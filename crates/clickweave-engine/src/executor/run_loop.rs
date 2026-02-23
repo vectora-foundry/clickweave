@@ -615,17 +615,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
                         // Supervision (Test mode only)
                         if self.execution_mode == ExecutionMode::Test {
-                            // Skip supervision for read-only nodes inside loops —
-                            // these are typically condition checks (e.g. find_text
-                            // to test a value), and "not found" is expected on
-                            // early iterations.
-                            // Safe for any nesting depth: the graph walk is
-                            // linear, so active counters always belong to
-                            // loops whose body is currently executing.
+                            // Skip per-step supervision for nodes inside loops —
+                            // individual steps (clicks, keypresses, condition
+                            // checks) are verified in aggregate by
+                            // verify_loop_exit when the loop completes.
                             let inside_loop = !self.context.loop_counters.is_empty();
-                            if inside_loop && node_type.is_read_only() {
+                            if inside_loop {
                                 self.log(format!(
-                                    "Skipping supervision for '{}' (read-only inside loop)",
+                                    "Skipping supervision for '{}' (inside loop)",
                                     node_name
                                 ));
                                 break (true, false);
