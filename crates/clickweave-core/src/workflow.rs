@@ -802,6 +802,23 @@ pub struct Artifact {
     pub overlays: Vec<Value>,
 }
 
+/// Sanitize a node name for use as a variable prefix.
+/// Converts to lowercase, replaces non-alphanumeric chars (except `_`) with underscores.
+///
+/// Examples: `"Find Text"` → `"find_text"`, `"Click (Login Button)"` → `"click__login_button_"`
+pub fn sanitize_node_name(name: &str) -> String {
+    name.to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1044,6 +1061,29 @@ mod tests {
                 serde_json::from_str(&json).expect("deserialize EdgeOutput");
             assert_eq!(*variant, deserialized);
         }
+    }
+
+    #[test]
+    fn test_sanitize_node_name_simple() {
+        assert_eq!(sanitize_node_name("Find Text"), "find_text");
+    }
+
+    #[test]
+    fn test_sanitize_node_name_special_chars() {
+        assert_eq!(
+            sanitize_node_name("Click (Login Button)"),
+            "click__login_button_"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_node_name_preserves_underscores() {
+        assert_eq!(sanitize_node_name("my_node_1"), "my_node_1");
+    }
+
+    #[test]
+    fn test_sanitize_node_name_empty() {
+        assert_eq!(sanitize_node_name(""), "");
     }
 
     #[test]

@@ -1383,7 +1383,7 @@ fn test_flat_plan_with_loop_gets_control_flow_edges() {
     let raw_steps: Vec<serde_json::Value> = serde_json::from_str(r#"[
         {"step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
         {"step_type": "Loop", "name": "Repeat", "exit_condition": {
-            "left": {"type": "Variable", "name": "result.found"},
+            "left": {"type": "Variable", "name": "click_2.found"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }, "max_iterations": 10},
@@ -1443,7 +1443,7 @@ fn test_flat_plan_with_post_loop_node_gets_loop_done() {
     let raw_steps: Vec<serde_json::Value> = serde_json::from_str(r#"[
         {"step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
         {"step_type": "Loop", "name": "Repeat", "exit_condition": {
-            "left": {"type": "Variable", "name": "result.found"},
+            "left": {"type": "Variable", "name": "click_2.found"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }, "max_iterations": 10},
@@ -1500,7 +1500,7 @@ async fn test_infer_loop_edges_from_unlabeled() {
     let response = r#"{"nodes": [
         {"id": "n1", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
         {"id": "n2", "step_type": "Loop", "name": "My Loop", "exit_condition": {
-            "left": {"type": "Variable", "name": "done"},
+            "left": {"type": "Variable", "name": "click_equals.found"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }, "max_iterations": 10},
@@ -1552,7 +1552,7 @@ async fn test_infer_loop_reroutes_back_edge_through_endloop() {
     let response = r#"{"nodes": [
         {"id": "n1", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
         {"id": "n2", "step_type": "Loop", "name": "Multiply", "exit_condition": {
-            "left": {"type": "Variable", "name": "result.found"},
+            "left": {"type": "Variable", "name": "check_result.found"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }, "max_iterations": 20},
@@ -1709,7 +1709,7 @@ async fn test_infer_if_edges_from_unlabeled() {
     // LLM produces If node with two unlabeled edges — first should be IfTrue, second IfFalse.
     let response = r#"{"nodes": [
         {"id": "n1", "step_type": "If", "name": "Check Found", "condition": {
-            "left": {"type": "Variable", "name": "find_text.found"},
+            "left": {"type": "Variable", "name": "click_ok.found"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }},
@@ -1814,7 +1814,7 @@ async fn test_infer_loop_reroutes_body_back_edge_when_endloop_edge_already_exist
     let response = r#"{"nodes": [
         {"id": "n1", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus"},
         {"id": "n2", "step_type": "Loop", "name": "Multiply", "exit_condition": {
-            "left": {"type": "Variable", "name": "result.found"},
+            "left": {"type": "Variable", "name": "check_result.found"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }, "max_iterations": 20},
@@ -1891,13 +1891,13 @@ async fn test_infer_loop_reroutes_if_false_back_edge_to_loop() {
     let response = r#"{"nodes": [
         {"id": "n1", "step_type": "Tool", "tool_name": "focus_window", "arguments": {"app_name": "Calculator"}, "name": "Focus Calculator"},
         {"id": "n2", "step_type": "Loop", "name": "Repeat Multiply", "exit_condition": {
-            "left": {"type": "Variable", "name": "result.found"},
+            "left": {"type": "Variable", "name": "check_result.found"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }, "max_iterations": 10},
         {"id": "n3", "step_type": "Tool", "tool_name": "find_text", "arguments": {"text": "1024"}, "name": "Check Result"},
         {"id": "n4", "step_type": "If", "condition": {
-            "left": {"type": "Variable", "name": "n3.found"},
+            "left": {"type": "Variable", "name": "check_result.found"},
             "operator": "Equals",
             "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
         }, "name": "Is 1024?"},

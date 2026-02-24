@@ -3,7 +3,9 @@ use super::{
     WorkflowExecutor, check_eval,
 };
 use clickweave_core::runtime::RuntimeContext;
-use clickweave_core::{EdgeOutput, ExecutionMode, NodeRun, NodeType, RunStatus};
+use clickweave_core::{
+    EdgeOutput, ExecutionMode, NodeRun, NodeType, RunStatus, sanitize_node_name,
+};
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::McpClient;
 use serde_json::Value;
@@ -837,21 +839,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 }
 
-/// Sanitize a node name for use as a variable prefix.
-/// Converts to lowercase, replaces spaces and non-alphanumeric chars with underscores.
-fn sanitize_node_name(name: &str) -> String {
-    name.to_lowercase()
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
 /// Extract type-specific variables from a tool result into the RuntimeContext.
 ///
 /// Returns the list of `(variable_name, value)` pairs that were set, for tracing.
@@ -931,29 +918,6 @@ fn array_alias_for_node_type(node_type: &NodeType) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn sanitize_simple_name() {
-        assert_eq!(sanitize_node_name("Find Text"), "find_text");
-    }
-
-    #[test]
-    fn sanitize_name_with_special_chars() {
-        assert_eq!(
-            sanitize_node_name("Click (Login Button)"),
-            "click__login_button_"
-        );
-    }
-
-    #[test]
-    fn sanitize_name_preserves_underscores() {
-        assert_eq!(sanitize_node_name("my_node_1"), "my_node_1");
-    }
-
-    #[test]
-    fn sanitize_empty_name() {
-        assert_eq!(sanitize_node_name(""), "");
-    }
 
     #[test]
     fn extract_variables_from_object() {
