@@ -89,11 +89,11 @@ User: "Open Calculator, keep multiplying by 2 until the result exceeds 100."
   "nodes": [
     {"id": "n1", "step_type": "Tool", "tool_name": "launch_app", "arguments": {"app_name": "Calculator"}, "name": "Launch Calculator"},
     {"id": "n2", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "2"}, "name": "Click 2"},
-    {"id": "n3", "step_type": "Loop", "exit_condition": {"left": {"type": "Variable", "name": "check_result.found"}, "operator": "Equals", "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}}, "max_iterations": 20, "name": "Multiply until > 100"},
+    {"id": "n3", "step_type": "Loop", "exit_condition": {"left": {"type": "Variable", "name": "check_if_over_100.found"}, "operator": "Equals", "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}}, "max_iterations": 20, "name": "Multiply until > 100"},
     {"id": "n4", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "×"}, "name": "Click ×"},
     {"id": "n5", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "2"}, "name": "Click 2"},
     {"id": "n6", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "="}, "name": "Click ="},
-    {"id": "n7", "step_type": "Tool", "tool_name": "find_text", "arguments": {"text": "128"}, "name": "Check result"},
+    {"id": "n7", "step_type": "Tool", "tool_name": "find_text", "arguments": {"text": "128"}, "name": "Check if over 100"},
     {"id": "n8", "step_type": "EndLoop", "loop_id": "n3", "name": "End loop"},
     {"id": "n9", "step_type": "Tool", "tool_name": "take_screenshot", "arguments": {}, "name": "Final screenshot"}
   ],
@@ -112,3 +112,5 @@ User: "Open Calculator, keep multiplying by 2 until the result exceeds 100."
 ```
 
 Note the edge pattern: n2→n3 (enter loop), n3→n4 (LoopBody), body chain n4→n5→n6→n7→n8, n8→n3 (EndLoop back to Loop), n3→n9 (LoopDone exit). The EndLoop ALWAYS points back to the Loop node.
+
+Note the variable name: the find_text node is named "Check if over 100", so the sanitized variable prefix is `check_if_over_100` (lowercase, non-alphanumeric → underscore). The exit condition therefore uses `check_if_over_100.found`.

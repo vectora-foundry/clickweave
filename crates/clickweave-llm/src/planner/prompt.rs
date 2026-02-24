@@ -64,7 +64,7 @@ pub(crate) fn planner_system_prompt(
 **Condition** objects compare a runtime variable to a value:
 ```json
 {
-  "left": {"type": "Variable", "name": "<node_name>.<field>"},
+  "left": {"type": "Variable", "name": "<sanitized_node_name>.<field>"},
   "operator": "<op>",
   "right": {"type": "Literal", "value": {"type": "Bool", "value": true}}
 }
@@ -73,7 +73,7 @@ Operators: Equals, NotEquals, GreaterThan, LessThan, GreaterThanOrEqual, LessTha
 
 Literal types: `{"type": "String", "value": "text"}`, `{"type": "Number", "value": 42}`, `{"type": "Bool", "value": true}`.
 
-**Variable names** follow `<sanitized_node_name>.<field>` (lowercase, spaces→underscores). Fields per tool:
+**Variable names** follow `<sanitized_node_name>.<field>`. The sanitized name is derived from the node's `"name"` field: lowercase the entire name, then replace every non-alphanumeric character (spaces, punctuation, symbols) with `_`. Examples: `"Check result"` → `check_result`, `"Check if result is 128"` → `check_if_result_is_128`, `"Click +"` → `click___`. The variable name in conditions MUST match the exact sanitized form of the referenced node's name. Fields per tool:
 - find_text: `.found` (bool), `.text`, `.x`, `.y`, `.count`, `.matches`
 - find_image: `.found` (bool), `.x`, `.y`, `.score`, `.count`, `.matches`
 - list_windows: `.found` (bool), `.count`, `.windows`
