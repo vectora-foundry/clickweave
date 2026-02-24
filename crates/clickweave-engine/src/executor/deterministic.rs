@@ -164,12 +164,19 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let images = self.save_result_images(&result, "result", &mut node_run);
         let result_text = Self::extract_result_text(&result);
 
-        // For find_text: if empty matches + available_elements, resolve element name via LLM and retry
-        let result_text = if tool_name == "find_text"
-            && let Some(ref original_args) = find_text_original_args
+        // For find_text: if empty matches + available_elements, resolve element name via LLM and retry.
+        // Skip resolution inside loops — FindText nodes in loops act as condition checks
+        // where accurate found/not-found results are needed for exit conditions.
+        // Element resolution would map e.g. "128" → "8" (a button), masking the fact
+        // that "128" is not yet on screen and preventing the loop from exiting.
+        let inside_loop = !self.context.loop_counters.is_empty();
+        let find_text_empty = tool_name == "find_text"
             && serde_json::from_str::<Vec<Value>>(&result_text)
                 .unwrap_or_default()
-                .is_empty()
+                .is_empty();
+        let result_text = if find_text_empty
+            && !inside_loop
+            && let Some(ref original_args) = find_text_original_args
         {
             self.try_resolve_find_text(
                 node_id,
@@ -180,6 +187,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             )
             .await
             .unwrap_or(result_text)
+        } else if find_text_empty && inside_loop {
+            // Inside loops, return just the empty array so parse_result_text
+            // produces Value::Array([]) and extract_result_variables sets found=false.
+            "[]".to_string()
         } else {
             result_text
         };
