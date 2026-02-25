@@ -111,8 +111,7 @@ pub(crate) fn extract_result_variables(
 fn array_alias_for_node_type(node_type: &NodeType) -> Option<&'static str> {
     match node_type {
         NodeType::ListWindows(_) => Some("windows"),
-        NodeType::FindText(_) => Some("matches"),
-        NodeType::FindImage(_) => Some("matches"),
+        NodeType::FindText(_) | NodeType::FindImage(_) => Some("matches"),
         _ => None,
     }
 }

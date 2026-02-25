@@ -1,31 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useLoopGrouping } from "./useLoopGrouping";
-import type { Node, Edge, Workflow } from "../bindings";
-
-function node(id: string, type: string, params?: Record<string, unknown>): Node {
-  return {
-    id,
-    node_type: { type, ...params } as Node["node_type"],
-    position: { x: 0, y: 0 },
-    name: id,
-    enabled: true,
-    timeout_ms: null,
-    settle_ms: null,
-    retries: 0,
-    trace_level: "Full",
-    expected_outcome: null,
-    checks: [],
-  };
-}
-
-function edge(from: string, to: string, output?: Edge["output"]): Edge {
-  return { from, to, output: output ?? null };
-}
-
-function makeWorkflow(nodes: Node[], edges: Edge[]): Workflow {
-  return { id: "test-id", name: "test", nodes, edges };
-}
+import { node, edge, makeWorkflow } from "./test-helpers";
 
 describe("useLoopGrouping", () => {
   it("hiddenNodeIds contains EndLoop IDs", () => {

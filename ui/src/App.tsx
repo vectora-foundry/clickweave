@@ -90,7 +90,7 @@ function App() {
   const redo = useStore((s) => s.redo);
 
   // ── Workflow mutations ───────────────────────────────────────────
-  const { addNode, removeNode, removeNodes, removeEdgesOnly, updateNodePositions, updateNode, addEdge, removeEdge } =
+  const { addNode, removeNodes, removeEdgesOnly, updateNodePositions, updateNode, addEdge } =
     useWorkflowActions();
 
   // ── Derived state ────────────────────────────────────────────────

@@ -256,18 +256,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         match wait_for_supervision_command(&mut command_rx).await {
                             SupervisionAction::Retry => {
                                 // Can't re-run a loop; treat as skip
-                                self.log(
-                                    "Supervision: user chose Retry (continuing past loop)"
-                                        .to_string(),
-                                );
+                                self.log("Supervision: user chose Retry (continuing past loop)");
                             }
                             SupervisionAction::Skip => {
-                                self.log("Supervision: user chose Skip for loop exit".to_string());
+                                self.log("Supervision: user chose Skip for loop exit");
                             }
                             SupervisionAction::Abort => {
-                                self.log(
-                                    "Supervision: user chose Abort after loop exit".to_string(),
-                                );
+                                self.log("Supervision: user chose Abort after loop exit");
                                 completed_normally = false;
                                 break;
                             }
@@ -381,15 +376,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
                                 match wait_for_supervision_command(&mut command_rx).await {
                                     SupervisionAction::Retry => {
-                                        self.log("Supervision: user chose Retry".to_string());
+                                        self.log("Supervision: user chose Retry");
                                         continue;
                                     }
                                     SupervisionAction::Skip => {
-                                        self.log("Supervision: user chose Skip".to_string());
+                                        self.log("Supervision: user chose Skip");
                                         break (true, false);
                                     }
                                     SupervisionAction::Abort => {
-                                        self.log("Supervision: user chose Abort".to_string());
+                                        self.log("Supervision: user chose Abort");
                                         break (false, true);
                                     }
                                 }
@@ -440,7 +435,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         // --- Check evaluation pass (runs for all completed checked nodes) ---
         if !self.completed_checks.is_empty() {
-            self.log("Running post-workflow check evaluation...".to_string());
+            self.log("Running post-workflow check evaluation...");
 
             // Deduplicate: keep only the last entry per node_id (loop iterations
             // overwrite trace/screenshot on disk, so only the last is meaningful).
@@ -503,7 +498,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 .unwrap_or_else(|e| e.into_inner())
                 .save(&self.storage.cache_path());
             match save_result {
-                Ok(()) => self.log("Decision cache saved".to_string()),
+                Ok(()) => self.log("Decision cache saved"),
                 Err(e) => self.log(format!("Warning: failed to save decision cache: {}", e)),
             }
         }

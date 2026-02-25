@@ -1,32 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { useEdgeSync } from "./useEdgeSync";
-import type { Node, Edge, Workflow } from "../bindings";
+import type { Workflow } from "../bindings";
 import { useRef } from "react";
-
-function node(id: string, type: string, params?: Record<string, unknown>): Node {
-  return {
-    id,
-    node_type: { type, ...params } as Node["node_type"],
-    position: { x: 0, y: 0 },
-    name: id,
-    enabled: true,
-    timeout_ms: null,
-    settle_ms: null,
-    retries: 0,
-    trace_level: "Full",
-    expected_outcome: null,
-    checks: [],
-  };
-}
-
-function edge(from: string, to: string, output?: Edge["output"]): Edge {
-  return { from, to, output: output ?? null };
-}
-
-function makeWorkflow(nodes: Node[], edges: Edge[]): Workflow {
-  return { id: "test-id", name: "test", nodes, edges };
-}
+import { node, edge, makeWorkflow } from "./test-helpers";
 
 function renderEdgeSync(params: {
   workflow: Workflow;
