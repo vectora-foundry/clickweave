@@ -274,6 +274,9 @@ export function useNodeSync({
         if (change.type === "remove") removeIds.push(change.id);
       }
       if (removeIds.length > 0) {
+        // TIMING CONTRACT: deletedNodeIdsRef is set here and consumed by useEdgeSync's
+        // handleEdgesChange. React Flow fires edge removal callbacks synchronously after
+        // node removal callbacks. The queueMicrotask clears it for nodes with no edges.
         deletedNodeIdsRef.current = new Set(removeIds);
         onDeleteNodes(removeIds);
         queueMicrotask(() => { deletedNodeIdsRef.current = null; });

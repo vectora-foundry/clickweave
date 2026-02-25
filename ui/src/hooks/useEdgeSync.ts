@@ -70,7 +70,8 @@ export function useEdgeSync({
     (changes) => {
       const removals = changes.filter((c) => c.type === "remove");
 
-      // If a node deletion just happened, identify extra selected edges
+      // If a node deletion just happened (set by useNodeSync's handleNodesChange),
+      // identify extra selected edges that need silent removal.
       if (deletedNodeIdsRef.current) {
         const deletedIds = deletedNodeIdsRef.current;
         deletedNodeIdsRef.current = null;

@@ -173,7 +173,11 @@ function App() {
       listen("assistant://repairing", () => {
         useStore.setState({ assistantRetrying: true });
       }),
-    ]);
+    ]).catch((err) => {
+      console.error("Failed to subscribe to Tauri events:", err);
+      useStore.getState().pushLog(`Critical: event listeners failed to initialize: ${err}`);
+      return [] as (() => void)[];
+    });
 
     return () => {
       subscriptions.then((unlisteners) => unlisteners.forEach((u) => u()));
