@@ -1,11 +1,14 @@
 mod ai_step;
 mod app_resolve;
 mod check_eval;
+mod control_flow;
 mod deterministic;
 mod element_resolve;
+mod graph_nav;
 mod run_loop;
 mod supervision;
 mod trace;
+mod variables;
 
 #[cfg(test)]
 mod tests;
