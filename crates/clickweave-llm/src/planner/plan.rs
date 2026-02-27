@@ -14,13 +14,13 @@ use uuid::Uuid;
 /// A flat plan step with optional role/expected_outcome metadata.
 /// Unlike `PlanNode`, this doesn't require an `id` field (flat plans are sequential).
 #[derive(Debug, Deserialize)]
-struct FlatPlanStep {
+pub(crate) struct FlatPlanStep {
     #[serde(flatten)]
-    step: PlanStep,
+    pub step: PlanStep,
     #[serde(default)]
-    role: Option<String>,
+    pub role: Option<String>,
     #[serde(default)]
-    expected_outcome: Option<String>,
+    pub expected_outcome: Option<String>,
 }
 
 /// Plan a workflow from an intent using the planner LLM.

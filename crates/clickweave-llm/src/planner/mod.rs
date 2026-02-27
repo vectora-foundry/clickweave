@@ -87,7 +87,6 @@ pub struct PlannerOutput {
 /// A node in the graph-based planner output.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PlanNode {
-    #[serde(default)]
     pub id: String,
     #[serde(flatten)]
     pub step: PlanStep,
@@ -256,16 +255,16 @@ pub(crate) fn build_patch_from_output(
             output.add.len(),
         ));
     } else {
-        let (add_steps, add_warnings) = parse_lenient::<PlanNode>(&output.add);
+        let (add_steps, add_warnings) = parse_lenient::<plan::FlatPlanStep>(&output.add);
         warnings.extend(add_warnings);
-        for (i, plan_node) in add_steps.iter().enumerate() {
+        for (i, flat) in add_steps.iter().enumerate() {
             if let Some(reason) =
-                step_rejected_reason(&plan_node.step, allow_ai_transforms, allow_agent_steps)
+                step_rejected_reason(&flat.step, allow_ai_transforms, allow_agent_steps)
             {
                 warnings.push(format!("Added step {} removed: {}", i, reason));
                 continue;
             }
-            match step_to_node_type(&plan_node.step, mcp_tools) {
+            match step_to_node_type(&flat.step, mcp_tools) {
                 Ok((node_type, display_name)) => {
                     let mut node = Node::new(
                         node_type,
@@ -275,10 +274,10 @@ pub(crate) fn build_patch_from_output(
                         },
                         display_name,
                     );
-                    if plan_node.role.as_deref() == Some("Verification") {
+                    if flat.role.as_deref() == Some("Verification") {
                         node.role = NodeRole::Verification;
                     }
-                    node.expected_outcome = plan_node.expected_outcome.clone();
+                    node.expected_outcome = flat.expected_outcome.clone();
                     added_nodes.push(node);
                 }
                 Err(e) => warnings.push(format!("Added step {} skipped: {}", i, e)),
@@ -423,32 +422,32 @@ pub(crate) fn build_plan_as_patch(
 ) -> PatchResult {
     let mut warnings = Vec::new();
 
-    let (plan_nodes, step_warnings) = parse_lenient::<PlanNode>(raw_steps);
+    let (flat_steps, step_warnings) = parse_lenient::<plan::FlatPlanStep>(raw_steps);
     warnings.extend(step_warnings);
 
     let mut valid_steps = Vec::new();
 
-    for (i, plan_node) in plan_nodes.iter().enumerate() {
+    for (i, flat) in flat_steps.iter().enumerate() {
         if let Some(reason) =
-            step_rejected_reason(&plan_node.step, allow_ai_transforms, allow_agent_steps)
+            step_rejected_reason(&flat.step, allow_ai_transforms, allow_agent_steps)
         {
             warnings.push(format!("Step {} removed: {}", i, reason));
             continue;
         }
-        valid_steps.push(plan_node);
+        valid_steps.push(flat);
     }
 
     let positions = layout_nodes(valid_steps.len());
     let mut added_nodes = Vec::new();
 
-    for (i, plan_node) in valid_steps.iter().enumerate() {
-        match step_to_node_type(&plan_node.step, mcp_tools) {
+    for (i, flat) in valid_steps.iter().enumerate() {
+        match step_to_node_type(&flat.step, mcp_tools) {
             Ok((node_type, display_name)) => {
                 let mut node = Node::new(node_type, positions[i], display_name);
-                if plan_node.role.as_deref() == Some("Verification") {
+                if flat.role.as_deref() == Some("Verification") {
                     node.role = NodeRole::Verification;
                 }
-                node.expected_outcome = plan_node.expected_outcome.clone();
+                node.expected_outcome = flat.expected_outcome.clone();
                 added_nodes.push(node);
             }
             Err(e) => warnings.push(format!("Step {} skipped: {}", i, e)),

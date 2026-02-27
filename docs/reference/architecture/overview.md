@@ -38,7 +38,7 @@ src-tauri
 
 | Module | Purpose |
 |--------|---------|
-| `workflow.rs` | Core types: `Workflow`, `Node`, `Edge`, `NodeType`, `ExecutionMode`, control-flow params, checks, trace/run types |
+| `workflow.rs` | Core types: `Workflow`, `Node`, `Edge`, `NodeType`, `ExecutionMode`, `NodeRole`, control-flow params, verdicts, trace/run types |
 | `validation.rs` | `validate_workflow()` graph validation |
 | `runtime.rs` | `RuntimeContext` variable store + condition evaluation + loop counters |
 | `storage.rs` | `RunStorage` execution/run/event/artifact persistence, `cache_path()` for decision cache |
@@ -59,7 +59,7 @@ src-tauri
 | `executor/app_resolve.rs` | LLM app-name resolution + cache eviction |
 | `executor/element_resolve.rs` | LLM element-name resolution + cache eviction |
 | `executor/supervision.rs` | Step verification via VLM + supervision LLM; screenshot capture, description, judge-with-history |
-| `executor/check_eval.rs` | Post-run check evaluation |
+| `executor/verdict.rs` | Inline verification verdicts |
 | `executor/trace.rs` | Trace events, artifacts, run finalization |
 
 See [Workflow Execution](../engine/execution.md).

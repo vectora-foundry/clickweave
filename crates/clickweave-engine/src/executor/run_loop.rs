@@ -462,21 +462,28 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 Some(img) => {
                     let backend = self.vlm.as_ref().unwrap_or(&self.agent);
                     Some(
-                        super::verdict::screenshot_verdict(backend, node_id, node_name, outcome, &img)
-                            .await,
+                        super::verdict::screenshot_verdict(
+                            backend, node_id, node_name, outcome, &img,
+                        )
+                        .await,
                     )
                 }
                 None => {
                     self.log(format!(
-                        "Warning: could not capture screenshot for verification '{}'",
+                        "Verification '{}': screenshot capture failed — marking as FAIL",
                         node_name,
                     ));
-                    None
+                    Some(super::verdict::screenshot_capture_failed_verdict(
+                        node_id, node_name,
+                    ))
                 }
             }
         } else if node_type.is_read_only() {
             Some(super::verdict::deterministic_verdict(
-                node_id, node_name, node_type, node_result,
+                node_id,
+                node_name,
+                node_type,
+                node_result,
             ))
         } else {
             self.log(format!(

@@ -1,74 +1,75 @@
-# Node Checks
+# Verification Nodes
 
-Per-node validation that runs after a workflow completes. A VLM evaluates whether each checked node produced the expected result by examining trace events and a post-execution screenshot.
+Nodes with `role: Verification` produce inline verdicts during workflow execution. A verification failure stops the workflow immediately (fail-fast).
 
 ## How It Works
 
-### 1. Defining Checks
+### 1. Marking a Node as Verification
 
-Each workflow node has two optional verification mechanisms on its **Setup** and **Checks** tabs:
+In the Node Detail Modal's **Setup** tab, eligible node types show a **Verification** toggle. Only read-only node types can be verification nodes:
 
-**Typed checks** (Checks tab) — structured assertions:
-- `TextPresent` — verify specific text is visible on screen
-- `TextAbsent` — verify specific text is NOT visible
-- `TemplateFound` — verify a visual template/image is found
-- `WindowTitleMatches` — verify the window title matches expected value
+- `FindText`
+- `FindImage`
+- `ListWindows`
+- `TakeScreenshot`
 
-Each check has:
-- `name` — descriptive label (e.g. "Calculator shows result")
-- `check_type` — one of the four types above
-- `params` — type-specific parameters (JSON)
-- `on_fail` — `FailNode` (hard failure, stops evaluation) or `WarnOnly` (soft, continues)
+When enabled, the node's `role` field is set to `NodeRole::Verification` (stored in `workflow.rs`).
 
-**Expected outcome** (Setup tab) — free-text description of what should happen after the node runs (e.g. "The calculator display should show 128"). Evaluated as an additional check alongside typed checks.
+### 2. Verdict Evaluation (Inline During Execution)
 
-### 2. During Execution
+After a Verification-role node executes successfully, a verdict is produced immediately — not in a post-run batch pass. Evaluation depends on the node type:
 
-After each node completes successfully, if it has checks or an expected outcome:
-1. A **screenshot** is captured via the MCP `take_screenshot` tool
-2. The screenshot is saved as an artifact in the node's run directory
-3. The node is added to the `completed_checks` queue for post-run evaluation
+**Deterministic verdicts** (FindText, FindImage, ListWindows):
 
-### 3. Post-Workflow Evaluation Pass
+The MCP tool result is inspected directly. A non-empty array result means pass; an empty array means fail.
 
-After **all nodes finish**, a single evaluation pass runs:
+- `FindText` — checks `TextPresent` (are matches found?)
+- `FindImage` — checks `TemplateFound` (are matches found?)
+- `ListWindows` — checks `WindowTitleMatches` (are windows found?)
 
-1. **Deduplication** — for nodes that ran multiple times (e.g. inside loops), only the last execution is evaluated
-2. **Evidence gathering** — for each checked node:
-   - Trace summary: last 20 `tool_call`/`tool_result` events from `events.jsonl`
-   - Screenshot: base64 PNG captured after the node ran
-3. **VLM evaluation** — each node's checks are sent to the VLM with:
-   - System prompt instructing it to evaluate UI automation results
-   - Node name, check descriptions, trace events, and screenshot
-   - VLM responds with JSON: `[{"check_name": "...", "verdict": "pass"|"fail", "reasoning": "..."}]`
-4. **Verdict resolution** — VLM responses are matched against original checks, `on_fail` policy applied (fail demoted to warn for `WarnOnly`)
-5. **Short-circuit** — if any node has a hard failure (`Fail`), evaluation stops immediately
+No LLM is involved. The verdict is derived purely from the result data.
+
+**VLM-based verdicts** (TakeScreenshot):
+
+Requires `expected_outcome` text on the node (set in the Setup tab). The VLM receives the captured screenshot and the expected outcome description, then returns a pass/fail verdict with reasoning.
+
+If a TakeScreenshot node has `Verification` role but no `expected_outcome`, a `Warn` verdict is produced instead of fail.
+
+### 3. Fail-Fast Behavior
+
+If any verification verdict is `Fail`, execution stops immediately. The failing node is marked as failed and no subsequent nodes run. This differs from the old post-run check system which evaluated all checks after the workflow completed.
 
 ### 4. Results
 
-- Saved to `verdict.json` in each node's run directory
+- Accumulated in `runtime_verdicts` on the executor during the graph walk
+- Persisted to `verdict.json` in each node's run directory after the graph walk
 - Emitted as `executor://checks_completed` event to the frontend
 - Displayed in the **VerdictBar** at the top of the app:
-  - Green: PASSED (all checks pass)
-  - Yellow: PASSED with warnings (some `WarnOnly` checks failed)
-  - Red: FAILED (at least one `FailNode` check failed)
-  - Expandable to show per-node breakdowns with individual check verdicts and VLM reasoning
+  - Green: PASSED (all verdicts pass)
+  - Yellow: PASSED with warnings (e.g. missing `expected_outcome`)
+  - Red: FAILED (at least one verdict failed)
+  - Expandable to show per-node breakdowns with individual verdicts and reasoning
+
+## Key Types
+
+Defined in `crates/clickweave-core/src/workflow.rs`:
+
+| Type | Purpose |
+|------|---------|
+| `NodeRole` | `Default` or `Verification` — set on each node |
+| `CheckType` | `TextPresent`, `TemplateFound`, `WindowTitleMatches`, `ScreenshotMatch` |
+| `CheckVerdict` | `Pass`, `Fail`, `Warn` |
+| `CheckResult` | Individual check result: `check_name`, `check_type`, `verdict`, `reasoning` |
+| `NodeVerdict` | Per-node verdict: `node_id`, `node_name`, `check_results`, `expected_outcome_verdict` |
 
 ## Key Files
 
 | File | Role |
 |------|------|
-| `crates/clickweave-engine/src/executor/check_eval.rs` | VLM prompt construction, response parsing, verdict resolution |
-| `crates/clickweave-engine/src/executor/run_loop.rs` | Screenshot capture, check collection, evaluation pass orchestration |
-| `crates/clickweave-core/src/workflow.rs` | Core types: `Check`, `CheckType`, `CheckResult`, `CheckVerdict`, `NodeVerdict`, `OnCheckFail` |
+| `crates/clickweave-engine/src/executor/verdict.rs` | Deterministic verdict logic, VLM screenshot verdict, missing-outcome warning |
+| `crates/clickweave-engine/src/executor/run_loop.rs` | Inline verdict evaluation after node execution, fail-fast logic, verdict accumulation and emission |
+| `crates/clickweave-core/src/workflow.rs` | Core types: `NodeRole`, `CheckType`, `CheckVerdict`, `CheckResult`, `NodeVerdict` |
 | `crates/clickweave-core/src/storage.rs` | `save_node_verdict()` — persists `verdict.json` per node |
 | `ui/src/components/VerdictBar.tsx` | Verdict display with expandable per-node details |
-| `ui/src/components/node-detail/tabs/ChecksTab.tsx` | UI for adding/removing checks on a node |
+| `ui/src/components/node-detail/tabs/SetupTab.tsx` | Verification toggle for eligible node types |
 | `ui/src/store/slices/verdictSlice.ts` | Zustand state for verdicts |
-
-## Limitations
-
-- Checks are **manual** — the user must add them per node. Nothing is auto-generated from the original prompt.
-- The VLM backend defaults to the agent's LLM but can be overridden with a dedicated VLM (`self.vlm`).
-- Screenshot capture uses the currently focused app; if focus shifted unexpectedly, the screenshot may not show the right window.
-- Loop nodes are deduplicated to the last iteration only — earlier iterations are not evaluated.

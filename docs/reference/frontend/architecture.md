@@ -42,7 +42,6 @@ ui/src/
 │       └── tabs/
 │           ├── SetupTab.tsx
 │           ├── TraceTab.tsx
-│           ├── ChecksTab.tsx
 │           └── RunsTab.tsx
 ├── hooks/
 │   ├── useEscapeKey.ts
@@ -172,11 +171,10 @@ Control-flow edge labels shown in canvas:
 
 ## Node Detail Modal
 
-`NodeDetailModal` has 4 tabs:
+`NodeDetailModal` has 3 tabs:
 
-- `Setup`: node params, enabled flag, timeout, settle delay, retries, trace level, expected outcome
+- `Setup`: node params, enabled flag, timeout, settle delay, retries, trace level, expected outcome, Verification role toggle (for eligible node types)
 - `Trace`: trace events + artifact preview/lightbox for selected run
-- `Checks`: check definitions and `on_fail` policy
 - `Runs`: run history list (can jump to Trace tab)
 
 ## Settings Defaults

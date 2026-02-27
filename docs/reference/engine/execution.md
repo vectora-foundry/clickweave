@@ -28,7 +28,7 @@ High-level flow in `run()`:
 4. `RunStorage::begin_execution()`
 5. Find entry points
 6. Walk graph (with per-step supervision in Test mode)
-7. Run post-execution check pass (if needed)
+7. Emit accumulated verification verdicts (if any)
 8. Save decision cache (Test mode only)
 9. Emit `WorkflowCompleted` when completed normally
 10. Emit `StateChanged(Idle)`
@@ -66,7 +66,7 @@ Main state machine (in `executor/run_loop.rs`):
 | `NodeFailed(Uuid, String)` | node id, error | Node execution failed |
 | `RunCreated(Uuid, NodeRun)` | node id, run metadata | Node run directory created |
 | `WorkflowCompleted` | none | Graph walk completed normally |
-| `ChecksCompleted(Vec<NodeVerdict>)` | verdicts | Post-execution check results |
+| `ChecksCompleted(Vec<NodeVerdict>)` | verdicts | Inline verification verdicts from Verification-role nodes |
 | `Error(String)` | message | Fatal error |
 | `SupervisionPassed` | `node_id`, `node_name`, `summary` | Step passed verification (Test mode) |
 | `SupervisionPaused` | `node_id`, `node_name`, `finding`, `screenshot?` | Step failed verification, awaiting user action (Test mode) |
@@ -290,11 +290,11 @@ Common event types recorded in trace files:
 - `element_resolved`
 - `match_disambiguated`
 
-## Post-Execution Checks
+## Inline Verification Verdicts
 
-If any completed node has checks or expected outcome text, a check pass runs after graph walk. Results are emitted as `ChecksCompleted` and persisted per node.
+Nodes with `role: Verification` produce verdicts inline during execution (fail-fast). Verdicts are accumulated in `runtime_verdicts` and emitted as `ChecksCompleted` after the graph walk completes.
 
-See [Node Checks](../../verification/node-checks.md).
+See [Verification Nodes](../../verification/node-checks.md).
 
 ## Key Files
 
@@ -310,7 +310,7 @@ See [Node Checks](../../verification/node-checks.md).
 | `crates/clickweave-engine/src/executor/app_resolve.rs` | App resolution + cache eviction |
 | `crates/clickweave-engine/src/executor/element_resolve.rs` | Element resolution, click disambiguation, cache eviction |
 | `crates/clickweave-engine/src/executor/supervision.rs` | Per-step and loop-exit verification (Test mode) |
-| `crates/clickweave-engine/src/executor/check_eval.rs` | Post-run check pass |
+| `crates/clickweave-engine/src/executor/verdict.rs` | Inline verification verdicts |
 | `crates/clickweave-core/src/decision_cache.rs` | Decision cache types and save/load |
 | `crates/clickweave-core/src/runtime.rs` | Runtime context and condition evaluation |
 | `crates/clickweave-core/src/storage.rs` | Run/event/artifact persistence |

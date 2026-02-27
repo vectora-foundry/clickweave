@@ -33,7 +33,11 @@ pub(crate) fn deterministic_verdict(
     let (verdict, reasoning) = if found {
         (
             CheckVerdict::Pass,
-            format!("Found {} match{}", count, if count == 1 { "" } else { "es" }),
+            format!(
+                "Found {} match{}",
+                count,
+                if count == 1 { "" } else { "es" }
+            ),
         )
     } else {
         (CheckVerdict::Fail, "No matches found".to_string())
@@ -76,6 +80,21 @@ pub(crate) fn missing_outcome_verdict(node_id: Uuid, node_name: &str) -> NodeVer
             check_type: CheckType::ScreenshotMatch,
             verdict: CheckVerdict::Warn,
             reasoning: "Verification role set but no expected_outcome configured".to_string(),
+        }],
+        expected_outcome_verdict: None,
+    }
+}
+
+/// Create a Fail verdict when screenshot capture fails for a Verification node.
+pub(crate) fn screenshot_capture_failed_verdict(node_id: Uuid, node_name: &str) -> NodeVerdict {
+    NodeVerdict {
+        node_id,
+        node_name: node_name.to_string(),
+        check_results: vec![CheckResult {
+            check_name: node_name.to_string(),
+            check_type: CheckType::ScreenshotMatch,
+            verdict: CheckVerdict::Fail,
+            reasoning: "Screenshot capture failed — cannot verify expected outcome".to_string(),
         }],
         expected_outcome_verdict: None,
     }
