@@ -93,8 +93,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         self.log_model_info("Agent", &self.agent).await;
         if let Some(vlm) = &self.vlm {
-            self.log(format!("VLM enabled: {}", vlm.model_name()));
+            self.log(format!("VLM configured: {}", vlm.model_name()));
             self.log_model_info("VLM", vlm).await;
+        } else if let Some(planner) = &self.supervision {
+            self.log(format!(
+                "VLM not configured — using planner ({}) for vision",
+                planner.model_name()
+            ));
         } else {
             self.log("VLM not configured — images sent directly to agent");
         }
@@ -460,7 +465,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let screenshot_b64 = self.extract_screenshot_image(mcp, args).await;
             match screenshot_b64 {
                 Some(img) => {
-                    let backend = self.vlm.as_ref().unwrap_or(&self.agent);
+                    let backend = self.vision_backend().unwrap_or(&self.agent);
                     Some(
                         super::verdict::screenshot_verdict(
                             backend, node_id, node_name, outcome, &img,

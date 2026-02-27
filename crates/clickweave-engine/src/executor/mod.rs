@@ -166,4 +166,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .or(self.vlm.as_ref())
             .unwrap_or(&self.agent)
     }
+
+    /// Return the best available LLM for vision tasks (image analysis,
+    /// screenshot verification). Prefers an explicitly configured VLM, falls
+    /// back to supervision (planner-class). Returns `None` only when neither
+    /// VLM nor planner is configured.
+    pub(crate) fn vision_backend(&self) -> Option<&C> {
+        self.vlm.as_ref().or(self.supervision.as_ref())
+    }
 }

@@ -179,7 +179,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             if !pending_images.is_empty() {
                 let image_count = pending_images.len();
-                if let Some(vlm) = &self.vlm {
+                if let Some(vlm) = self.vision_backend() {
                     self.log(format!(
                         "Analyzing {} image(s) with VLM ({})",
                         image_count,

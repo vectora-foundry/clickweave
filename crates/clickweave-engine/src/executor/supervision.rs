@@ -169,8 +169,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     /// Ask the VLM to describe a screenshot using a custom prompt.
+    /// Falls back to the planner when no explicit VLM is configured.
     async fn describe_screenshot_with_prompt(&self, image_base64: &str, prompt: &str) -> String {
-        let vlm = match self.vlm.as_ref() {
+        let vlm = match self.vision_backend() {
             Some(v) => v,
             None => {
                 return "No VLM configured — no visual observation available.".to_string();
