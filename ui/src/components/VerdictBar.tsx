@@ -13,6 +13,8 @@ export function VerdictBar() {
   // Hide when running or when there's no workflow to test
   if (executorState === "running" || !hasNodes) return null;
 
+  const hasRun = status !== "none";
+
   // Post-run state: show result bar
   if (visible) {
     const { total, passed } = countChecks(verdicts);
@@ -24,7 +26,7 @@ export function VerdictBar() {
           ? "bg-yellow-900/80 border-yellow-700"
           : status === "failed"
             ? "bg-red-900/80 border-red-700"
-            : "bg-zinc-800/80 border-zinc-600";
+            : "bg-blue-900/80 border-blue-700";
 
     const label =
       status === "passed"
@@ -33,7 +35,7 @@ export function VerdictBar() {
           ? `PASSED with warnings — ${passed}/${total} checks`
           : status === "failed"
             ? `FAILED — ${passed}/${total} checks passed`
-            : "COMPLETED";
+            : "Test run completed — no checks";
 
     return (
       <div className={`border-b ${bgColor}`}>
@@ -50,6 +52,37 @@ export function VerdictBar() {
           >
             Dismiss
           </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Dismissed post-run state: compact summary
+  if (hasRun) {
+    const summaryColor =
+      status === "passed"
+        ? "text-green-500"
+        : status === "warned"
+          ? "text-yellow-500"
+          : status === "failed"
+            ? "text-red-500"
+            : "text-blue-500";
+
+    const summaryLabel =
+      status === "passed"
+        ? "Passed"
+        : status === "warned"
+          ? "Passed with warnings"
+          : status === "failed"
+            ? "Failed"
+            : "Completed";
+
+    return (
+      <div className="border-b bg-zinc-800/40 border-zinc-700/50">
+        <div className="px-4 py-1.5">
+          <span className={`text-xs ${summaryColor}`}>
+            Last run: {summaryLabel}
+          </span>
         </div>
       </div>
     );

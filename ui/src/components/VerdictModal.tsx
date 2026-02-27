@@ -6,6 +6,7 @@ const statusConfig: Record<Exclude<VerdictStatus, "none">, { heading: string; ic
   passed: { heading: "Test Passed", icon: "\u2713", iconCls: "bg-green-500/20 text-green-400", borderCls: "border-green-700/50" },
   warned: { heading: "Test Passed with Warnings", icon: "\u26A0", iconCls: "bg-yellow-500/20 text-yellow-400", borderCls: "border-yellow-700/50" },
   failed: { heading: "Test Failed", icon: "\u2717", iconCls: "bg-red-500/20 text-red-400", borderCls: "border-red-700/50" },
+  completed: { heading: "Test Run Completed", icon: "\u2713", iconCls: "bg-blue-500/20 text-blue-400", borderCls: "border-blue-700/50" },
 };
 
 const verdictColor: Record<string, string> = {
@@ -28,8 +29,8 @@ export function VerdictModal() {
 
   if (!open) return null;
 
-  const hasVerdicts = status !== "none";
-  const config = hasVerdicts
+  const hasVerdicts = verdicts.length > 0;
+  const config = status !== "none"
     ? statusConfig[status]
     : { heading: "Workflow Completed", icon: "\u2713", iconCls: "bg-green-500/20 text-green-400", borderCls: "border-green-700/50" };
   const { total, passed } = countChecks(verdicts);

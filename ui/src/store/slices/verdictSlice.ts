@@ -18,7 +18,7 @@ export interface NodeVerdict {
   expected_outcome_verdict: CheckResult | null;
 }
 
-export type VerdictStatus = "none" | "passed" | "failed" | "warned";
+export type VerdictStatus = "none" | "passed" | "failed" | "warned" | "completed";
 
 export interface VerdictSlice {
   verdicts: NodeVerdict[];
@@ -83,6 +83,11 @@ export const createVerdictSlice: StateCreator<StoreState, [], [], VerdictSlice> 
   clearVerdicts: () =>
     set({ verdicts: [], verdictStatus: "none", verdictBarVisible: false, verdictModalOpen: false }),
 
-  openVerdictModal: () => set({ verdictModalOpen: true, verdictBarVisible: true }),
+  openVerdictModal: () =>
+    set((state) => ({
+      verdictModalOpen: true,
+      verdictBarVisible: true,
+      verdictStatus: state.verdictStatus === "none" ? "completed" : state.verdictStatus,
+    })),
   closeVerdictModal: () => set({ verdictModalOpen: false }),
 });
