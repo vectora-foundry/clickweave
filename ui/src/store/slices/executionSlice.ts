@@ -16,6 +16,7 @@ export interface ExecutionSlice {
   executorState: "idle" | "running";
   executionMode: ExecutionMode;
   supervisionPause: SupervisionPause | null;
+  lastRunStatus: "completed" | "failed" | null;
 
   setExecutorState: (state: "idle" | "running") => void;
   setExecutionMode: (mode: ExecutionMode) => void;
@@ -24,14 +25,17 @@ export interface ExecutionSlice {
   supervisionRespond: (action: "retry" | "skip" | "abort") => Promise<void>;
   runWorkflow: () => Promise<void>;
   stopWorkflow: () => Promise<void>;
+  setLastRunStatus: (status: "completed" | "failed" | null) => void;
 }
 
 export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSlice> = (set, get) => ({
   executorState: "idle",
   executionMode: "Test",
   supervisionPause: null,
+  lastRunStatus: null,
 
   setExecutorState: (state) => set({ executorState: state }),
+  setLastRunStatus: (status) => set({ lastRunStatus: status }),
   setExecutionMode: (mode) => set({ executionMode: mode }),
   setSupervisionPause: (pause) => set({ supervisionPause: pause }),
   clearSupervisionPause: () => set({ supervisionPause: null }),

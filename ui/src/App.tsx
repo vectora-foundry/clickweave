@@ -32,6 +32,7 @@ function App() {
   const selectedNode = useStore((s) => s.selectedNode);
   const activeNode = useStore((s) => s.activeNode);
   const executorState = useStore((s) => s.executorState);
+  const lastRunStatus = useStore((s) => s.lastRunStatus);
   const executionMode = useStore((s) => s.executionMode);
   const supervisionPause = useStore((s) => s.supervisionPause);
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
@@ -65,9 +66,7 @@ function App() {
   const setShowSettings = useStore((s) => s.setShowSettings);
   const clearLogs = useStore((s) => s.clearLogs);
   const pushHistory = useStore((s) => s.pushHistory);
-  const openProject = useStore((s) => s.openProject);
   const saveProject = useStore((s) => s.saveProject);
-  const newProject = useStore((s) => s.newProject);
   const setPlannerConfig = useStore((s) => s.setPlannerConfig);
   const setAgentConfig = useStore((s) => s.setAgentConfig);
   const setVlmConfig = useStore((s) => s.setVlmConfig);
@@ -121,7 +120,10 @@ function App() {
         const s = e.payload.state as "idle" | "running";
         useStore.getState().setExecutorState(s);
         if (s === "idle") useStore.getState().setActiveNode(null);
-        if (s === "running") useStore.getState().clearVerdicts();
+        if (s === "running") {
+          useStore.getState().clearVerdicts();
+          useStore.getState().setLastRunStatus(null);
+        }
       }),
       listen<{ node_id: string }>("executor://node_started", (e) => {
         useStore.getState().setActiveNode(e.payload.node_id);
@@ -134,6 +136,7 @@ function App() {
       listen<{ node_id: string; error: string }>("executor://node_failed", (e) => {
         useStore.getState().setActiveNode(null);
         useStore.getState().pushLog(`Node failed: ${e.payload.node_id} - ${e.payload.error}`);
+        useStore.getState().setLastRunStatus("failed");
       }),
       listen<import("./store/slices/verdictSlice").NodeVerdict[]>(
         "executor://checks_completed",
@@ -145,6 +148,9 @@ function App() {
         useStore.getState().pushLog("Workflow completed");
         useStore.getState().setExecutorState("idle");
         useStore.getState().setActiveNode(null);
+        if (useStore.getState().lastRunStatus !== "failed") {
+          useStore.getState().setLastRunStatus("completed");
+        }
         useStore.getState().openVerdictModal();
       }),
       listen<{ node_id: string; node_name: string; summary: string }>(
@@ -196,11 +202,9 @@ function App() {
       <div className="flex flex-1 flex-col overflow-hidden">
         <Header
           workflowName={workflow.name}
-          projectPath={projectPath}
           executorState={executorState}
+          lastRunStatus={lastRunStatus}
           onSave={saveProject}
-          onOpen={openProject}
-          onNew={newProject}
           onSettings={() => setShowSettings(true)}
           onNameChange={(name) => {
             pushHistory("Rename Workflow");

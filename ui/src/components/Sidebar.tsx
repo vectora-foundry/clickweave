@@ -18,17 +18,23 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         collapsed ? "w-12" : "w-48"
       }`}
     >
-      {/* Logo / Toggle */}
+      {/* Toggle */}
       <button
         onClick={onToggle}
-        className="flex h-12 items-center gap-2 border-b border-[var(--border)] px-3 hover:bg-[var(--bg-hover)]"
+        className="flex h-10 items-center justify-center border-b border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)]"
+        title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
       >
-        <span className="text-lg font-bold text-[var(--accent-coral)]">C</span>
-        {!collapsed && (
-          <span className="text-sm font-semibold text-[var(--text-primary)]">
-            Clickweave
-          </span>
-        )}
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+        >
+          <path d="M2 4h12M2 8h12M2 12h12" />
+        </svg>
       </button>
 
       {/* Nav items */}
