@@ -6,7 +6,7 @@ import type { StoreState } from "./types";
 // but are defined here to avoid blocking on a debug build.
 export interface CheckResult {
   check_name: string;
-  check_type: "TextPresent" | "TextAbsent" | "TemplateFound" | "WindowTitleMatches";
+  check_type: "TextPresent" | "TemplateFound" | "WindowTitleMatches" | "ScreenshotMatch";
   verdict: "Pass" | "Fail" | "Warn";
   reasoning: string;
 }

@@ -272,83 +272,36 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         );
 
                         // Inline verdict for Verification-role nodes
-                        if node_role == NodeRole::Verification
-                            && node_type.is_read_only()
-                            && !matches!(node_type, NodeType::TakeScreenshot(_))
-                        {
-                            let v = super::verdict::deterministic_verdict(
-                                node_id,
-                                &node_name,
-                                &node_type,
-                                &node_result,
-                            );
-                            let failed = v
-                                .check_results
-                                .iter()
-                                .any(|r| r.verdict == clickweave_core::CheckVerdict::Fail);
-                            self.log(format!(
-                                "Verification '{}': {}",
-                                node_name,
-                                if failed { "FAIL" } else { "PASS" },
-                            ));
-                            self.runtime_verdicts.push(v);
-                            if failed {
-                                self.emit_error(format!("Verification failed: '{}'", node_name,));
-                                verification_failed = true;
-                                break (false, false);
-                            }
-                        }
-
-                        // Inline VLM verdict for TakeScreenshot verification
-                        if node_role == NodeRole::Verification
-                            && matches!(node_type, NodeType::TakeScreenshot(_))
-                        {
-                            if let Some(ref outcome) = expected_outcome {
-                                let mut args = serde_json::json!({ "format": "png" });
-                                if let Some(ref name) =
-                                    self.focused_app.read().ok().and_then(|g| g.clone())
-                                {
-                                    args["app_name"] = serde_json::Value::String(name.clone());
-                                }
-                                let screenshot_b64 =
-                                    self.extract_screenshot_image(&mcp, args).await;
-                                match screenshot_b64 {
-                                    Some(img) => {
-                                        let backend = self.vlm.as_ref().unwrap_or(&self.agent);
-                                        let v = super::verdict::screenshot_verdict(
-                                            backend, node_id, &node_name, outcome, &img,
-                                        )
-                                        .await;
-                                        let failed = v.check_results.iter().any(|r| {
-                                            r.verdict == clickweave_core::CheckVerdict::Fail
-                                        });
-                                        self.log(format!(
-                                            "Verification '{}': {}",
-                                            node_name,
-                                            if failed { "FAIL" } else { "PASS" },
-                                        ));
-                                        self.runtime_verdicts.push(v);
-                                        if failed {
-                                            self.emit_error(format!(
-                                                "Verification failed: '{}'",
-                                                node_name,
-                                            ));
-                                            verification_failed = true;
-                                            break (false, false);
-                                        }
-                                    }
-                                    None => {
-                                        self.log(format!(
-                                            "Warning: could not capture screenshot for verification '{}'",
-                                            node_name,
-                                        ));
-                                    }
-                                }
-                            } else {
+                        if node_role == NodeRole::Verification {
+                            if let Some(v) = self
+                                .evaluate_verification(
+                                    node_id,
+                                    &node_name,
+                                    &node_type,
+                                    expected_outcome.as_deref(),
+                                    &node_result,
+                                    &mcp,
+                                )
+                                .await
+                            {
+                                let failed = v
+                                    .check_results
+                                    .iter()
+                                    .any(|r| r.verdict == clickweave_core::CheckVerdict::Fail);
                                 self.log(format!(
-                                    "Warning: TakeScreenshot node '{}' has Verification role but no expected_outcome — skipping",
+                                    "Verification '{}': {}",
                                     node_name,
+                                    if failed { "FAIL" } else { "PASS" },
                                 ));
+                                self.runtime_verdicts.push(v);
+                                if failed {
+                                    self.emit_error(format!(
+                                        "Verification failed: '{}'",
+                                        node_name,
+                                    ));
+                                    verification_failed = true;
+                                    break (false, false);
+                                }
                             }
                         }
 
@@ -479,5 +432,58 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             self.emit(ExecutorEvent::WorkflowCompleted);
         }
         self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
+    }
+
+    /// Evaluate a Verification-role node and return its verdict.
+    /// Returns `None` for non-read-only nodes or when screenshot capture fails.
+    async fn evaluate_verification(
+        &self,
+        node_id: Uuid,
+        node_name: &str,
+        node_type: &NodeType,
+        expected_outcome: Option<&str>,
+        node_result: &Value,
+        mcp: &McpClient,
+    ) -> Option<clickweave_core::NodeVerdict> {
+        if matches!(node_type, NodeType::TakeScreenshot(_)) {
+            let Some(outcome) = expected_outcome else {
+                self.log(format!(
+                    "Warning: TakeScreenshot node '{}' has Verification role but no expected_outcome",
+                    node_name,
+                ));
+                return Some(super::verdict::missing_outcome_verdict(node_id, node_name));
+            };
+            let mut args = serde_json::json!({ "format": "png" });
+            if let Some(ref name) = self.focused_app.read().ok().and_then(|g| g.clone()) {
+                args["app_name"] = serde_json::Value::String(name.clone());
+            }
+            let screenshot_b64 = self.extract_screenshot_image(mcp, args).await;
+            match screenshot_b64 {
+                Some(img) => {
+                    let backend = self.vlm.as_ref().unwrap_or(&self.agent);
+                    Some(
+                        super::verdict::screenshot_verdict(backend, node_id, node_name, outcome, &img)
+                            .await,
+                    )
+                }
+                None => {
+                    self.log(format!(
+                        "Warning: could not capture screenshot for verification '{}'",
+                        node_name,
+                    ));
+                    None
+                }
+            }
+        } else if node_type.is_read_only() {
+            Some(super::verdict::deterministic_verdict(
+                node_id, node_name, node_type, node_result,
+            ))
+        } else {
+            self.log(format!(
+                "Warning: node '{}' has Verification role but is not a read-only type — skipping verdict",
+                node_name,
+            ));
+            None
+        }
     }
 }

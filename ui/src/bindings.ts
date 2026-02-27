@@ -173,7 +173,7 @@ export type AssistantChatResponse = { assistant_message: string; patch: Workflow
  */
 export type ChatEntry = { role: ChatRole; content: string; timestamp: number; patch_summary?: PatchSummary | null; run_context?: RunContext | null }
 export type ChatRole = "user" | "assistant"
-export type CheckType = "TextPresent" | "TextAbsent" | "TemplateFound" | "WindowTitleMatches"
+export type CheckType = "TextPresent" | "TemplateFound" | "WindowTitleMatches" | "ScreenshotMatch"
 export type ClickParams = { target: string | null; x: number | null; y: number | null; button: MouseButton; click_count: number }
 export type Condition = { left: ValueRef; operator: Operator; right: ValueRef }
 /**

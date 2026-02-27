@@ -21,23 +21,22 @@ pub(crate) fn deterministic_verdict(
         NodeType::FindText(_) => CheckType::TextPresent,
         NodeType::FindImage(_) => CheckType::TemplateFound,
         NodeType::ListWindows(_) => CheckType::WindowTitleMatches,
-        _ => CheckType::TextPresent,
+        _ => {
+            tracing::warn!(
+                "deterministic_verdict called for unexpected node type: {}",
+                node_type.display_name()
+            );
+            CheckType::TextPresent
+        }
     };
 
-    let verdict = if found {
-        CheckVerdict::Pass
-    } else {
-        CheckVerdict::Fail
-    };
-
-    let reasoning = if found {
-        format!(
-            "Found {} match{}",
-            count,
-            if count == 1 { "" } else { "es" }
+    let (verdict, reasoning) = if found {
+        (
+            CheckVerdict::Pass,
+            format!("Found {} match{}", count, if count == 1 { "" } else { "es" }),
         )
     } else {
-        "No matches found".to_string()
+        (CheckVerdict::Fail, "No matches found".to_string())
     };
 
     NodeVerdict {
@@ -53,19 +52,33 @@ pub(crate) fn deterministic_verdict(
     }
 }
 
-fn screenshot_verification_prompt() -> &'static str {
-    "You are verifying whether a UI automation step produced the expected visual result. \
-     You will receive a screenshot taken after the step completed and a description of \
-     what should be visible.\n\n\
-     Respond with ONLY a JSON object (no markdown fences):\n\
-     {\"verdict\": \"pass\" or \"fail\", \"reasoning\": \"...\"}\n\n\
-     Be precise: only mark 'pass' if the screenshot clearly shows what was expected."
-}
+const SCREENSHOT_VERIFICATION_PROMPT: &str = "\
+You are verifying whether a UI automation step produced the expected visual result. \
+You will receive a screenshot taken after the step completed and a description of \
+what should be visible.\n\n\
+Respond with ONLY a JSON object (no markdown fences):\n\
+{\"verdict\": \"pass\" or \"fail\", \"reasoning\": \"...\"}\n\n\
+Be precise: only mark 'pass' if the screenshot clearly shows what was expected.";
 
 #[derive(serde::Deserialize)]
 struct VlmVerdict {
     verdict: String,
     reasoning: String,
+}
+
+/// Create a Warn verdict for a TakeScreenshot Verification node missing `expected_outcome`.
+pub(crate) fn missing_outcome_verdict(node_id: Uuid, node_name: &str) -> NodeVerdict {
+    NodeVerdict {
+        node_id,
+        node_name: node_name.to_string(),
+        check_results: vec![CheckResult {
+            check_name: node_name.to_string(),
+            check_type: CheckType::ScreenshotMatch,
+            verdict: CheckVerdict::Warn,
+            reasoning: "Verification role set but no expected_outcome configured".to_string(),
+        }],
+        expected_outcome_verdict: None,
+    }
 }
 
 /// Evaluate a TakeScreenshot verification node using VLM.
@@ -85,7 +98,7 @@ pub(crate) async fn screenshot_verdict<C: ChatBackend>(
         vec![(screenshot_base64.to_string(), "image/png".to_string())],
     );
 
-    let messages = vec![Message::system(screenshot_verification_prompt()), user_msg];
+    let messages = vec![Message::system(SCREENSHOT_VERIFICATION_PROMPT), user_msg];
 
     let (verdict, reasoning) = match backend.chat(messages, None).await {
         Ok(response) => {
@@ -122,7 +135,7 @@ pub(crate) async fn screenshot_verdict<C: ChatBackend>(
         node_name: node_name.to_string(),
         check_results: vec![CheckResult {
             check_name: format!("{}: {}", node_name, expected_outcome),
-            check_type: CheckType::TextPresent,
+            check_type: CheckType::ScreenshotMatch,
             verdict,
             reasoning,
         }],

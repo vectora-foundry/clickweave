@@ -1,5 +1,6 @@
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
+import type { NodeRole } from "../bindings";
 
 interface WorkflowNodeData {
   label: string;
@@ -10,6 +11,7 @@ interface WorkflowNodeData {
   enabled: boolean;
   onDelete: () => void;
   switchCases: string[];
+  role: NodeRole;
   bodyCount?: number;
   onToggleCollapse?: () => void;
   [key: string]: unknown;
@@ -139,9 +141,11 @@ export const WorkflowNode = memo(function WorkflowNode({
     enabled,
     onDelete,
     nodeType,
+    role,
     bodyCount,
     onToggleCollapse,
   } = d;
+  const isVerification = role === "Verification";
   const isCollapsedLoop = nodeType === "Loop";
   const isControlFlow = CONTROL_FLOW_TYPES.has(nodeType);
   const needsTallNode = nodeType === "If";
@@ -153,7 +157,7 @@ export const WorkflowNode = memo(function WorkflowNode({
         !enabled ? "opacity-50" : ""
       } ${needsTallNode ? "min-h-[60px]" : ""} ${needsExtraTallNode ? "min-h-[80px]" : ""}`}
       style={{
-        borderColor: selected ? color : isControlFlow ? "#10b98144" : "var(--border)",
+        borderColor: selected ? color : isVerification ? "#f59e0b" : isControlFlow ? "#10b98144" : "var(--border)",
         boxShadow: selected ? `0 0 12px ${color}33` : "none",
       }}
     >
@@ -166,6 +170,12 @@ export const WorkflowNode = memo(function WorkflowNode({
 
       {isActive && (
         <span className="absolute -right-1 -top-1 h-3 w-3 animate-pulse rounded-full bg-[var(--accent-green)]" />
+      )}
+
+      {isVerification && (
+        <span className="absolute -left-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-amber-500 text-[8px] font-bold text-white">
+          ✓
+        </span>
       )}
 
       <button

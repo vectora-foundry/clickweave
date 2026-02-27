@@ -2,13 +2,26 @@ use super::mapping::step_to_node_type;
 use super::parse::{extract_json, layout_nodes, step_rejected_reason, truncate_intent};
 use super::prompt::planner_system_prompt;
 use super::repair::chat_with_repair;
-use super::{PlanResult, PlannerOutput};
+use super::{PlanResult, PlanStep, PlannerOutput};
 use crate::{ChatBackend, LlmClient, LlmConfig, Message};
 use anyhow::{Context, Result, anyhow};
-use clickweave_core::{Edge, Node, Workflow, validate_workflow};
+use clickweave_core::{Edge, Node, NodeRole, Workflow, validate_workflow};
+use serde::Deserialize;
 use serde_json::Value;
 use tracing::{debug, info};
 use uuid::Uuid;
+
+/// A flat plan step with optional role/expected_outcome metadata.
+/// Unlike `PlanNode`, this doesn't require an `id` field (flat plans are sequential).
+#[derive(Debug, Deserialize)]
+struct FlatPlanStep {
+    #[serde(flatten)]
+    step: PlanStep,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    expected_outcome: Option<String>,
+}
 
 /// Plan a workflow from an intent using the planner LLM.
 pub async fn plan_workflow(
@@ -102,8 +115,7 @@ fn parse_and_build_workflow(
     }
 
     // Parse steps leniently — skip malformed ones with warnings
-    let (parsed_steps, step_warnings) =
-        super::parse_lenient::<super::PlanStep>(&planner_output.steps);
+    let (parsed_steps, step_warnings) = super::parse_lenient::<FlatPlanStep>(&planner_output.steps);
     warnings.extend(step_warnings);
 
     if parsed_steps.is_empty() {
@@ -112,12 +124,14 @@ fn parse_and_build_workflow(
 
     // Filter out rejected steps and collect warnings in a single pass
     let mut steps = Vec::new();
-    for step in &parsed_steps {
-        if let Some(reason) = step_rejected_reason(step, allow_ai_transforms, allow_agent_steps) {
+    for flat in &parsed_steps {
+        if let Some(reason) =
+            step_rejected_reason(&flat.step, allow_ai_transforms, allow_agent_steps)
+        {
             warnings.push(format!("Planner step removed: {}", reason));
             continue;
         }
-        steps.push(step);
+        steps.push(flat);
     }
 
     if steps.is_empty() {
@@ -130,10 +144,15 @@ fn parse_and_build_workflow(
     let positions = layout_nodes(steps.len());
     let mut nodes = Vec::new();
 
-    for (i, step) in steps.iter().enumerate() {
-        match step_to_node_type(step, mcp_tools_openai) {
+    for (i, flat) in steps.iter().enumerate() {
+        match step_to_node_type(&flat.step, mcp_tools_openai) {
             Ok((node_type, display_name)) => {
-                nodes.push(Node::new(node_type, positions[i], display_name));
+                let mut node = Node::new(node_type, positions[i], display_name);
+                if flat.role.as_deref() == Some("Verification") {
+                    node.role = NodeRole::Verification;
+                }
+                node.expected_outcome = flat.expected_outcome.clone();
+                nodes.push(node);
             }
             Err(e) => {
                 warnings.push(format!("Step {} skipped: {}", i, e));

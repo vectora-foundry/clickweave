@@ -64,6 +64,7 @@ function toRFNode(
       switchCases: node.node_type.type === "Switch"
         ? (node.node_type as { type: "Switch"; cases: { name: string }[] }).cases.map((c) => c.name)
         : [],
+      role: node.role,
     },
   };
 }

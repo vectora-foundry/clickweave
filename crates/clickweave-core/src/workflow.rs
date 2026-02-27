@@ -662,9 +662,9 @@ pub enum NodeRole {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum CheckType {
     TextPresent,
-    TextAbsent,
     TemplateFound,
     WindowTitleMatches,
+    ScreenshotMatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

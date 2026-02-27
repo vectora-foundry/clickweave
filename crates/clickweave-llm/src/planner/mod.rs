@@ -87,6 +87,7 @@ pub struct PlannerOutput {
 /// A node in the graph-based planner output.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PlanNode {
+    #[serde(default)]
     pub id: String,
     #[serde(flatten)]
     pub step: PlanStep,
@@ -255,24 +256,30 @@ pub(crate) fn build_patch_from_output(
             output.add.len(),
         ));
     } else {
-        let (add_steps, add_warnings) = parse_lenient::<PlanStep>(&output.add);
+        let (add_steps, add_warnings) = parse_lenient::<PlanNode>(&output.add);
         warnings.extend(add_warnings);
-        for (i, step) in add_steps.iter().enumerate() {
-            if let Some(reason) = step_rejected_reason(step, allow_ai_transforms, allow_agent_steps)
+        for (i, plan_node) in add_steps.iter().enumerate() {
+            if let Some(reason) =
+                step_rejected_reason(&plan_node.step, allow_ai_transforms, allow_agent_steps)
             {
                 warnings.push(format!("Added step {} removed: {}", i, reason));
                 continue;
             }
-            match step_to_node_type(step, mcp_tools) {
+            match step_to_node_type(&plan_node.step, mcp_tools) {
                 Ok((node_type, display_name)) => {
-                    added_nodes.push(Node::new(
+                    let mut node = Node::new(
                         node_type,
                         Position {
                             x: 300.0,
                             y: last_y + 120.0 + (i as f32) * 120.0,
                         },
                         display_name,
-                    ));
+                    );
+                    if plan_node.role.as_deref() == Some("Verification") {
+                        node.role = NodeRole::Verification;
+                    }
+                    node.expected_outcome = plan_node.expected_outcome.clone();
+                    added_nodes.push(node);
                 }
                 Err(e) => warnings.push(format!("Added step {} skipped: {}", i, e)),
             }
@@ -416,26 +423,33 @@ pub(crate) fn build_plan_as_patch(
 ) -> PatchResult {
     let mut warnings = Vec::new();
 
-    let (steps, step_warnings) = parse_lenient::<PlanStep>(raw_steps);
+    let (plan_nodes, step_warnings) = parse_lenient::<PlanNode>(raw_steps);
     warnings.extend(step_warnings);
 
     let mut valid_steps = Vec::new();
 
-    for (i, step) in steps.iter().enumerate() {
-        if let Some(reason) = step_rejected_reason(step, allow_ai_transforms, allow_agent_steps) {
+    for (i, plan_node) in plan_nodes.iter().enumerate() {
+        if let Some(reason) =
+            step_rejected_reason(&plan_node.step, allow_ai_transforms, allow_agent_steps)
+        {
             warnings.push(format!("Step {} removed: {}", i, reason));
             continue;
         }
-        valid_steps.push(step);
+        valid_steps.push(plan_node);
     }
 
     let positions = layout_nodes(valid_steps.len());
     let mut added_nodes = Vec::new();
 
-    for (i, step) in valid_steps.iter().enumerate() {
-        match step_to_node_type(step, mcp_tools) {
+    for (i, plan_node) in valid_steps.iter().enumerate() {
+        match step_to_node_type(&plan_node.step, mcp_tools) {
             Ok((node_type, display_name)) => {
-                added_nodes.push(Node::new(node_type, positions[i], display_name));
+                let mut node = Node::new(node_type, positions[i], display_name);
+                if plan_node.role.as_deref() == Some("Verification") {
+                    node.role = NodeRole::Verification;
+                }
+                node.expected_outcome = plan_node.expected_outcome.clone();
+                added_nodes.push(node);
             }
             Err(e) => warnings.push(format!("Step {} skipped: {}", i, e)),
         }
@@ -535,9 +549,7 @@ fn build_nodes_and_edges_from_graph(
                 if plan_node.role.as_deref() == Some("Verification") {
                     node.role = NodeRole::Verification;
                 }
-                if plan_node.expected_outcome.is_some() {
-                    node.expected_outcome = plan_node.expected_outcome.clone();
-                }
+                node.expected_outcome = plan_node.expected_outcome.clone();
                 id_map.insert(plan_node.id.clone(), node.id);
                 nodes.push(node);
             }
