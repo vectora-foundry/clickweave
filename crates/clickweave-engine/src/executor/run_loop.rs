@@ -1,5 +1,5 @@
 use super::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExecutor, check_eval};
-use clickweave_core::{ExecutionMode, NodeRun, NodeType, RunStatus};
+use clickweave_core::{ExecutionMode, NodeRole, NodeRun, NodeType, RunStatus};
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::McpClient;
 use serde_json::Value;
@@ -198,6 +198,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let tools = mcp.tools_as_openai();
 
         let mut completed_normally = true;
+        let mut verification_failed = false;
 
         while let Some(node_id) = current {
             if self.stop_requested(&mut command_rx) {
@@ -219,6 +220,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             let node_name = node.name.clone();
             let node_type = node.node_type.clone();
+            let node_role = node.role;
             let checks = node.checks.clone();
             let expected_outcome = node.expected_outcome.clone();
 
@@ -343,6 +345,34 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             ));
                         }
 
+                        // Inline verdict for Verification-role nodes
+                        if node_role == NodeRole::Verification
+                            && node_type.is_read_only()
+                            && !matches!(node_type, NodeType::TakeScreenshot(_))
+                        {
+                            let v = super::verdict::deterministic_verdict(
+                                node_id,
+                                &node_name,
+                                &node_type,
+                                &node_result,
+                            );
+                            let failed = v
+                                .check_results
+                                .iter()
+                                .any(|r| r.verdict == clickweave_core::CheckVerdict::Fail);
+                            self.log(format!(
+                                "Verification '{}': {}",
+                                node_name,
+                                if failed { "FAIL" } else { "PASS" },
+                            ));
+                            self.runtime_verdicts.push(v);
+                            if failed {
+                                self.emit_error(format!("Verification failed: '{}'", node_name,));
+                                verification_failed = true;
+                                break (false, false);
+                            }
+                        }
+
                         // Supervision (Test mode only)
                         if self.execution_mode == ExecutionMode::Test {
                             // Skip per-step supervision for nodes inside loops —
@@ -405,9 +435,17 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             };
 
             if !node_succeeded {
-                // Only finalize + emit for supervision aborts; execution
-                // errors already handle this in the Err arm above.
-                if was_supervision_abort {
+                if verification_failed {
+                    if let Some(ref mut run) = node_run {
+                        self.finalize_run(run, RunStatus::Failed);
+                    }
+                    self.emit(ExecutorEvent::NodeFailed(
+                        node_id,
+                        "Verification failed".to_string(),
+                    ));
+                } else if was_supervision_abort {
+                    // Only finalize + emit for supervision aborts; execution
+                    // errors already handle this in the Err arm above.
                     if let Some(ref mut run) = node_run {
                         self.finalize_run(run, RunStatus::Failed);
                     }
@@ -490,6 +528,17 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
         }
 
+        // Emit accumulated runtime verdicts
+        if !self.runtime_verdicts.is_empty() {
+            for v in &self.runtime_verdicts {
+                if let Err(e) = self.storage.save_node_verdict(v) {
+                    tracing::warn!("Failed to persist verdict for '{}': {}", v.node_name, e);
+                }
+            }
+            let verdicts: Vec<_> = self.runtime_verdicts.drain(..).collect();
+            self.emit(ExecutorEvent::ChecksCompleted(verdicts));
+        }
+
         // Save decision cache after Test mode runs
         if self.execution_mode == ExecutionMode::Test {
             let save_result = self
@@ -503,7 +552,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
         }
 
-        if completed_normally {
+        if completed_normally || verification_failed {
             self.log("Workflow execution completed");
             self.emit(ExecutorEvent::WorkflowCompleted);
         }

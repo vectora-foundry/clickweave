@@ -9,6 +9,7 @@ mod run_loop;
 mod supervision;
 mod trace;
 mod variables;
+mod verdict;
 
 #[cfg(test)]
 mod tests;
@@ -91,6 +92,8 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     supervision_history: RwLock<Vec<Message>>,
     /// Nodes that completed successfully and have checks, in execution order.
     completed_checks: Vec<(Uuid, Vec<Check>, Option<String>)>,
+    /// Verdicts from Verification-role nodes, accumulated during execution.
+    runtime_verdicts: Vec<NodeVerdict>,
     /// Set by eval_control_flow when a loop exits; consumed by the main loop
     /// to run a deferred visual verification after the loop completes.
     pending_loop_exit: Option<PendingLoopExit>,
@@ -150,6 +153,7 @@ impl WorkflowExecutor {
             decision_cache: RwLock::new(decision_cache),
             supervision_history: RwLock::new(Vec::new()),
             completed_checks: Vec::new(),
+            runtime_verdicts: Vec::new(),
             pending_loop_exit: None,
         }
     }
