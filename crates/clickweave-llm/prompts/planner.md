@@ -80,6 +80,32 @@ User: "Open Calculator, calculate 5+3. If the result shows 8, take a screenshot.
 
 Note: IfTrue → screenshot, IfFalse → clear. Both branches have distinct actions. The If node MUST always have exactly 2 outgoing edges (IfTrue and IfFalse). If only one branch has meaningful work, point the other branch to the next shared downstream node so both paths rejoin.
 
+## Verification example
+
+User: "Open Calculator, compute 5+3, verify the result is 8."
+
+```json
+{
+  "nodes": [
+    {"id": "n1", "step_type": "Tool", "tool_name": "launch_app", "arguments": {"app_name": "Calculator"}, "name": "Launch Calculator"},
+    {"id": "n2", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "5"}, "name": "Click 5"},
+    {"id": "n3", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "+"}, "name": "Click +"},
+    {"id": "n4", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "3"}, "name": "Click 3"},
+    {"id": "n5", "step_type": "Tool", "tool_name": "click", "arguments": {"target": "="}, "name": "Click ="},
+    {"id": "n6", "step_type": "Tool", "tool_name": "find_text", "arguments": {"text": "8"}, "name": "Verify result is 8", "role": "Verification"}
+  ],
+  "edges": [
+    {"from": "n1", "to": "n2"},
+    {"from": "n2", "to": "n3"},
+    {"from": "n3", "to": "n4"},
+    {"from": "n4", "to": "n5"},
+    {"from": "n5", "to": "n6"}
+  ]
+}
+```
+
+Note: The find_text node has `"role": "Verification"` — this makes it a test assertion. If "8" is not found, the workflow fails immediately. No If-branch needed for simple pass/fail verification.
+
 ## Loop example
 
 User: "Open Calculator, keep multiplying by 2 until the result exceeds 100."

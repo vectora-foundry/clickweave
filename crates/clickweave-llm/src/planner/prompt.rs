@@ -79,7 +79,18 @@ Literal types: `{"type": "String", "value": "text"}`, `{"type": "Number", "value
 - list_windows: `.found` (bool), `.count`, `.windows`
 - click, type_text, press_key, scroll, focus_window: `.success` (bool)
 - take_screenshot: `.result`
-- Any tool: `.result` (raw JSON response)"#);
+- Any tool: `.result` (raw JSON response)
+
+## Verification role
+
+Any read-only Tool step (find_text, find_image, list_windows, take_screenshot) can be marked as a **verification** by adding `"role": "Verification"` to the node. This makes the node's result count as a test assertion:
+
+- **find_text / find_image / list_windows**: Pass if matches are found, fail otherwise. No LLM call needed.
+- **take_screenshot**: Requires `"expected_outcome": "<description>"`. A VLM evaluates whether the screenshot shows the expected result.
+
+Verification failures stop the workflow immediately (fail-fast).
+
+Use `"role": "Verification"` when the user asks to **verify**, **check**, **confirm**, or **assert** a result. Do NOT use it for navigation lookups (e.g., finding a button to click)."#);
 
     let template = template_override.unwrap_or(include_str!("../../prompts/planner.md"));
 

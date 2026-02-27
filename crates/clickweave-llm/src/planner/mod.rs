@@ -14,7 +14,9 @@ mod tests;
 
 use std::collections::{HashMap, HashSet};
 
-use clickweave_core::{Edge, EdgeOutput, Node, NodeType, Position, Workflow, tool_mapping};
+use clickweave_core::{
+    Edge, EdgeOutput, Node, NodeRole, NodeType, Position, Workflow, tool_mapping,
+};
 use mapping::step_to_node_type;
 use parse::{id_str_short, layout_nodes, step_rejected_reason};
 use serde::{Deserialize, Serialize};
@@ -88,6 +90,10 @@ pub struct PlanNode {
     pub id: String,
     #[serde(flatten)]
     pub step: PlanStep,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub expected_outcome: Option<String>,
 }
 
 /// An edge in the graph-based planner output.
@@ -525,7 +531,13 @@ fn build_nodes_and_edges_from_graph(
         }
         match step_to_node_type(&plan_node.step, mcp_tools) {
             Ok((node_type, display_name)) => {
-                let node = Node::new(node_type, pos, display_name);
+                let mut node = Node::new(node_type, pos, display_name);
+                if plan_node.role.as_deref() == Some("Verification") {
+                    node.role = NodeRole::Verification;
+                }
+                if plan_node.expected_outcome.is_some() {
+                    node.expected_outcome = plan_node.expected_outcome.clone();
+                }
                 id_map.insert(plan_node.id.clone(), node.id);
                 nodes.push(node);
             }
