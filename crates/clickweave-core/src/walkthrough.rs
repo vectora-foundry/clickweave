@@ -53,6 +53,14 @@ pub enum WalkthroughStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct OcrAnnotation {
+    pub text: String,
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct WalkthroughEvent {
     pub id: Uuid,
     pub timestamp: u64,
@@ -90,6 +98,11 @@ pub enum WalkthroughEventKind {
     ScreenshotCaptured {
         path: String,
         kind: ScreenshotKind,
+    },
+    OcrCaptured {
+        annotations: Vec<OcrAnnotation>,
+        click_x: f64,
+        click_y: f64,
     },
     Paused,
     Resumed,

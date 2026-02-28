@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use base64::Engine;
 use clickweave_core::storage::now_millis;
 use clickweave_core::walkthrough::{
-    ScreenshotKind, WalkthroughAnnotations, WalkthroughEvent, WalkthroughEventKind,
+    OcrAnnotation, ScreenshotKind, WalkthroughAnnotations, WalkthroughEvent, WalkthroughEventKind,
     WalkthroughSession, WalkthroughStatus, WalkthroughStorage,
 };
 use clickweave_mcp::McpClient;
@@ -343,7 +343,7 @@ async fn process_capture_events(
             } => {
                 // Enrich: take screenshot with OCR near the click point.
                 let app_name = app_cache.get(&capture.target_pid).cloned();
-                let screenshot_event = enrich_click(
+                let enrichment_events = enrich_click(
                     &mcp,
                     &session_dir,
                     x,
@@ -365,9 +365,9 @@ async fn process_capture_events(
                     },
                 };
 
-                // Emit screenshot event first (if any), then click event.
-                if let Some(ss) = screenshot_event {
-                    persist_and_emit(&app, &storage, &session_dir, &ss);
+                // Emit enrichment events first (screenshot + OCR), then click event.
+                for ev in &enrichment_events {
+                    persist_and_emit(&app, &storage, &session_dir, ev);
                 }
 
                 click_event
@@ -507,16 +507,19 @@ async fn resolve_app_name(
 
 /// Enrich a click event by taking a screenshot with OCR.
 ///
-/// Returns a ScreenshotCaptured event if successful.
+/// Returns screenshot and OCR events if successful.
 async fn enrich_click(
     mcp: &Option<McpClient>,
     session_dir: &std::path::Path,
-    _x: f64,
-    _y: f64,
+    x: f64,
+    y: f64,
     app_name: Option<&str>,
     timestamp: u64,
-) -> Option<WalkthroughEvent> {
-    let mcp = mcp.as_ref()?;
+) -> Vec<WalkthroughEvent> {
+    let mcp = match mcp.as_ref() {
+        Some(m) => m,
+        None => return vec![],
+    };
 
     let mut args = serde_json::json!({
         "mode": "window",
@@ -526,35 +529,95 @@ async fn enrich_click(
         args["app_name"] = serde_json::Value::String(name.to_string());
     }
 
-    let result = mcp.call_tool("take_screenshot", Some(args)).await;
-
-    match result {
-        Ok(tool_result) => {
-            // Save the screenshot image to artifacts dir.
-            for content in &tool_result.content {
-                if let clickweave_mcp::ToolContent::Image { data, .. } = content {
-                    let filename = format!("click_{timestamp}.png");
-                    let artifact_path = session_dir.join("artifacts").join(&filename);
-                    if let Ok(image_bytes) = base64::engine::general_purpose::STANDARD.decode(data)
-                    {
-                        let _ = std::fs::write(&artifact_path, &image_bytes);
-
-                        return Some(WalkthroughEvent {
-                            id: Uuid::new_v4(),
-                            timestamp,
-                            kind: WalkthroughEventKind::ScreenshotCaptured {
-                                path: artifact_path.to_string_lossy().to_string(),
-                                kind: ScreenshotKind::AfterClick,
-                            },
-                        });
-                    }
-                }
-            }
-            None
-        }
+    let result = match mcp.call_tool("take_screenshot", Some(args)).await {
+        Ok(r) => r,
         Err(e) => {
             tracing::debug!("Screenshot enrichment failed: {e}");
-            None
+            return vec![];
+        }
+    };
+
+    let mut events = Vec::new();
+
+    // Extract screenshot image.
+    for content in &result.content {
+        if let clickweave_mcp::ToolContent::Image { data, .. } = content {
+            let filename = format!("click_{timestamp}.png");
+            let artifact_path = session_dir.join("artifacts").join(&filename);
+            if let Ok(image_bytes) = base64::engine::general_purpose::STANDARD.decode(data) {
+                let _ = std::fs::write(&artifact_path, &image_bytes);
+                events.push(WalkthroughEvent {
+                    id: Uuid::new_v4(),
+                    timestamp,
+                    kind: WalkthroughEventKind::ScreenshotCaptured {
+                        path: artifact_path.to_string_lossy().to_string(),
+                        kind: ScreenshotKind::AfterClick,
+                    },
+                });
+            }
         }
     }
+
+    // Extract OCR annotations from text content.
+    let annotations = parse_ocr_annotations(&result.content);
+    if !annotations.is_empty() {
+        events.push(WalkthroughEvent {
+            id: Uuid::new_v4(),
+            timestamp,
+            kind: WalkthroughEventKind::OcrCaptured {
+                annotations,
+                click_x: x,
+                click_y: y,
+            },
+        });
+    }
+
+    events
+}
+
+/// Parse OCR annotations from MCP take_screenshot response.
+///
+/// The MCP server returns OCR data as a markdown text content item with lines like:
+/// `- "Button Text" at (123, 456) bounds: {x: 123, y: 456, w: 50, h: 20}`
+fn parse_ocr_annotations(content: &[clickweave_mcp::ToolContent]) -> Vec<OcrAnnotation> {
+    let mut annotations = Vec::new();
+    for item in content {
+        if let Some(text) = item.as_text() {
+            if !text.contains("OCR Text Detected") {
+                continue;
+            }
+            for line in text.lines() {
+                let line = line.trim();
+                if !line.starts_with("- \"") {
+                    continue;
+                }
+                // Parse: - "text" at (x, y) bounds: ...
+                if let Some(parsed) = parse_ocr_line(line) {
+                    annotations.push(parsed);
+                }
+            }
+        }
+    }
+    annotations
+}
+
+/// Parse a single OCR markdown line: `- "text" at (x, y) bounds: ...`
+fn parse_ocr_line(line: &str) -> Option<OcrAnnotation> {
+    // Strip leading `- "`
+    let rest = line.strip_prefix("- \"")?;
+    // Find closing quote before ` at (`
+    let at_idx = rest.find("\" at (")?;
+    let text = &rest[..at_idx];
+    let after_at = &rest[at_idx + 5..]; // skip `" at (`
+    let paren_end = after_at.find(')')?;
+    let coords = &after_at[..paren_end];
+    let mut parts = coords.split(',');
+    let x: f64 = parts.next()?.trim().parse().ok()?;
+    let y: f64 = parts.next()?.trim().parse().ok()?;
+
+    Some(OcrAnnotation {
+        text: text.to_string(),
+        x,
+        y,
+    })
 }
