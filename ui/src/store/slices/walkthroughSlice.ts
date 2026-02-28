@@ -1,5 +1,6 @@
 import type { StateCreator } from "zustand";
 import { commands } from "../../bindings";
+import type { WalkthroughAction, Workflow } from "../../bindings";
 import type { StoreState } from "./types";
 
 export type WalkthroughStatus = "Idle" | "Recording" | "Paused" | "Processing" | "Review" | "Applied" | "Cancelled";
@@ -11,9 +12,14 @@ export interface WalkthroughSlice {
   walkthroughStatus: WalkthroughStatus;
   walkthroughError: string | null;
   walkthroughEvents: WalkthroughCapturedEvent[];
+  walkthroughActions: WalkthroughAction[];
+  walkthroughDraft: Workflow | null;
+  walkthroughWarnings: string[];
 
   setWalkthroughStatus: (status: WalkthroughStatus) => void;
   pushWalkthroughEvent: (event: WalkthroughCapturedEvent) => void;
+  setWalkthroughDraft: (payload: { actions: WalkthroughAction[]; draft: Workflow | null; warnings: string[] }) => void;
+  fetchWalkthroughDraft: () => Promise<void>;
   startWalkthrough: () => Promise<void>;
   pauseWalkthrough: () => Promise<void>;
   resumeWalkthrough: () => Promise<void>;
@@ -25,12 +31,32 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   walkthroughStatus: "Idle",
   walkthroughError: null,
   walkthroughEvents: [],
+  walkthroughActions: [],
+  walkthroughDraft: null,
+  walkthroughWarnings: [],
 
   setWalkthroughStatus: (status) => set({ walkthroughStatus: status }),
 
   pushWalkthroughEvent: (event) => set((s) => ({
     walkthroughEvents: [...s.walkthroughEvents, event],
   })),
+
+  setWalkthroughDraft: ({ actions, draft, warnings }) => set({
+    walkthroughActions: actions,
+    walkthroughDraft: draft,
+    walkthroughWarnings: warnings,
+  }),
+
+  fetchWalkthroughDraft: async () => {
+    const result = await commands.getWalkthroughDraft();
+    if (result.status === "ok") {
+      set({
+        walkthroughActions: result.data.actions,
+        walkthroughDraft: result.data.draft ?? null,
+        walkthroughWarnings: result.data.warnings,
+      });
+    }
+  },
 
   startWalkthrough: async () => {
     const { workflow, mcpCommand, projectPath, pushLog } = get();
@@ -68,7 +94,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
 
   cancelWalkthrough: async () => {
     const { pushLog } = get();
-    set({ walkthroughEvents: [] });
+    set({ walkthroughEvents: [], walkthroughActions: [], walkthroughDraft: null, walkthroughWarnings: [] });
     const result = await commands.cancelWalkthrough();
     if (result.status === "error") {
       pushLog(`Walkthrough cancel failed: ${result.error}`);

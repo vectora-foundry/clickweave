@@ -197,6 +197,14 @@ async applyWalkthroughAnnotations(annotations: WalkthroughAnnotations) : Promise
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async getWalkthroughDraft() : Promise<Result<WalkthroughDraftResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_walkthrough_draft") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -329,7 +337,13 @@ export type TypeTextParams = { text: string }
 export type ValidationResult = { valid: boolean; errors: string[] }
 export type ValueRef = { type: "Variable"; name: string } | { type: "Literal"; value: LiteralValue }
 export type VariablePromotion = { action_id: string; variable_name: string }
+export type ActionConfidence = "High" | "Medium" | "Low"
+export type OcrAnnotation = { text: string; x: number; y: number }
+export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role: string | null } | { type: "OcrText"; text: string } | { type: "ImageCrop"; path: string } | { type: "Coordinates"; x: number; y: number }
+export type WalkthroughAction = { id: string; kind: WalkthroughActionKind; app_name: string | null; window_title: string | null; target_candidates: TargetCandidate[]; artifact_paths: string[]; source_event_ids: string[]; confidence: ActionConfidence; warnings: string[] }
+export type WalkthroughActionKind = { type: "LaunchApp"; app_name: string } | { type: "FocusWindow"; app_name: string; window_title: string | null } | { type: "Click"; x: number; y: number; button: MouseButton; click_count: number } | { type: "TypeText"; text: string } | { type: "PressKey"; key: string; modifiers: string[] } | { type: "Scroll"; delta_y: number }
 export type WalkthroughAnnotations = { deleted_action_ids: string[]; renamed_actions: ActionRename[]; target_overrides: TargetOverride[]; variable_promotions: VariablePromotion[] }
+export type WalkthroughDraftResponse = { actions: WalkthroughAction[]; draft: Workflow | null; warnings: string[] }
 export type Workflow = { id: string; name: string; nodes: Node[]; edges: Edge[] }
 export type WorkflowPatch = { added_nodes: Node[]; removed_node_ids: string[]; updated_nodes: Node[]; added_edges: Edge[]; removed_edges: Edge[]; warnings: string[] }
 

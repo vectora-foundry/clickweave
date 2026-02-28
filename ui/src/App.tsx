@@ -190,6 +190,14 @@ function App() {
       listen<{ event: any }>("walkthrough://event", (e) => {
         useStore.getState().pushWalkthroughEvent(e.payload.event);
       }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      listen<{ actions: any[]; draft: any; warnings: string[] }>("walkthrough://draft_ready", (e) => {
+        useStore.getState().setWalkthroughDraft({
+          actions: e.payload.actions,
+          draft: e.payload.draft,
+          warnings: e.payload.warnings,
+        });
+      }),
     ]).catch((err) => {
       console.error("Failed to subscribe to Tauri events:", err);
       useStore.getState().pushLog(`Critical: event listeners failed to initialize: ${err}`);
