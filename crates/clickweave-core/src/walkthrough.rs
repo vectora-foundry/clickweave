@@ -207,31 +207,58 @@ pub enum ActionConfidence {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct WalkthroughAnnotations {
-    pub deleted_action_ids: Vec<Uuid>,
-    pub renamed_actions: Vec<ActionRename>,
+    pub deleted_node_ids: Vec<Uuid>,
+    pub renamed_nodes: Vec<NodeRename>,
     pub target_overrides: Vec<TargetOverride>,
     pub variable_promotions: Vec<VariablePromotion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct ActionRename {
-    pub action_id: Uuid,
+pub struct NodeRename {
+    pub node_id: Uuid,
     pub new_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct TargetOverride {
-    pub action_id: Uuid,
+    pub node_id: Uuid,
     pub chosen_candidate_index: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct VariablePromotion {
-    pub action_id: Uuid,
+    pub node_id: Uuid,
     pub variable_name: String,
+}
+
+/// Maps a walkthrough action to its corresponding workflow node in the draft.
+/// For deterministic drafts this is 1:1. For LLM-enhanced drafts, some actions
+/// may have no node (removed as redundant) and some nodes may have no action
+/// (LLM-added verification nodes).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct ActionNodeEntry {
+    pub action_id: Uuid,
+    pub node_id: Uuid,
+}
+
+/// Build a 1:1 action→node mapping for a deterministic draft where
+/// actions and nodes are in the same order.
+pub fn build_action_node_map(
+    actions: &[WalkthroughAction],
+    workflow: &crate::Workflow,
+) -> Vec<ActionNodeEntry> {
+    actions
+        .iter()
+        .zip(workflow.nodes.iter())
+        .map(|(a, n)| ActionNodeEntry {
+            action_id: a.id,
+            node_id: n.id,
+        })
+        .collect()
 }
 
 // --- Walkthrough storage ---
@@ -885,8 +912,8 @@ mod tests {
     #[test]
     fn test_annotations_default() {
         let annotations = WalkthroughAnnotations::default();
-        assert!(annotations.deleted_action_ids.is_empty());
-        assert!(annotations.renamed_actions.is_empty());
+        assert!(annotations.deleted_node_ids.is_empty());
+        assert!(annotations.renamed_nodes.is_empty());
         assert!(annotations.target_overrides.is_empty());
         assert!(annotations.variable_promotions.is_empty());
     }
@@ -1001,6 +1028,55 @@ mod tests {
         assert_eq!(events[1].id, ev2.id);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_build_action_node_map_1_to_1() {
+        let actions = vec![
+            WalkthroughAction {
+                id: Uuid::new_v4(),
+                kind: WalkthroughActionKind::Click {
+                    x: 0.0,
+                    y: 0.0,
+                    button: MouseButton::Left,
+                    click_count: 1,
+                },
+                app_name: None,
+                window_title: None,
+                target_candidates: vec![],
+                artifact_paths: vec![],
+                source_event_ids: vec![],
+                confidence: ActionConfidence::High,
+                warnings: vec![],
+            },
+            WalkthroughAction {
+                id: Uuid::new_v4(),
+                kind: WalkthroughActionKind::TypeText {
+                    text: "hello".into(),
+                },
+                app_name: None,
+                window_title: None,
+                target_candidates: vec![],
+                artifact_paths: vec![],
+                source_event_ids: vec![],
+                confidence: ActionConfidence::High,
+                warnings: vec![],
+            },
+        ];
+        let draft = synthesize_draft(&actions, Uuid::new_v4(), "test");
+        let map = build_action_node_map(&actions, &draft);
+
+        assert_eq!(map.len(), 2);
+        assert_eq!(map[0].action_id, actions[0].id);
+        assert_eq!(map[0].node_id, draft.nodes[0].id);
+        assert_eq!(map[1].action_id, actions[1].id);
+        assert_eq!(map[1].node_id, draft.nodes[1].id);
+    }
+
+    #[test]
+    fn test_build_action_node_map_empty() {
+        let map = build_action_node_map(&[], &crate::Workflow::default());
+        assert!(map.is_empty());
     }
 
     mod normalize_tests {

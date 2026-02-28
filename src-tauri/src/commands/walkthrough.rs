@@ -402,8 +402,8 @@ pub async fn apply_walkthrough_annotations(
     // persist the result. For now we only update the status.
     tracing::warn!(
         "Walkthrough annotations received but not yet applied (stub): {} deletions, {} renames, {} target overrides, {} variable promotions",
-        annotations.deleted_action_ids.len(),
-        annotations.renamed_actions.len(),
+        annotations.deleted_node_ids.len(),
+        annotations.renamed_nodes.len(),
         annotations.target_overrides.len(),
         annotations.variable_promotions.len(),
     );
