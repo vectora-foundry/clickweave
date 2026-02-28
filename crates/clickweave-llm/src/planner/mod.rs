@@ -8,6 +8,7 @@ mod repair;
 pub mod assistant;
 pub mod conversation;
 pub mod summarize;
+pub mod walkthrough;
 
 #[cfg(test)]
 mod tests;
@@ -886,3 +887,4 @@ pub(crate) fn build_workflow_from_graph(
 pub use assistant::{AssistantResult, assistant_chat, assistant_chat_with_backend};
 pub use patch::{patch_workflow, patch_workflow_with_backend};
 pub use plan::{plan_workflow, plan_workflow_with_backend};
+pub use walkthrough::{WalkthroughPlanResult, generalize_walkthrough};

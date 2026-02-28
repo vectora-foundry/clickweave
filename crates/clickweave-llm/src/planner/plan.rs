@@ -198,3 +198,13 @@ fn parse_and_build_workflow(
 
     Ok(PlanResult { workflow, warnings })
 }
+
+/// Parse LLM output for walkthrough generalization.
+/// Same as planner parsing but disallows AiTransform and AiStep.
+pub(crate) fn parse_and_build_walkthrough(
+    content: &str,
+    workflow_name: &str,
+    mcp_tools_openai: &[Value],
+) -> Result<super::PlanResult> {
+    parse_and_build_workflow(content, workflow_name, mcp_tools_openai, false, false)
+}

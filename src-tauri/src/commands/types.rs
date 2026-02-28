@@ -224,9 +224,17 @@ pub struct WalkthroughDraftPayload {
     pub actions: Vec<clickweave_core::WalkthroughAction>,
     pub draft: clickweave_core::Workflow,
     pub warnings: Vec<String>,
+    pub action_node_map: Vec<clickweave_core::walkthrough::ActionNodeEntry>,
+    pub used_fallback: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WalkthroughEventPayload {
     pub event: clickweave_core::WalkthroughEvent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct AppResolutionSeedEntry {
+    pub node_id: String,
+    pub app_name: String,
 }

@@ -174,9 +174,9 @@ async resumeWalkthrough() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async stopWalkthrough() : Promise<Result<null, string>> {
+async stopWalkthrough(planner: EndpointConfig | null) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("stop_walkthrough") };
+    return { status: "ok", data: await TAURI_INVOKE("stop_walkthrough", { planner }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -190,6 +190,14 @@ async cancelWalkthrough() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async getWalkthroughDraft() : Promise<Result<WalkthroughDraftResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_walkthrough_draft") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async applyWalkthroughAnnotations(annotations: WalkthroughAnnotations) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("apply_walkthrough_annotations", { annotations }) };
@@ -198,9 +206,9 @@ async applyWalkthroughAnnotations(annotations: WalkthroughAnnotations) : Promise
     else return { status: "error", error: e  as any };
 }
 },
-async getWalkthroughDraft() : Promise<Result<WalkthroughDraftResponse, string>> {
+async seedWalkthroughCache(workflowId: string, workflowName: string, projectPath: string | null, appEntries: AppResolutionSeedEntry[]) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_walkthrough_draft") };
+    return { status: "ok", data: await TAURI_INVOKE("seed_walkthrough_cache", { workflowId, workflowName, projectPath, appEntries }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -218,9 +226,10 @@ async getWalkthroughDraft() : Promise<Result<WalkthroughDraftResponse, string>> 
 
 /** user-defined types **/
 
-export type ActionRename = { action_id: string; new_name: string }
+export type ActionConfidence = "High" | "Medium" | "Low"
 export type AiStepParams = { prompt: string; button_text: string | null; template_image: string | null; max_tool_calls: number | null; allowed_tools: string[] | null; timeout_ms?: number | null }
 export type AppDebugKitParams = { operation_name: string; parameters: JsonValue }
+export type AppResolutionSeedEntry = { node_id: string; app_name: string }
 export type Artifact = { artifact_id: string; kind: ArtifactKind; path: string; metadata: JsonValue; overlays: JsonValue[] }
 export type ArtifactKind = "Screenshot" | "Ocr" | "TemplateMatch" | "Log" | "Other"
 export type AssistantChatRequest = { workflow: Workflow; user_message: string; history: ChatEntry[]; summary: string | null; summary_cutoff: number; run_context: RunContext | null; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string; max_repair_attempts: number }
@@ -289,6 +298,7 @@ export type MatchMode = "Contains" | "Exact"
 export type McpToolCallParams = { tool_name: string; arguments: JsonValue }
 export type MouseButton = "Left" | "Right" | "Center"
 export type Node = { id: string; node_type: NodeType; position: Position; name: string; enabled: boolean; timeout_ms: number | null; settle_ms: number | null; retries: number; trace_level: TraceLevel; role?: NodeRole; expected_outcome: string | null }
+export type NodeRename = { node_id: string; new_name: string }
 export type NodeResult = { node_name: string; status: string; error?: string | null }
 export type NodeRole = "Default" | "Verification"
 export type NodeRun = { run_id: string; node_id: string; node_name?: string; execution_dir?: string; started_at: number; ended_at: number | null; status: RunStatus; trace_level: TraceLevel; events: TraceEvent[]; artifacts: Artifact[]; observed_summary: string | null }
@@ -330,19 +340,17 @@ export type SwitchParams = {
  */
 cases: SwitchCase[] }
 export type TakeScreenshotParams = { mode: ScreenshotMode; target: string | null; include_ocr: boolean }
-export type TargetOverride = { action_id: string; chosen_candidate_index: number }
+export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role: string | null } | { type: "OcrText"; text: string } | { type: "ImageCrop"; path: string } | { type: "Coordinates"; x: number; y: number }
+export type TargetOverride = { node_id: string; chosen_candidate_index: number }
 export type TraceEvent = { timestamp: number; event_type: string; payload: JsonValue }
 export type TraceLevel = "Off" | "Minimal" | "Full"
 export type TypeTextParams = { text: string }
 export type ValidationResult = { valid: boolean; errors: string[] }
 export type ValueRef = { type: "Variable"; name: string } | { type: "Literal"; value: LiteralValue }
-export type VariablePromotion = { action_id: string; variable_name: string }
-export type ActionConfidence = "High" | "Medium" | "Low"
-export type OcrAnnotation = { text: string; x: number; y: number }
-export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role: string | null } | { type: "OcrText"; text: string } | { type: "ImageCrop"; path: string } | { type: "Coordinates"; x: number; y: number }
+export type VariablePromotion = { node_id: string; variable_name: string }
 export type WalkthroughAction = { id: string; kind: WalkthroughActionKind; app_name: string | null; window_title: string | null; target_candidates: TargetCandidate[]; artifact_paths: string[]; source_event_ids: string[]; confidence: ActionConfidence; warnings: string[] }
 export type WalkthroughActionKind = { type: "LaunchApp"; app_name: string } | { type: "FocusWindow"; app_name: string; window_title: string | null } | { type: "Click"; x: number; y: number; button: MouseButton; click_count: number } | { type: "TypeText"; text: string } | { type: "PressKey"; key: string; modifiers: string[] } | { type: "Scroll"; delta_y: number }
-export type WalkthroughAnnotations = { deleted_action_ids: string[]; renamed_actions: ActionRename[]; target_overrides: TargetOverride[]; variable_promotions: VariablePromotion[] }
+export type WalkthroughAnnotations = { deleted_node_ids: string[]; renamed_nodes: NodeRename[]; target_overrides: TargetOverride[]; variable_promotions: VariablePromotion[] }
 export type WalkthroughDraftResponse = { actions: WalkthroughAction[]; draft: Workflow | null; warnings: string[] }
 export type Workflow = { id: string; name: string; nodes: Node[]; edges: Edge[] }
 export type WorkflowPatch = { added_nodes: Node[]; removed_node_ids: string[]; updated_nodes: Node[]; added_edges: Edge[]; removed_edges: Edge[]; warnings: string[] }

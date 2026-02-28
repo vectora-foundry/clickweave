@@ -1,6 +1,7 @@
 import type { StateCreator } from "zustand";
 import { commands } from "../../bindings";
-import type { ActionRename, Node, NodeType, TargetOverride, VariablePromotion, WalkthroughAction, WalkthroughAnnotations, Workflow } from "../../bindings";
+import type { Node, NodeRename, NodeType, TargetOverride, VariablePromotion, WalkthroughAction, WalkthroughAnnotations, Workflow } from "../../bindings";
+import { toEndpoint } from "../settings";
 import type { StoreState } from "./types";
 
 export type WalkthroughStatus = "Idle" | "Recording" | "Paused" | "Processing" | "Review" | "Applied" | "Cancelled";
@@ -8,15 +9,21 @@ export type WalkthroughStatus = "Idle" | "Recording" | "Paused" | "Processing" |
 /** Opaque captured event from the backend (serialized WalkthroughEvent). */
 export type WalkthroughCapturedEvent = Record<string, unknown>;
 
-/** Upsert an entry into an annotation array, matching by action_id. */
-function upsertAnnotation<T extends { action_id: string }>(arr: T[], entry: T): T[] {
-  const idx = arr.findIndex((item) => item.action_id === entry.action_id);
+/** Maps a walkthrough action to its corresponding workflow node. */
+export interface ActionNodeEntry {
+  action_id: string;
+  node_id: string;
+}
+
+/** Upsert an entry into an annotation array, matching by node_id. */
+function upsertAnnotation<T extends { node_id: string }>(arr: T[], entry: T): T[] {
+  const idx = arr.findIndex((item) => item.node_id === entry.node_id);
   return idx >= 0 ? arr.map((item, i) => (i === idx ? entry : item)) : [...arr, entry];
 }
 
 const emptyAnnotations: WalkthroughAnnotations = {
-  deleted_action_ids: [],
-  renamed_actions: [],
+  deleted_node_ids: [],
+  renamed_nodes: [],
   target_overrides: [],
   variable_promotions: [],
 };
@@ -30,10 +37,18 @@ export interface WalkthroughSlice {
   walkthroughWarnings: string[];
   walkthroughAnnotations: WalkthroughAnnotations;
   walkthroughExpandedAction: string | null;
+  walkthroughActionNodeMap: ActionNodeEntry[];
+  walkthroughUsedFallback: boolean;
 
   setWalkthroughStatus: (status: WalkthroughStatus) => void;
   pushWalkthroughEvent: (event: WalkthroughCapturedEvent) => void;
-  setWalkthroughDraft: (payload: { actions: WalkthroughAction[]; draft: Workflow | null; warnings: string[] }) => void;
+  setWalkthroughDraft: (payload: {
+    actions: WalkthroughAction[];
+    draft: Workflow | null;
+    warnings: string[];
+    action_node_map: ActionNodeEntry[];
+    used_fallback: boolean;
+  }) => void;
   fetchWalkthroughDraft: () => Promise<void>;
   startWalkthrough: () => Promise<void>;
   pauseWalkthrough: () => Promise<void>;
@@ -42,12 +57,12 @@ export interface WalkthroughSlice {
   cancelWalkthrough: () => Promise<void>;
 
   setWalkthroughExpandedAction: (id: string | null) => void;
-  deleteAction: (actionId: string) => void;
-  restoreAction: (actionId: string) => void;
-  renameAction: (actionId: string, newName: string) => void;
-  overrideTarget: (actionId: string, candidateIndex: number) => void;
-  promoteToVariable: (actionId: string, variableName: string) => void;
-  removeVariablePromotion: (actionId: string) => void;
+  deleteNode: (nodeId: string) => void;
+  restoreNode: (nodeId: string) => void;
+  renameNode: (nodeId: string, newName: string) => void;
+  overrideTarget: (nodeId: string, candidateIndex: number) => void;
+  promoteToVariable: (nodeId: string, variableName: string) => void;
+  removeVariablePromotion: (nodeId: string) => void;
   resetAnnotations: () => void;
   applyDraftToCanvas: () => void;
   discardDraft: () => void;
@@ -62,6 +77,8 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   walkthroughWarnings: [],
   walkthroughAnnotations: { ...emptyAnnotations },
   walkthroughExpandedAction: null,
+  walkthroughActionNodeMap: [],
+  walkthroughUsedFallback: false,
 
   setWalkthroughStatus: (status) => set({ walkthroughStatus: status }),
 
@@ -69,11 +86,14 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     walkthroughEvents: [...s.walkthroughEvents, event],
   })),
 
-  setWalkthroughDraft: ({ actions, draft, warnings }) => set({
+  setWalkthroughDraft: ({ actions, draft, warnings, action_node_map, used_fallback }) => set({
     walkthroughActions: actions,
     walkthroughDraft: draft,
     walkthroughWarnings: warnings,
+    walkthroughActionNodeMap: action_node_map,
+    walkthroughUsedFallback: used_fallback,
     walkthroughStatus: "Review",
+    walkthroughAnnotations: { ...emptyAnnotations },
   }),
 
   fetchWalkthroughDraft: async () => {
@@ -93,9 +113,10 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     set({
       walkthroughError: null,
       walkthroughEvents: [],
-
       walkthroughAnnotations: { ...emptyAnnotations },
       walkthroughExpandedAction: null,
+      walkthroughActionNodeMap: [],
+      walkthroughUsedFallback: false,
       assistantOpen: false,
     });
     const result = await commands.startWalkthrough(workflow.id, mcpCommand, projectPath ?? null);
@@ -122,8 +143,11 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   },
 
   stopWalkthrough: async () => {
-    const { pushLog } = get();
-    const result = await commands.stopWalkthrough();
+    const { pushLog, plannerConfig } = get();
+    const planner = plannerConfig.baseUrl && plannerConfig.model
+      ? toEndpoint(plannerConfig)
+      : null;
+    const result = await commands.stopWalkthrough(planner);
     if (result.status === "error") {
       pushLog(`Walkthrough stop failed: ${result.error}`);
     }
@@ -136,9 +160,10 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       walkthroughActions: [],
       walkthroughDraft: null,
       walkthroughWarnings: [],
-
       walkthroughAnnotations: { ...emptyAnnotations },
       walkthroughExpandedAction: null,
+      walkthroughActionNodeMap: [],
+      walkthroughUsedFallback: false,
     });
     const result = await commands.cancelWalkthrough();
     if (result.status === "error") {
@@ -150,45 +175,45 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     walkthroughExpandedAction: s.walkthroughExpandedAction === id ? null : id,
   })),
 
-  deleteAction: (actionId) => set((s) => ({
+  deleteNode: (nodeId) => set((s) => ({
     walkthroughAnnotations: {
       ...s.walkthroughAnnotations,
-      deleted_action_ids: [...s.walkthroughAnnotations.deleted_action_ids, actionId],
+      deleted_node_ids: [...s.walkthroughAnnotations.deleted_node_ids, nodeId],
     },
   })),
 
-  restoreAction: (actionId) => set((s) => ({
+  restoreNode: (nodeId) => set((s) => ({
     walkthroughAnnotations: {
       ...s.walkthroughAnnotations,
-      deleted_action_ids: s.walkthroughAnnotations.deleted_action_ids.filter((id) => id !== actionId),
+      deleted_node_ids: s.walkthroughAnnotations.deleted_node_ids.filter((id) => id !== nodeId),
     },
   })),
 
-  renameAction: (actionId, newName) => set((s) => ({
+  renameNode: (nodeId, newName) => set((s) => ({
     walkthroughAnnotations: {
       ...s.walkthroughAnnotations,
-      renamed_actions: upsertAnnotation(s.walkthroughAnnotations.renamed_actions, { action_id: actionId, new_name: newName }),
+      renamed_nodes: upsertAnnotation(s.walkthroughAnnotations.renamed_nodes, { node_id: nodeId, new_name: newName }),
     },
   })),
 
-  overrideTarget: (actionId, candidateIndex) => set((s) => ({
+  overrideTarget: (nodeId, candidateIndex) => set((s) => ({
     walkthroughAnnotations: {
       ...s.walkthroughAnnotations,
-      target_overrides: upsertAnnotation(s.walkthroughAnnotations.target_overrides, { action_id: actionId, chosen_candidate_index: candidateIndex }),
+      target_overrides: upsertAnnotation(s.walkthroughAnnotations.target_overrides, { node_id: nodeId, chosen_candidate_index: candidateIndex }),
     },
   })),
 
-  promoteToVariable: (actionId, variableName) => set((s) => ({
+  promoteToVariable: (nodeId, variableName) => set((s) => ({
     walkthroughAnnotations: {
       ...s.walkthroughAnnotations,
-      variable_promotions: upsertAnnotation(s.walkthroughAnnotations.variable_promotions, { action_id: actionId, variable_name: variableName }),
+      variable_promotions: upsertAnnotation(s.walkthroughAnnotations.variable_promotions, { node_id: nodeId, variable_name: variableName }),
     },
   })),
 
-  removeVariablePromotion: (actionId) => set((s) => ({
+  removeVariablePromotion: (nodeId) => set((s) => ({
     walkthroughAnnotations: {
       ...s.walkthroughAnnotations,
-      variable_promotions: s.walkthroughAnnotations.variable_promotions.filter((p) => p.action_id !== actionId),
+      variable_promotions: s.walkthroughAnnotations.variable_promotions.filter((p) => p.node_id !== nodeId),
     },
   })),
 
@@ -198,45 +223,34 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   }),
 
   applyDraftToCanvas: () => {
-    const { walkthroughDraft, walkthroughActions, walkthroughAnnotations: ann } = get();
+    const { walkthroughDraft, walkthroughActions, walkthroughAnnotations: ann,
+            walkthroughActionNodeMap } = get();
     if (!walkthroughDraft) return;
 
-    // Build bidirectional action↔node mapping (1:1 order from synthesis)
-    const actionToNode = new Map<string, string>();
-    const nodeToAction = new Map<string, string>();
-    walkthroughActions.forEach((action, i) => {
-      if (i < walkthroughDraft.nodes.length) {
-        actionToNode.set(action.id, walkthroughDraft.nodes[i].id);
-        nodeToAction.set(walkthroughDraft.nodes[i].id, action.id);
-      }
-    });
+    // Collect deleted node IDs directly (annotations already use node_id).
+    const deletedNodeIds = new Set(ann.deleted_node_ids);
 
-    // Collect deleted node IDs
-    const deletedNodeIds = new Set(
-      ann.deleted_action_ids
-        .map((aid) => actionToNode.get(aid))
-        .filter((nid): nid is string => !!nid),
-    );
+    // Build action lookup by node_id for target candidates.
+    const actionByNodeId = new Map<string, WalkthroughAction>();
+    for (const entry of walkthroughActionNodeMap) {
+      const action = walkthroughActions.find((a) => a.id === entry.action_id);
+      if (action) actionByNodeId.set(entry.node_id, action);
+    }
 
-    // Filter nodes
+    // Filter and transform nodes.
     const nodes = walkthroughDraft.nodes
       .filter((n) => !deletedNodeIds.has(n.id))
       .map((n): Node => {
         let updated = { ...n };
 
-        const actionId = nodeToAction.get(n.id);
-        if (!actionId) return updated;
+        // Apply rename.
+        const rename = ann.renamed_nodes.find((r) => r.node_id === n.id);
+        if (rename) updated = { ...updated, name: rename.new_name };
 
-        // Apply rename
-        const rename = ann.renamed_actions.find((r) => r.action_id === actionId);
-        if (rename) {
-          updated = { ...updated, name: rename.new_name };
-        }
-
-        // Apply target override (Click nodes)
-        const targetOvr = ann.target_overrides.find((o) => o.action_id === actionId);
+        // Apply target override (Click nodes).
+        const targetOvr = ann.target_overrides.find((o) => o.node_id === n.id);
         if (targetOvr && updated.node_type.type === "Click") {
-          const action = walkthroughActions.find((a) => a.id === actionId);
+          const action = actionByNodeId.get(n.id);
           const candidate = action?.target_candidates[targetOvr.chosen_candidate_index];
           if (candidate) {
             let nodeType: NodeType;
@@ -253,16 +267,16 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
           }
         }
 
-        // Apply variable promotion (TypeText nodes)
-        const varPromo = ann.variable_promotions.find((p) => p.action_id === actionId);
-        if (varPromo && varPromo.variable_name && updated.node_type.type === "TypeText") {
+        // Apply variable promotion (TypeText nodes).
+        const varPromo = ann.variable_promotions.find((p) => p.node_id === n.id);
+        if (varPromo?.variable_name && updated.node_type.type === "TypeText") {
           updated = { ...updated, node_type: { ...updated.node_type, text: `{{${varPromo.variable_name}}}` } };
         }
 
         return updated;
       });
 
-    // Filter edges — remove any referencing deleted nodes
+    // Filter edges — remove any referencing deleted nodes.
     const edges = walkthroughDraft.edges.filter(
       (e) => !deletedNodeIds.has(e.from) && !deletedNodeIds.has(e.to),
     );
@@ -271,15 +285,20 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
 
     get().pushHistory("Apply Walkthrough");
     get().setWorkflow(modifiedDraft);
+
+    // Seed decision cache.
+    seedCache(modifiedDraft, get);
+
     set({
       walkthroughStatus: "Idle",
-
       walkthroughActions: [],
       walkthroughDraft: null,
       walkthroughWarnings: [],
       walkthroughAnnotations: { ...emptyAnnotations },
       walkthroughExpandedAction: null,
       walkthroughEvents: [],
+      walkthroughActionNodeMap: [],
+      walkthroughUsedFallback: false,
       isNewWorkflow: false,
     });
   },
@@ -292,6 +311,30 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     walkthroughAnnotations: { ...emptyAnnotations },
     walkthroughExpandedAction: null,
     walkthroughEvents: [],
+    walkthroughActionNodeMap: [],
+    walkthroughUsedFallback: false,
     walkthroughError: null,
   }),
 });
+
+/** Seed the decision cache with app resolution entries from the applied workflow. */
+async function seedCache(workflow: Workflow, get: () => StoreState) {
+  const entries: { node_id: string; app_name: string }[] = [];
+  for (const node of workflow.nodes) {
+    if (node.node_type.type === "FocusWindow" && node.node_type.value) {
+      entries.push({ node_id: node.id, app_name: node.node_type.value });
+    }
+  }
+  if (entries.length === 0) return;
+
+  const { projectPath } = get();
+  const result = await commands.seedWalkthroughCache(
+    workflow.id,
+    workflow.name,
+    projectPath ?? null,
+    entries,
+  );
+  if (result.status === "error") {
+    console.warn("Cache seeding failed:", result.error);
+  }
+}

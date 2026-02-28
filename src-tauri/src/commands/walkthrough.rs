@@ -26,6 +26,7 @@ pub struct WalkthroughHandle {
     pub session: Option<WalkthroughSession>,
     pub session_dir: Option<std::path::PathBuf>,
     storage: Option<WalkthroughStorage>,
+    mcp_command: Option<String>,
     #[cfg(target_os = "macos")]
     event_tap: Option<MacOSEventTap>,
     processing_task: Option<tauri::async_runtime::JoinHandle<()>>,
@@ -117,6 +118,7 @@ pub async fn start_walkthrough(
         guard.session = Some(session);
         guard.session_dir = Some(session_dir.clone());
         guard.storage = Some(storage);
+        guard.mcp_command = Some(mcp_command.clone());
 
         (session_dir, processing_storage)
     };
@@ -217,32 +219,38 @@ pub async fn resume_walkthrough(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 #[specta::specta]
-pub async fn stop_walkthrough(app: tauri::AppHandle) -> Result<(), String> {
-    let handle = app.state::<Mutex<WalkthroughHandle>>();
-    let mut guard = handle.lock().unwrap();
+pub async fn stop_walkthrough(
+    app: tauri::AppHandle,
+    planner: Option<super::types::EndpointConfig>,
+) -> Result<(), String> {
+    let (storage, session_dir, workflow_id, mcp_command) = {
+        let handle = app.state::<Mutex<WalkthroughHandle>>();
+        let mut guard = handle.lock().unwrap();
 
-    guard.ensure_status(&[WalkthroughStatus::Recording, WalkthroughStatus::Paused])?;
-    let session = guard.session.as_mut().unwrap();
-    session.status = WalkthroughStatus::Processing;
-    session.ended_at = Some(now_millis());
+        guard.ensure_status(&[WalkthroughStatus::Recording, WalkthroughStatus::Paused])?;
+        let session = guard.session.as_mut().unwrap();
+        session.status = WalkthroughStatus::Processing;
+        session.ended_at = Some(now_millis());
 
-    guard.stop_capture();
+        guard.stop_capture();
 
-    // Persist the Stopped event.
-    if let (Some(storage), Some(dir)) = (&guard.storage, &guard.session_dir) {
-        let event = WalkthroughEvent {
-            id: Uuid::new_v4(),
-            timestamp: now_millis(),
-            kind: WalkthroughEventKind::Stopped,
-        };
-        let _ = storage.append_event(dir, &event);
-    }
+        // Persist the Stopped event.
+        if let (Some(storage), Some(dir)) = (&guard.storage, &guard.session_dir) {
+            let event = WalkthroughEvent {
+                id: Uuid::new_v4(),
+                timestamp: now_millis(),
+                kind: WalkthroughEventKind::Stopped,
+            };
+            let _ = storage.append_event(dir, &event);
+        }
 
-    let storage = guard.storage.clone();
-    let session_dir = guard.session_dir.clone();
-    let workflow_id = guard.session.as_ref().unwrap().workflow_id;
-
-    drop(guard);
+        (
+            guard.storage.clone(),
+            guard.session_dir.clone(),
+            guard.session.as_ref().unwrap().workflow_id,
+            guard.mcp_command.clone(),
+        )
+    };
     emit_state(&app, WalkthroughStatus::Processing);
 
     // --- Processing phase (outside the lock) ---
@@ -291,13 +299,53 @@ pub async fn stop_walkthrough(app: tauri::AppHandle) -> Result<(), String> {
         ),
     };
 
+    // --- LLM generalization (optional) ---
+
+    let (final_draft, action_node_map, used_fallback, all_warnings) =
+        if let Some(planner_cfg) = planner {
+            if planner_cfg.is_empty() || actions.is_empty() {
+                let map = clickweave_core::walkthrough::build_action_node_map(&actions, &draft);
+                (draft, map, true, warnings)
+            } else {
+                // Fetch MCP tool schemas for the prompt.
+                let mcp_tools = match &mcp_command {
+                    Some(cmd) => super::planner::fetch_mcp_tool_schemas(cmd)
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::warn!("Failed to fetch MCP tools for generalization: {e}");
+                            vec![]
+                        }),
+                    None => vec![],
+                };
+
+                let llm_config = planner_cfg.into_llm_config(None);
+                let backend = clickweave_llm::LlmClient::new(llm_config);
+                let result = clickweave_llm::planner::generalize_walkthrough(
+                    &backend, &draft, &actions, &mcp_tools,
+                )
+                .await;
+
+                let mut combined_warnings = warnings;
+                combined_warnings.extend(result.warnings);
+                (
+                    result.workflow,
+                    result.action_node_map,
+                    result.used_fallback,
+                    combined_warnings,
+                )
+            }
+        } else {
+            let map = clickweave_core::walkthrough::build_action_node_map(&actions, &draft);
+            (draft, map, true, warnings)
+        };
+
     // Store results back on the session.
     {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
         let mut guard = handle.lock().unwrap();
         if let Some(session) = guard.session.as_mut() {
             session.actions = actions.clone();
-            session.warnings = warnings.clone();
+            session.warnings = all_warnings.clone();
             session.status = WalkthroughStatus::Review;
         }
 
@@ -312,8 +360,10 @@ pub async fn stop_walkthrough(app: tauri::AppHandle) -> Result<(), String> {
         "walkthrough://draft_ready",
         WalkthroughDraftPayload {
             actions,
-            draft,
-            warnings,
+            draft: final_draft,
+            warnings: all_warnings,
+            action_node_map,
+            used_fallback,
         },
     );
     emit_state(&app, WalkthroughStatus::Review);
@@ -410,6 +460,54 @@ pub async fn apply_walkthrough_annotations(
 
     drop(guard);
     emit_state(&app, WalkthroughStatus::Applied);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn seed_walkthrough_cache(
+    app: tauri::AppHandle,
+    workflow_id: String,
+    workflow_name: String,
+    project_path: Option<String>,
+    app_entries: Vec<super::types::AppResolutionSeedEntry>,
+) -> Result<(), String> {
+    use clickweave_core::decision_cache::{AppResolution, DecisionCache, cache_key};
+
+    let wf_id = parse_uuid(&workflow_id, "workflow")?;
+
+    if app_entries.is_empty() {
+        return Ok(());
+    }
+
+    let storage = super::types::resolve_storage(&app, &project_path, &workflow_name, wf_id);
+    let cache_path = storage.cache_path();
+
+    // Load existing cache or create new one.
+    let mut cache = DecisionCache::load(&cache_path).unwrap_or_else(|| DecisionCache::new(wf_id));
+
+    for entry in &app_entries {
+        let node_id = parse_uuid(&entry.node_id, "node")?;
+        let key = cache_key(node_id, &entry.app_name, None);
+        cache.app_resolution.insert(
+            key,
+            AppResolution {
+                user_input: entry.app_name.clone(),
+                resolved_name: entry.app_name.clone(),
+            },
+        );
+    }
+
+    cache
+        .save(&cache_path)
+        .map_err(|e| format!("Failed to save cache: {e}"))?;
+
+    tracing::info!(
+        "Seeded decision cache with {} app resolution entries at {:?}",
+        app_entries.len(),
+        cache_path,
+    );
+
     Ok(())
 }
 

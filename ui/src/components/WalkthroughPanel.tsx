@@ -2,7 +2,7 @@ import { useRef, useEffect } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useStore } from "../store/useAppStore";
 import { useHorizontalResize } from "../hooks/useHorizontalResize";
-import type { WalkthroughAction, TargetCandidate } from "../bindings";
+import type { WalkthroughAction, TargetCandidate, Node } from "../bindings";
 import type { WalkthroughCapturedEvent } from "../store/slices/walkthroughSlice";
 
 function eventDescription(event: WalkthroughCapturedEvent): { icon: string; text: string } {
@@ -86,6 +86,27 @@ function targetCandidateIcon(candidate: TargetCandidate): string {
   }
 }
 
+function nodeTypeIcon(nodeType: Node["node_type"]): { icon: string; color: string } {
+  switch (nodeType.type) {
+    case "FocusWindow":
+    case "ListWindows": return { icon: "◎", color: "text-green-400" };
+    case "Click": return { icon: "◉", color: "text-[var(--accent-coral)]" };
+    case "TypeText": return { icon: "⌨", color: "text-blue-400" };
+    case "PressKey": return { icon: "⌥", color: "text-[var(--text-muted)]" };
+    case "Scroll": return { icon: "↕", color: "text-[var(--text-muted)]" };
+    case "AiStep": return { icon: "★", color: "text-purple-400" };
+    case "McpToolCall": return { icon: "⚙", color: "text-blue-400" };
+    case "TakeScreenshot":
+    case "FindText":
+    case "FindImage": return { icon: "◇", color: "text-[var(--text-muted)]" };
+    case "AppDebugKitOp": return { icon: "⚙", color: "text-[var(--text-muted)]" };
+    case "If":
+    case "Switch":
+    case "Loop":
+    case "EndLoop": return { icon: "◆", color: "text-yellow-400" };
+  }
+}
+
 function confidenceDot(confidence: WalkthroughAction["confidence"]): string {
   switch (confidence) {
     case "High": return "bg-green-400";
@@ -107,9 +128,12 @@ export function WalkthroughPanel() {
   const resumeWalkthrough = useStore((s) => s.resumeWalkthrough);
   const stopWalkthrough = useStore((s) => s.stopWalkthrough);
   const setWalkthroughExpandedAction = useStore((s) => s.setWalkthroughExpandedAction);
-  const deleteAction = useStore((s) => s.deleteAction);
-  const restoreAction = useStore((s) => s.restoreAction);
-  const renameAction = useStore((s) => s.renameAction);
+  const walkthroughDraft = useStore((s) => s.walkthroughDraft);
+  const walkthroughActionNodeMap = useStore((s) => s.walkthroughActionNodeMap);
+  const walkthroughUsedFallback = useStore((s) => s.walkthroughUsedFallback);
+  const deleteNode = useStore((s) => s.deleteNode);
+  const restoreNode = useStore((s) => s.restoreNode);
+  const renameNode = useStore((s) => s.renameNode);
   const overrideTarget = useStore((s) => s.overrideTarget);
   const promoteToVariable = useStore((s) => s.promoteToVariable);
   const removeVariablePromotion = useStore((s) => s.removeVariablePromotion);
@@ -244,18 +268,26 @@ export function WalkthroughPanel() {
   // Review mode
   if (walkthroughStatus !== "Review") return null;
 
-  const activeActions = walkthroughActions.filter(
-    (a) => !walkthroughAnnotations.deleted_action_ids.includes(a.id),
+  // Build action lookup by node_id for metadata (screenshots, candidates, confidence).
+  const actionByNodeId = new Map<string, WalkthroughAction>();
+  for (const entry of walkthroughActionNodeMap) {
+    const action = walkthroughActions.find((a) => a.id === entry.action_id);
+    if (action) actionByNodeId.set(entry.node_id, action);
+  }
+
+  const draftNodes = walkthroughDraft?.nodes ?? [];
+  const activeNodes = draftNodes.filter(
+    (n) => !walkthroughAnnotations.deleted_node_ids.includes(n.id),
   );
-  const allDeleted = walkthroughActions.length > 0 && activeActions.length === 0;
+  const allDeleted = draftNodes.length > 0 && activeNodes.length === 0;
   const warningCount = walkthroughActions.reduce((sum, a) => sum + a.warnings.length, 0) + walkthroughWarnings.length;
 
-  // Precompute step numbers (only for non-deleted actions)
+  // Precompute step numbers (only for non-deleted nodes)
   const stepNumbers = new Map<string, number>();
   let step = 0;
-  for (const a of walkthroughActions) {
-    if (!walkthroughAnnotations.deleted_action_ids.includes(a.id)) {
-      stepNumbers.set(a.id, ++step);
+  for (const n of draftNodes) {
+    if (!walkthroughAnnotations.deleted_node_ids.includes(n.id)) {
+      stepNumbers.set(n.id, ++step);
     }
   }
 
@@ -269,7 +301,7 @@ export function WalkthroughPanel() {
         <div className="flex items-center gap-2">
           <h2 className="text-sm font-medium text-[var(--text-primary)]">Review Walkthrough</h2>
           <span className="rounded-full bg-[var(--bg-hover)] px-2 py-0.5 text-[10px] text-[var(--text-muted)]">
-            {activeActions.length} step{activeActions.length !== 1 ? "s" : ""}
+            {activeNodes.length} step{activeNodes.length !== 1 ? "s" : ""}
           </span>
           {warningCount > 0 && (
             <span className="rounded-full bg-yellow-500/20 px-2 py-0.5 text-[10px] text-yellow-400">
@@ -308,32 +340,35 @@ export function WalkthroughPanel() {
 
       {/* Action list */}
       <div className="flex-1 overflow-y-auto px-3 py-3">
-        {walkthroughActions.length === 0 ? (
+        {draftNodes.length === 0 ? (
           <div className="flex h-full items-center justify-center">
             <p className="text-center text-xs text-[var(--text-muted)]">No actions captured</p>
           </div>
         ) : (
           <div className="space-y-1.5">
-            {walkthroughActions.map((action) => {
-              const isDeleted = walkthroughAnnotations.deleted_action_ids.includes(action.id);
-              const isExpanded = walkthroughExpandedAction === action.id;
-              const currentStep = stepNumbers.get(action.id) ?? null;
-              const { icon, color } = actionIcon(action.kind);
+            {draftNodes.map((node) => {
+              const action = actionByNodeId.get(node.id);
+              const isDeleted = walkthroughAnnotations.deleted_node_ids.includes(node.id);
+              const isExpanded = walkthroughExpandedAction === node.id;
+              const currentStep = stepNumbers.get(node.id) ?? null;
+              const { icon, color } = action ? actionIcon(action.kind) : nodeTypeIcon(node.node_type);
+              const isLlmAdded = !action && !walkthroughUsedFallback;
 
               // Get rename if any
-              const renameEntry = walkthroughAnnotations.renamed_actions.find((r) => r.action_id === action.id);
-              const displayLabel = renameEntry?.new_name || actionLabel(action);
+              const renameEntry = walkthroughAnnotations.renamed_nodes.find((r) => r.node_id === node.id);
+              const defaultLabel = action ? actionLabel(action) : node.name;
+              const displayLabel = renameEntry?.new_name || defaultLabel;
 
               // Get target override if any
-              const targetOverride = walkthroughAnnotations.target_overrides.find((o) => o.action_id === action.id);
+              const targetOverride = walkthroughAnnotations.target_overrides.find((o) => o.node_id === node.id);
               const chosenTargetIdx = targetOverride?.chosen_candidate_index ?? 0;
 
               // Get variable promotion if any
-              const variablePromo = walkthroughAnnotations.variable_promotions.find((p) => p.action_id === action.id);
+              const variablePromo = walkthroughAnnotations.variable_promotions.find((p) => p.node_id === node.id);
 
               return (
                 <div
-                  key={action.id}
+                  key={node.id}
                   className={`rounded-lg border transition-all duration-200 ${
                     isDeleted
                       ? "border-[var(--border)] opacity-40"
@@ -345,7 +380,7 @@ export function WalkthroughPanel() {
                   {/* Collapsed row */}
                   <div
                     className="flex cursor-pointer items-center gap-2 px-3 py-2"
-                    onClick={() => setWalkthroughExpandedAction(action.id)}
+                    onClick={() => setWalkthroughExpandedAction(node.id)}
                   >
                     {/* Step number */}
                     <span className="w-5 text-right text-[10px] text-[var(--text-muted)]">
@@ -360,13 +395,20 @@ export function WalkthroughPanel() {
                       {displayLabel}
                     </span>
 
-                    {/* Confidence dot */}
-                    <span className={`h-1.5 w-1.5 rounded-full ${confidenceDot(action.confidence)}`} title={action.confidence} />
+                    {/* LLM-added badge */}
+                    {isLlmAdded && (
+                      <span className="rounded bg-purple-500/20 px-1 py-0.5 text-[9px] text-purple-400">LLM</span>
+                    )}
+
+                    {/* Confidence dot (only for nodes with an action) */}
+                    {action && (
+                      <span className={`h-1.5 w-1.5 rounded-full ${confidenceDot(action.confidence)}`} title={action.confidence} />
+                    )}
 
                     {/* Delete / Restore */}
                     {isDeleted ? (
                       <button
-                        onClick={(e) => { e.stopPropagation(); restoreAction(action.id); }}
+                        onClick={(e) => { e.stopPropagation(); restoreNode(node.id); }}
                         className="rounded px-1.5 py-0.5 text-[10px] text-[var(--text-muted)] hover:text-green-400"
                         title="Restore"
                       >
@@ -374,7 +416,7 @@ export function WalkthroughPanel() {
                       </button>
                     ) : (
                       <button
-                        onClick={(e) => { e.stopPropagation(); deleteAction(action.id); }}
+                        onClick={(e) => { e.stopPropagation(); deleteNode(node.id); }}
                         className="rounded px-1 py-0.5 text-[var(--text-muted)] hover:text-red-400"
                         title="Delete step"
                       >
@@ -391,14 +433,14 @@ export function WalkthroughPanel() {
                         <label className="mb-1 block text-[10px] text-[var(--text-muted)]">Name</label>
                         <input
                           type="text"
-                          value={renameEntry?.new_name ?? actionLabel(action)}
-                          onChange={(e) => renameAction(action.id, e.target.value)}
+                          value={renameEntry?.new_name ?? defaultLabel}
+                          onChange={(e) => renameNode(node.id, e.target.value)}
                           className="w-full rounded border border-[var(--border)] bg-[var(--bg-input)] px-2 py-1 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent-coral)]"
                         />
                       </div>
 
-                      {/* Target candidates (Click actions only) */}
-                      {action.kind.type === "Click" && action.target_candidates.length > 0 && (
+                      {/* Target candidates (Click nodes with action metadata) */}
+                      {action && action.kind.type === "Click" && action.target_candidates.length > 0 && (
                         <div>
                           <label className="mb-1 block text-[10px] text-[var(--text-muted)]">Click Target</label>
                           <div className="space-y-1">
@@ -413,9 +455,9 @@ export function WalkthroughPanel() {
                               >
                                 <input
                                   type="radio"
-                                  name={`target-${action.id}`}
+                                  name={`target-${node.id}`}
                                   checked={ci === chosenTargetIdx}
-                                  onChange={() => overrideTarget(action.id, ci)}
+                                  onChange={() => overrideTarget(node.id, ci)}
                                   className="accent-[var(--accent-coral)]"
                                 />
                                 <span>{targetCandidateIcon(candidate)}</span>
@@ -426,8 +468,8 @@ export function WalkthroughPanel() {
                         </div>
                       )}
 
-                      {/* Variable promotion (TypeText actions only) */}
-                      {action.kind.type === "TypeText" && (
+                      {/* Variable promotion (TypeText nodes) */}
+                      {(action ? action.kind.type === "TypeText" : node.node_type.type === "TypeText") && (
                         <div>
                           <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
                             <input
@@ -435,9 +477,9 @@ export function WalkthroughPanel() {
                               checked={!!variablePromo}
                               onChange={(e) => {
                                 if (e.target.checked) {
-                                  promoteToVariable(action.id, "");
+                                  promoteToVariable(node.id, "");
                                 } else {
-                                  removeVariablePromotion(action.id);
+                                  removeVariablePromotion(node.id);
                                 }
                               }}
                               className="accent-[var(--accent-coral)]"
@@ -448,7 +490,7 @@ export function WalkthroughPanel() {
                             <input
                               type="text"
                               value={variablePromo.variable_name}
-                              onChange={(e) => promoteToVariable(action.id, e.target.value)}
+                              onChange={(e) => promoteToVariable(node.id, e.target.value)}
                               placeholder="variable_name"
                               className="mt-1 w-full rounded border border-[var(--border)] bg-[var(--bg-input)] px-2 py-1 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent-coral)]"
                             />
@@ -457,7 +499,7 @@ export function WalkthroughPanel() {
                       )}
 
                       {/* Per-action warnings */}
-                      {action.warnings.length > 0 && (
+                      {action && action.warnings.length > 0 && (
                         <div className="space-y-1">
                           {action.warnings.map((w, wi) => (
                             <div key={wi} className="rounded bg-yellow-500/10 px-2 py-1 text-[11px] text-yellow-400">
@@ -468,7 +510,7 @@ export function WalkthroughPanel() {
                       )}
 
                       {/* Screenshot thumbnail */}
-                      {action.artifact_paths.length > 0 && (
+                      {action && action.artifact_paths.length > 0 && (
                         <div>
                           <label className="mb-1 block text-[10px] text-[var(--text-muted)]">Screenshot</label>
                           <img
@@ -500,7 +542,7 @@ export function WalkthroughPanel() {
         )}
         <button
           onClick={applyDraftToCanvas}
-          disabled={allDeleted || walkthroughActions.length === 0}
+          disabled={allDeleted || draftNodes.length === 0}
           className="ml-auto rounded-lg bg-[var(--accent-coral)] px-4 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
         >
           Apply

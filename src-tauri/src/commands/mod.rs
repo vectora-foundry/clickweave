@@ -17,5 +17,6 @@ pub use runs::{list_runs, load_run_events, read_artifact_base64};
 pub use types::AppDataDir;
 pub use walkthrough::{
     WalkthroughHandle, apply_walkthrough_annotations, cancel_walkthrough, get_walkthrough_draft,
-    pause_walkthrough, resume_walkthrough, start_walkthrough, stop_walkthrough,
+    pause_walkthrough, resume_walkthrough, seed_walkthrough_cache, start_walkthrough,
+    stop_walkthrough,
 };

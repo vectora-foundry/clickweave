@@ -82,6 +82,7 @@ fn main() {
         cancel_walkthrough,
         get_walkthrough_draft,
         apply_walkthrough_annotations,
+        seed_walkthrough_cache,
     ]);
 
     #[cfg(debug_assertions)]
