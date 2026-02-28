@@ -80,6 +80,7 @@ fn main() {
         resume_walkthrough,
         stop_walkthrough,
         cancel_walkthrough,
+        get_walkthrough_draft,
         apply_walkthrough_annotations,
     ]);
 

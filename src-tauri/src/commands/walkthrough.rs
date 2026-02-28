@@ -4,14 +4,17 @@ use std::sync::Mutex;
 use base64::Engine;
 use clickweave_core::storage::now_millis;
 use clickweave_core::walkthrough::{
-    OcrAnnotation, ScreenshotKind, WalkthroughAnnotations, WalkthroughEvent, WalkthroughEventKind,
-    WalkthroughSession, WalkthroughStatus, WalkthroughStorage,
+    OcrAnnotation, ScreenshotKind, WalkthroughAction, WalkthroughAnnotations, WalkthroughEvent,
+    WalkthroughEventKind, WalkthroughSession, WalkthroughStatus, WalkthroughStorage,
 };
 use clickweave_mcp::McpClient;
 use tauri::{Emitter, Manager};
 use uuid::Uuid;
 
-use super::types::{AppDataDir, WalkthroughEventPayload, WalkthroughStatePayload, parse_uuid};
+use super::types::{
+    AppDataDir, WalkthroughDraftPayload, WalkthroughEventPayload, WalkthroughStatePayload,
+    parse_uuid,
+};
 use crate::platform::{CaptureCommand, CaptureEvent, CaptureEventKind};
 
 #[cfg(target_os = "macos")]
@@ -220,12 +223,12 @@ pub async fn stop_walkthrough(app: tauri::AppHandle) -> Result<(), String> {
 
     guard.ensure_status(&[WalkthroughStatus::Recording, WalkthroughStatus::Paused])?;
     let session = guard.session.as_mut().unwrap();
-    session.status = WalkthroughStatus::Review;
+    session.status = WalkthroughStatus::Processing;
     session.ended_at = Some(now_millis());
 
     guard.stop_capture();
 
-    // Persist a Stopped event and update the session file.
+    // Persist the Stopped event.
     if let (Some(storage), Some(dir)) = (&guard.storage, &guard.session_dir) {
         let event = WalkthroughEvent {
             id: Uuid::new_v4(),
@@ -233,13 +236,132 @@ pub async fn stop_walkthrough(app: tauri::AppHandle) -> Result<(), String> {
             kind: WalkthroughEventKind::Stopped,
         };
         let _ = storage.append_event(dir, &event);
-        let _ = storage.save_session(dir, guard.session.as_ref().unwrap());
     }
 
+    let storage = guard.storage.clone();
+    let session_dir = guard.session_dir.clone();
+    let workflow_id = guard.session.as_ref().unwrap().workflow_id;
+
     drop(guard);
+    emit_state(&app, WalkthroughStatus::Processing);
+
+    // --- Processing phase (outside the lock) ---
+
+    let (actions, draft, warnings) = match (&storage, &session_dir) {
+        (Some(storage), Some(dir)) => {
+            // Read events from disk.
+            let events = storage
+                .read_events(dir)
+                .map_err(|e| format!("Failed to read events: {e}"))?;
+
+            // Normalize.
+            let (actions, mut norm_warnings) =
+                clickweave_core::walkthrough::normalize_events(&events);
+
+            // Save actions.
+            if let Err(e) = storage.save_actions(dir, &actions) {
+                tracing::warn!("Failed to save actions: {e}");
+            }
+
+            // Synthesize draft.
+            let draft = clickweave_core::walkthrough::synthesize_draft(
+                &actions,
+                workflow_id,
+                "Walkthrough Draft",
+            );
+
+            // Validate (non-fatal — warnings only).
+            if !draft.nodes.is_empty()
+                && let Err(e) = clickweave_core::validate_workflow(&draft)
+            {
+                norm_warnings.push(format!("Draft validation warning: {e}"));
+            }
+
+            // Save draft.
+            if let Err(e) = storage.save_draft(dir, &draft) {
+                tracing::warn!("Failed to save draft: {e}");
+            }
+
+            (actions, draft, norm_warnings)
+        }
+        _ => (
+            vec![],
+            clickweave_core::Workflow::default(),
+            vec!["No storage available".to_string()],
+        ),
+    };
+
+    // Store results back on the session.
+    {
+        let handle = app.state::<Mutex<WalkthroughHandle>>();
+        let mut guard = handle.lock().unwrap();
+        if let Some(session) = guard.session.as_mut() {
+            session.actions = actions.clone();
+            session.warnings = warnings.clone();
+            session.status = WalkthroughStatus::Review;
+        }
+
+        // Persist the updated session.
+        if let (Some(storage), Some(dir)) = (&guard.storage, &guard.session_dir) {
+            let _ = storage.save_session(dir, guard.session.as_ref().unwrap());
+        }
+    }
+
+    // Emit results to frontend.
+    let _ = app.emit(
+        "walkthrough://draft_ready",
+        WalkthroughDraftPayload {
+            actions,
+            draft,
+            warnings,
+        },
+    );
     emit_state(&app, WalkthroughStatus::Review);
-    tracing::info!("Walkthrough stopped, entering review");
+
+    tracing::info!("Walkthrough processing complete, entering review");
     Ok(())
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct WalkthroughDraftResponse {
+    pub actions: Vec<WalkthroughAction>,
+    pub draft: Option<clickweave_core::Workflow>,
+    pub warnings: Vec<String>,
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_walkthrough_draft(
+    app: tauri::AppHandle,
+) -> Result<WalkthroughDraftResponse, String> {
+    let handle = app.state::<Mutex<WalkthroughHandle>>();
+
+    // Extract needed data under lock, then drop it before doing file I/O.
+    let (actions, warnings, draft_path) = {
+        let guard = handle.lock().unwrap();
+        guard.ensure_status(&[WalkthroughStatus::Review])?;
+        let session = guard.session.as_ref().unwrap();
+        let path = guard.session_dir.as_ref().map(|dir| dir.join("draft.json"));
+        (session.actions.clone(), session.warnings.clone(), path)
+    };
+
+    // Read draft from disk if available (no lock held).
+    let draft = match draft_path {
+        Some(path) => match std::fs::read_to_string(&path) {
+            Ok(data) => Some(
+                serde_json::from_str(&data).map_err(|e| format!("Failed to parse draft: {e}"))?,
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(format!("Failed to read draft: {e}")),
+        },
+        None => None,
+    };
+
+    Ok(WalkthroughDraftResponse {
+        actions,
+        draft,
+        warnings,
+    })
 }
 
 #[tauri::command]
@@ -502,7 +624,10 @@ async fn resolve_app_name(
         }
     }
 
-    format!("PID:{pid}")
+    // Insert negative-cache entry to avoid repeated MCP calls for unknown PIDs.
+    let fallback = format!("PID:{pid}");
+    cache.insert(pid, fallback.clone());
+    fallback
 }
 
 /// Enrich a click event by taking a screenshot with OCR.
