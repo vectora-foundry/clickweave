@@ -75,6 +75,7 @@ async function openRecordingBarWindow() {
     skipTaskbar: true,
     shadow: false,
     focus: false,
+    acceptFirstMouse: true,
   });
 }
 

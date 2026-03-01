@@ -20,6 +20,9 @@ use crate::platform::{CaptureCommand, CaptureEvent, CaptureEventKind};
 #[cfg(target_os = "macos")]
 use crate::platform::macos::MacOSEventTap;
 
+const RECORDING_BAR_LABEL: &str = "recording-bar";
+const SELF_APP_NAME: &str = "clickweave-tauri";
+
 /// Manages the walkthrough recording lifecycle.
 #[derive(Default)]
 pub struct WalkthroughHandle {
@@ -293,9 +296,14 @@ pub async fn stop_walkthrough(
     let (actions, draft, warnings) = match (&storage, &session_dir) {
         (Some(storage), Some(dir)) => {
             // Read events from disk.
-            let events = storage
+            let mut events = storage
                 .read_events(dir)
                 .map_err(|e| format!("Failed to read events: {e}"))?;
+
+            // Strip the stop-button click captured just before the tap shut down.
+            if let Some(bar_rect) = get_recording_bar_rect(&app) {
+                strip_recording_bar_click(&mut events, bar_rect);
+            }
 
             // Normalize.
             let (actions, mut norm_warnings) =
@@ -593,6 +601,7 @@ async fn process_capture_events(
     // Cache PID → app name to avoid repeated lookups.
     let mut app_cache: HashMap<i32, String> = HashMap::new();
     let mut last_pid: i32 = 0;
+    let mut self_focused = false;
 
     if let Some(ref mcp) = mcp {
         populate_app_cache(mcp, &mut app_cache).await;
@@ -602,6 +611,14 @@ async fn process_capture_events(
         // Detect app focus changes.
         if capture.target_pid != 0 && capture.target_pid != last_pid {
             let app_name = resolve_app_name(capture.target_pid, &mcp, &mut app_cache).await;
+
+            // Skip events targeting our own app (recording bar clicks, etc.).
+            // We track focus but don't emit the AppFocused event for ourselves.
+            if app_name == SELF_APP_NAME {
+                last_pid = capture.target_pid;
+                self_focused = true;
+                continue;
+            }
 
             let focus_event = WalkthroughEvent {
                 id: Uuid::new_v4(),
@@ -614,6 +631,12 @@ async fn process_capture_events(
             };
             persist_and_emit(&app, &storage, &session_dir, &focus_event);
             last_pid = capture.target_pid;
+            self_focused = false;
+        }
+
+        // Skip events while our own app is focused.
+        if self_focused {
+            continue;
         }
 
         // Translate the capture event into a walkthrough event.
@@ -709,6 +732,44 @@ async fn process_capture_events(
     }
 
     tracing::info!("Walkthrough capture event loop ended");
+}
+
+/// Get the recording bar window's bounds in logical screen coordinates.
+///
+/// Returns `(x, y, width, height)` if the window exists, or `None` if it has
+/// already been closed.
+fn get_recording_bar_rect(app: &tauri::AppHandle) -> Option<(f64, f64, f64, f64)> {
+    let win = app.get_webview_window(RECORDING_BAR_LABEL)?;
+    let scale = win.scale_factor().ok()?;
+    let pos = win.outer_position().ok()?;
+    let size = win.outer_size().ok()?;
+    Some((
+        pos.x as f64 / scale,
+        pos.y as f64 / scale,
+        size.width as f64 / scale,
+        size.height as f64 / scale,
+    ))
+}
+
+/// Strip the last click event if it lands inside the recording bar window.
+///
+/// When the user clicks Stop, the event tap captures that click before shutting
+/// down. This function removes that trailing click and its associated enrichment
+/// events (screenshot, OCR) which share the same timestamp.
+fn strip_recording_bar_click(events: &mut Vec<WalkthroughEvent>, bar_rect: (f64, f64, f64, f64)) {
+    let (bar_x, bar_y, bar_w, bar_h) = bar_rect;
+
+    let last_click_pos = events
+        .iter()
+        .rposition(|e| matches!(&e.kind, WalkthroughEventKind::MouseClicked { .. }));
+
+    if let Some(idx) = last_click_pos {
+        if let WalkthroughEventKind::MouseClicked { x, y, .. } = &events[idx].kind {
+            if *x >= bar_x && *x <= bar_x + bar_w && *y >= bar_y && *y <= bar_y + bar_h {
+                events.truncate(idx);
+            }
+        }
+    }
 }
 
 fn persist_and_emit(
