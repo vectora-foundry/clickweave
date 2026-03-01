@@ -1,6 +1,9 @@
 import type { StateCreator } from "zustand";
 import { commands } from "../../bindings";
 import type { Node, NodeRename, NodeType, TargetOverride, VariablePromotion, WalkthroughAction, WalkthroughAnnotations, Workflow } from "../../bindings";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { currentMonitor } from "@tauri-apps/api/window";
+import { LogicalSize, LogicalPosition } from "@tauri-apps/api/dpi";
 import { toEndpoint } from "../settings";
 import type { StoreState } from "./types";
 
@@ -37,6 +40,50 @@ export interface ActionNodeEntry {
 function upsertAnnotation<T extends { node_id: string }>(arr: T[], entry: T): T[] {
   const idx = arr.findIndex((item) => item.node_id === entry.node_id);
   return idx >= 0 ? arr.map((item, i) => (i === idx ? entry : item)) : [...arr, entry];
+}
+
+const RECORDING_BAR_LABEL = "recording-bar";
+const BAR_WIDTH = 460;
+const BAR_HEIGHT = 48;
+
+async function openRecordingBarWindow() {
+  // Don't create if already exists
+  const existing = await WebviewWindow.getByLabel(RECORDING_BAR_LABEL);
+  if (existing) return;
+
+  // Center horizontally at top of the current monitor
+  const monitor = await currentMonitor();
+  const screenWidth = monitor?.size.width ?? 1920;
+  const scaleFactor = monitor?.scaleFactor ?? 2;
+  const logicalScreenWidth = screenWidth / scaleFactor;
+  const x = Math.round((logicalScreenWidth - BAR_WIDTH) / 2);
+
+  new WebviewWindow(RECORDING_BAR_LABEL, {
+    url: "/?view=recording-bar",
+    title: "",
+    width: BAR_WIDTH,
+    height: BAR_HEIGHT,
+    x,
+    y: 12,
+    decorations: false,
+    transparent: true,
+    alwaysOnTop: true,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    closable: false,
+    skipTaskbar: true,
+    shadow: false,
+    focus: false,
+  });
+}
+
+async function closeRecordingBarWindow() {
+  const win = await WebviewWindow.getByLabel(RECORDING_BAR_LABEL);
+  if (win) await win.close();
+  // Bring the main window back to front
+  const main = await WebviewWindow.getByLabel("main");
+  if (main) await main.setFocus();
 }
 
 const emptyAnnotations: WalkthroughAnnotations = {
@@ -101,7 +148,13 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   walkthroughActionNodeMap: [],
   walkthroughUsedFallback: false,
 
-  setWalkthroughStatus: (status) => set({ walkthroughStatus: status }),
+  setWalkthroughStatus: (status) => {
+    set({ walkthroughStatus: status });
+    // Close the recording bar window when leaving recording states
+    if (status === "Review" || status === "Idle" || status === "Cancelled" || status === "Applied") {
+      closeRecordingBarWindow();
+    }
+  },
   setWalkthroughPanelOpen: (open) => set({ walkthroughPanelOpen: open }),
 
   pushWalkthroughEvent: (event) => set((s) => ({
@@ -147,6 +200,8 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     if (result.status === "error") {
       set({ walkthroughError: result.error });
       pushLog(`Walkthrough start failed: ${result.error}`);
+    } else {
+      openRecordingBarWindow();
     }
   },
 
@@ -179,6 +234,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
 
   cancelWalkthrough: async () => {
     const { pushLog } = get();
+    closeRecordingBarWindow();
     set({
       walkthroughEvents: [],
       walkthroughActions: [],

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicholasgasior/tauri-schema/refs/heads/main/tauri-capability.schema.json",
+  "identifier": "recording-bar",
+  "description": "Capabilities for the recording bar overlay window",
+  "windows": ["recording-bar"],
+  "permissions": [
+    "core:default",
+    "core:event:default"
+  ]
+}

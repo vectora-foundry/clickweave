@@ -1,36 +1,8 @@
-import { useRef, useEffect } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useStore } from "../store/useAppStore";
 import { useHorizontalResize } from "../hooks/useHorizontalResize";
 import type { WalkthroughAction, TargetCandidate, Node } from "../bindings";
-import { isWalkthroughActive, buildActionByNodeId } from "../store/slices/walkthroughSlice";
-import type { WalkthroughCapturedEvent } from "../store/slices/walkthroughSlice";
-
-function eventDescription(event: WalkthroughCapturedEvent): { icon: string; text: string } {
-  // The backend serializes WalkthroughEvent as { id, timestamp, kind: { type, ...fields } }.
-  const kind = (event as Record<string, unknown>).kind as Record<string, unknown> | undefined;
-  const type_ = ((kind?.type ?? "") as string);
-
-  if (type_ === "MouseClicked") {
-    const x = (kind?.x as number) ?? 0;
-    const y = (kind?.y as number) ?? 0;
-    return { icon: "◉", text: `Clicked at (${Math.round(x)}, ${Math.round(y)})` };
-  }
-  if (type_ === "KeyPressed") {
-    return { icon: "⌥", text: `Pressed ${(kind?.key as string) ?? "key"}` };
-  }
-  if (type_ === "TextCommitted") {
-    const text = (kind?.text as string) ?? "";
-    return { icon: "⌨", text: `Typed '${text.length > 30 ? text.slice(0, 30) + "…" : text}'` };
-  }
-  if (type_ === "AppFocused") {
-    return { icon: "⬡", text: `Focused ${(kind?.app_name as string) ?? "app"}` };
-  }
-  if (type_ === "Scrolled") {
-    return { icon: "↕", text: "Scrolled" };
-  }
-  return { icon: "•", text: type_ || "Event" };
-}
+import { buildActionByNodeId } from "../store/slices/walkthroughSlice";
 
 function actionIcon(kind: WalkthroughAction["kind"]): { icon: string; color: string } {
   switch (kind.type) {
@@ -125,10 +97,6 @@ export function WalkthroughPanel() {
   const walkthroughAnnotations = useStore((s) => s.walkthroughAnnotations);
   const walkthroughExpandedAction = useStore((s) => s.walkthroughExpandedAction);
   const walkthroughWarnings = useStore((s) => s.walkthroughWarnings);
-  const cancelWalkthrough = useStore((s) => s.cancelWalkthrough);
-  const pauseWalkthrough = useStore((s) => s.pauseWalkthrough);
-  const resumeWalkthrough = useStore((s) => s.resumeWalkthrough);
-  const stopWalkthrough = useStore((s) => s.stopWalkthrough);
   const setWalkthroughExpandedAction = useStore((s) => s.setWalkthroughExpandedAction);
   const walkthroughDraft = useStore((s) => s.walkthroughDraft);
   const walkthroughActionNodeMap = useStore((s) => s.walkthroughActionNodeMap);
@@ -146,139 +114,15 @@ export function WalkthroughPanel() {
   const assistantOpen = useStore((s) => s.assistantOpen);
 
   const { width, handleResizeStart } = useHorizontalResize();
-  const feedEndRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll feed to bottom
-  useEffect(() => {
-    feedEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [walkthroughEvents.length]);
-
-  if (!isWalkthroughActive(walkthroughStatus)) return null;
+  // Recording/Paused/Processing states are now handled by RecordingBar overlay
+  if (walkthroughStatus !== "Review") return null;
 
   // Hide while assistant panel is open to avoid rendering both side panels.
-  // The walkthrough state is preserved — closing the assistant restores this panel.
   if (assistantOpen) return null;
 
   // Hide when user closed the panel via X. State is preserved; can reopen from toolbar.
-  if (!walkthroughPanelOpen && walkthroughStatus === "Review") return null;
-
-  const isRecording = walkthroughStatus === "Recording" || walkthroughStatus === "Paused";
-
-  // Derive current focused app from last AppFocused event (backwards scan, no copy)
-  let currentApp: string | null = null;
-  for (let i = walkthroughEvents.length - 1; i >= 0; i--) {
-    const kind = (walkthroughEvents[i] as Record<string, unknown>).kind as Record<string, unknown> | undefined;
-    if (kind?.type === "AppFocused") {
-      currentApp = (kind.app_name as string) ?? null;
-      break;
-    }
-  }
-
-  if (isRecording) {
-    return (
-      <div className="relative flex h-full flex-col border-l border-[var(--border)] bg-[var(--bg-panel)]" style={{ width, minWidth: width }}>
-        {/* Resize handle */}
-        <div
-          onMouseDown={handleResizeStart}
-          className="absolute left-0 top-0 z-10 h-full w-1.5 cursor-col-resize hover:bg-[var(--accent-coral)]/30 active:bg-[var(--accent-coral)]/40"
-        />
-
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-2.5">
-          <div className="flex items-center gap-2">
-            <span
-              className={`inline-block h-2 w-2 rounded-full ${
-                walkthroughStatus === "Recording"
-                  ? "bg-red-500 animate-pulse"
-                  : "bg-yellow-500"
-              }`}
-            />
-            <h2 className="text-sm font-medium text-[var(--text-primary)]">
-              {walkthroughStatus === "Recording" ? "Recording" : "Paused"}
-            </h2>
-          </div>
-          <button
-            onClick={() => cancelWalkthrough()}
-            className="rounded px-1.5 py-0.5 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-            title="Cancel recording"
-          >
-            &times;
-          </button>
-        </div>
-
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto px-3 py-3">
-          {/* Current app + step counter */}
-          <div className="mb-3 flex items-center justify-between text-[11px] text-[var(--text-muted)]">
-            <span>{currentApp ? `App: ${currentApp}` : "Waiting for input…"}</span>
-            <span>{walkthroughEvents.length} event{walkthroughEvents.length !== 1 ? "s" : ""}</span>
-          </div>
-
-          {/* Error banner */}
-          {walkthroughError && (
-            <div className="mb-3 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-400">
-              {walkthroughError}
-            </div>
-          )}
-
-          {/* Event feed */}
-          <div className="space-y-1">
-            {walkthroughEvents.map((event, idx) => {
-              const { icon, text } = eventDescription(event);
-              return (
-                <div key={idx} className="flex items-center gap-2 rounded px-2 py-1 text-xs text-[var(--text-secondary)]">
-                  <span className="w-4 text-center opacity-60">{icon}</span>
-                  <span className="truncate">{text}</span>
-                </div>
-              );
-            })}
-            <div ref={feedEndRef} />
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center gap-2 border-t border-[var(--border)] px-3 py-2.5">
-          <button
-            onClick={() => walkthroughStatus === "Paused" ? resumeWalkthrough() : pauseWalkthrough()}
-            className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
-          >
-            {walkthroughStatus === "Paused" ? "Resume" : "Pause"}
-          </button>
-          <button
-            onClick={() => stopWalkthrough()}
-            className="rounded-lg bg-[var(--accent-coral)] px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
-          >
-            Stop
-          </button>
-          <button
-            onClick={() => cancelWalkthrough()}
-            className="ml-auto rounded-lg px-3 py-1.5 text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
-          >
-            Cancel
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (walkthroughStatus === "Processing") {
-    return (
-      <div className="relative flex h-full flex-col border-l border-[var(--border)] bg-[var(--bg-panel)]" style={{ width, minWidth: width }}>
-        <div onMouseDown={handleResizeStart} className="absolute left-0 top-0 z-10 h-full w-1.5 cursor-col-resize hover:bg-[var(--accent-coral)]/30 active:bg-[var(--accent-coral)]/40" />
-        <div className="flex items-center border-b border-[var(--border)] px-4 py-2.5">
-          <h2 className="text-sm font-medium text-[var(--text-primary)]">Processing</h2>
-        </div>
-        <div className="flex flex-1 flex-col items-center justify-center gap-3">
-          <div className="h-5 w-5 animate-spin rounded-full border-2 border-[var(--accent-coral)] border-t-transparent" />
-          <span className="text-xs text-[var(--text-secondary)]">Analyzing captured actions…</span>
-          <span className="text-[10px] text-[var(--text-muted)]">{walkthroughEvents.length} events recorded</span>
-        </div>
-      </div>
-    );
-  }
-
-  // Review mode
-  if (walkthroughStatus !== "Review") return null;
+  if (!walkthroughPanelOpen) return null;
 
   // Build action lookup by node_id for metadata (screenshots, candidates, confidence).
   const actionByNodeId = buildActionByNodeId(walkthroughActionNodeMap, walkthroughActions);

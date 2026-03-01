@@ -204,6 +204,15 @@ function App() {
           used_fallback: e.payload.used_fallback ?? true,
         });
       }),
+      listen<{ action: string }>("recording-bar://action", (e) => {
+        const s = useStore.getState();
+        switch (e.payload.action) {
+          case "pause": s.pauseWalkthrough(); break;
+          case "resume": s.resumeWalkthrough(); break;
+          case "stop": s.stopWalkthrough(); break;
+          case "cancel": s.cancelWalkthrough(); break;
+        }
+      }),
     ]).catch((err) => {
       console.error("Failed to subscribe to Tauri events:", err);
       useStore.getState().pushLog(`Critical: event listeners failed to initialize: ${err}`);
@@ -362,6 +371,7 @@ function App() {
           onRespond={supervisionRespond}
         />
       )}
+
     </div>
   );
 }

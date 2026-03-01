@@ -12,6 +12,13 @@
     "shell:default",
     "shell:allow-open",
     "store:default",
-    "global-shortcut:allow-register"
+    "global-shortcut:allow-register",
+    "core:webview:allow-create-webview-window",
+    "core:webview:allow-get-all-webviews",
+    "core:window:allow-get-all-windows",
+    "core:window:allow-destroy",
+    "core:window:allow-close",
+    "core:window:allow-current-monitor",
+    "core:window:allow-set-focus"
   ]
 }
