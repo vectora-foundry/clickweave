@@ -1,6 +1,6 @@
 # MCP Integration (Reference)
 
-Verified at commit: `d65ae72`
+Verified at commit: `1cdb730`
 
 Clickweave executes desktop/browser automation by spawning an MCP server subprocess and talking JSON-RPC over stdio.
 

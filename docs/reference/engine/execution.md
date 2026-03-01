@@ -1,6 +1,6 @@
 # Workflow Execution (Reference)
 
-Verified at commit: `f8e0d5b`
+Verified at commit: `1cdb730`
 
 The engine executes a workflow graph sequentially, evaluating control-flow nodes in place and dispatching execution nodes to MCP tools or an AI-step tool loop.
 
@@ -18,6 +18,7 @@ Execution starts at Tauri command `run_workflow` (`src-tauri/src/commands/execut
 | `execution_mode` | `ExecutionMode` | `Test` (interactive supervision, records decisions) or `Run` (replays cached decisions) |
 | `decision_cache` | `RwLock<DecisionCache>` | Persisted LLM decisions from Test mode, replayed in Run mode |
 | `supervision_history` | `RwLock<Vec<Message>>` | Persistent conversation history for supervision across the entire run |
+| `runtime_verdicts` | `Vec<NodeVerdict>` | Accumulated inline verification verdicts from Verification-role nodes |
 | `pending_loop_exit` | `Option<PendingLoopExit>` | Set when a loop exits; consumed by the main loop to run deferred verification |
 
 High-level flow in `run()`:
@@ -27,10 +28,10 @@ High-level flow in `run()`:
 3. Spawn MCP server (`npx` or custom command)
 4. `RunStorage::begin_execution()`
 5. Find entry points
-6. Walk graph (with per-step supervision in Test mode)
-7. Emit accumulated verification verdicts (if any)
+6. Walk graph (with inline verification for Verification-role nodes and per-step supervision in Test mode)
+7. Emit accumulated `runtime_verdicts` via `ChecksCompleted` (if any)
 8. Save decision cache (Test mode only)
-9. Emit `WorkflowCompleted` when completed normally
+9. Emit `WorkflowCompleted` when completed normally or when a verification failure stopped the walk
 10. Emit `StateChanged(Idle)`
 
 ## Graph Walk
@@ -42,9 +43,10 @@ Main state machine (in `executor/run_loop.rs`):
 3. For control-flow nodes, evaluate branch and jump
 4. If a loop just exited (Test mode): run `verify_loop_exit` supervision check
 5. For execution nodes, run with retries
-6. If Test mode and not inside a loop: run `verify_step` supervision check
-7. On supervision failure: pause and wait for user command (`Resume`, `Skip`, `Abort`)
-8. Follow next edge (`follow_single_edge`)
+6. If node has `role == Verification`: run `evaluate_verification()` inline (fail-fast — a failed verdict breaks the walk immediately)
+7. If Test mode and not inside a loop: run `verify_step` supervision check
+8. On supervision failure: pause and wait for user command (`Resume`, `Skip`, `Abort`)
+9. Follow next edge (`follow_single_edge`)
 
 ### Executor Commands
 
@@ -65,7 +67,7 @@ Main state machine (in `executor/run_loop.rs`):
 | `NodeCompleted(Uuid)` | node id | Node execution succeeded |
 | `NodeFailed(Uuid, String)` | node id, error | Node execution failed |
 | `RunCreated(Uuid, NodeRun)` | node id, run metadata | Node run directory created |
-| `WorkflowCompleted` | none | Graph walk completed normally |
+| `WorkflowCompleted` | none | Graph walk completed normally or stopped by a verification failure |
 | `ChecksCompleted(Vec<NodeVerdict>)` | verdicts | Inline verification verdicts from Verification-role nodes |
 | `Error(String)` | message | Fatal error |
 | `SupervisionPassed` | `node_id`, `node_name`, `summary` | Step passed verification (Test mode) |
@@ -142,8 +144,8 @@ App resolution and element resolution use `reasoning_backend()` priority: superv
 4. Execute returned tool calls via MCP
 5. Save tool result images as artifacts
 6. If images exist:
-   - with VLM: summarize via `analyze_images()`
-   - without VLM: attach images directly to next LLM turn
+   - with vision backend (`vision_backend()`: prefers VLM, falls back to supervision LLM): summarize via `analyze_images()`
+   - without vision backend: attach images directly to next LLM turn
 7. Stop on no tool calls, timeout, max tool calls, or user stop
 
 ## Supervision (Test Mode)
@@ -151,7 +153,7 @@ App resolution and element resolution use `reasoning_backend()` priority: superv
 In `ExecutionMode::Test`, each execution node is verified after it completes:
 
 1. Capture a screenshot of the focused app (waits 500ms for UI animations to settle)
-2. Ask the VLM to describe the current screen state
+2. Ask the vision backend (`vision_backend()`: prefers VLM, falls back to supervision LLM) to describe the current screen state
 3. Ask the supervision LLM (with persistent conversation history) whether the step achieved its intended effect
 4. If passed: emit `SupervisionPassed` and continue
 5. If failed: emit `SupervisionPaused` with finding + screenshot, then wait for user command:
@@ -292,7 +294,13 @@ Common event types recorded in trace files:
 
 ## Inline Verification Verdicts
 
-Nodes with `role: Verification` produce verdicts inline during execution (fail-fast). Verdicts are accumulated in `runtime_verdicts` and emitted as `ChecksCompleted` after the graph walk completes.
+Nodes with `role: Verification` produce verdicts inline during execution (fail-fast). If a verification fails, the walk stops immediately. Verdicts are accumulated in `runtime_verdicts` and emitted as `ChecksCompleted` after the graph walk completes.
+
+Verdict types (in `executor/verdict.rs`):
+
+- `deterministic_verdict()` — for `FindText`, `FindImage`, `ListWindows`: pass if matches found, fail otherwise
+- `screenshot_verdict()` — for `TakeScreenshot` with `expected_outcome`: sends screenshot + expected outcome to VLM, parses `{verdict, reasoning}` response
+- `missing_outcome_verdict()` — warn verdict for `TakeScreenshot` without `expected_outcome`
 
 See [Verification Nodes](../../verification/node-checks.md).
 

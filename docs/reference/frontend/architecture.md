@@ -1,6 +1,6 @@
 # Frontend Architecture (Reference)
 
-Verified at commit: `f8e0d5b`
+Verified at commit: `1cdb730`
 
 The UI is a React 19 + Vite app using Zustand for app state and React Flow for graph editing.
 
@@ -33,18 +33,23 @@ ui/src/
 │   ├── LogsDrawer.tsx
 │   ├── FloatingToolbar.tsx
 │   ├── Header.tsx
-│   ├── Sidebar.tsx
+│   ├── NodePalette.tsx
 │   ├── VerdictBar.tsx
+│   ├── VerdictModal.tsx
 │   ├── SettingsModal.tsx
 │   ├── SupervisionModal.tsx
+│   ├── WalkthroughPanel.tsx
+│   ├── RecordingBarView.tsx
 │   └── node-detail/
 │       ├── NodeDetailModal.tsx
 │       └── tabs/
 │           ├── SetupTab.tsx
 │           ├── TraceTab.tsx
 │           └── RunsTab.tsx
+│   ├── IntentEmptyState.tsx
 ├── hooks/
 │   ├── useEscapeKey.ts
+│   ├── useHorizontalResize.ts
 │   ├── useUndoRedoKeyboard.ts
 │   ├── useLoopGrouping.ts
 │   ├── useNodeSync.ts
@@ -64,6 +69,7 @@ ui/src/
 │       ├── settingsSlice.ts
 │       ├── logSlice.ts
 │       ├── verdictSlice.ts
+│       ├── walkthroughSlice.ts
 │       ├── uiSlice.ts
 │       └── types.ts
 └── utils/
@@ -71,7 +77,7 @@ ui/src/
 
 ## State Model
 
-`StoreState` is the intersection of 8 slices:
+`StoreState` is the intersection of 9 slices:
 
 - `ProjectSlice`
 - `ExecutionSlice`
@@ -80,6 +86,7 @@ ui/src/
 - `SettingsSlice`
 - `LogSlice`
 - `VerdictSlice`
+- `WalkthroughSlice`
 - `UiSlice`
 
 Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/src/store/useAppStore.ts`.
@@ -93,8 +100,8 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 
 **ExecutionSlice** (`executionSlice.ts`)
 
-- `executorState: "idle" | "running"`, `executionMode: ExecutionMode`, `supervisionPause: SupervisionPause | null`
-- actions: `setExecutorState`, `setExecutionMode`, `setSupervisionPause`, `clearSupervisionPause`, `supervisionRespond`, `runWorkflow`, `stopWorkflow`
+- `executorState: "idle" | "running"`, `executionMode: ExecutionMode`, `supervisionPause: SupervisionPause | null`, `lastRunStatus: "completed" | "failed" | null`
+- actions: `setExecutorState`, `setExecutionMode`, `setSupervisionPause`, `clearSupervisionPause`, `supervisionRespond`, `runWorkflow`, `stopWorkflow`, `setLastRunStatus`
 
 **AssistantSlice** (`assistantSlice.ts`)
 
@@ -119,9 +126,21 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 - actions: `pushHistory`, `undo`, `redo`, `clearHistory`
 - Workflow mutations push snapshots via `useWorkflowMutations` before each change
 
-**LogSlice / VerdictSlice**
+**LogSlice**
 
-- log buffer and check verdict state used by Logs drawer and Verdict bar
+- log buffer used by Logs drawer
+
+**VerdictSlice** (`verdictSlice.ts`)
+
+- `verdicts: NodeVerdict[]`, `verdictStatus: VerdictStatus`, `verdictBarVisible`, `verdictModalOpen`
+- `VerdictStatus`: `"none" | "passed" | "failed" | "warned" | "completed"`
+- actions: `setVerdicts`, `dismissVerdictBar`, `clearVerdicts`, `openVerdictModal`, `closeVerdictModal`
+
+**WalkthroughSlice** (`walkthroughSlice.ts`)
+
+- `walkthroughStatus`, `walkthroughPanelOpen`, `walkthroughError`, `walkthroughEvents`, `walkthroughActions`, `walkthroughDraft`, `walkthroughWarnings`, `walkthroughAnnotations`, `walkthroughActionNodeMap`, `walkthroughUsedFallback`
+- actions: `startWalkthrough`, `pauseWalkthrough`, `resumeWalkthrough`, `stopWalkthrough`, `cancelWalkthrough`, `fetchWalkthroughDraft`, `applyDraftToCanvas`, `discardDraft`, annotation editing actions (`deleteNode`, `restoreNode`, `renameNode`, `overrideTarget`, `promoteToVariable`, etc.)
+- manages recording bar overlay window lifecycle
 
 ## App Event Wiring
 
@@ -137,6 +156,10 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 - `executor://supervision_passed`
 - `executor://supervision_paused`
 - `assistant://repairing`
+- `walkthrough://state`
+- `walkthrough://event`
+- `walkthrough://draft_ready`
+- `recording-bar://action`
 
 It also listens to menu events (`menu://new`, `menu://open`, etc.) and maps them to store actions.
 
@@ -171,9 +194,9 @@ Control-flow edge labels shown in canvas:
 
 ## Node Detail Modal
 
-`NodeDetailModal` has 3 tabs:
+`NodeDetailModal` is rendered as a flex sidebar (not a floating overlay). It has 3 tabs:
 
-- `Setup`: node params, enabled flag, timeout, settle delay, retries, trace level, expected outcome, Verification role toggle (for eligible node types)
+- `Setup`: node params, enabled flag, timeout, settle delay, retries, trace level. For eligible node types (`FindText`, `FindImage`, `TakeScreenshot`, `ListWindows`): Verification role toggle + expected outcome field
 - `Trace`: trace events + artifact preview/lightbox for selected run
 - `Runs`: run history list (can jump to Trace tab)
 
@@ -202,6 +225,8 @@ Notable types:
 
 - `ExecutionMode` — `"Test" | "Run"`, selects whether the executor runs in supervised test mode or unattended run mode
 - `SupervisionPause` — `{ nodeId, nodeName, finding, screenshot }`, defined in `executionSlice.ts`; represents a paused supervision check awaiting user decision
+- `NodeRole` — `"Default" | "Verification"`
+- `WalkthroughStatus`, `WalkthroughAction`, `WalkthroughAnnotations`, `WalkthroughDraftResponse`, `ActionNodeEntry` — walkthrough recording and review types
 
 Do not edit manually.
 
@@ -213,11 +238,15 @@ Do not edit manually.
 | `ui/src/components/GraphCanvas.tsx` | React Flow graph editor |
 | `ui/src/components/WorkflowNode.tsx` | standard node renderer |
 | `ui/src/components/LoopGroupNode.tsx` | expanded loop group renderer |
-| `ui/src/components/node-detail/NodeDetailModal.tsx` | node detail shell |
+| `ui/src/components/NodePalette.tsx` | collapsible node palette (left sidebar) |
+| `ui/src/components/WalkthroughPanel.tsx` | walkthrough recording review panel |
+| `ui/src/components/VerdictModal.tsx` | verdict detail modal |
+| `ui/src/components/node-detail/NodeDetailModal.tsx` | node detail sidebar |
 | `ui/src/components/node-detail/tabs/TraceTab.tsx` | trace + artifact viewer |
 | `ui/src/store/useAppStore.ts` | composed Zustand store hook |
 | `ui/src/store/useWorkflowMutations.ts` | node/edge mutation helpers with history push (`removeEdgesOnly` for silent edge removal) |
 | `ui/src/store/slices/types.ts` | `StoreState` composition |
+| `ui/src/store/slices/walkthroughSlice.ts` | walkthrough recording state and actions |
 | `ui/src/store/slices/historySlice.ts` | undo/redo state and actions |
 | `ui/src/store/settings.ts` | persisted settings I/O |
 | `ui/src/components/SupervisionModal.tsx` | supervision pause modal (retry / skip / abort) |
@@ -226,4 +255,5 @@ Do not edit manually.
 | `ui/src/hooks/useEdgeSync.ts` | RF edge filtering, change handling |
 | `ui/src/hooks/useWorkflowActions.ts` | workflow mutation dispatchers (wraps `useWorkflowMutations`) |
 | `ui/src/hooks/useEscapeKey.ts` | global Escape key handler that closes panels in priority order |
+| `ui/src/hooks/useHorizontalResize.ts` | horizontal panel resize drag handle |
 | `ui/src/hooks/useUndoRedoKeyboard.ts` | Ctrl+Z / Ctrl+Shift+Z keyboard binding |

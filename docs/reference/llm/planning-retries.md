@@ -1,6 +1,6 @@
 # Planning & LLM Retry Logic (Reference)
 
-Verified at commit: `d65ae72`
+Verified at commit: `1cdb730`
 
 Planner/assistant flows layer retries and parsing tolerance to handle malformed LLM output.
 
@@ -103,6 +103,8 @@ Step type catalog (built in `prompt.rs`, conditionally includes AiTransform / Ai
 5. EndLoop      — marks loop body end (execution jumps back to paired Loop)
 6. If           — 2-branch conditional; MUST have exactly 2 outgoing edges (IfTrue + IfFalse), both connected
 ```
+
+The catalog also includes a **Verification role** section: any read-only Tool step (`find_text`, `find_image`, `list_windows`, `take_screenshot`) can be marked `"role": "Verification"` to act as a test assertion. `take_screenshot` additionally requires `"expected_outcome"` for VLM evaluation. Verification failures are fail-fast.
 
 Condition / Variable / Operator reference (also built in `prompt.rs`):
 - Variable names follow `<sanitized_node_name>.<field>`: lowercase the name, replace every non-alphanumeric character with `_`
@@ -215,8 +217,8 @@ User message built by `build_step_prompt`:
 2. LLM call via `chat_with_repair`
 3. `extract_json()` (`planner/parse.rs`)
 4. Parse graph or flat output
-5. `parse_lenient` + feature filtering
-6. `PlanStep -> NodeType` mapping
+5. `parse_lenient<FlatPlanStep>` + feature filtering (`FlatPlanStep` wraps `PlanStep` with optional `role` and `expected_outcome`)
+6. `PlanStep -> NodeType` mapping; propagate `role: "Verification"` → `NodeRole::Verification` and `expected_outcome` to `Node`
 7. Edge build + control-flow inference
 8. `validate_workflow()`
 9. Return workflow + warnings
@@ -239,6 +241,19 @@ Both `assistant_chat` and `assistant_chat_with_backend` accept an `on_repair_att
 4. If patch and validation enabled: merge + validate + retry loop (fires `on_repair_attempt` callback on each retry)
 5. Return assistant text, optional patch, warnings, optional summary update
 
+## Walkthrough Pipeline (`generalize_walkthrough`)
+
+`generalize_walkthrough(backend, deterministic_draft, actions, mcp_tools_openai)` in `planner/walkthrough.rs` generalizes a recorded walkthrough into a workflow.
+
+1. Format action trace (action sequence with screenshots)
+2. Build walkthrough system prompt (step type catalog + verification role docs)
+3. LLM call via `chat_with_repair`
+4. `parse_and_build_walkthrough` (delegates to `parse_and_build_workflow` with AI features disabled)
+5. Build enhanced action-node map (maps original actions to generated nodes)
+6. Return `WalkthroughPlanResult { workflow, warnings, action_node_map, used_fallback }`
+
+If LLM generalization fails, falls back to the deterministic draft (`used_fallback: true`).
+
 ## Key Files
 
 | File | Role |
@@ -252,5 +267,6 @@ Both `assistant_chat` and `assistant_chat_with_backend` accept an `on_repair_att
 | `crates/clickweave-llm/src/planner/patch.rs` | patcher entrypoint |
 | `crates/clickweave-llm/src/planner/mod.rs` | lenient parsing, patch build, control-flow inference |
 | `crates/clickweave-llm/src/planner/parse.rs` | JSON extraction and layout helpers |
+| `crates/clickweave-llm/src/planner/walkthrough.rs` | walkthrough generalization pipeline and prompt |
 | `crates/clickweave-core/src/validation.rs` | workflow structural validation |
 | `ui/src/store/settings.ts` | settings persistence (`maxRepairAttempts`) |

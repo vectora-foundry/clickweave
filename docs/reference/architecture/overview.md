@@ -1,6 +1,6 @@
 # Architecture Overview (Reference)
 
-Verified at commit: `f8e0d5b`
+Verified at commit: `1cdb730`
 
 Clickweave is a Tauri v2 desktop app with a Rust backend and a React frontend.
 
@@ -44,6 +44,7 @@ src-tauri
 | `storage.rs` | `RunStorage` execution/run/event/artifact persistence, `cache_path()` for decision cache |
 | `decision_cache.rs` | `DecisionCache` — persists LLM decisions (click disambiguation, element/app resolution) as `decisions.json` for replay in Run mode |
 | `tool_mapping.rs` | `NodeType` ↔ MCP tool invocation mapping |
+| `walkthrough.rs` | Walkthrough recording types (`WalkthroughSession`, `WalkthroughStatus`, `WalkthroughEvent`, `WalkthroughAction`, `WalkthroughAnnotations`), event normalization, draft synthesis, session storage |
 
 ### `clickweave-engine`
 
@@ -80,6 +81,7 @@ See [Workflow Execution](../engine/execution.md).
 | `planner/mapping.rs` | `PlanStep` → `NodeType` mapping |
 | `planner/conversation.rs` | Conversation session windowing |
 | `planner/summarize.rs` | Overflow summarization |
+| `planner/walkthrough.rs` | `generalize_walkthrough()` — LLM generalization of recorded walkthrough into workflow |
 
 See [Planning & LLM Retry Logic](../llm/planning-retries.md).
 
@@ -141,17 +143,19 @@ src-tauri/src/commands/
 ├── assistant.rs    # assistant_chat, cancel_assistant_chat (AssistantHandle with AbortHandle)
 ├── executor.rs     # run_workflow, stop_workflow, supervision_respond (ExecutorHandle with stop/command channel)
 ├── project.rs      # open/save/validate, node_type_defaults, import_asset, pick_*_file, conversation I/O, ping
-└── runs.rs         # list_runs, load_run_events, read_artifact_base64
+├── runs.rs         # list_runs, load_run_events, read_artifact_base64
+└── walkthrough.rs  # start/pause/resume/stop/cancel_walkthrough, get/apply/seed walkthrough (WalkthroughHandle)
 ```
 
 ### Managed State
 
-Two `Mutex`-wrapped handles are registered as Tauri managed state:
+Three `Mutex`-wrapped handles are registered as Tauri managed state:
 
 | Handle | State | Purpose |
 |--------|-------|---------|
 | `ExecutorHandle` | `stop_tx: Option<Sender<ExecutorCommand>>`, `task_handle: Option<JoinHandle<()>>` | `force_stop()` aborts the executor task and drops the MCP subprocess; also used by `supervision_respond` to send `Resume`/`Skip`/`Abort` commands |
 | `AssistantHandle` | `Option<AbortHandle>` | Cancels in-flight assistant LLM call |
+| `WalkthroughHandle` | `session`, `session_dir`, `storage`, `mcp_command`, `event_tap`, `processing_task` | Manages walkthrough recording session lifecycle and event capture |
 
 ### Command Summary
 
@@ -172,6 +176,14 @@ Two `Mutex`-wrapped handles are registered as Tauri managed state:
 | `import_asset` | `project.rs` | Copy image asset into project |
 | `list_runs` / `load_run_events` | `runs.rs` | Run history + trace events |
 | `read_artifact_base64` | `runs.rs` | Load artifact contents |
+| `start_walkthrough` | `walkthrough.rs` | Begin recording walkthrough session |
+| `pause_walkthrough` | `walkthrough.rs` | Pause recording |
+| `resume_walkthrough` | `walkthrough.rs` | Resume recording |
+| `stop_walkthrough` | `walkthrough.rs` | Stop recording and process events (optional LLM generalization) |
+| `cancel_walkthrough` | `walkthrough.rs` | Cancel and discard walkthrough |
+| `get_walkthrough_draft` | `walkthrough.rs` | Return draft workflow from recorded walkthrough |
+| `apply_walkthrough_annotations` | `walkthrough.rs` | Apply user annotations (renames, deletions, target overrides) to draft |
+| `seed_walkthrough_cache` | `walkthrough.rs` | Populate decision cache from walkthrough recording data |
 | `ping` | `project.rs` | Health check |
 
 ## Event Contract
@@ -190,6 +202,10 @@ Emitted from `src-tauri/src/commands/executor.rs` and `src-tauri/src/commands/as
 | `executor://supervision_passed` | `{ node_id: string, node_name: string, summary: string }` |
 | `executor://supervision_paused` | `{ node_id: string, node_name: string, finding: string, screenshot: string? }` |
 | `assistant://repairing` | `[attempt: number, max: number]` |
+| `walkthrough://state` | `{ status: WalkthroughStatus }` |
+| `walkthrough://event` | `{ event: WalkthroughEvent }` |
+| `walkthrough://draft_ready` | `{ actions, draft, warnings, action_node_map, used_fallback }` |
+| `recording-bar://action` | `{ action: string }` |
 
 Notes:
 - `ExecutorEvent::RunCreated` is internal and not emitted to UI.
