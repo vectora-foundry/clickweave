@@ -1,5 +1,4 @@
 import { useStore } from "./store/useAppStore";
-import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
 import { NodePalette } from "./components/NodePalette";
 import { LogsDrawer } from "./components/LogsDrawer";
@@ -226,11 +225,6 @@ function App() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-[var(--bg-dark)]">
-      <Sidebar
-        collapsed={sidebarCollapsed}
-        onToggle={toggleSidebar}
-      />
-
       <div className="flex flex-1 flex-col overflow-hidden">
         <Header
           workflowName={workflow.name}
@@ -262,6 +256,15 @@ function App() {
             />
           ) : (
             <>
+              <NodePalette
+                nodeTypes={nodeTypes}
+                search={nodeSearch}
+                collapsed={sidebarCollapsed}
+                onSearchChange={setNodeSearch}
+                onAdd={addNode}
+                onToggle={toggleSidebar}
+              />
+
               <div className="relative flex-1 overflow-hidden bg-[var(--bg-dark)]">
                 <GraphCanvas
                   workflow={workflow}
@@ -317,12 +320,6 @@ function App() {
 
               <WalkthroughPanel />
 
-              <NodePalette
-                nodeTypes={nodeTypes}
-                search={nodeSearch}
-                onSearchChange={setNodeSearch}
-                onAdd={addNode}
-              />
             </>
           )}
         </div>
