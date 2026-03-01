@@ -224,19 +224,20 @@ function App() {
   }, []);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-[var(--bg-dark)]">
+    <div className="flex h-screen flex-col overflow-hidden bg-[var(--bg-dark)]">
+      <Header
+        workflowName={workflow.name}
+        executorState={executorState}
+        lastRunStatus={lastRunStatus}
+        onSave={saveProject}
+        onSettings={() => setShowSettings(true)}
+        onNameChange={(name) => {
+          pushHistory("Rename Workflow");
+          setWorkflow({ ...workflow, name });
+        }}
+      />
+
       <div className="flex flex-1 flex-col overflow-hidden">
-        <Header
-          workflowName={workflow.name}
-          executorState={executorState}
-          lastRunStatus={lastRunStatus}
-          onSave={saveProject}
-          onSettings={() => setShowSettings(true)}
-          onNameChange={(name) => {
-            pushHistory("Rename Workflow");
-            setWorkflow({ ...workflow, name });
-          }}
-        />
         <VerdictBar />
 
         <div className="flex flex-1 overflow-hidden">
@@ -320,6 +321,16 @@ function App() {
 
               <WalkthroughPanel />
 
+              <NodeDetailModal
+                node={selectedNodeData}
+                projectPath={projectPath}
+                workflowId={workflow.id}
+                workflowName={workflow.name}
+                tab={detailTab}
+                onTabChange={setDetailTab}
+                onUpdate={updateNode}
+                onClose={() => selectNode(null)}
+              />
             </>
           )}
         </div>
@@ -331,17 +342,6 @@ function App() {
           onClear={clearLogs}
         />
       </div>
-
-      <NodeDetailModal
-        node={selectedNodeData}
-        projectPath={projectPath}
-        workflowId={workflow.id}
-        workflowName={workflow.name}
-        tab={detailTab}
-        onTabChange={setDetailTab}
-        onUpdate={updateNode}
-        onClose={() => selectNode(null)}
-      />
 
       <SettingsModal
         open={showSettings}
