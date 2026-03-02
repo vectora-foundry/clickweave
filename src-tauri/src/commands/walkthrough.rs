@@ -23,6 +23,13 @@ use crate::platform::macos::MacOSEventTap;
 const RECORDING_BAR_LABEL: &str = "recording-bar";
 const SELF_APP_NAME: &str = "clickweave-tauri";
 
+/// Crop size (in image pixels) for the VLM click-target screenshot crop.
+const VLM_CROP_SIZE_PX: u32 = 300;
+
+/// Maximum length of a VLM-resolved label to accept. Longer responses
+/// are likely full sentences rather than a concise element name.
+const VLM_LABEL_MAX_LEN: usize = 80;
+
 /// Manages the walkthrough recording lifecycle.
 #[derive(Default)]
 pub struct WalkthroughHandle {
@@ -306,8 +313,13 @@ pub async fn stop_walkthrough(
             }
 
             // Normalize.
-            let (actions, mut norm_warnings) =
+            let (mut actions, mut norm_warnings) =
                 clickweave_core::walkthrough::normalize_events(&events);
+
+            // VLM: resolve click targets using vision (parallel).
+            if let Some(ref planner_cfg) = planner {
+                resolve_click_targets_with_vlm(&mut actions, planner_cfg).await;
+            }
 
             // Save actions.
             if let Err(e) = storage.save_actions(dir, &actions) {
@@ -858,9 +870,9 @@ async fn resolve_app_name(
     fallback
 }
 
-/// Enrich a click event by taking a screenshot with OCR.
+/// Enrich a click event with accessibility data and a screenshot with OCR.
 ///
-/// Returns screenshot and OCR events if successful.
+/// Returns accessibility, screenshot, and OCR events if successful.
 async fn enrich_click(
     mcp: &Option<McpClient>,
     session_dir: &std::path::Path,
@@ -874,58 +886,122 @@ async fn enrich_click(
         None => return vec![],
     };
 
-    let mut args = serde_json::json!({
+    let mut events = Vec::new();
+
+    // Query the accessibility element at the click point.
+    let mut ax_args = serde_json::json!({ "x": x, "y": y });
+    if let Some(name) = app_name {
+        ax_args["app_name"] = serde_json::Value::String(name.to_string());
+    }
+    match mcp.call_tool("element_at_point", Some(ax_args)).await {
+        Ok(result) => {
+            if let Some(ax) = parse_accessibility_result(&result.content) {
+                tracing::info!(
+                    "Accessibility enrichment: label={:?} role={:?} at ({x:.0}, {y:.0})",
+                    ax.0,
+                    ax.1
+                );
+                events.push(WalkthroughEvent {
+                    id: Uuid::new_v4(),
+                    timestamp,
+                    kind: WalkthroughEventKind::AccessibilityElementCaptured {
+                        label: ax.0,
+                        role: ax.1,
+                    },
+                });
+            } else {
+                let raw: Vec<String> = result
+                    .content
+                    .iter()
+                    .filter_map(|c| c.as_text().map(|s| s.to_string()))
+                    .collect();
+                tracing::info!(
+                    "Accessibility enrichment: no label parsed at ({x:.0}, {y:.0}), raw={raw:?}"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::info!("Accessibility enrichment failed at ({x:.0}, {y:.0}): {e}");
+        }
+    }
+
+    // Take screenshot with OCR for visual artifacts and text fallback.
+    let mut screenshot_args = serde_json::json!({
         "mode": "window",
         "include_ocr": true,
     });
     if let Some(name) = app_name {
-        args["app_name"] = serde_json::Value::String(name.to_string());
+        screenshot_args["app_name"] = serde_json::Value::String(name.to_string());
     }
 
-    let result = match mcp.call_tool("take_screenshot", Some(args)).await {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::debug!("Screenshot enrichment failed: {e}");
-            return vec![];
-        }
-    };
+    if let Ok(result) = mcp
+        .call_tool("take_screenshot", Some(screenshot_args))
+        .await
+    {
+        // Parse screenshot metadata (origin, scale) from the JSON text content.
+        let screenshot_meta = parse_screenshot_metadata(&result.content);
 
-    let mut events = Vec::new();
-
-    // Extract screenshot image.
-    for content in &result.content {
-        if let clickweave_mcp::ToolContent::Image { data, .. } = content {
-            let filename = format!("click_{timestamp}.png");
-            let artifact_path = session_dir.join("artifacts").join(&filename);
-            if let Ok(image_bytes) = base64::engine::general_purpose::STANDARD.decode(data) {
-                let _ = std::fs::write(&artifact_path, &image_bytes);
-                events.push(WalkthroughEvent {
-                    id: Uuid::new_v4(),
-                    timestamp,
-                    kind: WalkthroughEventKind::ScreenshotCaptured {
-                        path: artifact_path.to_string_lossy().to_string(),
-                        kind: ScreenshotKind::AfterClick,
-                    },
-                });
+        // Extract screenshot image.
+        for content in &result.content {
+            if let clickweave_mcp::ToolContent::Image { data, .. } = content {
+                let filename = format!("click_{timestamp}.png");
+                let artifact_path = session_dir.join("artifacts").join(&filename);
+                if let Ok(image_bytes) = base64::engine::general_purpose::STANDARD.decode(data) {
+                    let _ = std::fs::write(&artifact_path, &image_bytes);
+                    events.push(WalkthroughEvent {
+                        id: Uuid::new_v4(),
+                        timestamp,
+                        kind: WalkthroughEventKind::ScreenshotCaptured {
+                            path: artifact_path.to_string_lossy().to_string(),
+                            kind: ScreenshotKind::AfterClick,
+                            meta: screenshot_meta,
+                        },
+                    });
+                }
             }
         }
-    }
 
-    // Extract OCR annotations from text content.
-    let annotations = parse_ocr_annotations(&result.content);
-    if !annotations.is_empty() {
-        events.push(WalkthroughEvent {
-            id: Uuid::new_v4(),
-            timestamp,
-            kind: WalkthroughEventKind::OcrCaptured {
-                annotations,
-                click_x: x,
-                click_y: y,
-            },
-        });
+        // Extract OCR annotations from text content.
+        let annotations = parse_ocr_annotations(&result.content);
+        if !annotations.is_empty() {
+            events.push(WalkthroughEvent {
+                id: Uuid::new_v4(),
+                timestamp,
+                kind: WalkthroughEventKind::OcrCaptured {
+                    annotations,
+                    click_x: x,
+                    click_y: y,
+                },
+            });
+        }
     }
 
     events
+}
+
+/// Find the first JSON object in MCP tool response content.
+fn find_json_in_content(content: &[clickweave_mcp::ToolContent]) -> Option<serde_json::Value> {
+    content.iter().find_map(|item| {
+        item.as_text()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+    })
+}
+
+/// Parse the `element_at_point` MCP response into `(label, role)`.
+///
+/// Picks the best display text from the response fields:
+/// `name` (AXTitle) > `value` (AXValue) > `label` (AXDescription).
+fn parse_accessibility_result(
+    content: &[clickweave_mcp::ToolContent],
+) -> Option<(String, Option<String>)> {
+    let obj = find_json_in_content(content)?;
+    let label = obj["name"]
+        .as_str()
+        .or_else(|| obj["value"].as_str())
+        .or_else(|| obj["label"].as_str())
+        .filter(|s| !s.is_empty())?;
+    let role = obj["role"].as_str().map(|s| s.to_string());
+    Some((label.to_string(), role))
 }
 
 /// Parse OCR annotations from MCP take_screenshot response.
@@ -973,4 +1049,235 @@ fn parse_ocr_line(line: &str) -> Option<OcrAnnotation> {
         x,
         y,
     })
+}
+
+/// Parse screenshot metadata (origin, scale) from the MCP take_screenshot response.
+fn parse_screenshot_metadata(
+    content: &[clickweave_mcp::ToolContent],
+) -> Option<clickweave_core::walkthrough::ScreenshotMeta> {
+    let obj = find_json_in_content(content)?;
+    Some(clickweave_core::walkthrough::ScreenshotMeta {
+        origin_x: obj["screenshot_origin_x"].as_f64()?,
+        origin_y: obj["screenshot_origin_y"].as_f64()?,
+        scale: obj["screenshot_scale"].as_f64()?,
+    })
+}
+
+/// Use a VLM to identify click targets for all click actions (in parallel).
+///
+/// For each Click action that has a screenshot artifact and screenshot metadata,
+/// crops a region around the click point and sends it to the VLM asking what UI
+/// element was clicked. All requests are fired concurrently.
+async fn resolve_click_targets_with_vlm(
+    actions: &mut [WalkthroughAction],
+    planner_cfg: &super::types::EndpointConfig,
+) {
+    use clickweave_core::walkthrough::{TargetCandidate, WalkthroughActionKind};
+
+    if planner_cfg.is_empty() {
+        return;
+    }
+
+    // Prepare VLM requests: read screenshots and crop on the main thread,
+    // then fire all LLM calls in parallel.
+    struct VlmRequest {
+        action_idx: usize,
+        image_b64: String,
+    }
+
+    let mut requests: Vec<VlmRequest> = Vec::new();
+
+    for (idx, action) in actions.iter().enumerate() {
+        let (click_x, click_y) = match &action.kind {
+            WalkthroughActionKind::Click { x, y, .. } => (*x, *y),
+            _ => continue,
+        };
+
+        // Skip clicks that already have a specific accessibility label.
+        if action
+            .target_candidates
+            .iter()
+            .any(|c| c.is_actionable_ax_label())
+        {
+            continue;
+        }
+
+        let screenshot_path = match action.artifact_paths.first() {
+            Some(p) => p.clone(),
+            None => continue,
+        };
+        let meta = match &action.screenshot_meta {
+            Some(m) => *m,
+            None => continue,
+        };
+
+        let image_bytes = match std::fs::read(&screenshot_path) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::warn!("VLM: failed to read {screenshot_path}: {e}");
+                continue;
+            }
+        };
+
+        // Compute click position in image pixel coordinates.
+        let px = (click_x - meta.origin_x) * meta.scale;
+        let py = (click_y - meta.origin_y) * meta.scale;
+
+        let image_b64 = match crop_around_point(&image_bytes, px, py) {
+            Some(b64) => b64,
+            None => continue,
+        };
+
+        requests.push(VlmRequest {
+            action_idx: idx,
+            image_b64,
+        });
+    }
+
+    if requests.is_empty() {
+        return;
+    }
+
+    tracing::info!(
+        "VLM: resolving {} click targets in parallel",
+        requests.len()
+    );
+
+    let mut llm_config = planner_cfg.clone().into_llm_config(Some(0.1));
+    llm_config.max_tokens = Some(50);
+    let backend = std::sync::Arc::new(clickweave_llm::LlmClient::new(llm_config));
+
+    let prompt = "This is a cropped screenshot with a red crosshair marking \
+         where the user clicked. What UI element is at the crosshair? \
+         Return ONLY the text label or name of the element (e.g., \"Send\", \
+         \"Note to Self\", \"Search\"). If there's no text label, describe \
+         the element briefly (e.g., \"message input field\"). \
+         Return just the label, nothing else.";
+
+    // Fire all VLM requests in parallel.
+    let mut join_set = tokio::task::JoinSet::new();
+
+    for req in requests {
+        let backend = backend.clone();
+        let prompt = prompt.to_string();
+
+        join_set.spawn(async move {
+            let messages = vec![clickweave_llm::Message::user_with_images(
+                prompt,
+                vec![(req.image_b64, "image/jpeg".to_string())],
+            )];
+            let result = clickweave_llm::ChatBackend::chat(backend.as_ref(), messages, None).await;
+            (req.action_idx, result)
+        });
+    }
+
+    // Collect results and apply to actions.
+    while let Some(join_result) = join_set.join_next().await {
+        let (action_idx, llm_result) = match join_result {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("VLM task panicked: {e}");
+                continue;
+            }
+        };
+
+        let (click_x, click_y) = match &actions[action_idx].kind {
+            WalkthroughActionKind::Click { x, y, .. } => (*x, *y),
+            _ => continue,
+        };
+
+        match llm_result {
+            Ok(response) => {
+                if let Some(label) = response
+                    .choices
+                    .first()
+                    .and_then(|c| c.message.content_text())
+                {
+                    let label = label.trim().trim_matches('"').to_string();
+                    if !label.is_empty() && label.len() <= VLM_LABEL_MAX_LEN {
+                        tracing::info!(
+                            "VLM resolved click at ({click_x:.0}, {click_y:.0}) → \"{label}\""
+                        );
+                        let action = &mut actions[action_idx];
+                        // Insert VLM label after accessibility but before OCR/coordinates.
+                        let insert_pos = action
+                            .target_candidates
+                            .iter()
+                            .position(|c| !matches!(c, TargetCandidate::AccessibilityLabel { .. }))
+                            .unwrap_or(action.target_candidates.len());
+                        action
+                            .target_candidates
+                            .insert(insert_pos, TargetCandidate::VlmLabel { label });
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("VLM failed for click at ({click_x:.0}, {click_y:.0}): {e}");
+            }
+        }
+    }
+}
+
+/// Crop, downscale, and JPEG-encode an image region around a click point.
+///
+/// Crops a 300x300 pixel region centered on `(px, py)`, downscales to half
+/// resolution (matching screen points on 2x displays), draws a red crosshair
+/// at the click point, and encodes as JPEG for minimal VLM token cost.
+/// Returns `None` if the image can't be decoded.
+fn crop_around_point(png_bytes: &[u8], px: f64, py: f64) -> Option<String> {
+    let img = image::load_from_memory(png_bytes).ok()?;
+    let (img_w, img_h) = (img.width(), img.height());
+
+    let half = VLM_CROP_SIZE_PX / 2;
+
+    let cx = (px as u32).min(img_w.saturating_sub(1));
+    let cy = (py as u32).min(img_h.saturating_sub(1));
+
+    let left = cx.saturating_sub(half);
+    let top = cy.saturating_sub(half);
+    let right = (cx + half).min(img_w);
+    let bottom = (cy + half).min(img_h);
+
+    let cropped = img.crop_imm(left, top, right - left, bottom - top);
+
+    // Downscale to half resolution (retina → screen points).
+    let (cw, ch) = (cropped.width(), cropped.height());
+    let mut scaled = image::imageops::resize(
+        &cropped,
+        cw / 2,
+        ch / 2,
+        image::imageops::FilterType::Triangle,
+    );
+
+    // Draw a crosshair at the click point so the VLM knows the exact target.
+    let center_x = (cx - left) / 2;
+    let center_y = (cy - top) / 2;
+    let (sw, sh) = (scaled.width(), scaled.height());
+    let red = image::Rgba([255, 0, 0, 255]);
+    let arm = 8u32;
+    let gap = 2u32;
+
+    for dx in gap..=arm {
+        if center_x + dx < sw {
+            scaled.put_pixel(center_x + dx, center_y, red);
+        }
+        if let Some(x) = center_x.checked_sub(dx) {
+            scaled.put_pixel(x, center_y, red);
+        }
+    }
+    for dy in gap..=arm {
+        if center_y + dy < sh {
+            scaled.put_pixel(center_x, center_y + dy, red);
+        }
+        if let Some(y) = center_y.checked_sub(dy) {
+            scaled.put_pixel(center_x, y, red);
+        }
+    }
+
+    let mut buf = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(scaled)
+        .write_to(&mut buf, image::ImageFormat::Jpeg)
+        .ok()?;
+
+    Some(base64::engine::general_purpose::STANDARD.encode(buf.into_inner()))
 }

@@ -98,11 +98,19 @@ pub enum WalkthroughEventKind {
     ScreenshotCaptured {
         path: String,
         kind: ScreenshotKind,
+        /// Window origin and scale from the MCP screenshot metadata.
+        /// Used to map screen coordinates to image pixel coordinates.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        meta: Option<ScreenshotMeta>,
     },
     OcrCaptured {
         annotations: Vec<OcrAnnotation>,
         click_x: f64,
         click_y: f64,
+    },
+    AccessibilityElementCaptured {
+        label: String,
+        role: Option<String>,
     },
     Paused,
     Resumed,
@@ -115,6 +123,18 @@ pub enum ScreenshotKind {
     BeforeClick,
     AfterClick,
     ClickCrop,
+}
+
+/// Screenshot coordinate metadata for mapping screen coordinates to image pixels.
+///
+/// Given a screen coordinate `(sx, sy)`, the image pixel coordinate is:
+/// `px = (sx - origin_x) * scale`, `py = (sy - origin_y) * scale`
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct ScreenshotMeta {
+    pub origin_x: f64,
+    pub origin_y: f64,
+    pub scale: f64,
 }
 
 // --- Normalized semantic actions ---
@@ -131,6 +151,9 @@ pub struct WalkthroughAction {
     pub source_event_ids: Vec<Uuid>,
     pub confidence: ActionConfidence,
     pub warnings: Vec<String>,
+    /// Screenshot coordinate metadata for VLM click target resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screenshot_meta: Option<ScreenshotMeta>,
 }
 
 impl WalkthroughAction {
@@ -150,6 +173,7 @@ impl WalkthroughAction {
             source_event_ids,
             confidence: ActionConfidence::High,
             warnings: vec![],
+            screenshot_meta: None,
         }
     }
 }
@@ -187,10 +211,67 @@ pub enum WalkthroughActionKind {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "type")]
 pub enum TargetCandidate {
-    AccessibilityLabel { label: String, role: Option<String> },
-    OcrText { text: String },
-    ImageCrop { path: String },
-    Coordinates { x: f64, y: f64 },
+    AccessibilityLabel {
+        label: String,
+        role: Option<String>,
+    },
+    /// Label identified by a vision language model from a screenshot crop.
+    VlmLabel {
+        label: String,
+    },
+    OcrText {
+        text: String,
+    },
+    ImageCrop {
+        path: String,
+    },
+    Coordinates {
+        x: f64,
+        y: f64,
+    },
+}
+
+/// Accessibility roles that represent specific, actionable UI elements.
+/// Labels from these roles are reliable enough to use as click targets
+/// without VLM fallback.
+const ACTIONABLE_AX_ROLES: &[&str] = &[
+    "AXButton",
+    "AXCheckBox",
+    "AXComboBox",
+    "AXDisclosureTriangle",
+    "AXIncrementor",
+    "AXLink",
+    "AXMenuButton",
+    "AXMenuItem",
+    "AXPopUpButton",
+    "AXRadioButton",
+    "AXSegmentedControl",
+    "AXSlider",
+    "AXStaticText",
+    "AXTab",
+    "AXTabButton",
+    "AXTextField",
+    "AXTextArea",
+    "AXToggle",
+    "AXToolbarButton",
+];
+
+impl TargetCandidate {
+    /// Return the text label if this candidate has one.
+    pub fn preferred_label(&self) -> Option<&str> {
+        match self {
+            Self::AccessibilityLabel { label, .. } | Self::VlmLabel { label } => Some(label),
+            Self::OcrText { text } => Some(text),
+            _ => None,
+        }
+    }
+
+    /// Whether this is an accessibility label from a specific, actionable element
+    /// (button, text field, menu item, etc.) as opposed to a container
+    /// (window, group, application).
+    pub fn is_actionable_ax_label(&self) -> bool {
+        matches!(self, Self::AccessibilityLabel { role: Some(r), .. } if ACTIONABLE_AX_ROLES.contains(&r.as_str()))
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -475,18 +556,24 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
             } => {
                 flush_text(&mut text_buffer, &mut actions, &last_app);
 
-                // Lookahead: collect enrichment events (screenshot, OCR)
+                // Lookahead: collect enrichment events (screenshot, OCR, accessibility)
                 // that follow this click before the next action event.
                 let mut screenshot_path: Option<String> = None;
+                let mut screenshot_meta: Option<ScreenshotMeta> = None;
                 let mut ocr_annotations: Option<&Vec<OcrAnnotation>> = None;
+                let mut ax_label: Option<(String, Option<String>)> = None;
                 let mut peek = i;
                 while peek < events.len() {
                     match &events[peek].kind {
-                        WalkthroughEventKind::ScreenshotCaptured { path, .. } => {
+                        WalkthroughEventKind::ScreenshotCaptured { path, meta, .. } => {
                             screenshot_path = Some(path.clone());
+                            screenshot_meta = *meta;
                         }
                         WalkthroughEventKind::OcrCaptured { annotations, .. } => {
                             ocr_annotations = Some(annotations);
+                        }
+                        WalkthroughEventKind::AccessibilityElementCaptured { label, role } => {
+                            ax_label = Some((label.clone(), role.clone()));
                         }
                         // Stop at the next action event.
                         _ => break,
@@ -496,8 +583,15 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 // Advance past consumed enrichment events.
                 i = peek;
 
-                // Find best target candidate from OCR data.
+                // Build target candidates: accessibility label > OCR text > coordinates.
                 let mut candidates = Vec::new();
+
+                // Accessibility label is the most reliable target.
+                if let Some((label, role)) = ax_label {
+                    candidates.push(TargetCandidate::AccessibilityLabel { label, role });
+                }
+
+                // OCR text as fallback.
                 if let Some(annotations) = ocr_annotations {
                     let mut nearest: Option<(&OcrAnnotation, f64)> = None;
                     for ann in annotations {
@@ -517,7 +611,9 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 // Always add coordinates as fallback.
                 candidates.push(TargetCandidate::Coordinates { x: *x, y: *y });
 
-                let confidence = if candidates
+                let confidence = if candidates.iter().any(|c| c.is_actionable_ax_label()) {
+                    ActionConfidence::High
+                } else if candidates
                     .iter()
                     .any(|c| matches!(c, TargetCandidate::OcrText { .. }))
                 {
@@ -546,6 +642,7 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 action.target_candidates = candidates;
                 action.confidence = confidence;
                 action.warnings = click_warnings;
+                action.screenshot_meta = screenshot_meta;
                 if let Some(path) = screenshot_path {
                     action.artifact_paths.push(path);
                 }
@@ -597,10 +694,11 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 last_scroll_ts = event.timestamp;
             }
 
-            // Enrichment events (OcrCaptured, ScreenshotCaptured) are consumed
-            // by the MouseClicked lookahead above, so standalone occurrences are skipped.
+            // Enrichment events are consumed by the MouseClicked lookahead above,
+            // so standalone occurrences are skipped.
             WalkthroughEventKind::OcrCaptured { .. }
-            | WalkthroughEventKind::ScreenshotCaptured { .. } => {}
+            | WalkthroughEventKind::ScreenshotCaptured { .. }
+            | WalkthroughEventKind::AccessibilityElementCaptured { .. } => {}
 
             // Skip non-action events.
             WalkthroughEventKind::Paused
@@ -683,11 +781,10 @@ pub fn synthesize_draft(
                 click_count,
             } => {
                 // Use the best target candidate.
-                let best_target = action.target_candidates.iter().find_map(|c| match c {
-                    TargetCandidate::AccessibilityLabel { label, .. } => Some(label.clone()),
-                    TargetCandidate::OcrText { text } => Some(text.clone()),
-                    _ => None,
-                });
+                let best_target = action
+                    .target_candidates
+                    .iter()
+                    .find_map(|c| c.preferred_label().map(|s| s.to_string()));
 
                 let (params, name) = if let Some(ref target) = best_target {
                     (
@@ -857,6 +954,7 @@ mod tests {
             WalkthroughEventKind::ScreenshotCaptured {
                 path: "/tmp/shot.png".to_string(),
                 kind: ScreenshotKind::BeforeClick,
+                meta: None,
             },
             WalkthroughEventKind::Paused,
             WalkthroughEventKind::Resumed,
@@ -1069,6 +1167,7 @@ mod tests {
                 source_event_ids: vec![],
                 confidence: ActionConfidence::High,
                 warnings: vec![],
+                screenshot_meta: None,
             },
             WalkthroughAction {
                 id: Uuid::new_v4(),
@@ -1082,6 +1181,7 @@ mod tests {
                 source_event_ids: vec![],
                 confidence: ActionConfidence::High,
                 warnings: vec![],
+                screenshot_meta: None,
             },
         ];
         let draft = synthesize_draft(&actions, Uuid::new_v4(), "test");
@@ -1432,6 +1532,7 @@ mod tests {
                 WalkthroughEventKind::ScreenshotCaptured {
                     path: "/tmp/shot.png".into(),
                     kind: ScreenshotKind::AfterClick,
+                    meta: None,
                 },
             )];
             let (actions, _) = normalize_events(&events);
@@ -1454,6 +1555,7 @@ mod tests {
                 source_event_ids: vec![],
                 confidence: ActionConfidence::High,
                 warnings: vec![],
+                screenshot_meta: None,
             }
         }
 

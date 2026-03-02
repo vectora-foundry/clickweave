@@ -327,6 +327,13 @@ export type RunRequest = { workflow: Workflow; project_path: string | null; agen
 planner: EndpointConfig | null; mcp_command: string; execution_mode: ExecutionMode }
 export type RunStatus = "Ok" | "Failed" | "Stopped"
 export type RunsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string }
+/**
+ * Screenshot coordinate metadata for mapping screen coordinates to image pixels.
+ * 
+ * Given a screen coordinate `(sx, sy)`, the image pixel coordinate is:
+ * `px = (sx - origin_x) * scale`, `py = (sy - origin_y) * scale`
+ */
+export type ScreenshotMeta = { origin_x: number; origin_y: number; scale: number }
 export type ScreenshotMode = "Screen" | "Window" | "Region"
 export type ScrollParams = { delta_y: number; x: number | null; y: number | null }
 export type SwitchCase = { 
@@ -340,7 +347,11 @@ export type SwitchParams = {
  */
 cases: SwitchCase[] }
 export type TakeScreenshotParams = { mode: ScreenshotMode; target: string | null; include_ocr: boolean }
-export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role: string | null } | { type: "OcrText"; text: string } | { type: "ImageCrop"; path: string } | { type: "Coordinates"; x: number; y: number }
+export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role: string | null } | 
+/**
+ * Label identified by a vision language model from a screenshot crop.
+ */
+{ type: "VlmLabel"; label: string } | { type: "OcrText"; text: string } | { type: "ImageCrop"; path: string } | { type: "Coordinates"; x: number; y: number }
 export type TargetOverride = { node_id: string; chosen_candidate_index: number }
 export type TraceEvent = { timestamp: number; event_type: string; payload: JsonValue }
 export type TraceLevel = "Off" | "Minimal" | "Full"
@@ -348,7 +359,11 @@ export type TypeTextParams = { text: string }
 export type ValidationResult = { valid: boolean; errors: string[] }
 export type ValueRef = { type: "Variable"; name: string } | { type: "Literal"; value: LiteralValue }
 export type VariablePromotion = { node_id: string; variable_name: string }
-export type WalkthroughAction = { id: string; kind: WalkthroughActionKind; app_name: string | null; window_title: string | null; target_candidates: TargetCandidate[]; artifact_paths: string[]; source_event_ids: string[]; confidence: ActionConfidence; warnings: string[] }
+export type WalkthroughAction = { id: string; kind: WalkthroughActionKind; app_name: string | null; window_title: string | null; target_candidates: TargetCandidate[]; artifact_paths: string[]; source_event_ids: string[]; confidence: ActionConfidence; warnings: string[]; 
+/**
+ * Screenshot coordinate metadata for VLM click target resolution.
+ */
+screenshot_meta?: ScreenshotMeta | null }
 export type WalkthroughActionKind = { type: "LaunchApp"; app_name: string } | { type: "FocusWindow"; app_name: string; window_title: string | null } | { type: "Click"; x: number; y: number; button: MouseButton; click_count: number } | { type: "TypeText"; text: string } | { type: "PressKey"; key: string; modifiers: string[] } | { type: "Scroll"; delta_y: number }
 export type WalkthroughAnnotations = { deleted_node_ids: string[]; renamed_nodes: NodeRename[]; target_overrides: TargetOverride[]; variable_promotions: VariablePromotion[] }
 export type WalkthroughDraftResponse = { actions: WalkthroughAction[]; draft: Workflow | null; warnings: string[] }

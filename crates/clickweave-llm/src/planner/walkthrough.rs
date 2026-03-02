@@ -114,6 +114,9 @@ fn format_action_trace(actions: &[WalkthroughAction]) -> String {
                     TargetCandidate::AccessibilityLabel { label, .. } => {
                         Some(format!("target=\"{label}\""))
                     }
+                    TargetCandidate::VlmLabel { label } => {
+                        Some(format!("target=\"{label}\" (VLM)"))
+                    }
                     TargetCandidate::OcrText { text } => Some(format!("target=\"{text}\" (OCR)")),
                     _ => None,
                 });
@@ -154,6 +157,7 @@ fn format_action_trace(actions: &[WalkthroughAction]) -> String {
                         Some(r) => format!("AccessibilityLabel \"{label}\" role={r}"),
                         None => format!("AccessibilityLabel \"{label}\""),
                     },
+                    TargetCandidate::VlmLabel { label } => format!("VlmLabel \"{label}\""),
                     TargetCandidate::OcrText { text } => format!("OcrText \"{text}\""),
                     TargetCandidate::ImageCrop { path } => format!("ImageCrop \"{path}\""),
                     TargetCandidate::Coordinates { x, y } => {
@@ -336,6 +340,7 @@ mod tests {
                 source_event_ids: vec![],
                 confidence: ActionConfidence::High,
                 warnings: vec![],
+                screenshot_meta: None,
             },
             WalkthroughAction {
                 id: uuid::Uuid::new_v4(),
@@ -355,6 +360,7 @@ mod tests {
                 source_event_ids: vec![],
                 confidence: ActionConfidence::Medium,
                 warnings: vec![],
+                screenshot_meta: None,
             },
         ]
     }
