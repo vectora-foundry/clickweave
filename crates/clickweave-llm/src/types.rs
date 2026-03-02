@@ -13,6 +13,10 @@ pub struct ChatRequest {
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// Extra provider-specific fields flattened into the request body
+    /// (e.g. `{"chat_template_kwargs": {"enable_thinking": false}}`).
+    #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra_body: serde_json::Map<String, Value>,
 }
 
 /// Message content can be a plain string or an array of content parts (for vision).

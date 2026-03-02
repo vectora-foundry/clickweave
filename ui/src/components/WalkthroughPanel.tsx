@@ -21,11 +21,13 @@ function actionLabel(action: WalkthroughAction): string {
     case "LaunchApp": return `Launch ${k.app_name}`;
     case "FocusWindow": return `Focus ${k.app_name}`;
     case "Click": {
-      const textTarget = action.target_candidates.find(
-        (c) => c.type === "AccessibilityLabel" || c.type === "OcrText",
-      );
-      if (textTarget) {
-        const label = textTarget.type === "AccessibilityLabel" ? textTarget.label : textTarget.text;
+      // Prefer VLM label (most specific), then actionable AX labels, then OCR.
+      const vlm = action.target_candidates.find((c) => c.type === "VlmLabel");
+      const ax = action.target_candidates.find((c) => c.type === "AccessibilityLabel");
+      const ocr = action.target_candidates.find((c) => c.type === "OcrText");
+      const best = vlm ?? (ax && ax.role !== "AXWindow" ? ax : null) ?? ocr ?? ax;
+      if (best) {
+        const label = best.type === "OcrText" ? best.text : best.label;
         return `Click '${label.length > 25 ? label.slice(0, 25) + "…" : label}'`;
       }
       return `Click (${k.x}, ${k.y})`;
@@ -45,6 +47,7 @@ function actionLabel(action: WalkthroughAction): string {
 function targetCandidateLabel(candidate: TargetCandidate): string {
   switch (candidate.type) {
     case "AccessibilityLabel": return `"${candidate.label}"${candidate.role ? ` (${candidate.role})` : ""}`;
+    case "VlmLabel": return `"${candidate.label}"`;
     case "OcrText": return `"${candidate.text}"`;
     case "ImageCrop": return "Image crop";
     case "Coordinates": return `(${candidate.x}, ${candidate.y})`;
@@ -54,6 +57,7 @@ function targetCandidateLabel(candidate: TargetCandidate): string {
 function targetCandidateIcon(candidate: TargetCandidate): string {
   switch (candidate.type) {
     case "AccessibilityLabel": return "\u{1F3F7}";
+    case "VlmLabel": return "\u{1F52D}";
     case "OcrText": return "\u{1F441}";
     case "ImageCrop": return "\u{1F5BC}";
     case "Coordinates": return "\u{1F4CD}";

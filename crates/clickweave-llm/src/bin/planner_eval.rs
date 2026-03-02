@@ -317,6 +317,7 @@ async fn main() -> Result<()> {
         model: model.to_string(),
         temperature: config.llm.temperature,
         max_tokens: Some(4096),
+        ..LlmConfig::default()
     });
 
     println!("planner-eval — model: {model}, prompt: {prompt_rel} ({prompt_hash})\n");

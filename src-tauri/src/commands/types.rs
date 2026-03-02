@@ -72,6 +72,7 @@ impl EndpointConfig {
             model: self.model,
             temperature,
             max_tokens: None,
+            ..LlmConfig::default()
         }
     }
 

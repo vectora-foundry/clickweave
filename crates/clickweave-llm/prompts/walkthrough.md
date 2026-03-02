@@ -16,7 +16,7 @@ The user performed these actions in order:
 
 Produce a workflow that faithfully replays the demonstrated actions. Follow these rules:
 
-1. **Preserve the demonstrated sequence.** Every meaningful user action must have a corresponding workflow step in the same order. Do not reorder, skip, or invent steps the user did not perform.
+1. **Preserve the demonstrated sequence.** Every user action (click, type, key press) MUST have a corresponding workflow step in the same order. Do not reorder, skip, merge, or drop any action. Do not invent steps the user did not perform.
 
 2. **Use descriptive node names.** Name each step by its purpose, not the raw action. Examples:
    - "Click '5'" → "Enter first operand"
@@ -24,7 +24,7 @@ Produce a workflow that faithfully replays the demonstrated actions. Follow thes
    - "Press Enter" → "Submit form"
    - "Launch Calculator" → "Open Calculator"
 
-3. **Prefer text-based click targets.** When an action lists an AccessibilityLabel or OcrText candidate, use `click` with `target` set to that text. Only use coordinates (`x`/`y`) as a last resort when no text candidate exists.
+3. **ALWAYS use text-based click targets when available.** When an action lists a VlmLabel, AccessibilityLabel, or OcrText candidate, you MUST use `find_text` to locate the element and then `click` at the returned coordinates — or use `click` with `target` set to that text. NEVER use raw `x`/`y` coordinates when a text label exists. Only fall back to coordinates when no text candidate is available.
 
 4. **Add verification after key transitions.** After important state changes (form submission, dialog dismissal, navigation, calculation result), insert a `take_screenshot` step with `"role": "Verification"` and an `"expected_outcome"` describing what should be visible. Scope screenshots to the active app using the `app_name` argument.
 

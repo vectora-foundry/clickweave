@@ -82,9 +82,9 @@ pub async fn generalize_walkthrough(
             }
         }
         Err(e) => {
-            info!("Walkthrough generalization failed: {e}");
+            info!("Walkthrough generalization failed: {e:#}");
             let mut f = fallback();
-            f.warnings.push(format!("LLM error: {e}"));
+            f.warnings.push(format!("LLM error: {e:#}"));
             f
         }
     }
@@ -110,16 +110,23 @@ fn format_action_trace(actions: &[WalkthroughAction]) -> String {
                 None => trace.push_str(&format!(" Focus \"{app_name}\"\n")),
             },
             WalkthroughActionKind::Click { x, y, .. } => {
-                let target_desc = action.target_candidates.iter().find_map(|c| match c {
-                    TargetCandidate::AccessibilityLabel { label, .. } => {
-                        Some(format!("target=\"{label}\""))
-                    }
-                    TargetCandidate::VlmLabel { label } => {
-                        Some(format!("target=\"{label}\" (VLM)"))
-                    }
-                    TargetCandidate::OcrText { text } => Some(format!("target=\"{text}\" (OCR)")),
+                // Prefer VLM label (most specific), then actionable AX labels, then OCR.
+                let vlm = action.target_candidates.iter().find_map(|c| match c {
+                    TargetCandidate::VlmLabel { label } => Some(label.as_str()),
                     _ => None,
                 });
+                let ax = action.target_candidates.iter().find_map(|c| match c {
+                    TargetCandidate::AccessibilityLabel { label, .. } => Some(label.as_str()),
+                    _ => None,
+                });
+                let ocr = action.target_candidates.iter().find_map(|c| match c {
+                    TargetCandidate::OcrText { text } => Some(text.as_str()),
+                    _ => None,
+                });
+                let target_desc = vlm
+                    .map(|l| format!("target=\"{l}\" (VLM)"))
+                    .or_else(|| ax.map(|l| format!("target=\"{l}\"")))
+                    .or_else(|| ocr.map(|t| format!("target=\"{t}\" (OCR)")));
                 match target_desc {
                     Some(desc) => trace.push_str(&format!(" Click {desc}\n")),
                     None => {

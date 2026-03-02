@@ -23,9 +23,6 @@ use crate::platform::macos::MacOSEventTap;
 const RECORDING_BAR_LABEL: &str = "recording-bar";
 const SELF_APP_NAME: &str = "clickweave-tauri";
 
-/// Crop size (in image pixels) for the VLM click-target screenshot crop.
-const VLM_CROP_SIZE_PX: u32 = 300;
-
 /// Maximum length of a VLM-resolved label to accept. Longer responses
 /// are likely full sentences rather than a concise element name.
 const VLM_LABEL_MAX_LEN: usize = 80;
@@ -1123,7 +1120,7 @@ async fn resolve_click_targets_with_vlm(
         let px = (click_x - meta.origin_x) * meta.scale;
         let py = (click_y - meta.origin_y) * meta.scale;
 
-        let image_b64 = match crop_around_point(&image_bytes, px, py) {
+        let image_b64 = match mark_click_point(&image_bytes, px, py) {
             Some(b64) => b64,
             None => continue,
         };
@@ -1144,14 +1141,19 @@ async fn resolve_click_targets_with_vlm(
     );
 
     let mut llm_config = planner_cfg.clone().into_llm_config(Some(0.1));
-    llm_config.max_tokens = Some(50);
+    llm_config.max_tokens = Some(4096);
+    // Disable thinking/reasoning for this simple label extraction task.
+    llm_config.extra_body.insert(
+        "chat_template_kwargs".to_string(),
+        serde_json::json!({"enable_thinking": false}),
+    );
     let backend = std::sync::Arc::new(clickweave_llm::LlmClient::new(llm_config));
 
-    let prompt = "This is a cropped screenshot with a red crosshair marking \
-         where the user clicked. What UI element is at the crosshair? \
-         Return ONLY the text label or name of the element (e.g., \"Send\", \
-         \"Note to Self\", \"Search\"). If there's no text label, describe \
-         the element briefly (e.g., \"message input field\"). \
+    let prompt = "This is a screenshot of an application window with a red \
+         crosshair marking where the user clicked. What UI element is at \
+         the crosshair? Return ONLY the text label or name of the element \
+         (e.g., \"Send\", \"Note to Self\", \"Search\"). If there's no text \
+         label, describe the element briefly (e.g., \"message input field\"). \
          Return just the label, nothing else.";
 
     // Fire all VLM requests in parallel.
@@ -1218,59 +1220,45 @@ async fn resolve_click_targets_with_vlm(
     }
 }
 
-/// Crop, downscale, and JPEG-encode an image region around a click point.
+/// Downscale the full window screenshot and draw a red crosshair at the click point.
 ///
-/// Crops a 300x300 pixel region centered on `(px, py)`, downscales to half
-/// resolution (matching screen points on 2x displays), draws a red crosshair
-/// at the click point, and encodes as JPEG for minimal VLM token cost.
+/// Downscales to half resolution (retina → screen points), draws a red crosshair
+/// at `(px, py)` in image-pixel coordinates, and encodes as JPEG.
 /// Returns `None` if the image can't be decoded.
-fn crop_around_point(png_bytes: &[u8], px: f64, py: f64) -> Option<String> {
+fn mark_click_point(png_bytes: &[u8], px: f64, py: f64) -> Option<String> {
     let img = image::load_from_memory(png_bytes).ok()?;
     let (img_w, img_h) = (img.width(), img.height());
 
-    let half = VLM_CROP_SIZE_PX / 2;
-
-    let cx = (px as u32).min(img_w.saturating_sub(1));
-    let cy = (py as u32).min(img_h.saturating_sub(1));
-
-    let left = cx.saturating_sub(half);
-    let top = cy.saturating_sub(half);
-    let right = (cx + half).min(img_w);
-    let bottom = (cy + half).min(img_h);
-
-    let cropped = img.crop_imm(left, top, right - left, bottom - top);
-
     // Downscale to half resolution (retina → screen points).
-    let (cw, ch) = (cropped.width(), cropped.height());
     let mut scaled = image::imageops::resize(
-        &cropped,
-        cw / 2,
-        ch / 2,
+        &img,
+        img_w / 2,
+        img_h / 2,
         image::imageops::FilterType::Triangle,
     );
 
     // Draw a crosshair at the click point so the VLM knows the exact target.
-    let center_x = (cx - left) / 2;
-    let center_y = (cy - top) / 2;
+    let cx = (px as u32 / 2).min(scaled.width().saturating_sub(1));
+    let cy = (py as u32 / 2).min(scaled.height().saturating_sub(1));
     let (sw, sh) = (scaled.width(), scaled.height());
     let red = image::Rgba([255, 0, 0, 255]);
-    let arm = 8u32;
-    let gap = 2u32;
+    let arm = 12u32;
+    let gap = 3u32;
 
     for dx in gap..=arm {
-        if center_x + dx < sw {
-            scaled.put_pixel(center_x + dx, center_y, red);
+        if cx + dx < sw {
+            scaled.put_pixel(cx + dx, cy, red);
         }
-        if let Some(x) = center_x.checked_sub(dx) {
-            scaled.put_pixel(x, center_y, red);
+        if let Some(x) = cx.checked_sub(dx) {
+            scaled.put_pixel(x, cy, red);
         }
     }
     for dy in gap..=arm {
-        if center_y + dy < sh {
-            scaled.put_pixel(center_x, center_y + dy, red);
+        if cy + dy < sh {
+            scaled.put_pixel(cx, cy + dy, red);
         }
-        if let Some(y) = center_y.checked_sub(dy) {
-            scaled.put_pixel(center_x, y, red);
+        if let Some(y) = cy.checked_sub(dy) {
+            scaled.put_pixel(cx, y, red);
         }
     }
 

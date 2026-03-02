@@ -337,7 +337,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
           const candidate = action?.target_candidates[targetOvr.chosen_candidate_index];
           if (candidate) {
             let nodeType: NodeType;
-            if (candidate.type === "AccessibilityLabel") {
+            if (candidate.type === "AccessibilityLabel" || candidate.type === "VlmLabel") {
               nodeType = { ...updated.node_type, target: candidate.label, x: null, y: null };
             } else if (candidate.type === "OcrText") {
               nodeType = { ...updated.node_type, target: candidate.text, x: null, y: null };

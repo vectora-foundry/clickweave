@@ -29,6 +29,9 @@ pub struct LlmConfig {
     pub model: String,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
+    /// Extra provider-specific fields to include in the request body
+    /// (e.g. `{"chat_template_kwargs": {"enable_thinking": false}}`).
+    pub extra_body: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for LlmConfig {
@@ -40,6 +43,7 @@ impl Default for LlmConfig {
             model: "local-model".to_string(),
             temperature: Some(0.7),
             max_tokens: Some(4096),
+            extra_body: serde_json::Map::new(),
         }
     }
 }
@@ -154,6 +158,7 @@ impl ChatBackend for LlmClient {
             tool_choice: None,
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
+            extra_body: self.config.extra_body.clone(),
         };
 
         debug!(
