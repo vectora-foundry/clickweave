@@ -1,6 +1,6 @@
 use super::{LoopExitReason, PendingLoopExit, WorkflowExecutor};
 use clickweave_core::NodeType;
-use clickweave_llm::{ChatBackend, Content, ContentPart, ImageUrl, Message};
+use clickweave_llm::{ChatBackend, Message};
 use clickweave_mcp::{McpClient, ToolContent};
 use serde_json::Value;
 use tracing::debug;
@@ -178,22 +178,21 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
         };
 
-        let messages = vec![Message {
-            role: "user".to_string(),
-            content: Some(Content::Parts(vec![
-                ContentPart::Text {
-                    text: prompt.to_string(),
-                },
-                ContentPart::ImageUrl {
-                    image_url: ImageUrl {
-                        url: format!("data:image/png;base64,{}", image_base64),
-                    },
-                },
-            ])),
-            tool_calls: None,
-            tool_call_id: None,
-            name: None,
-        }];
+        let (prepared_b64, mime) = match clickweave_llm::prepare_base64_image_for_vlm(
+            image_base64,
+            clickweave_llm::DEFAULT_MAX_DIMENSION,
+        ) {
+            Some(pair) => pair,
+            None => {
+                self.log("Supervision: failed to prepare screenshot for VLM".to_string());
+                return "Failed to prepare screenshot for VLM".to_string();
+            }
+        };
+
+        let messages = vec![Message::user_with_images(
+            prompt.to_string(),
+            vec![(prepared_b64, mime)],
+        )];
 
         match vlm.chat(messages, None).await {
             Ok(response) => response

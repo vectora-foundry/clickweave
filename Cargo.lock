@@ -433,9 +433,11 @@ name = "clickweave-llm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "clickweave-core",
+ "image",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

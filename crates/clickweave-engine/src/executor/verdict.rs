@@ -109,12 +109,22 @@ pub(crate) async fn screenshot_verdict<C: ChatBackend>(
     expected_outcome: &str,
     screenshot_base64: &str,
 ) -> NodeVerdict {
+    let (prepared_b64, mime) = match clickweave_llm::prepare_base64_image_for_vlm(
+        screenshot_base64,
+        clickweave_llm::DEFAULT_MAX_DIMENSION,
+    ) {
+        Some(pair) => pair,
+        None => {
+            return screenshot_capture_failed_verdict(node_id, node_name);
+        }
+    };
+
     let user_msg = Message::user_with_images(
         format!(
             "## Node: \"{}\"\n\n## Expected outcome:\n{}",
             node_name, expected_outcome
         ),
-        vec![(screenshot_base64.to_string(), "image/png".to_string())],
+        vec![(prepared_b64, mime)],
     );
 
     let messages = vec![Message::system(SCREENSHOT_VERIFICATION_PROMPT), user_msg];

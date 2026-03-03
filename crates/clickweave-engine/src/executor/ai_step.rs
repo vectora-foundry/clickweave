@@ -179,13 +179,29 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             if !pending_images.is_empty() {
                 let image_count = pending_images.len();
-                if let Some(vlm) = self.vision_backend() {
+
+                let prepared_images: Vec<(String, String)> = pending_images
+                    .into_iter()
+                    .filter_map(|(b64, _mime)| {
+                        clickweave_llm::prepare_base64_image_for_vlm(
+                            &b64,
+                            clickweave_llm::DEFAULT_MAX_DIMENSION,
+                        )
+                    })
+                    .collect();
+
+                if prepared_images.is_empty() {
+                    self.log(format!(
+                        "Failed to prepare {} image(s) for VLM",
+                        image_count
+                    ));
+                } else if let Some(vlm) = self.vision_backend() {
                     self.log(format!(
                         "Analyzing {} image(s) with VLM ({})",
                         image_count,
                         vlm.model_name()
                     ));
-                    match analyze_images(vlm, &params.prompt, &last_image_tool, pending_images)
+                    match analyze_images(vlm, &params.prompt, &last_image_tool, prepared_images)
                         .await
                     {
                         Ok(summary) => {
@@ -212,7 +228,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 } else {
                     messages.push(Message::user_with_images(
                         "Here are the images from the tool results above.",
-                        pending_images,
+                        prepared_images,
                     ));
                 }
             }

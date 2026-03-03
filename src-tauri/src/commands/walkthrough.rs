@@ -1222,50 +1222,41 @@ async fn resolve_click_targets_with_vlm(
 
 /// Downscale the full window screenshot and draw a red crosshair at the click point.
 ///
-/// Downscales to half resolution (retina → screen points), draws a red crosshair
-/// at `(px, py)` in image-pixel coordinates, and encodes as JPEG.
+/// Draws a red crosshair at `(px, py)` in image-pixel coordinates, then
+/// downscales + JPEG-encodes via the shared VLM image prep utility.
 /// Returns `None` if the image can't be decoded.
 fn mark_click_point(png_bytes: &[u8], px: f64, py: f64) -> Option<String> {
     let img = image::load_from_memory(png_bytes).ok()?;
     let (img_w, img_h) = (img.width(), img.height());
 
-    // Downscale to half resolution (retina → screen points).
-    let mut scaled = image::imageops::resize(
-        &img,
-        img_w / 2,
-        img_h / 2,
-        image::imageops::FilterType::Triangle,
-    );
-
-    // Draw a crosshair at the click point so the VLM knows the exact target.
-    let cx = (px as u32 / 2).min(scaled.width().saturating_sub(1));
-    let cy = (py as u32 / 2).min(scaled.height().saturating_sub(1));
-    let (sw, sh) = (scaled.width(), scaled.height());
+    // Draw crosshair at full resolution.
+    let mut rgba = img.to_rgba8();
+    let cx = (px as u32).min(img_w.saturating_sub(1));
+    let cy = (py as u32).min(img_h.saturating_sub(1));
     let red = image::Rgba([255, 0, 0, 255]);
-    let arm = 12u32;
-    let gap = 3u32;
+    let arm = 24u32;
+    let gap = 6u32;
 
     for dx in gap..=arm {
-        if cx + dx < sw {
-            scaled.put_pixel(cx + dx, cy, red);
+        if cx + dx < img_w {
+            rgba.put_pixel(cx + dx, cy, red);
         }
         if let Some(x) = cx.checked_sub(dx) {
-            scaled.put_pixel(x, cy, red);
+            rgba.put_pixel(x, cy, red);
         }
     }
     for dy in gap..=arm {
-        if cy + dy < sh {
-            scaled.put_pixel(cx, cy + dy, red);
+        if cy + dy < img_h {
+            rgba.put_pixel(cx, cy + dy, red);
         }
         if let Some(y) = cy.checked_sub(dy) {
-            scaled.put_pixel(cx, y, red);
+            rgba.put_pixel(cx, y, red);
         }
     }
 
-    let mut buf = std::io::Cursor::new(Vec::new());
-    image::DynamicImage::ImageRgba8(scaled)
-        .write_to(&mut buf, image::ImageFormat::Jpeg)
-        .ok()?;
-
-    Some(base64::engine::general_purpose::STANDARD.encode(buf.into_inner()))
+    let (b64, _mime) = clickweave_llm::prepare_dynimage_for_vlm(
+        image::DynamicImage::ImageRgba8(rgba),
+        clickweave_llm::DEFAULT_MAX_DIMENSION,
+    );
+    Some(b64)
 }
