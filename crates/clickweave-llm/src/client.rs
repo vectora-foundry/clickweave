@@ -35,16 +35,25 @@ pub struct LlmConfig {
 }
 
 impl LlmConfig {
-    /// Clone this config with capped `max_tokens` and thinking/reasoning disabled.
-    /// Used for simple, structured-output VLM calls (verdict, click-target labels).
-    pub fn for_fast_vision(&self, max_tokens: u32) -> Self {
-        let mut c = self.clone();
-        c.max_tokens = Some(max_tokens);
-        c.extra_body.insert(
-            "chat_template_kwargs".to_string(),
-            serde_json::json!({"enable_thinking": false}),
-        );
-        c
+    /// Set `max_tokens` on this config (chainable).
+    pub fn with_max_tokens(mut self, n: u32) -> Self {
+        self.max_tokens = Some(n);
+        self
+    }
+
+    /// Enable or disable model thinking/reasoning via `chat_template_kwargs` (chainable).
+    /// When `false`, injects `{"chat_template_kwargs": {"enable_thinking": false}}`
+    /// into the request body. When `true`, removes the override (model default).
+    pub fn with_thinking(mut self, enabled: bool) -> Self {
+        if enabled {
+            self.extra_body.remove("chat_template_kwargs");
+        } else {
+            self.extra_body.insert(
+                "chat_template_kwargs".to_string(),
+                serde_json::json!({"enable_thinking": false}),
+            );
+        }
+        self
     }
 }
 

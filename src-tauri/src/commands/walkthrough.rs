@@ -1143,7 +1143,8 @@ async fn resolve_click_targets_with_vlm(
     let llm_config = planner_cfg
         .clone()
         .into_llm_config(Some(0.1))
-        .for_fast_vision(4096);
+        .with_max_tokens(4096)
+        .with_thinking(false);
     let backend = std::sync::Arc::new(clickweave_llm::LlmClient::new(llm_config));
 
     let prompt = "This is a screenshot of an application window with a red \

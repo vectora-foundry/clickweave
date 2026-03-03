@@ -138,12 +138,12 @@ impl WorkflowExecutor {
         let verdict_vlm = vlm_config
             .as_ref()
             .or(supervision_config.as_ref())
-            .map(|cfg| LlmClient::new(cfg.for_fast_vision(4096)));
+            .map(|cfg| LlmClient::new(cfg.clone().with_max_tokens(4096).with_thinking(false)));
         Self {
             workflow,
             agent: LlmClient::new(agent_config),
-            vlm: vlm_config.map(LlmClient::new),
-            supervision: supervision_config.map(LlmClient::new),
+            vlm: vlm_config.map(|c| LlmClient::new(c.with_thinking(false))),
+            supervision: supervision_config.map(|c| LlmClient::new(c.with_thinking(false))),
             verdict_vlm,
             mcp_command,
             execution_mode,
