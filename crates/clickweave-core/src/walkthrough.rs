@@ -502,6 +502,14 @@ fn flush_text(
 ///
 /// Returns `(actions, warnings)`. Pure function — no I/O.
 pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>, Vec<String>) {
+    // Sort by timestamp so each click is followed by its enrichment events.
+    // Background enrichment tasks append events out-of-order (after later
+    // clicks), but reuse the original click's timestamp. Stable sort keeps
+    // the click before its enrichment within the same timestamp.
+    let mut sorted = events.to_vec();
+    sorted.sort_by_key(|e| e.timestamp);
+    let events = &sorted;
+
     let mut actions: Vec<WalkthroughAction> = Vec::new();
     let warnings: Vec<String> = Vec::new();
     let mut seen_apps: std::collections::HashSet<String> = std::collections::HashSet::new();

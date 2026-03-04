@@ -583,11 +583,17 @@ pub async fn seed_walkthrough_cache(
     Ok(())
 }
 
+/// Timeout for individual VLM resolution requests (during and after recording).
+const VLM_CALL_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(10);
+
 // ---------------------------------------------------------------------------
 // Async event processing loop
 // ---------------------------------------------------------------------------
 
 /// Process captured events: enrich with MCP data, persist, and emit to frontend.
+///
+/// Click enrichment (screenshot + accessibility + VLM) runs in background tasks
+/// so the event loop never blocks on MCP calls and captures every click.
 async fn process_capture_events(
     app: tauri::AppHandle,
     mut event_rx: tokio::sync::mpsc::UnboundedReceiver<CaptureEvent>,
@@ -597,12 +603,10 @@ async fn process_capture_events(
     session_dir: std::path::PathBuf,
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) {
-    use clickweave_core::walkthrough::ScreenshotMeta;
-
-    const VLM_CALL_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(15);
-
     // Spawn the MCP server for enrichment (screenshots + OCR).
-    let mcp = spawn_mcp(&mcp_command).await;
+    // Wrapped in Arc so background enrichment tasks can share it.
+    let mcp: Option<std::sync::Arc<McpClient>> =
+        spawn_mcp(&mcp_command).await.map(std::sync::Arc::new);
 
     // Initialize VLM backend if planner config is available.
     let vlm_backend: Option<std::sync::Arc<clickweave_llm::LlmClient>> =
@@ -614,7 +618,10 @@ async fn process_capture_events(
             std::sync::Arc::new(clickweave_llm::LlmClient::new(config))
         });
 
-    let mut vlm_tasks: tokio::task::JoinSet<Option<(u64, String)>> = tokio::task::JoinSet::new();
+    // Background tasks for click enrichment and VLM resolution.
+    // Each task persists and emits its own events; the event loop
+    // only needs to drain completions to detect errors.
+    let mut bg_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
     // Cache PID → app name to avoid repeated lookups.
     let mut app_cache: HashMap<i32, String> = HashMap::new();
@@ -625,35 +632,15 @@ async fn process_capture_events(
         populate_app_cache(mcp, &mut app_cache).await;
     }
 
-    let drain_vlm = |tasks: &mut tokio::task::JoinSet<Option<(u64, String)>>| {
-        while let Some(Ok(result)) = tasks.try_join_next() {
-            if let Some((timestamp, label)) = result {
-                let vlm_event = WalkthroughEvent {
-                    id: Uuid::new_v4(),
-                    timestamp,
-                    kind: WalkthroughEventKind::VlmLabelResolved { label },
-                };
-                persist_and_emit(&app, &storage, &session_dir, &vlm_event);
-            }
-        }
-    };
-
     'event_loop: loop {
-        // Drain completed VLM results and wait for the next capture event.
-        // The join_next arm ensures VLM labels are emitted as soon as they
-        // resolve, even if no new capture events are arriving.
+        // Drain completed background tasks and wait for the next capture event.
         let capture = loop {
             tokio::select! {
                 biased;
                 _ = cancel.changed() => break 'event_loop,
-                Some(Ok(result)) = vlm_tasks.join_next() => {
-                    if let Some((timestamp, label)) = result {
-                        let vlm_event = WalkthroughEvent {
-                            id: Uuid::new_v4(),
-                            timestamp,
-                            kind: WalkthroughEventKind::VlmLabelResolved { label },
-                        };
-                        persist_and_emit(&app, &storage, &session_dir, &vlm_event);
+                Some(result) = bg_tasks.join_next() => {
+                    if let Err(e) = result {
+                        tracing::warn!("Background enrichment task panicked: {e}");
                     }
                     continue;
                 }
@@ -715,119 +702,38 @@ async fn process_capture_events(
                     },
                 };
 
-                // Persist the click event immediately so it's never lost
-                // if enrichment is slow and the drain timeout expires.
+                // Persist the click event immediately so it's never lost.
                 persist_and_emit(&app, &storage, &session_dir, &click_event);
 
-                // Enrich: take screenshot with OCR near the click point.
-                let app_name = app_cache.get(&capture.target_pid).cloned();
-                let enrichment_events = enrich_click(
-                    &mcp,
-                    &session_dir,
-                    x,
-                    y,
-                    app_name.as_deref(),
-                    capture.timestamp,
-                    &mut cancel,
-                )
-                .await;
+                // Spawn enrichment (screenshot + accessibility + VLM) as a
+                // background task so the event loop stays responsive.
+                // Only spawn enrichment if MCP is available.
+                if let Some(ref mcp_arc) = mcp {
+                    let task_mcp = mcp_arc.clone();
+                    let task_vlm = vlm_backend.clone();
+                    let task_app = app.clone();
+                    let task_storage = storage.clone();
+                    let task_dir = session_dir.clone();
+                    let task_app_name = app_cache.get(&capture.target_pid).cloned();
+                    let ts = capture.timestamp;
 
-                for ev in &enrichment_events {
-                    persist_and_emit(&app, &storage, &session_dir, ev);
-                }
-
-                // Spawn VLM task if we have a screenshot and no actionable AX label.
-                if let Some(ref backend) = vlm_backend {
-                    let mut screenshot_path: Option<String> = None;
-                    let mut screenshot_meta: Option<ScreenshotMeta> = None;
-                    let mut ax_label_data: Option<(String, Option<String>)> = None;
-                    let mut ocr_text: Option<String> = None;
-                    let mut has_actionable_ax = false;
-
-                    for ev in &enrichment_events {
-                        match &ev.kind {
-                            WalkthroughEventKind::ScreenshotCaptured { path, meta, .. } => {
-                                screenshot_path = Some(path.clone());
-                                screenshot_meta = *meta;
-                            }
-                            WalkthroughEventKind::AccessibilityElementCaptured { label, role } => {
-                                has_actionable_ax =
-                                    clickweave_core::walkthrough::is_actionable_ax_role(
-                                        role.as_deref(),
-                                    );
-                                ax_label_data = Some((label.clone(), role.clone()));
-                            }
-                            WalkthroughEventKind::OcrCaptured {
-                                annotations,
-                                click_x,
-                                click_y,
-                            } => {
-                                let nearest = annotations
-                                    .iter()
-                                    .filter_map(|a| {
-                                        let dist = ((a.x - click_x).powi(2)
-                                            + (a.y - click_y).powi(2))
-                                        .sqrt();
-                                        (dist <= clickweave_core::walkthrough::OCR_PROXIMITY_PX)
-                                            .then_some((a, dist))
-                                    })
-                                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-                                if let Some((ann, _)) = nearest {
-                                    ocr_text = Some(ann.text.clone());
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    // Only fire VLM if we have a screenshot and no actionable AX label.
-                    if let (false, Some(path), Some(meta)) =
-                        (has_actionable_ax, screenshot_path, screenshot_meta)
-                    {
-                        let ax_ref = ax_label_data
-                            .as_ref()
-                            .map(|(l, r)| (l.as_str(), r.as_deref()));
-                        if let Some(req) = prepare_vlm_click_request(
-                            &path,
+                    bg_tasks.spawn(async move {
+                        enrich_click_background(
+                            task_mcp,
+                            task_vlm,
+                            task_app,
+                            task_storage,
+                            task_dir,
+                            task_app_name,
                             x,
                             y,
-                            meta,
-                            ax_ref,
-                            ocr_text.as_deref(),
-                            app_name.as_deref(),
-                        ) {
-                            let backend = backend.clone();
-                            let mut vlm_cancel = cancel.clone();
-                            let ts = capture.timestamp;
-
-                            vlm_tasks.spawn(async move {
-                                tokio::select! {
-                                    biased;
-                                    _ = vlm_cancel.changed() => None,
-                                    result = tokio::time::timeout(
-                                        VLM_CALL_TIMEOUT,
-                                        execute_vlm_click_request(backend.as_ref(), &req),
-                                    ) => {
-                                        match result {
-                                            Ok(Some(label)) => {
-                                                tracing::info!("VLM resolved click at ts={ts} → \"{label}\"");
-                                                Some((ts, label))
-                                            }
-                                            Ok(None) => None,
-                                            Err(_) => {
-                                                tracing::warn!("VLM timed out for click at ts={ts}");
-                                                None
-                                            }
-                                        }
-                                    }
-                                }
-                            });
-                        }
-                    }
+                            ts,
+                            VLM_CALL_TIMEOUT,
+                        )
+                        .await;
+                    });
                 }
 
-                // Already persisted above — skip the persist_and_emit at
-                // the bottom of the loop.
                 continue;
             }
 
@@ -877,9 +783,14 @@ async fn process_capture_events(
         persist_and_emit(&app, &storage, &session_dir, &wt_event);
     }
 
-    // Final drain of completed VLM results after loop exit.
-    // Remaining in-flight tasks are aborted when JoinSet drops.
-    drain_vlm(&mut vlm_tasks);
+    // Await all in-flight enrichment tasks so their events are on disk before
+    // stop_walkthrough reads them. Each task is bounded by its own internal
+    // timeouts (10s MCP calls, 15s VLM), so this never hangs.
+    while let Some(result) = bg_tasks.join_next().await {
+        if let Err(e) = result {
+            tracing::warn!("Enrichment task panicked: {e}");
+        }
+    }
 
     tracing::info!("Walkthrough capture event loop ended");
 }
@@ -904,8 +815,9 @@ fn get_recording_bar_rect(app: &tauri::AppHandle) -> Option<(f64, f64, f64, f64)
 /// Strip the last click event if it lands inside the recording bar window.
 ///
 /// When the user clicks Stop, the event tap captures that click before shutting
-/// down. This function removes that trailing click and its associated enrichment
-/// events (screenshot, OCR) which share the same timestamp.
+/// down. This function removes that click and any events sharing its timestamp
+/// (enrichment data for the stop-button click), preserving all other events
+/// (e.g. VLM results for earlier clicks that were appended later).
 fn strip_recording_bar_click(events: &mut Vec<WalkthroughEvent>, bar_rect: (f64, f64, f64, f64)) {
     let (bar_x, bar_y, bar_w, bar_h) = bar_rect;
 
@@ -916,7 +828,8 @@ fn strip_recording_bar_click(events: &mut Vec<WalkthroughEvent>, bar_rect: (f64,
     if let Some(idx) = last_click_pos {
         if let WalkthroughEventKind::MouseClicked { x, y, .. } = &events[idx].kind {
             if *x >= bar_x && *x <= bar_x + bar_w && *y >= bar_y && *y <= bar_y + bar_h {
-                events.truncate(idx);
+                let click_ts = events[idx].timestamp;
+                events.retain(|e| e.timestamp != click_ts);
             }
         }
     }
@@ -987,7 +900,7 @@ async fn populate_app_cache(mcp: &McpClient, cache: &mut HashMap<i32, String>) {
 
 async fn resolve_app_name(
     pid: i32,
-    mcp: &Option<McpClient>,
+    mcp: &Option<std::sync::Arc<McpClient>>,
     cache: &mut HashMap<i32, String>,
 ) -> String {
     if let Some(name) = cache.get(&pid) {
@@ -996,7 +909,7 @@ async fn resolve_app_name(
 
     // Re-fetch the app list from MCP to find the new PID.
     if let Some(mcp) = mcp {
-        populate_app_cache(mcp, cache).await;
+        populate_app_cache(mcp.as_ref(), cache).await;
         if let Some(name) = cache.get(&pid) {
             return name.clone();
         }
@@ -1012,22 +925,14 @@ async fn resolve_app_name(
 ///
 /// Returns accessibility, screenshot, and OCR events if successful.
 async fn enrich_click(
-    mcp: &Option<McpClient>,
+    mcp: &McpClient,
     session_dir: &std::path::Path,
     x: f64,
     y: f64,
     app_name: Option<&str>,
     timestamp: u64,
-    cancel: &mut tokio::sync::watch::Receiver<bool>,
 ) -> Vec<WalkthroughEvent> {
-    let mcp = match mcp.as_ref() {
-        Some(m) => m,
-        None => return vec![],
-    };
-
     let mut events = Vec::new();
-
-    let call_timeout = tokio::time::Duration::from_secs(3);
 
     // Build args for both calls.
     let app_name_val = app_name.map(|n| serde_json::Value::String(n.to_string()));
@@ -1041,34 +946,21 @@ async fn enrich_click(
         screenshot_args["app_name"] = val.clone();
     }
 
-    // Fire both MCP calls in parallel, cancellable.
-    let results = tokio::select! {
-        biased;
-        _ = cancel.changed() => return vec![],
-        result = async {
-            tokio::join!(
-                tokio::time::timeout(
-                    call_timeout,
-                    mcp.call_tool("element_at_point", Some(ax_args))
-                ),
-                tokio::time::timeout(
-                    call_timeout,
-                    mcp.call_tool("take_screenshot", Some(screenshot_args))
-                ),
-            )
-        } => result,
-    };
-    let (ax_result, screenshot_result) = results;
+    // Fire both MCP calls in parallel. No per-call timeout — calls
+    // serialize through io_lock so timeouts would fire while waiting
+    // in the queue, not during actual execution. The background task
+    // lifetime is bounded by the drain in the event loop.
+    let (ax_result, screenshot_result) = tokio::join!(
+        mcp.call_tool("element_at_point", Some(ax_args)),
+        mcp.call_tool("take_screenshot", Some(screenshot_args)),
+    );
 
     // Process accessibility result.
     match ax_result {
-        Err(_) => {
-            tracing::info!("Accessibility enrichment timed out at ({x:.0}, {y:.0})");
-        }
-        Ok(Err(e)) => {
+        Err(e) => {
             tracing::info!("Accessibility enrichment failed at ({x:.0}, {y:.0}): {e}");
         }
-        Ok(Ok(result)) => {
+        Ok(result) => {
             if let Some(ax) = parse_accessibility_result(&result.content) {
                 tracing::info!(
                     "Accessibility enrichment: label={:?} role={:?} at ({x:.0}, {y:.0})",
@@ -1098,13 +990,10 @@ async fn enrich_click(
 
     // Process screenshot result.
     match screenshot_result {
-        Err(_) => {
-            tracing::info!("Screenshot enrichment timed out at ({x:.0}, {y:.0})");
-        }
-        Ok(Err(e)) => {
+        Err(e) => {
             tracing::info!("Screenshot enrichment failed at ({x:.0}, {y:.0}): {e}");
         }
-        Ok(Ok(result)) => {
+        Ok(result) => {
             let screenshot_meta = parse_screenshot_metadata(&result.content);
 
             for content in &result.content {
@@ -1143,6 +1032,127 @@ async fn enrich_click(
     }
 
     events
+}
+
+/// Background task that enriches a click with MCP data and optionally spawns
+/// a VLM resolution request. Persists and emits all resulting events.
+///
+/// Runs entirely off the main event loop so click capture is never blocked.
+async fn enrich_click_background(
+    mcp: std::sync::Arc<McpClient>,
+    vlm_backend: Option<std::sync::Arc<clickweave_llm::LlmClient>>,
+    app: tauri::AppHandle,
+    storage: WalkthroughStorage,
+    session_dir: std::path::PathBuf,
+    app_name: Option<String>,
+    x: f64,
+    y: f64,
+    timestamp: u64,
+    vlm_timeout: tokio::time::Duration,
+) {
+    use clickweave_core::walkthrough::ScreenshotMeta;
+
+    // Run enrichment without checking the cancel token — we want MCP calls
+    // to complete even after Stop is pressed so every click gets a screenshot.
+    // The drain timeout in the event loop bounds total shutdown time.
+    let enrichment_events =
+        enrich_click(&mcp, &session_dir, x, y, app_name.as_deref(), timestamp).await;
+
+    for ev in &enrichment_events {
+        persist_and_emit(&app, &storage, &session_dir, ev);
+    }
+
+    // Spawn VLM if we have a screenshot and no actionable AX label.
+    let backend = match vlm_backend {
+        Some(ref b) => b,
+        None => return,
+    };
+
+    let mut screenshot_path: Option<String> = None;
+    let mut screenshot_meta: Option<ScreenshotMeta> = None;
+    let mut ax_label_data: Option<(String, Option<String>)> = None;
+    let mut ocr_text: Option<String> = None;
+    let mut has_actionable_ax = false;
+
+    for ev in &enrichment_events {
+        match &ev.kind {
+            WalkthroughEventKind::ScreenshotCaptured { path, meta, .. } => {
+                screenshot_path = Some(path.clone());
+                screenshot_meta = *meta;
+            }
+            WalkthroughEventKind::AccessibilityElementCaptured { label, role } => {
+                has_actionable_ax =
+                    clickweave_core::walkthrough::is_actionable_ax_role(role.as_deref());
+                ax_label_data = Some((label.clone(), role.clone()));
+            }
+            WalkthroughEventKind::OcrCaptured {
+                annotations,
+                click_x,
+                click_y,
+            } => {
+                let nearest = annotations
+                    .iter()
+                    .filter_map(|a| {
+                        let dist = ((a.x - click_x).powi(2) + (a.y - click_y).powi(2)).sqrt();
+                        (dist <= clickweave_core::walkthrough::OCR_PROXIMITY_PX)
+                            .then_some((a, dist))
+                    })
+                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                if let Some((ann, _)) = nearest {
+                    ocr_text = Some(ann.text.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if has_actionable_ax {
+        return;
+    }
+
+    let (Some(path), Some(meta)) = (screenshot_path, screenshot_meta) else {
+        return;
+    };
+
+    let ax_ref = ax_label_data
+        .as_ref()
+        .map(|(l, r)| (l.as_str(), r.as_deref()));
+    let req = match prepare_vlm_click_request(
+        &path,
+        x,
+        y,
+        meta,
+        ax_ref,
+        ocr_text.as_deref(),
+        app_name.as_deref(),
+    ) {
+        Some(r) => r,
+        None => return,
+    };
+
+    // Run VLM inline (we're already in a background task).
+    // No cancel check — the drain timeout bounds shutdown time.
+    let vlm_result = tokio::time::timeout(
+        vlm_timeout,
+        execute_vlm_click_request(backend.as_ref(), &req),
+    )
+    .await;
+
+    match vlm_result {
+        Ok(Some(label)) => {
+            tracing::info!("VLM resolved click at ts={timestamp} → \"{label}\"");
+            let vlm_event = WalkthroughEvent {
+                id: Uuid::new_v4(),
+                timestamp,
+                kind: WalkthroughEventKind::VlmLabelResolved { label },
+            };
+            persist_and_emit(&app, &storage, &session_dir, &vlm_event);
+        }
+        Ok(None) => {}
+        Err(_) => {
+            tracing::warn!("VLM timed out for click at ts={timestamp}");
+        }
+    }
 }
 
 /// Find the first JSON object in MCP tool response content.
@@ -1455,7 +1465,18 @@ async fn resolve_click_targets_with_vlm(
         let action_idx = indexed.action_idx;
 
         join_set.spawn(async move {
-            let label = execute_vlm_click_request(backend.as_ref(), &indexed.request).await;
+            let label = match tokio::time::timeout(
+                VLM_CALL_TIMEOUT,
+                execute_vlm_click_request(backend.as_ref(), &indexed.request),
+            )
+            .await
+            {
+                Ok(label) => label,
+                Err(_) => {
+                    tracing::warn!("Post-hoc VLM timed out for action {action_idx}");
+                    None
+                }
+            };
             (action_idx, label)
         });
     }
