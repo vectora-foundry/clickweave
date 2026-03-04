@@ -150,9 +150,9 @@ async importAsset(projectPath: string) : Promise<Result<ImportedAsset | null, st
     else return { status: "error", error: e  as any };
 }
 },
-async startWalkthrough(workflowId: string, mcpCommand: string, projectPath: string | null) : Promise<Result<null, string>> {
+async startWalkthrough(workflowId: string, mcpCommand: string, projectPath: string | null, planner: EndpointConfig | null) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("start_walkthrough", { workflowId, mcpCommand, projectPath }) };
+    return { status: "ok", data: await TAURI_INVOKE("start_walkthrough", { workflowId, mcpCommand, projectPath, planner }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
