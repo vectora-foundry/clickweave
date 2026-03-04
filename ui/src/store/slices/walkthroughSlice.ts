@@ -183,7 +183,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   },
 
   startWalkthrough: async () => {
-    const { workflow, mcpCommand, projectPath, pushLog } = get();
+    const { workflow, mcpCommand, projectPath, pushLog, plannerConfig } = get();
     set({
       walkthroughError: null,
       walkthroughEvents: [],
@@ -193,7 +193,10 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
 
       assistantOpen: false,
     });
-    const result = await commands.startWalkthrough(workflow.id, mcpCommand, projectPath ?? null);
+    const planner = plannerConfig.baseUrl && plannerConfig.model
+      ? toEndpoint(plannerConfig)
+      : null;
+    const result = await commands.startWalkthrough(workflow.id, mcpCommand, projectPath ?? null, planner);
     if (result.status === "error") {
       set({ walkthroughError: result.error });
       pushLog(`Walkthrough start failed: ${result.error}`);
