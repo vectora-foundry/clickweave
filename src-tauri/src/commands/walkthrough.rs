@@ -1019,8 +1019,31 @@ async fn enrich_click(
                                 path: artifact_path.to_string_lossy().to_string(),
                                 kind: ScreenshotKind::AfterClick,
                                 meta: screenshot_meta,
+                                image_b64: None,
                             },
                         });
+
+                        // Generate a click crop for image-based target matching.
+                        if let Some(meta) = screenshot_meta {
+                            let (px, py) = meta.screen_to_pixel(x, y);
+                            if let Some((crop_jpeg, crop_b64)) =
+                                crop_click_region(&image_bytes, px, py, meta.scale)
+                            {
+                                let crop_filename = format!("crop_{timestamp}.jpg");
+                                let crop_path = session_dir.join("artifacts").join(&crop_filename);
+                                let _ = std::fs::write(&crop_path, &crop_jpeg);
+                                events.push(WalkthroughEvent {
+                                    id: Uuid::new_v4(),
+                                    timestamp,
+                                    kind: WalkthroughEventKind::ScreenshotCaptured {
+                                        path: crop_path.to_string_lossy().to_string(),
+                                        kind: ScreenshotKind::ClickCrop,
+                                        meta: None,
+                                        image_b64: Some(crop_b64),
+                                    },
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -1189,8 +1212,7 @@ fn prepare_vlm_click_request(
     };
 
     // Compute click position in image pixel coordinates.
-    let px = (click_x - meta.origin_x) * meta.scale;
-    let py = (click_y - meta.origin_y) * meta.scale;
+    let (px, py) = meta.screen_to_pixel(click_x, click_y);
 
     let image_b64 = mark_click_point(&image_bytes, px, py)?;
 
@@ -1434,6 +1456,50 @@ async fn resolve_click_targets_with_vlm(
                 .insert(insert_pos, TargetCandidate::VlmLabel { label });
         }
     }
+}
+
+/// Half-size of the click crop in screen points. A 32pt radius yields a
+/// 64×64pt region → 128×128px at 2× Retina. Large enough for icon buttons,
+/// small enough for reliable template matching.
+const CROP_HALF_SIZE_PTS: f64 = 32.0;
+
+/// Crop a region around the click point from a screenshot and encode as JPEG.
+///
+/// `png_bytes` — raw PNG of the full window screenshot.
+/// `(px, py)` — click position in **image-pixel** coordinates.
+/// `scale` — display scale factor (e.g. 2.0 for Retina).
+///
+/// Returns `(jpeg_bytes_for_disk, base64_jpeg)`, or `None` if the image can't
+/// be decoded.
+fn crop_click_region(png_bytes: &[u8], px: f64, py: f64, scale: f64) -> Option<(Vec<u8>, String)> {
+    let img = image::load_from_memory(png_bytes).ok()?;
+    let (img_w, img_h) = (img.width(), img.height());
+
+    let half_px = (CROP_HALF_SIZE_PTS * scale).round() as u32;
+    let cx = (px.round() as u32).min(img_w.saturating_sub(1));
+    let cy = (py.round() as u32).min(img_h.saturating_sub(1));
+
+    let x0 = cx.saturating_sub(half_px);
+    let y0 = cy.saturating_sub(half_px);
+    let x1 = (cx + half_px).min(img_w);
+    let y1 = (cy + half_px).min(img_h);
+    let crop_w = x1 - x0;
+    let crop_h = y1 - y0;
+    if crop_w == 0 || crop_h == 0 {
+        return None;
+    }
+
+    let cropped = img.crop_imm(x0, y0, crop_w, crop_h);
+
+    // Single JPEG encode: save bytes to disk and base64-encode for events.
+    let mut jpeg_buf = std::io::Cursor::new(Vec::new());
+    cropped
+        .write_to(&mut jpeg_buf, image::ImageFormat::Jpeg)
+        .ok()?;
+    let jpeg_bytes = jpeg_buf.into_inner();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg_bytes);
+
+    Some((jpeg_bytes, b64))
 }
 
 /// Downscale the full window screenshot and draw a red crosshair at the click point.

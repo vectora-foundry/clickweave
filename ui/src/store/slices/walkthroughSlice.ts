@@ -337,11 +337,13 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
           if (candidate) {
             let nodeType: NodeType;
             if (candidate.type === "AccessibilityLabel" || candidate.type === "VlmLabel") {
-              nodeType = { ...updated.node_type, target: candidate.label, x: null, y: null };
+              nodeType = { ...updated.node_type, target: candidate.label, template_image: null, x: null, y: null };
             } else if (candidate.type === "OcrText") {
-              nodeType = { ...updated.node_type, target: candidate.text, x: null, y: null };
+              nodeType = { ...updated.node_type, target: candidate.text, template_image: null, x: null, y: null };
+            } else if (candidate.type === "ImageCrop") {
+              nodeType = { ...updated.node_type, target: null, template_image: candidate.image_b64, x: null, y: null };
             } else if (candidate.type === "Coordinates") {
-              nodeType = { ...updated.node_type, target: null, x: candidate.x, y: candidate.y };
+              nodeType = { ...updated.node_type, target: null, template_image: null, x: candidate.x, y: candidate.y };
             } else {
               nodeType = updated.node_type;
             }

@@ -306,6 +306,7 @@ impl NodeType {
         match self {
             NodeType::Click(p) => match &p.target {
                 Some(t) => format!("Clicked on '{}'", t),
+                None if p.template_image.is_some() => "Clicked on image match".to_string(),
                 None => format!(
                     "Clicked at ({}, {})",
                     p.x.unwrap_or(0.0),
@@ -487,6 +488,8 @@ impl Default for FindImageParams {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ClickParams {
     pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_image: Option<String>,
     pub x: Option<f64>,
     pub y: Option<f64>,
     pub button: MouseButton,
@@ -497,6 +500,7 @@ impl Default for ClickParams {
     fn default() -> Self {
         Self {
             target: None,
+            template_image: None,
             x: None,
             y: None,
             button: MouseButton::Left,

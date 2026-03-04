@@ -102,6 +102,9 @@ pub enum WalkthroughEventKind {
         /// Used to map screen coordinates to image pixel coordinates.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         meta: Option<ScreenshotMeta>,
+        /// Base64-encoded JPEG of a click crop. Only set for `ClickCrop` kind.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        image_b64: Option<String>,
     },
     OcrCaptured {
         annotations: Vec<OcrAnnotation>,
@@ -138,6 +141,16 @@ pub struct ScreenshotMeta {
     pub origin_x: f64,
     pub origin_y: f64,
     pub scale: f64,
+}
+
+impl ScreenshotMeta {
+    /// Convert screen coordinates to image pixel coordinates.
+    pub fn screen_to_pixel(&self, sx: f64, sy: f64) -> (f64, f64) {
+        (
+            (sx - self.origin_x) * self.scale,
+            (sy - self.origin_y) * self.scale,
+        )
+    }
 }
 
 // --- Normalized semantic actions ---
@@ -227,6 +240,7 @@ pub enum TargetCandidate {
     },
     ImageCrop {
         path: String,
+        image_b64: String,
     },
     Coordinates {
         x: f64,
@@ -588,9 +602,18 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 let mut ocr_annotations: Option<&Vec<OcrAnnotation>> = None;
                 let mut ax_label: Option<(String, Option<String>)> = None;
                 let mut vlm_label: Option<String> = None;
+                let mut crop_candidate: Option<(String, String)> = None;
                 let mut peek = i;
                 while peek < events.len() {
                     match &events[peek].kind {
+                        WalkthroughEventKind::ScreenshotCaptured {
+                            path,
+                            kind: ScreenshotKind::ClickCrop,
+                            image_b64: Some(b64),
+                            ..
+                        } => {
+                            crop_candidate = Some((path.clone(), b64.clone()));
+                        }
                         WalkthroughEventKind::ScreenshotCaptured { path, meta, .. } => {
                             screenshot_path = Some(path.clone());
                             screenshot_meta = *meta;
@@ -642,9 +665,19 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                         });
                     }
                 }
+                // Image crop as fallback (before coordinates).
+                if let Some((crop_path, crop_b64)) = crop_candidate {
+                    candidates.push(TargetCandidate::ImageCrop {
+                        path: crop_path,
+                        image_b64: crop_b64,
+                    });
+                }
                 // Always add coordinates as fallback.
                 candidates.push(TargetCandidate::Coordinates { x: *x, y: *y });
 
+                let has_image_crop = candidates
+                    .iter()
+                    .any(|c| matches!(c, TargetCandidate::ImageCrop { .. }));
                 let confidence = if candidates.iter().any(|c| c.is_actionable_ax_label()) {
                     ActionConfidence::High
                 } else if candidates.iter().any(|c| {
@@ -653,6 +686,8 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                         TargetCandidate::VlmLabel { .. } | TargetCandidate::OcrText { .. }
                     )
                 }) {
+                    ActionConfidence::Medium
+                } else if has_image_crop {
                     ActionConfidence::Medium
                 } else {
                     ActionConfidence::Low
@@ -823,6 +858,16 @@ pub fn synthesize_draft(
                     .iter()
                     .find_map(|c| c.preferred_label().map(|s| s.to_string()));
 
+                // Fallback: if no text target, try image crop.
+                let image_crop_b64 = if best_target.is_none() {
+                    action.target_candidates.iter().find_map(|c| match c {
+                        TargetCandidate::ImageCrop { image_b64, .. } => Some(image_b64.clone()),
+                        _ => None,
+                    })
+                } else {
+                    None
+                };
+
                 let (params, name) = if let Some(ref target) = best_target {
                     (
                         ClickParams {
@@ -831,8 +876,19 @@ pub fn synthesize_draft(
                             y: None,
                             button: *button,
                             click_count: *click_count,
+                            ..Default::default()
                         },
                         format!("Click '{target}'"),
+                    )
+                } else if let Some(ref b64) = image_crop_b64 {
+                    (
+                        ClickParams {
+                            template_image: Some(b64.clone()),
+                            button: *button,
+                            click_count: *click_count,
+                            ..Default::default()
+                        },
+                        format!("Click (image match at {x:.0}, {y:.0})"),
                     )
                 } else {
                     (
@@ -842,6 +898,7 @@ pub fn synthesize_draft(
                             y: Some(*y),
                             button: *button,
                             click_count: *click_count,
+                            ..Default::default()
                         },
                         format!("Click ({x:.0}, {y:.0})"),
                     )
@@ -992,6 +1049,7 @@ mod tests {
                 path: "/tmp/shot.png".to_string(),
                 kind: ScreenshotKind::BeforeClick,
                 meta: None,
+                image_b64: None,
             },
             WalkthroughEventKind::VlmLabelResolved {
                 label: "Submit".to_string(),
@@ -1058,6 +1116,7 @@ mod tests {
             },
             TargetCandidate::ImageCrop {
                 path: "/tmp/crop.png".to_string(),
+                image_b64: "abc123".to_string(),
             },
             TargetCandidate::Coordinates { x: 100.0, y: 200.0 },
         ];
@@ -1648,6 +1707,7 @@ mod tests {
                     path: "/tmp/shot.png".into(),
                     kind: ScreenshotKind::AfterClick,
                     meta: None,
+                    image_b64: None,
                 },
             )];
             let (actions, _) = normalize_events(&events);

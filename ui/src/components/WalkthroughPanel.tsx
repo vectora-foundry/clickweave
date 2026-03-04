@@ -61,15 +61,17 @@ const ACTIONABLE_AX_ROLES = new Set([
   "AXTextField", "AXTextArea", "AXToggle", "AXToolbarButton",
 ]);
 
-/** Find the index of the preferred target candidate, mirroring backend `preferred_label()` logic.
- *  When no text-based candidate qualifies, falls back to Coordinates (matching draft synthesis). */
+/** Find the index of the preferred target candidate, mirroring backend `synthesize_draft` logic.
+ *  Priority: actionable AX label > VlmLabel/OcrText > ImageCrop > Coordinates. */
 function preferredTargetIndex(candidates: TargetCandidate[]): number {
   const idx = candidates.findIndex((c) => {
     if (c.type === "AccessibilityLabel") return ACTIONABLE_AX_ROLES.has(c.role ?? "");
     return c.type === "VlmLabel" || c.type === "OcrText";
   });
   if (idx >= 0) return idx;
-  // No preferred label — draft synthesis uses coordinates.
+  // No text target — prefer ImageCrop over Coordinates (matching draft synthesis).
+  const cropIdx = candidates.findIndex((c) => c.type === "ImageCrop");
+  if (cropIdx >= 0) return cropIdx;
   const coordIdx = candidates.findIndex((c) => c.type === "Coordinates");
   return coordIdx >= 0 ? coordIdx : 0;
 }
@@ -381,6 +383,27 @@ export function WalkthroughPanel() {
                               </label>
                             ))}
                           </div>
+                          {/* Crop thumbnail for selected ImageCrop candidate */}
+                          {(() => {
+                            const chosen = action.target_candidates[chosenTargetIdx];
+                            if (chosen?.type === "ImageCrop") {
+                              return (
+                                <img
+                                  src={convertFileSrc(chosen.path)}
+                                  alt="Click crop"
+                                  className="mt-1 h-16 w-16 rounded border border-[var(--border)] object-contain"
+                                  onError={(e) => {
+                                    // Fall back to inline base64 if the artifact file is missing.
+                                    if (chosen.image_b64) {
+                                      (e.target as HTMLImageElement).src =
+                                        `data:image/jpeg;base64,${chosen.image_b64}`;
+                                    }
+                                  }}
+                                />
+                              );
+                            }
+                            return null;
+                          })()}
                         </div>
                       )}
 

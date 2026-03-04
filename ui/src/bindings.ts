@@ -239,7 +239,7 @@ export type AssistantChatResponse = { assistant_message: string; patch: Workflow
  */
 export type ChatEntry = { role: ChatRole; content: string; timestamp: number; patch_summary?: PatchSummary | null; run_context?: RunContext | null }
 export type ChatRole = "user" | "assistant"
-export type ClickParams = { target: string | null; x: number | null; y: number | null; button: MouseButton; click_count: number }
+export type ClickParams = { target: string | null; template_image?: string | null; x: number | null; y: number | null; button: MouseButton; click_count: number }
 export type Condition = { left: ValueRef; operator: Operator; right: ValueRef }
 /**
  * Persistent conversation session for a workflow.
@@ -351,7 +351,7 @@ export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role:
 /**
  * Label identified by a vision language model from a screenshot crop.
  */
-{ type: "VlmLabel"; label: string } | { type: "OcrText"; text: string } | { type: "ImageCrop"; path: string } | { type: "Coordinates"; x: number; y: number }
+{ type: "VlmLabel"; label: string } | { type: "OcrText"; text: string } | { type: "ImageCrop"; path: string; image_b64: string } | { type: "Coordinates"; x: number; y: number }
 export type TargetOverride = { node_id: string; chosen_candidate_index: number }
 export type TraceEvent = { timestamp: number; event_type: string; payload: JsonValue }
 export type TraceLevel = "Off" | "Minimal" | "Full"

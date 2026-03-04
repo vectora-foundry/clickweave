@@ -243,6 +243,7 @@ pub fn tool_invocation_to_node_type(
                 .or_else(|| args.get("text"))
                 .and_then(|v| v.as_str())
                 .map(String::from),
+            template_image: None,
             x: args.get("x").and_then(|v| v.as_f64()),
             y: args.get("y").and_then(|v| v.as_f64()),
             button: match args.get("button").and_then(|v| v.as_str()) {
@@ -400,6 +401,7 @@ mod tests {
             y: Some(200.0),
             button: MouseButton::Right,
             click_count: 2,
+            ..Default::default()
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         assert_eq!(inv.name, "click");
@@ -429,6 +431,7 @@ mod tests {
             y: None,
             button: MouseButton::Left,
             click_count: 1,
+            ..Default::default()
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();

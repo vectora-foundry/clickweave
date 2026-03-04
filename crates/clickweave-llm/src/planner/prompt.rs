@@ -122,10 +122,12 @@ pub(crate) fn patcher_system_prompt(
                     let mut args = inv.arguments;
                     // Click `target` is internal (not sent to MCP) but the LLM
                     // needs it to know what text the click resolves against.
-                    if let NodeType::Click(p) = &n.node_type
-                        && let Some(target) = &p.target
-                    {
-                        args["target"] = Value::String(target.clone());
+                    if let NodeType::Click(p) = &n.node_type {
+                        if let Some(target) = &p.target {
+                            args["target"] = Value::String(target.clone());
+                        } else if p.template_image.is_some() {
+                            args["has_template_image"] = Value::Bool(true);
+                        }
                     }
                     summary["arguments"] = args;
                 }

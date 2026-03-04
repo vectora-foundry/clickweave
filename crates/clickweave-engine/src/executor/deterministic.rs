@@ -55,6 +55,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let resolved_click;
         let effective = if let NodeType::Click(p) = node_type
+            && p.template_image.is_some()
+            && p.x.is_none()
+        {
+            resolved_click = self
+                .resolve_click_target_by_image(node_id, mcp, p, &mut node_run)
+                .await?;
+            &resolved_click
+        } else if let NodeType::Click(p) = node_type
             && p.target.is_some()
             && p.x.is_none()
         {
@@ -433,6 +441,101 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             y: Some(y),
             button: params.button,
             click_count: params.click_count,
+            ..Default::default()
+        }))
+    }
+
+    async fn resolve_click_target_by_image(
+        &self,
+        _node_id: Uuid,
+        mcp: &McpClient,
+        params: &ClickParams,
+        node_run: &mut Option<&mut NodeRun>,
+    ) -> Result<NodeType, String> {
+        let b64 = params
+            .template_image
+            .as_deref()
+            .ok_or("resolve_click_target_by_image called without template_image")?;
+
+        self.log("Resolving click target by image template".to_string());
+
+        let find_args = serde_json::json!({
+            "template_image_base64": b64,
+            "threshold": 0.75,
+            "max_results": 1,
+        });
+
+        self.record_event(
+            node_run.as_deref(),
+            "tool_call",
+            serde_json::json!({"name": "find_image", "args": {
+                "threshold": 0.75,
+                "max_results": 1,
+                "has_template": true,
+            }}),
+        );
+
+        let result = mcp
+            .call_tool("find_image", Some(find_args))
+            .await
+            .map_err(|e| format!("find_image failed: {}", e))?;
+        Self::check_tool_error(&result, "find_image")?;
+
+        let result_text = Self::extract_result_text(&result);
+
+        self.record_event(
+            node_run.as_deref(),
+            "tool_result",
+            serde_json::json!({
+                "name": "find_image",
+                "text": Self::truncate_for_trace(&result_text, 8192),
+                "text_len": result_text.len(),
+            }),
+        );
+
+        let parsed: Value = serde_json::from_str(&result_text)
+            .map_err(|e| format!("Failed to parse find_image result: {}", e))?;
+
+        // find_image returns a flat array of match objects.
+        let matches = parsed
+            .as_array()
+            .ok_or("find_image returned no matches array")?;
+        let best = matches.first().ok_or("find_image found no matches")?;
+
+        let x = best["screen_x"]
+            .as_f64()
+            .or_else(|| best["x"].as_f64())
+            .ok_or("Missing x in find_image match")?;
+        let y = best["screen_y"]
+            .as_f64()
+            .or_else(|| best["y"].as_f64())
+            .ok_or("Missing y in find_image match")?;
+
+        self.log(format!(
+            "Resolved image target -> ({}, {}), score={}",
+            x,
+            y,
+            best["score"].as_f64().unwrap_or(0.0)
+        ));
+
+        self.record_event(
+            node_run.as_deref(),
+            "target_resolved",
+            serde_json::json!({
+                "method": "find_image",
+                "x": x,
+                "y": y,
+                "score": best["score"],
+            }),
+        );
+
+        Ok(NodeType::Click(ClickParams {
+            target: params.target.clone(),
+            x: Some(x),
+            y: Some(y),
+            button: params.button,
+            click_count: params.click_count,
+            ..Default::default()
         }))
     }
 }

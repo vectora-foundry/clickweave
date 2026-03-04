@@ -90,6 +90,7 @@ async fn test_patch_removes_node() {
             y: Some(200.0),
             button: MouseButton::Left,
             click_count: 1,
+            ..Default::default()
         }),
         "Click",
     );
@@ -203,6 +204,7 @@ async fn test_patch_update_rejects_disallowed_node_type_change() {
             y: Some(200.0),
             button: MouseButton::Left,
             click_count: 1,
+            ..Default::default()
         }),
         "Click",
     );
