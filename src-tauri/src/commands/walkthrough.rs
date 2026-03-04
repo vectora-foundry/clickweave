@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use base64::Engine;
 use clickweave_core::storage::now_millis;
 use clickweave_core::walkthrough::{
-    OcrAnnotation, ScreenshotKind, WalkthroughAction, WalkthroughAnnotations, WalkthroughEvent,
+    ScreenshotKind, WalkthroughAction, WalkthroughAnnotations, WalkthroughEvent,
     WalkthroughEventKind, WalkthroughSession, WalkthroughStatus, WalkthroughStorage,
 };
 use clickweave_mcp::McpClient;
@@ -948,7 +948,7 @@ async fn enrich_click(
     let mut ax_args = serde_json::json!({ "x": x, "y": y });
     let mut screenshot_args = serde_json::json!({
         "mode": "window",
-        "include_ocr": true,
+        "include_ocr": false,
     });
     if let Some(val) = &app_name_val {
         ax_args["app_name"] = val.clone();
@@ -1024,19 +1024,6 @@ async fn enrich_click(
                     }
                 }
             }
-
-            let annotations = parse_ocr_annotations(&result.content);
-            if !annotations.is_empty() {
-                events.push(WalkthroughEvent {
-                    id: Uuid::new_v4(),
-                    timestamp,
-                    kind: WalkthroughEventKind::OcrCaptured {
-                        annotations,
-                        click_x: x,
-                        click_y: y,
-                    },
-                });
-            }
         }
     }
 
@@ -1080,7 +1067,6 @@ async fn enrich_click_background(
     let mut screenshot_path: Option<String> = None;
     let mut screenshot_meta: Option<ScreenshotMeta> = None;
     let mut ax_label_data: Option<(String, Option<String>)> = None;
-    let mut ocr_text: Option<String> = None;
     let mut has_actionable_ax = false;
 
     for ev in &enrichment_events {
@@ -1093,23 +1079,6 @@ async fn enrich_click_background(
                 has_actionable_ax =
                     clickweave_core::walkthrough::is_actionable_ax_role(role.as_deref());
                 ax_label_data = Some((label.clone(), role.clone()));
-            }
-            WalkthroughEventKind::OcrCaptured {
-                annotations,
-                click_x,
-                click_y,
-            } => {
-                let nearest = annotations
-                    .iter()
-                    .filter_map(|a| {
-                        let dist = ((a.x - click_x).powi(2) + (a.y - click_y).powi(2)).sqrt();
-                        (dist <= clickweave_core::walkthrough::OCR_PROXIMITY_PX)
-                            .then_some((a, dist))
-                    })
-                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-                if let Some((ann, _)) = nearest {
-                    ocr_text = Some(ann.text.clone());
-                }
             }
             _ => {}
         }
@@ -1126,15 +1095,8 @@ async fn enrich_click_background(
     let ax_ref = ax_label_data
         .as_ref()
         .map(|(l, r)| (l.as_str(), r.as_deref()));
-    let req = match prepare_vlm_click_request(
-        &path,
-        x,
-        y,
-        meta,
-        ax_ref,
-        ocr_text.as_deref(),
-        app_name.as_deref(),
-    ) {
+    let req = match prepare_vlm_click_request(&path, x, y, meta, ax_ref, None, app_name.as_deref())
+    {
         Some(r) => r,
         None => return,
     };
@@ -1187,53 +1149,6 @@ fn parse_accessibility_result(
         .filter(|s| !s.is_empty())?;
     let role = obj["role"].as_str().map(|s| s.to_string());
     Some((label.to_string(), role))
-}
-
-/// Parse OCR annotations from MCP take_screenshot response.
-///
-/// The MCP server returns OCR data as a markdown text content item with lines like:
-/// `- "Button Text" at (123, 456) bounds: {x: 123, y: 456, w: 50, h: 20}`
-fn parse_ocr_annotations(content: &[clickweave_mcp::ToolContent]) -> Vec<OcrAnnotation> {
-    let mut annotations = Vec::new();
-    for item in content {
-        if let Some(text) = item.as_text() {
-            if !text.contains("OCR Text Detected") {
-                continue;
-            }
-            for line in text.lines() {
-                let line = line.trim();
-                if !line.starts_with("- \"") {
-                    continue;
-                }
-                // Parse: - "text" at (x, y) bounds: ...
-                if let Some(parsed) = parse_ocr_line(line) {
-                    annotations.push(parsed);
-                }
-            }
-        }
-    }
-    annotations
-}
-
-/// Parse a single OCR markdown line: `- "text" at (x, y) bounds: ...`
-fn parse_ocr_line(line: &str) -> Option<OcrAnnotation> {
-    // Strip leading `- "`
-    let rest = line.strip_prefix("- \"")?;
-    // Find closing quote before ` at (`
-    let at_idx = rest.find("\" at (")?;
-    let text = &rest[..at_idx];
-    let after_at = &rest[at_idx + 5..]; // skip `" at (`
-    let paren_end = after_at.find(')')?;
-    let coords = &after_at[..paren_end];
-    let mut parts = coords.split(',');
-    let x: f64 = parts.next()?.trim().parse().ok()?;
-    let y: f64 = parts.next()?.trim().parse().ok()?;
-
-    Some(OcrAnnotation {
-        text: text.to_string(),
-        x,
-        y,
-    })
 }
 
 /// Parse screenshot metadata (origin, scale) from the MCP take_screenshot response.
