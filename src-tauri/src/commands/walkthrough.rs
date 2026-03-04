@@ -254,7 +254,7 @@ pub async fn stop_walkthrough(
     app: tauri::AppHandle,
     planner: Option<super::types::EndpointConfig>,
 ) -> Result<(), String> {
-    let (processing_task, storage, session_dir, workflow_id, session_id, mcp_command) = {
+    let (processing_task, storage, session_dir, workflow_id, session_id) = {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
         let mut guard = handle.lock().unwrap();
 
@@ -282,7 +282,6 @@ pub async fn stop_walkthrough(
             guard.session_dir.clone(),
             sess.workflow_id,
             sess.id,
-            guard.mcp_command.clone(),
         )
     };
     emit_state(&app, WalkthroughStatus::Processing);
@@ -351,49 +350,11 @@ pub async fn stop_walkthrough(
         ),
     };
 
-    // --- LLM generalization (optional) ---
+    let action_node_map = clickweave_core::walkthrough::build_action_node_map(&actions, &draft);
 
-    let (final_draft, action_node_map, used_fallback, all_warnings) =
-        if let Some(planner_cfg) = planner {
-            if planner_cfg.is_empty() || actions.is_empty() {
-                let map = clickweave_core::walkthrough::build_action_node_map(&actions, &draft);
-                (draft, map, true, warnings)
-            } else {
-                // Fetch MCP tool schemas for the prompt.
-                let mcp_tools = match &mcp_command {
-                    Some(cmd) => super::planner::fetch_mcp_tool_schemas(cmd)
-                        .await
-                        .unwrap_or_else(|e| {
-                            tracing::warn!("Failed to fetch MCP tools for generalization: {e}");
-                            vec![]
-                        }),
-                    None => vec![],
-                };
-
-                let llm_config = planner_cfg.into_llm_config(None);
-                let backend = clickweave_llm::LlmClient::new(llm_config);
-                let result = clickweave_llm::planner::generalize_walkthrough(
-                    &backend, &draft, &actions, &mcp_tools,
-                )
-                .await;
-
-                let mut combined_warnings = warnings;
-                combined_warnings.extend(result.warnings);
-                (
-                    result.workflow,
-                    result.action_node_map,
-                    result.used_fallback,
-                    combined_warnings,
-                )
-            }
-        } else {
-            let map = clickweave_core::walkthrough::build_action_node_map(&actions, &draft);
-            (draft, map, true, warnings)
-        };
-
-    // Persist final draft to disk (overwrites pre-generalization draft).
+    // Persist draft to disk.
     if let (Some(storage), Some(dir)) = (&storage, &session_dir)
-        && let Err(e) = storage.save_draft(dir, &final_draft)
+        && let Err(e) = storage.save_draft(dir, &draft)
     {
         tracing::warn!("Failed to save final draft: {e}");
     }
@@ -413,7 +374,7 @@ pub async fn stop_walkthrough(
         }
         let session = guard.session.as_mut().unwrap();
         session.actions = actions.clone();
-        session.warnings = all_warnings.clone();
+        session.warnings = warnings.clone();
         session.status = WalkthroughStatus::Review;
 
         // Persist the updated session.
@@ -427,10 +388,9 @@ pub async fn stop_walkthrough(
             "walkthrough://draft_ready",
             WalkthroughDraftPayload {
                 actions,
-                draft: final_draft,
-                warnings: all_warnings,
+                draft,
+                warnings,
                 action_node_map,
-                used_fallback,
             },
         );
         emit_state(&app, WalkthroughStatus::Review);
@@ -1080,6 +1040,7 @@ async fn resolve_click_targets_with_vlm(
     struct VlmRequest {
         action_idx: usize,
         image_b64: String,
+        prompt: String,
     }
 
     let mut requests: Vec<VlmRequest> = Vec::new();
@@ -1125,9 +1086,49 @@ async fn resolve_click_targets_with_vlm(
             None => continue,
         };
 
+        // Build context-aware prompt with hints from captured action data.
+        let mut prompt = String::from(
+            "This is a screenshot of an application window with a red \
+             crosshair marking where the user clicked. What UI element is at \
+             the crosshair?",
+        );
+
+        let mut hints = Vec::new();
+        if let Some(app) = &action.app_name {
+            hints.push(format!("Application: {app}"));
+        }
+        for candidate in &action.target_candidates {
+            match candidate {
+                TargetCandidate::AccessibilityLabel { label, role } => {
+                    let role_str = role.as_deref().unwrap_or("unknown");
+                    hints.push(format!(
+                        "Accessibility element: \"{label}\" (role: {role_str})"
+                    ));
+                }
+                TargetCandidate::OcrText { text } => {
+                    hints.push(format!("Nearby text (OCR): \"{text}\""));
+                }
+                _ => {}
+            }
+        }
+        if !hints.is_empty() {
+            prompt.push_str("\n\nContext hints (may be incomplete):\n");
+            for hint in &hints {
+                prompt.push_str(&format!("- {hint}\n"));
+            }
+        }
+
+        prompt.push_str(
+            "\nReturn ONLY the text label or name of the element \
+             (e.g., \"Send\", \"Note to Self\", \"Search\"). If there's no text \
+             label, describe the element briefly (e.g., \"message input field\"). \
+             Return just the label, nothing else.",
+        );
+
         requests.push(VlmRequest {
             action_idx: idx,
             image_b64,
+            prompt,
         });
     }
 
@@ -1143,31 +1144,48 @@ async fn resolve_click_targets_with_vlm(
     let llm_config = planner_cfg
         .clone()
         .into_llm_config(Some(0.1))
-        .with_max_tokens(4096)
+        .with_max_tokens(2048)
         .with_thinking(false);
     let backend = std::sync::Arc::new(clickweave_llm::LlmClient::new(llm_config));
-
-    let prompt = "This is a screenshot of an application window with a red \
-         crosshair marking where the user clicked. What UI element is at \
-         the crosshair? Return ONLY the text label or name of the element \
-         (e.g., \"Send\", \"Note to Self\", \"Search\"). If there's no text \
-         label, describe the element briefly (e.g., \"message input field\"). \
-         Return just the label, nothing else.";
 
     // Fire all VLM requests in parallel.
     let mut join_set = tokio::task::JoinSet::new();
 
     for req in requests {
         let backend = backend.clone();
-        let prompt = prompt.to_string();
 
         join_set.spawn(async move {
-            let messages = vec![clickweave_llm::Message::user_with_images(
-                prompt,
-                vec![(req.image_b64, "image/jpeg".to_string())],
-            )];
-            let result = clickweave_llm::ChatBackend::chat(backend.as_ref(), messages, None).await;
-            (req.action_idx, result)
+            let make_messages = || {
+                vec![clickweave_llm::Message::user_with_images(
+                    req.prompt.clone(),
+                    vec![(req.image_b64.clone(), "image/jpeg".to_string())],
+                )]
+            };
+
+            let result =
+                clickweave_llm::ChatBackend::chat(backend.as_ref(), make_messages(), None).await;
+
+            // Retry once if the model exhausted the token budget on reasoning
+            // without producing visible output.
+            let needs_retry = match &result {
+                Ok(resp) => resp.choices.first().is_some_and(|c| {
+                    c.finish_reason.as_deref() == Some("length")
+                        && c.message
+                            .content_text()
+                            .map_or(true, |t| t.trim().is_empty())
+                }),
+                Err(_) => false,
+            };
+
+            if needs_retry {
+                tracing::info!("VLM: retrying action {} (hit token limit)", req.action_idx);
+                let retry =
+                    clickweave_llm::ChatBackend::chat(backend.as_ref(), make_messages(), None)
+                        .await;
+                (req.action_idx, retry)
+            } else {
+                (req.action_idx, result)
+            }
         });
     }
 
@@ -1199,11 +1217,12 @@ async fn resolve_click_targets_with_vlm(
                             "VLM resolved click at ({click_x:.0}, {click_y:.0}) → \"{label}\""
                         );
                         let action = &mut actions[action_idx];
-                        // Insert VLM label after accessibility but before OCR/coordinates.
+                        // Insert VLM label after actionable AX labels but before
+                        // non-actionable AX labels, OCR, and coordinates.
                         let insert_pos = action
                             .target_candidates
                             .iter()
-                            .position(|c| !matches!(c, TargetCandidate::AccessibilityLabel { .. }))
+                            .position(|c| !c.is_actionable_ax_label())
                             .unwrap_or(action.target_candidates.len());
                         action
                             .target_candidates

@@ -226,7 +226,6 @@ pub struct WalkthroughDraftPayload {
     pub draft: clickweave_core::Workflow,
     pub warnings: Vec<String>,
     pub action_node_map: Vec<clickweave_core::walkthrough::ActionNodeEntry>,
-    pub used_fallback: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
