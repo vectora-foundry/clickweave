@@ -1078,6 +1078,118 @@ fn parse_screenshot_metadata(
     })
 }
 
+/// Data needed to fire a VLM request for a single click.
+struct VlmClickRequest {
+    image_b64: String,
+    prompt: String,
+}
+
+/// Prepare a VLM request for a single click: read screenshot, mark crosshair,
+/// build prompt with context hints. Returns `None` if prerequisites are missing.
+fn prepare_vlm_click_request(
+    screenshot_path: &str,
+    click_x: f64,
+    click_y: f64,
+    meta: clickweave_core::walkthrough::ScreenshotMeta,
+    ax_label: Option<(&str, Option<&str>)>,
+    ocr_text: Option<&str>,
+    app_name: Option<&str>,
+) -> Option<VlmClickRequest> {
+    let image_bytes = match std::fs::read(screenshot_path) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::warn!("VLM: failed to read {screenshot_path}: {e}");
+            return None;
+        }
+    };
+
+    // Compute click position in image pixel coordinates.
+    let px = (click_x - meta.origin_x) * meta.scale;
+    let py = (click_y - meta.origin_y) * meta.scale;
+
+    let image_b64 = mark_click_point(&image_bytes, px, py)?;
+
+    // Build context-aware prompt with hints from captured data.
+    let mut prompt = String::from(
+        "This is a screenshot of an application window with a red \
+         crosshair marking where the user clicked. What UI element is at \
+         the crosshair?",
+    );
+
+    let mut hints = Vec::new();
+    if let Some(app) = app_name {
+        hints.push(format!("Application: {app}"));
+    }
+    if let Some((label, role)) = ax_label {
+        let role_str = role.unwrap_or("unknown");
+        hints.push(format!(
+            "Accessibility element: \"{label}\" (role: {role_str})"
+        ));
+    }
+    if let Some(text) = ocr_text {
+        hints.push(format!("Nearby text (OCR): \"{text}\""));
+    }
+    if !hints.is_empty() {
+        prompt.push_str("\n\nContext hints (may be incomplete):\n");
+        for hint in &hints {
+            prompt.push_str(&format!("- {hint}\n"));
+        }
+    }
+
+    prompt.push_str(
+        "\nReturn ONLY the text label or name of the element \
+         (e.g., \"Send\", \"Note to Self\", \"Search\"). If there's no text \
+         label, describe the element briefly (e.g., \"message input field\"). \
+         Return just the label, nothing else.",
+    );
+
+    Some(VlmClickRequest { image_b64, prompt })
+}
+
+/// Execute a VLM request and return the resolved label, or `None` on failure.
+///
+/// Retries once if the model exhausts its token budget on reasoning.
+async fn execute_vlm_click_request(
+    backend: &clickweave_llm::LlmClient,
+    request: &VlmClickRequest,
+) -> Option<String> {
+    let make_messages = || {
+        vec![clickweave_llm::Message::user_with_images(
+            request.prompt.clone(),
+            vec![(request.image_b64.clone(), "image/jpeg".to_string())],
+        )]
+    };
+
+    let result = clickweave_llm::ChatBackend::chat(backend, make_messages(), None).await;
+
+    // Retry once if the model exhausted the token budget on reasoning.
+    let needs_retry = match &result {
+        Ok(resp) => resp.choices.first().is_some_and(|c| {
+            c.finish_reason.as_deref() == Some("length")
+                && c.message
+                    .content_text()
+                    .map_or(true, |t| t.trim().is_empty())
+        }),
+        Err(_) => false,
+    };
+
+    let final_result = if needs_retry {
+        clickweave_llm::ChatBackend::chat(backend, make_messages(), None).await
+    } else {
+        result
+    };
+
+    match final_result {
+        Ok(response) => response
+            .choices
+            .first()
+            .and_then(|c| c.message.content_text())
+            .map(|label| label.trim().trim_matches('"').to_string())
+            .filter(|label| !label.is_empty() && label.len() <= VLM_LABEL_MAX_LEN),
+        Err(_) => None,
+    }
+}
+
 /// Use a VLM to identify click targets for all click actions (in parallel).
 ///
 /// For each Click action that has a screenshot artifact and screenshot metadata,
@@ -1093,15 +1205,14 @@ async fn resolve_click_targets_with_vlm(
         return;
     }
 
-    // Prepare VLM requests: read screenshots and crop on the main thread,
+    // Prepare VLM requests: read screenshots and build prompts on the main thread,
     // then fire all LLM calls in parallel.
-    struct VlmRequest {
+    struct IndexedRequest {
         action_idx: usize,
-        image_b64: String,
-        prompt: String,
+        request: VlmClickRequest,
     }
 
-    let mut requests: Vec<VlmRequest> = Vec::new();
+    let mut requests: Vec<IndexedRequest> = Vec::new();
 
     for (idx, action) in actions.iter().enumerate() {
         let (click_x, click_y) = match &action.kind {
@@ -1119,7 +1230,7 @@ async fn resolve_click_targets_with_vlm(
         }
 
         let screenshot_path = match action.artifact_paths.first() {
-            Some(p) => p.clone(),
+            Some(p) => p.as_str(),
             None => continue,
         };
         let meta = match &action.screenshot_meta {
@@ -1127,67 +1238,37 @@ async fn resolve_click_targets_with_vlm(
             None => continue,
         };
 
-        let image_bytes = match std::fs::read(&screenshot_path) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                tracing::warn!("VLM: failed to read {screenshot_path}: {e}");
-                continue;
-            }
-        };
-
-        // Compute click position in image pixel coordinates.
-        let px = (click_x - meta.origin_x) * meta.scale;
-        let py = (click_y - meta.origin_y) * meta.scale;
-
-        let image_b64 = match mark_click_point(&image_bytes, px, py) {
-            Some(b64) => b64,
-            None => continue,
-        };
-
-        // Build context-aware prompt with hints from captured action data.
-        let mut prompt = String::from(
-            "This is a screenshot of an application window with a red \
-             crosshair marking where the user clicked. What UI element is at \
-             the crosshair?",
-        );
-
-        let mut hints = Vec::new();
-        if let Some(app) = &action.app_name {
-            hints.push(format!("Application: {app}"));
-        }
-        for candidate in &action.target_candidates {
-            match candidate {
+        // Extract hints from existing target candidates.
+        let ax_label_data: Option<(String, Option<String>)> =
+            action.target_candidates.iter().find_map(|c| match c {
                 TargetCandidate::AccessibilityLabel { label, role } => {
-                    let role_str = role.as_deref().unwrap_or("unknown");
-                    hints.push(format!(
-                        "Accessibility element: \"{label}\" (role: {role_str})"
-                    ));
+                    Some((label.clone(), role.clone()))
                 }
-                TargetCandidate::OcrText { text } => {
-                    hints.push(format!("Nearby text (OCR): \"{text}\""));
-                }
-                _ => {}
-            }
-        }
-        if !hints.is_empty() {
-            prompt.push_str("\n\nContext hints (may be incomplete):\n");
-            for hint in &hints {
-                prompt.push_str(&format!("- {hint}\n"));
-            }
-        }
-
-        prompt.push_str(
-            "\nReturn ONLY the text label or name of the element \
-             (e.g., \"Send\", \"Note to Self\", \"Search\"). If there's no text \
-             label, describe the element briefly (e.g., \"message input field\"). \
-             Return just the label, nothing else.",
-        );
-
-        requests.push(VlmRequest {
-            action_idx: idx,
-            image_b64,
-            prompt,
+                _ => None,
+            });
+        let ocr_text: Option<String> = action.target_candidates.iter().find_map(|c| match c {
+            TargetCandidate::OcrText { text } => Some(text.clone()),
+            _ => None,
         });
+
+        let ax_ref = ax_label_data
+            .as_ref()
+            .map(|(l, r)| (l.as_str(), r.as_deref()));
+
+        if let Some(request) = prepare_vlm_click_request(
+            screenshot_path,
+            click_x,
+            click_y,
+            meta,
+            ax_ref,
+            ocr_text.as_deref(),
+            action.app_name.as_deref(),
+        ) {
+            requests.push(IndexedRequest {
+                action_idx: idx,
+                request,
+            });
+        }
     }
 
     if requests.is_empty() {
@@ -1209,47 +1290,19 @@ async fn resolve_click_targets_with_vlm(
     // Fire all VLM requests in parallel.
     let mut join_set = tokio::task::JoinSet::new();
 
-    for req in requests {
+    for indexed in requests {
         let backend = backend.clone();
+        let action_idx = indexed.action_idx;
 
         join_set.spawn(async move {
-            let make_messages = || {
-                vec![clickweave_llm::Message::user_with_images(
-                    req.prompt.clone(),
-                    vec![(req.image_b64.clone(), "image/jpeg".to_string())],
-                )]
-            };
-
-            let result =
-                clickweave_llm::ChatBackend::chat(backend.as_ref(), make_messages(), None).await;
-
-            // Retry once if the model exhausted the token budget on reasoning
-            // without producing visible output.
-            let needs_retry = match &result {
-                Ok(resp) => resp.choices.first().is_some_and(|c| {
-                    c.finish_reason.as_deref() == Some("length")
-                        && c.message
-                            .content_text()
-                            .map_or(true, |t| t.trim().is_empty())
-                }),
-                Err(_) => false,
-            };
-
-            if needs_retry {
-                tracing::info!("VLM: retrying action {} (hit token limit)", req.action_idx);
-                let retry =
-                    clickweave_llm::ChatBackend::chat(backend.as_ref(), make_messages(), None)
-                        .await;
-                (req.action_idx, retry)
-            } else {
-                (req.action_idx, result)
-            }
+            let label = execute_vlm_click_request(backend.as_ref(), &indexed.request).await;
+            (action_idx, label)
         });
     }
 
     // Collect results and apply to actions.
     while let Some(join_result) = join_set.join_next().await {
-        let (action_idx, llm_result) = match join_result {
+        let (action_idx, label) = match join_result {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!("VLM task panicked: {e}");
@@ -1257,40 +1310,23 @@ async fn resolve_click_targets_with_vlm(
             }
         };
 
-        let (click_x, click_y) = match &actions[action_idx].kind {
-            WalkthroughActionKind::Click { x, y, .. } => (*x, *y),
-            _ => continue,
-        };
-
-        match llm_result {
-            Ok(response) => {
-                if let Some(label) = response
-                    .choices
-                    .first()
-                    .and_then(|c| c.message.content_text())
-                {
-                    let label = label.trim().trim_matches('"').to_string();
-                    if !label.is_empty() && label.len() <= VLM_LABEL_MAX_LEN {
-                        tracing::info!(
-                            "VLM resolved click at ({click_x:.0}, {click_y:.0}) → \"{label}\""
-                        );
-                        let action = &mut actions[action_idx];
-                        // Insert VLM label after actionable AX labels but before
-                        // non-actionable AX labels, OCR, and coordinates.
-                        let insert_pos = action
-                            .target_candidates
-                            .iter()
-                            .position(|c| !c.is_actionable_ax_label())
-                            .unwrap_or(action.target_candidates.len());
-                        action
-                            .target_candidates
-                            .insert(insert_pos, TargetCandidate::VlmLabel { label });
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("VLM failed for click at ({click_x:.0}, {click_y:.0}): {e}");
-            }
+        if let Some(label) = label {
+            let (click_x, click_y) = match &actions[action_idx].kind {
+                WalkthroughActionKind::Click { x, y, .. } => (*x, *y),
+                _ => continue,
+            };
+            tracing::info!("VLM resolved click at ({click_x:.0}, {click_y:.0}) → \"{label}\"");
+            let action = &mut actions[action_idx];
+            // Insert VLM label after actionable AX labels but before
+            // non-actionable AX labels, OCR, and coordinates.
+            let insert_pos = action
+                .target_candidates
+                .iter()
+                .position(|c| !c.is_actionable_ax_label())
+                .unwrap_or(action.target_candidates.len());
+            action
+                .target_candidates
+                .insert(insert_pos, TargetCandidate::VlmLabel { label });
         }
     }
 }
