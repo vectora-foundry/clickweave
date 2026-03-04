@@ -1372,6 +1372,15 @@ async fn resolve_click_targets_with_vlm(
             continue;
         }
 
+        // Skip clicks that already have a VLM label (resolved during recording).
+        if action
+            .target_candidates
+            .iter()
+            .any(|c| matches!(c, TargetCandidate::VlmLabel { .. }))
+        {
+            continue;
+        }
+
         let screenshot_path = match action.artifact_paths.first() {
             Some(p) => p.as_str(),
             None => continue,
