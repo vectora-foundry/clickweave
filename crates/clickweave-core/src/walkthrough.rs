@@ -260,10 +260,19 @@ const ACTIONABLE_AX_ROLES: &[&str] = &[
 ];
 
 impl TargetCandidate {
-    /// Return the text label if this candidate has one.
+    /// Return the text label if this candidate is useful as a click target.
+    /// Non-actionable AX labels (e.g. AXWindow, AXGroup) are skipped so that
+    /// VLM or OCR labels take priority in `find_map` iteration.
     pub fn preferred_label(&self) -> Option<&str> {
         match self {
-            Self::AccessibilityLabel { label, .. } | Self::VlmLabel { label } => Some(label),
+            Self::AccessibilityLabel { label, role } => {
+                if is_actionable_ax_role(role.as_deref()) {
+                    Some(label)
+                } else {
+                    None
+                }
+            }
+            Self::VlmLabel { label } => Some(label),
             Self::OcrText { text } => Some(text),
             _ => None,
         }
