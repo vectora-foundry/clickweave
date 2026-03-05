@@ -95,6 +95,23 @@ pub struct Tool {
     pub input_schema: Value,
 }
 
+/// Convert a slice of MCP tools to OpenAI-compatible function-calling format.
+pub fn tools_to_openai(tools: &[Tool]) -> Vec<Value> {
+    tools
+        .iter()
+        .map(|tool| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.input_schema
+                }
+            })
+        })
+        .collect()
+}
+
 /// MCP tools/list response
 #[derive(Debug, Deserialize)]
 pub struct ToolsListResult {

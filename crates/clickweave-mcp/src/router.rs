@@ -34,31 +34,46 @@ impl McpRouter {
             return Err(anyhow!("McpRouter requires at least one server config"));
         }
 
-        let mut servers = Vec::new();
-
+        // Spawn all servers concurrently via JoinSet.
+        let mut join_set = tokio::task::JoinSet::new();
         for (i, config) in configs.iter().enumerate() {
-            let args_ref: Vec<&str> = config.args.iter().map(|s| s.as_str()).collect();
-            let result = McpClient::spawn(&config.command, &args_ref).await;
+            let name = config.name.clone();
+            let command = config.command.clone();
+            let args = config.args.clone();
+            join_set.spawn(async move {
+                let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                let result = McpClient::spawn(&command, &args_ref).await;
+                (i, name, result)
+            });
+        }
 
+        // Collect results, preserving config order for deterministic routing.
+        let mut indexed_results: Vec<_> = Vec::with_capacity(configs.len());
+        while let Some(res) = join_set.join_next().await {
+            let (i, name, result) = res.context("MCP spawn task panicked")?;
+            indexed_results.push((i, name, result));
+        }
+        indexed_results.sort_by_key(|(i, _, _)| *i);
+
+        let mut servers = Vec::new();
+        for (i, name, result) in indexed_results {
             match result {
                 Ok(client) => {
                     info!(
                         "MCP server '{}' spawned with {} tools",
-                        config.name,
+                        name,
                         client.tools().len()
                     );
-                    servers.push((config.name.clone(), client));
+                    servers.push((name, client));
                 }
                 Err(e) => {
                     if i == 0 {
-                        return Err(e).context(format!(
-                            "Primary MCP server '{}' failed to spawn",
-                            config.name
-                        ));
+                        return Err(e)
+                            .context(format!("Primary MCP server '{}' failed to spawn", name));
                     }
                     warn!(
                         "MCP server '{}' failed to spawn: {}. Continuing without it.",
-                        config.name, e
+                        name, e
                     );
                 }
             }
@@ -116,19 +131,7 @@ impl McpRouter {
 
     /// Convert all tools to OpenAI-compatible function-calling format.
     pub fn tools_as_openai(&self) -> Vec<Value> {
-        self.merged_tools
-            .iter()
-            .map(|tool| {
-                serde_json::json!({
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.input_schema
-                    }
-                })
-            })
-            .collect()
+        crate::tools_to_openai(&self.merged_tools)
     }
 
     /// Number of active servers.

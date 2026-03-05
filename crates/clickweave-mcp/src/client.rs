@@ -176,19 +176,7 @@ impl McpClient {
 
     /// Convert MCP tools to OpenAI-compatible tool format
     pub fn tools_as_openai(&self) -> Vec<Value> {
-        self.tools
-            .iter()
-            .map(|tool| {
-                serde_json::json!({
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.input_schema
-                    }
-                })
-            })
-            .collect()
+        crate::tools_to_openai(&self.tools)
     }
 
     /// Check if process is still running
