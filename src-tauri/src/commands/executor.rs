@@ -61,13 +61,15 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
     let emit_handle = app.clone();
     let cleanup_handle = emit_handle.clone();
 
+    let mcp_configs = clickweave_mcp::default_server_configs(&request.mcp_command);
+
     let task_handle = tauri::async_runtime::spawn(async move {
         let mut executor = WorkflowExecutor::new(
             request.workflow,
             agent_config,
             vlm_config,
             supervision_config,
-            request.mcp_command,
+            mcp_configs,
             request.execution_mode,
             project_path,
             event_tx,

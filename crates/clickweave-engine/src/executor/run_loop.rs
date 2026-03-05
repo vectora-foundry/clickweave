@@ -1,7 +1,7 @@
 use super::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExecutor};
 use clickweave_core::{ExecutionMode, NodeRole, NodeRun, NodeType, RunStatus};
 use clickweave_llm::ChatBackend;
-use clickweave_mcp::McpClient;
+use clickweave_mcp::McpRouter;
 use serde_json::Value;
 use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
@@ -34,7 +34,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         node_name: &str,
         node_type: &NodeType,
         tools: &[Value],
-        mcp: &McpClient,
+        mcp: &McpRouter,
         timeout_ms: Option<u64>,
         retries: u32,
         command_rx: &mut Receiver<ExecutorCommand>,
@@ -104,22 +104,22 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             self.log("VLM not configured — images sent directly to agent");
         }
 
-        let mcp = if self.mcp_command == "npx" {
-            McpClient::spawn_npx().await
-        } else {
-            McpClient::spawn(&self.mcp_command, &[]).await
-        };
+        let mcp = McpRouter::spawn(&self.mcp_configs).await;
 
         let mcp = match mcp {
             Ok(m) => m,
             Err(e) => {
-                self.emit_error(format!("Failed to spawn MCP server: {}", e));
+                self.emit_error(format!("Failed to spawn MCP servers: {}", e));
                 self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
                 return;
             }
         };
 
-        self.log(format!("MCP server ready with {} tools", mcp.tools().len()));
+        self.log(format!(
+            "MCP router ready: {} servers, {} tools",
+            mcp.server_count(),
+            mcp.tools().len()
+        ));
 
         match self.storage.begin_execution() {
             Ok(exec_dir) => self.log(format!("Execution dir: {}", exec_dir)),
@@ -448,7 +448,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         node_type: &NodeType,
         expected_outcome: Option<&str>,
         node_result: &Value,
-        mcp: &McpClient,
+        mcp: &McpRouter,
     ) -> Option<clickweave_core::NodeVerdict> {
         if matches!(node_type, NodeType::TakeScreenshot(_)) {
             let Some(outcome) = expected_outcome else {

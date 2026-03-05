@@ -1,17 +1,15 @@
 use super::types::*;
-use clickweave_mcp::McpClient;
+use clickweave_mcp::{McpRouter, default_server_configs};
 
 pub(crate) async fn fetch_mcp_tool_schemas(
     mcp_command: &str,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let mut mcp = if mcp_command == "npx" {
-        McpClient::spawn_npx().await
-    } else {
-        McpClient::spawn(mcp_command, &[]).await
-    }
-    .map_err(|e| format!("Failed to spawn MCP: {}", e))?;
-    let tools = mcp.tools_as_openai();
-    let _ = mcp.kill();
+    let configs = default_server_configs(mcp_command);
+    let mut router = McpRouter::spawn(&configs)
+        .await
+        .map_err(|e| format!("Failed to spawn MCP servers: {}", e))?;
+    let tools = router.tools_as_openai();
+    router.kill_all();
     Ok(tools)
 }
 

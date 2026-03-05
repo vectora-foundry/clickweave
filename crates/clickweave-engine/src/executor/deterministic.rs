@@ -5,7 +5,7 @@ use clickweave_core::{
     TakeScreenshotParams, tool_mapping,
 };
 use clickweave_llm::ChatBackend;
-use clickweave_mcp::{McpClient, ToolCallResult};
+use clickweave_mcp::{McpRouter, ToolCallResult};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -14,7 +14,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &self,
         node_id: Uuid,
         node_type: &NodeType,
-        mcp: &McpClient,
+        mcp: &McpRouter,
         mut node_run: Option<&mut NodeRun>,
     ) -> Result<Value, String> {
         if let NodeType::AppDebugKitOp(p) = node_type {
@@ -255,7 +255,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         node_id: Uuid,
         original_args: &Value,
         original_result_text: &str,
-        mcp: &McpClient,
+        mcp: &McpRouter,
         node_run: Option<&NodeRun>,
     ) -> Option<String> {
         let retry_args = self
@@ -312,7 +312,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     async fn resolve_click_target(
         &self,
         node_id: Uuid,
-        mcp: &McpClient,
+        mcp: &McpRouter,
         params: &ClickParams,
         node_run: &mut Option<&mut NodeRun>,
     ) -> Result<NodeType, String> {
@@ -448,7 +448,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     async fn resolve_click_target_by_image(
         &self,
         _node_id: Uuid,
-        mcp: &McpClient,
+        mcp: &McpRouter,
         params: &ClickParams,
         node_run: &mut Option<&mut NodeRun>,
     ) -> Result<NodeType, String> {
