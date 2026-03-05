@@ -460,23 +460,30 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         self.log("Resolving click target by image template".to_string());
 
         // Take a screenshot first — find_image needs both a template and a
-        // screenshot to search within.
+        // screenshot to search within. Use screenshot_id when available so
+        // find_image has the screenshot metadata for screen coordinate conversion.
         let app_name = self.focused_app.read().ok().and_then(|g| g.clone());
         let screenshot_args = match &app_name {
             Some(name) => serde_json::json!({ "app_name": name }),
             None => serde_json::json!({}),
         };
-        let screenshot_b64 = self
-            .extract_screenshot_image(mcp, screenshot_args)
+        let (screenshot_b64, screenshot_id) = self
+            .take_screenshot_with_id(mcp, screenshot_args)
             .await
             .ok_or("Failed to take screenshot for image template matching")?;
 
-        let find_args = serde_json::json!({
+        let mut find_args = serde_json::json!({
             "template_image_base64": b64,
-            "screenshot_image_base64": screenshot_b64,
             "threshold": 0.75,
             "max_results": 1,
         });
+        // Prefer screenshot_id (avoids re-sending the full image and provides
+        // metadata for screen coordinate conversion). Fall back to base64.
+        if let Some(id) = &screenshot_id {
+            find_args["screenshot_id"] = serde_json::Value::String(id.clone());
+        } else {
+            find_args["screenshot_image_base64"] = serde_json::Value::String(screenshot_b64);
+        }
 
         self.record_event(
             node_run.as_deref(),
@@ -509,19 +516,21 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let parsed: Value = serde_json::from_str(&result_text)
             .map_err(|e| format!("Failed to parse find_image result: {}", e))?;
 
-        // find_image returns a flat array of match objects.
-        let matches = parsed
+        // find_image returns { "matches": [...] }.
+        let matches = parsed["matches"]
             .as_array()
             .ok_or("find_image returned no matches array")?;
         let best = matches.first().ok_or("find_image found no matches")?;
 
+        // Prefer screen coordinates (available when screenshot_id was used).
+        // Fall back to center pixel coordinates.
         let x = best["screen_x"]
             .as_f64()
-            .or_else(|| best["x"].as_f64())
+            .or_else(|| best["center"]["x"].as_f64())
             .ok_or("Missing x in find_image match")?;
         let y = best["screen_y"]
             .as_f64()
-            .or_else(|| best["y"].as_f64())
+            .or_else(|| best["center"]["y"].as_f64())
             .ok_or("Missing y in find_image match")?;
 
         self.log(format!(

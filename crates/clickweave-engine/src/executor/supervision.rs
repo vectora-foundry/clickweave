@@ -324,6 +324,37 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
         None
     }
+
+    /// Take a screenshot and extract both the image base64 and the screenshot_id
+    /// (used by find_image for server-side coordinate conversion).
+    pub(crate) async fn take_screenshot_with_id(
+        &self,
+        mcp: &McpClient,
+        args: Value,
+    ) -> Option<(String, Option<String>)> {
+        let result = mcp.call_tool("take_screenshot", Some(args)).await.ok()?;
+        if result.is_error == Some(true) {
+            return None;
+        }
+        let mut image_b64 = None;
+        let mut screenshot_id = None;
+        for content in &result.content {
+            match content {
+                ToolContent::Image { data, .. } => {
+                    image_b64 = Some(data.clone());
+                }
+                ToolContent::Text { text } => {
+                    if let Ok(meta) = serde_json::from_str::<Value>(text) {
+                        if let Some(id) = meta["screenshot_id"].as_str() {
+                            screenshot_id = Some(id.to_string());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        image_b64.map(|img| (img, screenshot_id))
+    }
 }
 
 /// Parse the LLM's JSON verification response. Returns (passed, reasoning).
