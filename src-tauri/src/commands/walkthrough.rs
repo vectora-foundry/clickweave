@@ -1195,12 +1195,10 @@ async fn enrich_click_background(
             Ok(b) => b,
             Err(_) => return,
         };
-        let Ok(img) = image::load_from_memory(&bytes) else {
-            return;
-        };
         let (px, py) = screenshot_meta.screen_to_pixel(x, y);
         let scale = screenshot_meta.scale;
         let crop_result = tokio::task::spawn_blocking(move || {
+            let img = image::load_from_memory(&bytes).ok()?;
             crop_click_region(&img, px, py, scale).map(|(jpeg, b64)| {
                 let filename = format!("crop_{timestamp}.jpg");
                 let path = artifacts_dir.join(&filename);
@@ -1593,9 +1591,9 @@ async fn resolve_click_targets_with_vlm(
     }
 }
 
-/// Half-size of the click crop in screen points. A 32pt radius yields a
-/// Re-export the crop half-size from the platform module. Used by the fallback
-/// crop path when the cursor region buffer is empty.
+/// Half-size of the click crop in screen points (32pt radius → 64pt square →
+/// 128px on Retina). On macOS this re-exports the platform constant; on other
+/// platforms it's defined inline.
 #[cfg(target_os = "macos")]
 use crate::platform::macos::CURSOR_REGION_HALF_PT as CROP_HALF_SIZE_PTS;
 #[cfg(not(target_os = "macos"))]

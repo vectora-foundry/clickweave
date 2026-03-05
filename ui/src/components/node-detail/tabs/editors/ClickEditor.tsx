@@ -1,5 +1,6 @@
+import { useMemo } from "react";
 import type { NodeType } from "../../../../bindings";
-import { FieldGroup, ImagePathField, NumberField, SelectField, TextField } from "../../fields";
+import { FieldGroup, NumberField, SelectField, TextField } from "../../fields";
 import { type NodeEditorProps, optionalString } from "./types";
 
 export function ClickEditor({ nodeType, onUpdate, projectPath }: NodeEditorProps) {
@@ -20,11 +21,9 @@ export function ClickEditor({ nodeType, onUpdate, projectPath }: NodeEditorProps
         onChange={(v) => updateType({ target: optionalString(v) })}
         placeholder="Text to find and click (auto-resolves coordinates)"
       />
-      <ImagePathField
-        label="Template Image"
-        value={nt.template_image ?? ""}
-        projectPath={projectPath}
-        onChange={(v) => updateType({ template_image: optionalString(v) })}
+      <TemplateImageField
+        value={nt.template_image ?? null}
+        onClear={() => updateType({ template_image: null })}
       />
       {hasImage && (
         <p className="text-[10px] text-[var(--text-muted)]">
@@ -55,5 +54,51 @@ export function ClickEditor({ nodeType, onUpdate, projectPath }: NodeEditorProps
         onChange={(v) => updateType({ click_count: v })}
       />
     </FieldGroup>
+  );
+}
+
+function TemplateImageField({
+  value,
+  onClear,
+}: {
+  value: string | null;
+  onClear: () => void;
+}) {
+  const src = useMemo(() => {
+    if (!value || value.length < 64) return null;
+    const mime = value.startsWith("/9j/")
+      ? "image/jpeg"
+      : value.startsWith("iVBOR")
+        ? "image/png"
+        : null;
+    if (!mime) return null;
+    return `data:${mime};base64,${value}`;
+  }, [value]);
+
+  return (
+    <div>
+      <label className="mb-1 block text-xs text-[var(--text-secondary)]">
+        Template Image
+      </label>
+      {src ? (
+        <div className="flex items-start gap-2">
+          <img
+            src={src}
+            alt="Template preview"
+            className="max-h-32 rounded border border-[var(--border)] object-contain"
+          />
+          <button
+            onClick={onClear}
+            className="rounded bg-[var(--bg-input)] px-2 py-1.5 text-xs text-red-400 hover:bg-red-500/20"
+          >
+            Clear
+          </button>
+        </div>
+      ) : (
+        <p className="text-[10px] text-[var(--text-muted)]">
+          No template image. Record a walkthrough to generate one.
+        </p>
+      )}
+    </div>
   );
 }
