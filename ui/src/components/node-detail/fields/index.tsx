@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import { commands } from "../../../bindings";
 
 export function FieldGroup({
@@ -203,7 +203,28 @@ export function ImagePathField({
           </button>
         )}
       </div>
+      <ImagePreview value={value} />
     </div>
+  );
+}
+
+/** Renders an inline preview when the value is base64-encoded image data. */
+function ImagePreview({ value }: { value: string }) {
+  const src = useMemo(() => {
+    if (!value || value.length < 64) return null;
+    // Skip if it looks like a file path
+    if (value.includes("/") || value.includes("\\") || value.includes(".")) return null;
+    return `data:image/png;base64,${value}`;
+  }, [value]);
+
+  if (!src) return null;
+
+  return (
+    <img
+      src={src}
+      alt="Template preview"
+      className="mt-1.5 max-h-32 rounded border border-[var(--border)] object-contain"
+    />
   );
 }
 
