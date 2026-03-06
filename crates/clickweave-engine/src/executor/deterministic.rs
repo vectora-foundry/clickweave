@@ -67,6 +67,34 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             && p.target.is_some()
             && p.x.is_none()
         {
+            // For Electron/Chrome apps, try CDP click first (snapshot + uid click).
+            let target = p.target.as_deref().unwrap();
+            let app_kind = self.focused_app_kind();
+            let is_cdm = app_kind == AppKind::ElectronApp || app_kind == AppKind::ChromeBrowser;
+
+            if is_cdm && mcp.has_server(CDP_SERVER) {
+                match self
+                    .resolve_and_click_cdp(node_id, target, mcp, node_run.as_deref())
+                    .await
+                {
+                    Ok(result_text) => {
+                        self.record_event(
+                            node_run.as_deref(),
+                            "tool_result",
+                            serde_json::json!({
+                                "tool": "click",
+                                "method": "cdp",
+                                "result": Self::truncate_for_trace(&result_text, 8192),
+                            }),
+                        );
+                        return Ok(Self::parse_result_text(&result_text));
+                    }
+                    Err(e) => {
+                        self.log(format!("CDP click failed, falling back to native: {e}"));
+                    }
+                }
+            }
+
             resolved_click = self
                 .resolve_click_target(node_id, mcp, p, &mut node_run)
                 .await?;
