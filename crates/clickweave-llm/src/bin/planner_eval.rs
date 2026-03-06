@@ -542,10 +542,18 @@ async fn main() -> Result<()> {
         runs_per_case,
     );
 
-    // Spawn runs with bounded concurrency.
-    // Multi-turn cases must run turns sequentially within each run, but
-    // independent (case, run) pairs can still run in parallel.
-    let semaphore = Arc::new(Semaphore::new(cli.concurrency));
+    // Per-endpoint semaphores so a slow/dead endpoint can't starve others.
+    let per_endpoint_sems: Vec<Arc<Semaphore>> = urls
+        .iter()
+        .enumerate()
+        .map(|(idx, _)| {
+            let weight = schedule.iter().filter(|&&i| i == idx).count();
+            // Scale concurrency by weight proportion, minimum 1.
+            let slots = (cli.concurrency * weight / schedule.len()).max(1);
+            Arc::new(Semaphore::new(slots))
+        })
+        .collect();
+
     let tools_json = Arc::new(tools_json);
     let prompt_template = Arc::new(prompt_template);
     let progress = Arc::new(Progress::new(total_runs));
@@ -560,7 +568,7 @@ async fn main() -> Result<()> {
             let endpoint = urls[client_idx].clone();
             let tools = Arc::clone(&tools_json);
             let template = Arc::clone(&prompt_template);
-            let sem = Arc::clone(&semaphore);
+            let sem = Arc::clone(&per_endpoint_sems[client_idx]);
             let prog = Arc::clone(&progress);
             let turns = case.turns.clone();
 
