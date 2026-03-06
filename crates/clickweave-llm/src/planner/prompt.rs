@@ -184,14 +184,37 @@ Output ONLY a JSON object with these optional fields:
 }}
 
 Rules:
+- **Minimal patch.** Only modify, add, or remove nodes directly affected by the user's request. Leave all unrelated nodes and edges untouched. If the user says "change X", only touch the nodes for X — do not rebuild or remove unrelated parts of the workflow.
+- **Identify affected nodes by their arguments, not just names.** When the user refers to a specific part (e.g. "change Alice to Michael"), find nodes whose tool arguments reference "Alice" specifically. Do not touch nodes that reference other entities (e.g. "Bob"), even if they use the same tool types.
+- **Use the right operation for each change:**
+  - **Replacing** an action with an equivalent one (e.g. "click Alice" → "click Michael"): use "update" to change the node's arguments in-place. This preserves position and edges.
+  - **Adding** genuinely new steps (e.g. "also type the result into TextEdit"): use "add" to append new nodes. These are new actions that don't replace anything.
+  - **Inserting before** an existing step: remove that step with "remove_node_ids", then include the new steps followed by the removed step in "add". This ensures correct ordering. Example: to insert "type result into TextEdit" before "take screenshot" (id: xyz) → remove xyz, add [launch TextEdit, type result, take screenshot].
+  - **Removing** steps the user no longer wants: use "remove_node_ids".
+  - Never use "remove+add" to **replace** a node with an equivalent one — use "update" instead. DO use "remove+add" when you need to **reorder** (insert before an existing step).
 - Only include fields that have changes (omit empty arrays).
-- For "add", use the same step format as planning (step_type: Tool/AiTransform/AiStep).
+- For "add", use the same step format as planning (step_type: Tool/AiTransform/AiStep). New nodes from "add" are appended after the last existing node.
 - For "remove_node_ids", use the exact node IDs from the current workflow.
 - For "update", include "node_type" whenever tool arguments need to change (e.g. different search text, click target, key). Changing only the "name" does NOT change what the node actually does at runtime.
-- New nodes from "add" will be appended after the last existing node.
 - For "add_nodes" + "add_edges", use short IDs (e.g. "n1", "n2") for new nodes. You can reference existing workflow node UUIDs in "add_edges" to connect new nodes to existing ones.
-- Keep the workflow functional — don't remove nodes that break the flow without replacement.
-- **Loop structure — think like code.** Setup steps go BEFORE the loop. Only repeating steps go in the body. Verification/cleanup goes AFTER (LoopDone). Example: "multiply by 2 until > 128" → setup: click "2" | body: click "×", click "2", click "=" | after: verify result."#,
+- Keep the workflow functional — don't remove nodes without replacement.
+- **Loop structure — think like code.** Setup steps go BEFORE the loop. Only repeating steps go in the body. Verification/cleanup goes AFTER (LoopDone). Example: "multiply by 2 until > 128" → setup: click "2" | body: click "×", click "2", click "=" | after: verify result.
+
+Example — redirect (user says "send to Michael instead of Alice"):
+Current nodes: [Launch Signal, Find Alice (id: abc1), Click Alice (id: abc2), Type hello (id: abc3), Send (id: abc4), Find Bob, Click Bob, Type yo, Send to Bob]
+User: "Don't send to Alice, send to Michael instead"
+Correct patch — use "update" to change Alice nodes in-place:
+{{"update": [{{"node_id": "abc1", "name": "Find Michael", "node_type": {{"step_type": "Tool", "tool_name": "find_text", "arguments": {{"text": "Michael"}}}}}}, {{"node_id": "abc2", "name": "Click Michael", "node_type": {{"step_type": "Tool", "tool_name": "click", "arguments": {{"target": "Michael"}}}}}}]}}
+This preserves node ordering and edges. Bob's nodes stay untouched.
+Wrong: removing Alice nodes + adding Michael nodes at the end (breaks edge ordering).
+
+Example — insert before (user says "before the screenshot, type the result into TextEdit"):
+Current nodes: [Launch Calc, Click 5, Click ×, Click 6, Click = , Take screenshot (id: xyz1)]
+User: "Before the screenshot, type the result into TextEdit"
+Correct patch — remove the screenshot, add new steps then re-add the screenshot at the end:
+{{"remove_node_ids": ["xyz1"], "add": [{{"step_type": "Tool", "tool_name": "launch_app", "arguments": {{"app_name": "TextEdit"}}}}, {{"step_type": "Tool", "tool_name": "type_text", "arguments": {{"text": "30"}}}}, {{"step_type": "Tool", "tool_name": "take_screenshot", "arguments": {{}}}}]}}
+The removed node is re-added after the new steps, so the final order is: …Click = → Launch TextEdit → Type 30 → Take screenshot.
+Wrong: using only "add" without removing the screenshot (appends TextEdit AFTER the screenshot, violating "before")."#,
     )
 }
 
