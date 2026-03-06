@@ -586,9 +586,235 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 }
 
+const CDP_SERVER: &str = "chrome-devtools";
+
+/// Parse a CDP snapshot and find elements whose text contains the target.
+/// Returns a vec of (uid, matched_line) tuples.
+///
+/// The snapshot from chrome-devtools `take_snapshot` is a text representation
+/// of the accessibility tree where each element has a UID. Format:
+/// ```text
+/// [uid="e1"] button "Submit"
+/// [uid="e2"] link "Friends"
+/// ```
+fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<(String, String)> {
+    let target_lower = target.to_lowercase();
+    let mut matches = Vec::new();
+    for line in snapshot_text.lines() {
+        if let Some(uid_start) = line.find("uid=\"") {
+            let uid_rest = &line[uid_start + 5..];
+            if let Some(uid_end) = uid_rest.find('"') {
+                let uid = &uid_rest[..uid_end];
+                if line.to_lowercase().contains(&target_lower) {
+                    matches.push((uid.to_string(), line.trim().to_string()));
+                }
+            }
+        }
+    }
+    matches
+}
+
+impl<C: ChatBackend> WorkflowExecutor<C> {
+    /// Try to resolve and click a text target via CDP (chrome-devtools).
+    ///
+    /// Takes a snapshot of the page's accessibility tree, finds the element
+    /// matching the target text, and clicks it via CDP. Returns the click
+    /// result text on success, or an error string to trigger native fallback.
+    async fn resolve_and_click_cdp(
+        &self,
+        _node_id: Uuid,
+        target: &str,
+        mcp: &McpRouter,
+        node_run: Option<&NodeRun>,
+    ) -> Result<String, String> {
+        // 1. Take CDP snapshot
+        self.log(format!("CDP: taking snapshot to find '{}'", target));
+        let snapshot_result = mcp
+            .call_tool_on(CDP_SERVER, "take_snapshot", None)
+            .await
+            .map_err(|e| format!("CDP take_snapshot failed: {e}"))?;
+
+        if snapshot_result.is_error == Some(true) {
+            return Err("CDP take_snapshot returned error".to_string());
+        }
+
+        let snapshot_text = Self::extract_result_text(&snapshot_result);
+
+        // 2. Find matching elements
+        let matches = find_elements_in_snapshot(&snapshot_text, target);
+
+        let uid = if matches.is_empty() {
+            self.log(format!(
+                "CDP: no exact match for '{}', trying LLM resolution",
+                target
+            ));
+            self.resolve_cdp_element_name(target, &snapshot_text)
+                .await?
+        } else if matches.len() == 1 {
+            matches[0].0.clone()
+        } else {
+            self.log(format!(
+                "CDP: {} matches for '{}', disambiguating",
+                matches.len(),
+                target
+            ));
+            self.disambiguate_cdp_elements(target, &matches).await?
+        };
+
+        // 3. Click the element
+        self.log(format!("CDP: clicking element uid='{}'", uid));
+        let click_args = serde_json::json!({ "uid": uid });
+        let click_result = mcp
+            .call_tool_on(CDP_SERVER, "click", Some(click_args))
+            .await
+            .map_err(|e| format!("CDP click failed: {e}"))?;
+
+        if click_result.is_error == Some(true) {
+            return Err(format!(
+                "CDP click error: {}",
+                Self::extract_result_text(&click_result)
+            ));
+        }
+
+        self.record_event(
+            node_run,
+            "cdp_click",
+            serde_json::json!({ "target": target, "uid": uid }),
+        );
+
+        Ok(Self::extract_result_text(&click_result))
+    }
+
+    /// Ask the LLM to find the best matching element in the CDP snapshot.
+    async fn resolve_cdp_element_name(
+        &self,
+        target: &str,
+        snapshot_text: &str,
+    ) -> Result<String, String> {
+        let truncated = if snapshot_text.len() > 4000 {
+            &snapshot_text[..4000]
+        } else {
+            snapshot_text
+        };
+
+        let prompt = format!(
+            "Find the element in this page snapshot that best matches the target '{target}'.\n\
+             Return ONLY the uid value, nothing else.\n\n\
+             Page snapshot:\n{truncated}"
+        );
+
+        let response = self
+            .reasoning_backend()
+            .chat(vec![clickweave_llm::Message::user(prompt)], None)
+            .await
+            .map_err(|e| format!("LLM resolution failed: {e}"))?;
+
+        let raw_text = response
+            .choices
+            .first()
+            .and_then(|c| c.message.content_text())
+            .ok_or_else(|| "LLM returned empty content".to_string())?;
+
+        let uid = raw_text.trim().trim_matches('"').to_string();
+        if uid.is_empty() {
+            return Err(format!(
+                "LLM could not resolve '{}' in CDP snapshot",
+                target
+            ));
+        }
+
+        self.log(format!("CDP: LLM resolved '{}' -> uid='{}'", target, uid));
+        Ok(uid)
+    }
+
+    /// Disambiguate between multiple CDP element matches using the LLM.
+    async fn disambiguate_cdp_elements(
+        &self,
+        target: &str,
+        matches: &[(String, String)],
+    ) -> Result<String, String> {
+        let options: Vec<String> = matches
+            .iter()
+            .enumerate()
+            .map(|(i, (uid, text))| format!("{}: uid={} — {}", i + 1, uid, text))
+            .collect();
+
+        let prompt = format!(
+            "Multiple elements match the target '{target}'. Which one is the best match?\n\
+             Return ONLY the uid value, nothing else.\n\n{}",
+            options.join("\n")
+        );
+
+        let response = self
+            .reasoning_backend()
+            .chat(vec![clickweave_llm::Message::user(prompt)], None)
+            .await
+            .map_err(|e| format!("LLM disambiguation failed: {e}"))?;
+
+        let raw_text = response
+            .choices
+            .first()
+            .and_then(|c| c.message.content_text())
+            .unwrap_or_default();
+
+        let uid = raw_text.trim().trim_matches('"').to_string();
+        if uid.is_empty() {
+            // Fall back to first match
+            return Ok(matches[0].0.clone());
+        }
+        Ok(uid)
+    }
+}
+
 fn truncate_for_error(s: &str, max_len: usize) -> &str {
     match s.char_indices().nth(max_len) {
         Some((idx, _)) => &s[..idx],
         None => s,
+    }
+}
+
+#[cfg(test)]
+mod cdp_tests {
+    use super::find_elements_in_snapshot;
+
+    const SNAPSHOT: &str = r#"
+[uid="e1"] button "Submit"
+[uid="e2"] link "Friends"
+[uid="e3"] heading "Settings"
+[uid="e4"] button "Submit Form"
+"#;
+
+    #[test]
+    fn single_match() {
+        let matches = find_elements_in_snapshot(SNAPSHOT, "Friends");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].0, "e2");
+    }
+
+    #[test]
+    fn multiple_matches() {
+        let matches = find_elements_in_snapshot(SNAPSHOT, "Submit");
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].0, "e1");
+        assert_eq!(matches[1].0, "e4");
+    }
+
+    #[test]
+    fn case_insensitive() {
+        let matches = find_elements_in_snapshot(SNAPSHOT, "settings");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].0, "e3");
+    }
+
+    #[test]
+    fn no_matches() {
+        let matches = find_elements_in_snapshot(SNAPSHOT, "Nonexistent");
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn empty_snapshot() {
+        let matches = find_elements_in_snapshot("", "Submit");
+        assert!(matches.is_empty());
     }
 }
