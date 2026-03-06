@@ -26,7 +26,7 @@ function actionLabel(action: WalkthroughAction): string {
       const idx = preferredTargetIndex(action.target_candidates);
       const best = action.target_candidates[idx];
       if (best && best.type !== "Coordinates" && best.type !== "ImageCrop") {
-        const label = best.type === "OcrText" ? best.text : best.label;
+        const label = best.type === "OcrText" ? best.text : best.type === "CdpElement" ? best.text : best.label;
         return `Click '${label.length > 25 ? label.slice(0, 25) + "…" : label}'`;
       }
       return `Click (${k.x}, ${k.y})`;
@@ -50,6 +50,7 @@ function targetCandidateLabel(candidate: TargetCandidate): string {
     case "OcrText": return `"${candidate.text}"`;
     case "ImageCrop": return "Image crop";
     case "Coordinates": return `(${candidate.x}, ${candidate.y})`;
+    case "CdpElement": return `"${candidate.text}" (DevTools)`;
   }
 }
 
@@ -64,6 +65,9 @@ const ACTIONABLE_AX_ROLES = new Set([
 /** Find the index of the preferred target candidate, mirroring backend `synthesize_draft` logic.
  *  Priority: actionable AX label > VlmLabel/OcrText > ImageCrop > Coordinates. */
 function preferredTargetIndex(candidates: TargetCandidate[]): number {
+  // CDP-verified elements are most reliable
+  const cdpIdx = candidates.findIndex((c) => c.type === "CdpElement");
+  if (cdpIdx >= 0) return cdpIdx;
   const idx = candidates.findIndex((c) => {
     if (c.type === "AccessibilityLabel") return ACTIONABLE_AX_ROLES.has(c.role ?? "");
     return c.type === "VlmLabel" || c.type === "OcrText";
@@ -83,6 +87,7 @@ function targetCandidateIcon(candidate: TargetCandidate): string {
     case "OcrText": return "\u{1F441}";
     case "ImageCrop": return "\u{1F5BC}";
     case "Coordinates": return "\u{1F4CD}";
+    case "CdpElement": return "\u{1F310}";
   }
 }
 

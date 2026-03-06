@@ -278,6 +278,11 @@ pub enum TargetCandidate {
         x: f64,
         y: f64,
     },
+    /// Element verified via Chrome DevTools Protocol snapshot.
+    CdpElement {
+        text: String,
+        uid: String,
+    },
 }
 
 /// Accessibility roles that represent specific, actionable UI elements.
@@ -320,6 +325,7 @@ impl TargetCandidate {
             }
             Self::VlmLabel { label } => Some(label),
             Self::OcrText { text } => Some(text),
+            Self::CdpElement { text, .. } => Some(text),
             _ => None,
         }
     }
@@ -713,7 +719,12 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 let has_image_crop = candidates
                     .iter()
                     .any(|c| matches!(c, TargetCandidate::ImageCrop { .. }));
-                let confidence = if candidates.iter().any(|c| c.is_actionable_ax_label()) {
+                let confidence = if candidates
+                    .iter()
+                    .any(|c| matches!(c, TargetCandidate::CdpElement { .. }))
+                {
+                    ActionConfidence::High
+                } else if candidates.iter().any(|c| c.is_actionable_ax_label()) {
                     ActionConfidence::High
                 } else if candidates.iter().any(|c| {
                     matches!(
@@ -1173,6 +1184,10 @@ mod tests {
                 image_b64: "abc123".to_string(),
             },
             TargetCandidate::Coordinates { x: 100.0, y: 200.0 },
+            TargetCandidate::CdpElement {
+                text: "Submit".to_string(),
+                uid: "e1".to_string(),
+            },
         ];
 
         for candidate in &candidates {

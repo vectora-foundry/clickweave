@@ -229,6 +229,15 @@ async seedWalkthroughCache(workflowId: string, workflowName: string, projectPath
 export type ActionConfidence = "High" | "Medium" | "Low"
 export type AiStepParams = { prompt: string; button_text: string | null; template_image: string | null; max_tool_calls: number | null; allowed_tools: string[] | null; timeout_ms?: number | null }
 export type AppDebugKitParams = { operation_name: string; parameters: JsonValue }
+/**
+ * Classification of an app's UI framework, used to decide whether
+ * Chrome DevTools Protocol (CDM) tools can provide better automation.
+ * 
+ * - `Native`: standard native app — use accessibility-based automation
+ * - `ChromeBrowser`: Chrome-family browser — CDM gives DOM access
+ * - `ElectronApp`: Electron-based app — native AX is unreliable, CDM preferred
+ */
+export type AppKind = "Native" | "ChromeBrowser" | "ElectronApp"
 export type AppResolutionSeedEntry = { node_id: string; app_name: string }
 export type Artifact = { artifact_id: string; kind: ArtifactKind; path: string; metadata: JsonValue; overlays: JsonValue[] }
 export type ArtifactKind = "Screenshot" | "Ocr" | "TemplateMatch" | "Log" | "Other"
@@ -272,7 +281,7 @@ export type ExecutionMode = "Test" | "Run"
 export type FindImageParams = { template_image: string | null; threshold: number; max_results: number }
 export type FindTextParams = { search_text: string; match_mode: MatchMode; scope: string | null; select_result: string | null }
 export type FocusMethod = "WindowId" | "AppName" | "Pid"
-export type FocusWindowParams = { method: FocusMethod; value: string | null; bring_to_front: boolean }
+export type FocusWindowParams = { method: FocusMethod; value: string | null; bring_to_front: boolean; app_kind?: AppKind }
 export type IfParams = { condition: Condition }
 export type ImportedAsset = { relative_path: string; absolute_path: string }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
@@ -351,7 +360,11 @@ export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role:
 /**
  * Label identified by a vision language model from a screenshot crop.
  */
-{ type: "VlmLabel"; label: string } | { type: "OcrText"; text: string } | { type: "ImageCrop"; path: string; image_b64: string } | { type: "Coordinates"; x: number; y: number }
+{ type: "VlmLabel"; label: string } | { type: "OcrText"; text: string } | { type: "ImageCrop"; path: string; image_b64: string } | { type: "Coordinates"; x: number; y: number } |
+/**
+ * Element verified via Chrome DevTools Protocol snapshot.
+ */
+{ type: "CdpElement"; text: string; uid: string }
 export type TargetOverride = { node_id: string; chosen_candidate_index: number }
 export type TraceEvent = { timestamp: number; event_type: string; payload: JsonValue }
 export type TraceLevel = "Off" | "Minimal" | "Full"
@@ -364,7 +377,7 @@ export type WalkthroughAction = { id: string; kind: WalkthroughActionKind; app_n
  * Screenshot coordinate metadata for VLM click target resolution.
  */
 screenshot_meta?: ScreenshotMeta | null }
-export type WalkthroughActionKind = { type: "LaunchApp"; app_name: string } | { type: "FocusWindow"; app_name: string; window_title: string | null } | { type: "Click"; x: number; y: number; button: MouseButton; click_count: number } | { type: "TypeText"; text: string } | { type: "PressKey"; key: string; modifiers: string[] } | { type: "Scroll"; delta_y: number }
+export type WalkthroughActionKind = { type: "LaunchApp"; app_name: string; app_kind: AppKind } | { type: "FocusWindow"; app_name: string; window_title: string | null; app_kind: AppKind } | { type: "Click"; x: number; y: number; button: MouseButton; click_count: number } | { type: "TypeText"; text: string } | { type: "PressKey"; key: string; modifiers: string[] } | { type: "Scroll"; delta_y: number }
 export type WalkthroughAnnotations = { deleted_node_ids: string[]; renamed_nodes: NodeRename[]; target_overrides: TargetOverride[]; variable_promotions: VariablePromotion[] }
 export type WalkthroughDraftResponse = { actions: WalkthroughAction[]; draft: Workflow | null; warnings: string[] }
 export type Workflow = { id: string; name: string; nodes: Node[]; edges: Edge[] }
