@@ -1,8 +1,8 @@
 name = "Find text then click it"
-prompt = "Open Safari, find the text 'Downloads' on the page, and click on it"
 
-[expect]
-valid = true
+[[turns]]
+prompt = "Open Safari, find the text 'Downloads' on the page, and click on it"
+[turns.expect]
 min_nodes = 3
 max_nodes = 6
 required_tools = ["launch_app", "click"]

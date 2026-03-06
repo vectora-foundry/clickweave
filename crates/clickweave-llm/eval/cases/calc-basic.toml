@@ -1,8 +1,8 @@
 name = "Calculator basic arithmetic"
-prompt = "Open the calculator app and calculate 5 times 6, then take a screenshot"
 
-[expect]
-valid = true
+[[turns]]
+prompt = "Open the calculator app and calculate 5 times 6, then take a screenshot"
+[turns.expect]
 min_nodes = 5
 max_nodes = 8
 required_tools = ["launch_app", "click", "take_screenshot"]

@@ -1,8 +1,8 @@
 name = "Conditional with both branches"
-prompt = "Open Safari. Search for 'login' text on the page. If found, click it. If not found, type 'login.example.com' in the address bar and press Enter."
 
-[expect]
-valid = true
+[[turns]]
+prompt = "Open Safari. Search for 'login' text on the page. If found, click it. If not found, type 'login.example.com' in the address bar and press Enter."
+[turns.expect]
 min_nodes = 5
 max_nodes = 10
 required_tools = ["launch_app", "find_text"]
