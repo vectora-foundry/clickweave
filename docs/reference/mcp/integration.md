@@ -175,6 +175,36 @@ Relevant files:
 - `src-tauri/src/commands/executor.rs`
 - `crates/clickweave-engine/src/executor/run_loop.rs`
 
+## App Detection
+
+File: `crates/clickweave-core/src/app_detection.rs`
+
+During walkthrough recording, apps are classified as `Native`, `ChromeBrowser`, or `ElectronApp` when they receive focus. This classification is emitted on `AppFocused` events via the `app_kind` field.
+
+### Detection Strategy
+
+| App Type | Detection Method | Maintenance |
+|----------|-----------------|-------------|
+| Chrome-family | Bundle ID matching (6 entries) | Rarely changes |
+| Electron apps | Framework directory check | Zero — automatic |
+| Native apps | Default (neither matches) | N/A |
+
+**Chrome-family**: matched by bundle ID (`com.google.Chrome`, `com.brave.Browser`, `com.microsoft.edgemac`, `company.thebrowser.Browser`, `org.chromium.Chromium`).
+
+**Electron**: detected by checking for `Contents/Frameworks/Electron Framework.framework` (macOS) or `resources\electron.asar` (Windows) in the app bundle. Uses `proc_pidpath` (macOS) to resolve PID → bundle path.
+
+### Reactive Fallback
+
+If proactive detection classifies an app as `Native` but accessibility enrichment returns no actionable element, the framework check is re-run. This catches Electron apps with unusual bundle structures.
+
+### Key Files
+
+| File | Role |
+|------|------|
+| `crates/clickweave-core/src/app_detection.rs` | `classify_app`, `bundle_path_from_pid`, Chrome/Electron checks |
+| `crates/clickweave-core/src/walkthrough.rs` | `AppKind` enum, `AppFocused` event |
+| `src-tauri/src/commands/walkthrough.rs` | Event loop integration, reactive fallback |
+
 ## Key Files
 
 | File | Role |
@@ -184,3 +214,4 @@ Relevant files:
 | `crates/clickweave-mcp/src/protocol.rs` | protocol data types |
 | `crates/clickweave-mcp/src/lib.rs` | re-exports |
 | `crates/clickweave-core/src/tool_mapping.rs` | shared node/tool mapping |
+| `crates/clickweave-core/src/app_detection.rs` | Electron/Chrome app classification |
