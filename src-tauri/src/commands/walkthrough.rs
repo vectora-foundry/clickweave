@@ -1054,7 +1054,8 @@ async fn enrich_actions_with_cdp(actions: &mut [WalkthroughAction], mcp: &McpRou
 
             if let Some(hint) = search_hint {
                 let matches = find_elements_in_snapshot(&snapshot_text, &hint);
-                if let Some((uid, text)) = matches.first() {
+                if matches.len() == 1 {
+                    let (uid, text) = &matches[0];
                     action.target_candidates.insert(
                         0,
                         TargetCandidate::CdpElement {
@@ -1067,6 +1068,12 @@ async fn enrich_actions_with_cdp(actions: &mut [WalkthroughAction], mcp: &McpRou
                         hint,
                         uid,
                         text
+                    );
+                } else if matches.len() > 1 {
+                    tracing::debug!(
+                        "CDP verification: skipping ambiguous match for '{}' ({} candidates)",
+                        hint,
+                        matches.len(),
                     );
                 }
             }
@@ -1299,13 +1306,29 @@ async fn enrich_click_background(
         if current_kind == Some(AppKind::Native)
             && let Some(bundle_path) = bundle_path_from_pid(target_pid)
         {
-            let rechecked = classify_app(None, Some(&bundle_path));
-            if rechecked == AppKind::ElectronApp {
+            let bundle_id = clickweave_core::app_detection::bundle_id_from_pid(target_pid);
+            let rechecked = classify_app(bundle_id.as_deref(), Some(&bundle_path));
+            if rechecked != AppKind::Native {
                 tracing::info!(
-                    "Reactive detection: PID {} reclassified as ElectronApp (empty AX triggered recheck)",
+                    "Reactive detection: PID {} reclassified as {:?} (empty AX triggered recheck)",
                     target_pid,
+                    rechecked,
                 );
                 app_kind_cache.lock().unwrap().insert(target_pid, rechecked);
+
+                // Re-emit focus event with corrected app_kind so downstream
+                // normalization picks up the reclassification.
+                let updated_focus = WalkthroughEvent {
+                    id: Uuid::new_v4(),
+                    timestamp,
+                    kind: WalkthroughEventKind::AppFocused {
+                        app_name: app_name.clone().unwrap_or_default(),
+                        pid: target_pid,
+                        window_title: None,
+                        app_kind: rechecked,
+                    },
+                };
+                persist_and_emit(&app, &storage, &session_dir, &updated_focus);
             }
         }
     }
