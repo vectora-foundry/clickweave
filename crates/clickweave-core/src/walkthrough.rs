@@ -217,10 +217,12 @@ impl WalkthroughAction {
 pub enum WalkthroughActionKind {
     LaunchApp {
         app_name: String,
+        app_kind: AppKind,
     },
     FocusWindow {
         app_name: String,
         window_title: Option<String>,
+        app_kind: AppKind,
     },
     Click {
         x: f64,
@@ -578,11 +580,13 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 let kind = if is_new {
                     WalkthroughActionKind::LaunchApp {
                         app_name: app_name.clone(),
+                        app_kind: AppKind::Native,
                     }
                 } else {
                     WalkthroughActionKind::FocusWindow {
                         app_name: app_name.clone(),
                         window_title: window_title.clone(),
+                        app_kind: AppKind::Native,
                     }
                 };
 
@@ -839,12 +843,12 @@ pub fn synthesize_draft(
         };
 
         let (node_type, name) = match &action.kind {
-            WalkthroughActionKind::LaunchApp { app_name } => (
+            WalkthroughActionKind::LaunchApp { app_name, app_kind } => (
                 NodeType::FocusWindow(FocusWindowParams {
                     method: FocusMethod::AppName,
                     value: Some(app_name.clone()),
                     bring_to_front: true,
-                    app_kind: AppKind::Native,
+                    app_kind: *app_kind,
                 }),
                 format!("Launch {app_name}"),
             ),
@@ -852,12 +856,13 @@ pub fn synthesize_draft(
             WalkthroughActionKind::FocusWindow {
                 app_name,
                 window_title,
+                app_kind,
             } => (
                 NodeType::FocusWindow(FocusWindowParams {
                     method: FocusMethod::AppName,
                     value: Some(app_name.clone()),
                     bring_to_front: true,
-                    app_kind: AppKind::Native,
+                    app_kind: *app_kind,
                 }),
                 match window_title {
                     Some(t) => format!("Focus '{t}'"),
@@ -1109,10 +1114,12 @@ mod tests {
         let kinds = vec![
             WalkthroughActionKind::LaunchApp {
                 app_name: "Calculator".to_string(),
+                app_kind: AppKind::Native,
             },
             WalkthroughActionKind::FocusWindow {
                 app_name: "Calculator".to_string(),
                 window_title: Some("Calculator".to_string()),
+                app_kind: AppKind::Native,
             },
             WalkthroughActionKind::Click {
                 x: 100.0,
@@ -1360,7 +1367,7 @@ mod tests {
             assert_eq!(actions.len(), 1);
             assert!(matches!(
                 &actions[0].kind,
-                WalkthroughActionKind::LaunchApp { app_name } if app_name == "Calculator"
+                WalkthroughActionKind::LaunchApp { app_name, .. } if app_name == "Calculator"
             ));
             assert_eq!(actions[0].confidence, ActionConfidence::High);
         }
@@ -1786,6 +1793,7 @@ mod tests {
         fn test_launch_app_becomes_focus_window_node() {
             let actions = vec![make_action(WalkthroughActionKind::LaunchApp {
                 app_name: "Calculator".into(),
+                app_kind: AppKind::Native,
             })];
             let wf = synthesize_draft(&actions, Uuid::new_v4(), "Test");
             assert_eq!(wf.nodes.len(), 1);
@@ -1839,6 +1847,7 @@ mod tests {
             let actions = vec![
                 make_action(WalkthroughActionKind::LaunchApp {
                     app_name: "App".into(),
+                    app_kind: AppKind::Native,
                 }),
                 make_action(WalkthroughActionKind::TypeText {
                     text: "hello".into(),

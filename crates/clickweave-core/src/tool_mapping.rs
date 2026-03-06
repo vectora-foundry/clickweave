@@ -494,6 +494,7 @@ mod tests {
             method: FocusMethod::AppName,
             value: Some("Safari".into()),
             bring_to_front: true,
+            app_kind: AppKind::Native,
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         assert_eq!(inv.name, "focus_window");
@@ -509,6 +510,7 @@ mod tests {
             method: FocusMethod::WindowId,
             value: Some("42".into()),
             bring_to_front: true,
+            app_kind: AppKind::Native,
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
@@ -523,6 +525,7 @@ mod tests {
             method: FocusMethod::Pid,
             value: Some("1234".into()),
             bring_to_front: true,
+            app_kind: AppKind::Native,
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
