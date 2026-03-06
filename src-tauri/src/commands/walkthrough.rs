@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
 use base64::Engine;
+use clickweave_core::app_detection::{bundle_path_from_pid, classify_app};
 use clickweave_core::storage::now_millis;
 use clickweave_core::walkthrough::{
     AppKind, ScreenshotKind, ScreenshotMeta, WalkthroughAction, WalkthroughAnnotations,
@@ -669,6 +670,7 @@ async fn process_capture_events(
 
     // Cache PID → app info to avoid repeated lookups.
     let mut app_cache: HashMap<i32, CachedApp> = HashMap::new();
+    let mut app_kind_cache: HashMap<i32, AppKind> = HashMap::new();
     let mut last_pid: i32 = 0;
     let mut self_focused = false;
 
@@ -706,6 +708,27 @@ async fn process_capture_events(
                 continue;
             }
 
+            // Classify the app's UI framework (Chrome, Electron, or Native).
+            let app_kind = if let Some(&cached_kind) = app_kind_cache.get(&capture.target_pid) {
+                cached_kind
+            } else {
+                let bundle_id = app_cache
+                    .get(&capture.target_pid)
+                    .and_then(|c| c.bundle_id.as_deref());
+                let bundle_path = bundle_path_from_pid(capture.target_pid);
+                let kind = classify_app(bundle_id, bundle_path.as_deref());
+                if kind != AppKind::Native {
+                    tracing::info!(
+                        "App '{}' (PID {}) classified as {:?}",
+                        app_name,
+                        capture.target_pid,
+                        kind,
+                    );
+                }
+                app_kind_cache.insert(capture.target_pid, kind);
+                kind
+            };
+
             let focus_event = WalkthroughEvent {
                 id: Uuid::new_v4(),
                 timestamp: capture.timestamp,
@@ -713,7 +736,7 @@ async fn process_capture_events(
                     app_name: app_name.clone(),
                     pid: capture.target_pid,
                     window_title: None,
-                    app_kind: AppKind::Native,
+                    app_kind,
                 },
             };
             persist_and_emit(&app, &storage, &session_dir, &focus_event);
