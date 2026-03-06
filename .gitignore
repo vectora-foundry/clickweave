@@ -5,3 +5,5 @@ node_modules
 /data
 .mcp.json
 .worktrees
+crates/clickweave-llm/eval/eval.toml
+crates/clickweave-llm/eval/results/
