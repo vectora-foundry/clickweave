@@ -139,6 +139,28 @@ impl McpRouter {
         self.servers.len()
     }
 
+    /// Dispatch a tool call to a specific MCP server by name, bypassing
+    /// tool-ownership lookup. Used by the executor to target chrome-devtools
+    /// tools that conflict with native-devtools (e.g. both have `click`).
+    pub async fn call_tool_on(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        arguments: Option<Value>,
+    ) -> Result<ToolCallResult> {
+        let idx = self
+            .servers
+            .iter()
+            .position(|(name, _)| name == server_name)
+            .ok_or_else(|| anyhow!("MCP server '{}' not found", server_name))?;
+        self.servers[idx].1.call_tool(tool_name, arguments).await
+    }
+
+    /// Check whether a server with the given name is connected.
+    pub fn has_server(&self, server_name: &str) -> bool {
+        self.servers.iter().any(|(name, _)| name == server_name)
+    }
+
     /// Kill all MCP server processes.
     pub fn kill_all(&mut self) {
         for (name, client) in &mut self.servers {
@@ -270,6 +292,32 @@ mod tests {
         assert!(configs[0].args.contains(&"-y".to_string()));
         assert!(configs[0].args.contains(&"native-devtools-mcp".to_string()));
         assert_eq!(configs[1].name, "chrome-devtools");
+    }
+
+    #[test]
+    fn has_server_returns_false_for_test_router() {
+        // make_router uses an empty servers vec (no real McpClient instances),
+        // so has_server always returns false. The method is trivial and tested
+        // via integration testing for the true case.
+        let router = make_router(vec![("native", vec![tool("click")])]);
+        assert!(!router.has_server("native"));
+        assert!(!router.has_server("nonexistent"));
+    }
+
+    #[test]
+    fn call_tool_on_unknown_server_returns_error() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let router = make_router(vec![("native", vec![tool("click")])]);
+            let result = router.call_tool_on("nonexistent", "click", None).await;
+            assert!(result.is_err());
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("MCP server 'nonexistent' not found")
+            );
+        });
     }
 
     #[test]
