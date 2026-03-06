@@ -88,6 +88,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 method: FocusMethod::Pid,
                 value: Some(app.pid.to_string()),
                 bring_to_front: p.bring_to_front,
+                app_kind: p.app_kind,
             });
             &resolved_fw
         } else {

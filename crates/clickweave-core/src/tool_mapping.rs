@@ -5,7 +5,7 @@
 use crate::{
     ClickParams, FindImageParams, FindTextParams, FocusMethod, FocusWindowParams,
     ListWindowsParams, McpToolCallParams, MouseButton, NodeType, PressKeyParams, ScreenshotMode,
-    ScrollParams, TakeScreenshotParams, TypeTextParams,
+    ScrollParams, TakeScreenshotParams, TypeTextParams, walkthrough::AppKind,
 };
 use serde_json::Value;
 use std::fmt;
@@ -302,6 +302,7 @@ pub fn tool_invocation_to_node_type(
                 method,
                 value,
                 bring_to_front: true,
+                app_kind: AppKind::Native,
             }))
         }
         _ if known_tools

@@ -844,6 +844,7 @@ pub fn synthesize_draft(
                     method: FocusMethod::AppName,
                     value: Some(app_name.clone()),
                     bring_to_front: true,
+                    app_kind: AppKind::Native,
                 }),
                 format!("Launch {app_name}"),
             ),
@@ -856,6 +857,7 @@ pub fn synthesize_draft(
                     method: FocusMethod::AppName,
                     value: Some(app_name.clone()),
                     bring_to_front: true,
+                    app_kind: AppKind::Native,
                 }),
                 match window_title {
                     Some(t) => format!("Focus '{t}'"),
