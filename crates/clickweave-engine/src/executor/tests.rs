@@ -1,6 +1,7 @@
 use super::*;
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
+use clickweave_core::walkthrough::AppKind;
 use clickweave_core::{
     ClickParams, Condition, EdgeOutput, EndLoopParams, ExecutionMode, FindTextParams, FocusMethod,
     FocusWindowParams, IfParams, LiteralValue, LoopParams, McpToolCallParams, NodeType, Operator,
@@ -353,7 +354,7 @@ fn evict_element_cache_for_click_node() {
         .insert(cache_key.clone(), "Multiply".to_string());
 
     // Set focused_app so eviction uses the right cache key
-    *exec.focused_app.write().unwrap() = Some("Calculator".to_string());
+    *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native));
 
     let node = NodeType::Click(ClickParams {
         target: Some("×".to_string()),
@@ -414,7 +415,7 @@ fn evict_element_cache_for_mcp_find_text_node() {
         .unwrap()
         .insert(cache_key.clone(), "Multiply".to_string());
 
-    *exec.focused_app.write().unwrap() = Some("Calculator".to_string());
+    *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native));
 
     let node = NodeType::McpToolCall(McpToolCallParams {
         tool_name: "find_text".to_string(),
@@ -437,7 +438,7 @@ fn evict_element_cache_for_mcp_find_text_with_explicit_app_name() {
         .unwrap()
         .insert(cache_key.clone(), "AXLink".to_string());
 
-    *exec.focused_app.write().unwrap() = Some("Calculator".to_string());
+    *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native));
 
     let node = NodeType::McpToolCall(McpToolCallParams {
         tool_name: "find_text".to_string(),
@@ -595,7 +596,7 @@ async fn prepare_find_text_retry_preserves_extra_fields() {
 #[tokio::test]
 async fn prepare_find_text_retry_falls_back_to_focused_app() {
     let exec = make_scripted_executor(vec![r#"{"name": "Multiply"}"#]);
-    *exec.focused_app.write().unwrap() = Some("Calculator".to_string());
+    *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native));
 
     let args = exec
         .prepare_find_text_retry(

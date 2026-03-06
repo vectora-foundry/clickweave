@@ -16,6 +16,7 @@ mod tests;
 use clickweave_core::decision_cache::DecisionCache;
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
+use clickweave_core::walkthrough::AppKind;
 use clickweave_core::{ExecutionMode, NodeRun, NodeVerdict, Workflow};
 use clickweave_llm::{ChatBackend, LlmClient, LlmConfig, Message};
 use serde::{Deserialize, Serialize};
@@ -85,7 +86,7 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     event_tx: Sender<ExecutorEvent>,
     storage: RunStorage,
     app_cache: RwLock<HashMap<String, ResolvedApp>>,
-    focused_app: RwLock<Option<String>>,
+    focused_app: RwLock<Option<(String, AppKind)>>,
     element_cache: RwLock<HashMap<(String, Option<String>), String>>,
     context: RuntimeContext,
     decision_cache: RwLock<DecisionCache>,
@@ -163,6 +164,23 @@ impl WorkflowExecutor {
 }
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
+    pub(crate) fn focused_app_name(&self) -> Option<String> {
+        self.focused_app
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|(name, _)| name.clone())
+    }
+
+    pub(crate) fn focused_app_kind(&self) -> AppKind {
+        self.focused_app
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|(_, kind)| *kind)
+            .unwrap_or(AppKind::Native)
+    }
+
     /// Return the best available LLM for text reasoning tasks (app resolution,
     /// element resolution). Prefers supervision (planner-class), falls back to
     /// VLM, then agent. The tiny agent model often has insufficient context for

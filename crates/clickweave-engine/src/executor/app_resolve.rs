@@ -276,12 +276,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         };
         if let Some(target) = element_target {
             // Prefer explicit app_name from call args; fall back to focused_app.
-            let app_name = explicit_app.map(|s| s.to_string()).or_else(|| {
-                self.focused_app
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone()
-            });
+            let app_name = explicit_app
+                .map(|s| s.to_string())
+                .or_else(|| self.focused_app_name());
             self.evict_element_cache(target, app_name.as_deref());
         }
 

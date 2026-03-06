@@ -48,10 +48,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let action = node_type.action_description();
         let app_name = self
-            .focused_app
-            .read()
-            .ok()
-            .and_then(|g| g.clone())
+            .focused_app_name()
             .unwrap_or_else(|| "unknown".to_string());
 
         // Stage 1: Capture screenshot and get VLM description
@@ -99,10 +96,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         );
 
         let app_name = self
-            .focused_app
-            .read()
-            .ok()
-            .and_then(|g| g.clone())
+            .focused_app_name()
             .unwrap_or_else(|| "unknown".to_string());
 
         let screenshot_data = self.capture_verification_screenshot(mcp).await;
@@ -288,7 +282,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Let UI animations/transitions settle before capturing.
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        let app_name = self.focused_app.read().ok().and_then(|g| g.clone());
+        let app_name = self.focused_app_name();
         let mut args = serde_json::json!({ "mode": "window" });
         if let Some(ref name) = app_name {
             args["app_name"] = Value::String(name.clone());

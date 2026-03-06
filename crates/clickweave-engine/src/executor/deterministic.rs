@@ -84,8 +84,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let app = self
                 .resolve_app_name(node_id, user_input, mcp, node_run.as_deref())
                 .await?;
-            *self.focused_app.write().unwrap_or_else(|e| e.into_inner()) = Some(app.name.clone());
-
             // Upgrade app_kind if the node says Native but detection disagrees.
             let app_kind = if p.app_kind == AppKind::Native {
                 let bundle_path = clickweave_core::app_detection::bundle_path_from_pid(app.pid);
@@ -101,6 +99,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             } else {
                 p.app_kind
             };
+
+            *self.focused_app.write().unwrap_or_else(|e| e.into_inner()) =
+                Some((app.name.clone(), app_kind));
 
             resolved_fw = NodeType::FocusWindow(FocusWindowParams {
                 method: FocusMethod::Pid,
@@ -144,12 +145,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             && let Some(ref mut a) = args
             && a.get("app_name").is_none()
         {
-            let scoped_app = self
-                .focused_app
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone();
-            if let Some(app_name) = scoped_app {
+            if let Some(app_name) = self.focused_app_name() {
                 a["app_name"] = serde_json::Value::String(app_name);
             }
         }
@@ -195,7 +191,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         // launch_app implies the app is now focused
         if let Some(name) = &launch_app_name {
-            *self.focused_app.write().unwrap_or_else(|e| e.into_inner()) = Some(name.clone());
+            *self.focused_app.write().unwrap_or_else(|e| e.into_inner()) =
+                Some((name.clone(), launch_app_kind));
 
             if launch_app_kind != AppKind::Native {
                 self.log(format!(
@@ -324,12 +321,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .get("app_name")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .or_else(|| {
-                self.focused_app
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone()
-            });
+            .or_else(|| self.focused_app_name());
         let resolved_name = self
             .resolve_element_name(node_id, target, &available, scoped_app.as_deref(), node_run)
             .await
@@ -357,11 +349,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .as_deref()
             .ok_or("resolve_click_target called with no target")?;
 
-        let scoped_app = self
-            .focused_app
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        let scoped_app = self.focused_app_name();
 
         // Use cached element resolution if available (e.g. × → Multiply) to
         // avoid matching display text that happens to contain the symbol.
@@ -498,7 +486,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Take a screenshot first — find_image needs both a template and a
         // screenshot to search within. Use screenshot_id when available so
         // find_image has the screenshot metadata for screen coordinate conversion.
-        let app_name = self.focused_app.read().ok().and_then(|g| g.clone());
+        let app_name = self.focused_app_name();
         let screenshot_args = match &app_name {
             Some(name) => serde_json::json!({ "app_name": name }),
             None => serde_json::json!({}),

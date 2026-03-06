@@ -459,7 +459,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 return Some(super::verdict::missing_outcome_verdict(node_id, node_name));
             };
             let mut args = serde_json::json!({ "format": "png" });
-            if let Some(ref name) = self.focused_app.read().ok().and_then(|g| g.clone()) {
+            if let Some(ref name) = self.focused_app_name() {
                 args["app_name"] = serde_json::Value::String(name.clone());
             }
             let screenshot_b64 = self.extract_screenshot_image(mcp, args).await;
