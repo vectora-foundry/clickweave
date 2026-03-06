@@ -1,5 +1,6 @@
 use super::WorkflowExecutor;
 use clickweave_core::decision_cache::cache_key;
+use clickweave_core::walkthrough::AppKind;
 use clickweave_core::{
     ClickParams, FocusMethod, FocusWindowParams, NodeRun, NodeType, ScreenshotMode,
     TakeScreenshotParams, tool_mapping,
@@ -84,11 +85,28 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 .resolve_app_name(node_id, user_input, mcp, node_run.as_deref())
                 .await?;
             *self.focused_app.write().unwrap_or_else(|e| e.into_inner()) = Some(app.name.clone());
+
+            // Upgrade app_kind if the node says Native but detection disagrees.
+            let app_kind = if p.app_kind == AppKind::Native {
+                let bundle_path = clickweave_core::app_detection::bundle_path_from_pid(app.pid);
+                let detected =
+                    clickweave_core::app_detection::classify_app(None, bundle_path.as_deref());
+                if detected != AppKind::Native {
+                    self.log(format!(
+                        "Upgraded app_kind for '{}' from Native to {:?}",
+                        app.name, detected
+                    ));
+                }
+                detected
+            } else {
+                p.app_kind
+            };
+
             resolved_fw = NodeType::FocusWindow(FocusWindowParams {
                 method: FocusMethod::Pid,
                 value: Some(app.pid.to_string()),
                 bring_to_front: p.bring_to_front,
-                app_kind: p.app_kind,
+                app_kind,
             });
             &resolved_fw
         } else {
@@ -143,7 +161,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             None
         };
 
-        // Extract app_name before args is moved into call_tool
+        // Extract app_name and app_kind before args is moved into call_tool
         let launch_app_name = if tool_name == "launch_app" {
             args.as_ref()
                 .and_then(|a| a.get("app_name"))
@@ -151,6 +169,18 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 .map(|s| s.to_string())
         } else {
             None
+        };
+
+        let launch_app_kind = if tool_name == "launch_app" {
+            args.as_ref()
+                .and_then(|a| a.get("app_kind"))
+                .and_then(|v| v.as_str())
+                .and_then(|s| {
+                    serde_json::from_value::<AppKind>(serde_json::Value::String(s.to_string())).ok()
+                })
+                .unwrap_or(AppKind::Native)
+        } else {
+            AppKind::Native
         };
 
         self.record_event(
@@ -168,6 +198,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // launch_app implies the app is now focused
         if let Some(name) = &launch_app_name {
             *self.focused_app.write().unwrap_or_else(|e| e.into_inner()) = Some(name.clone());
+
+            if launch_app_kind != AppKind::Native {
+                self.log(format!(
+                    "App '{}' has app_kind: {:?}",
+                    name, launch_app_kind
+                ));
+            }
         }
 
         let images = self.save_result_images(&result, "result", &mut node_run);
