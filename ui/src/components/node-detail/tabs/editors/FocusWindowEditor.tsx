@@ -58,6 +58,11 @@ export function FocusWindowEditor({ nodeType, onUpdate }: NodeEditorProps) {
           </span>
         )}
       </div>
+      {appKind === "ElectronApp" && (
+        <p className="mt-1 text-[10px] text-[var(--text-muted)]">
+          App will be restarted with DevTools enabled on first run.
+        </p>
+      )}
     </FieldGroup>
   );
 }
