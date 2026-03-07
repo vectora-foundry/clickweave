@@ -615,19 +615,25 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 // Collapse repeated focus on same app, but update app_kind
                 // if it changed (e.g. reactive Electron reclassification).
                 if last_app.as_ref() == Some(app_name) {
-                    if let Some(prev_action) = actions.last_mut() {
-                        match &mut prev_action.kind {
+                    // Search backward for the most recent focus/launch action
+                    // for this app — it may not be the very last action (clicks
+                    // can appear between the original focus and the correction).
+                    for prev in actions.iter_mut().rev() {
+                        let (prev_name, prev_kind) = match &mut prev.kind {
                             WalkthroughActionKind::LaunchApp {
-                                app_kind: prev_kind,
+                                app_name: name,
+                                app_kind: kind,
+                            } => (name as &str, kind),
+                            WalkthroughActionKind::FocusWindow {
+                                app_name: name,
+                                app_kind: kind,
                                 ..
-                            }
-                            | WalkthroughActionKind::FocusWindow {
-                                app_kind: prev_kind,
-                                ..
-                            } if *prev_kind != *app_kind => {
-                                *prev_kind = *app_kind;
-                            }
-                            _ => {}
+                            } => (name as &str, kind),
+                            _ => continue,
+                        };
+                        if prev_name == app_name && *prev_kind != *app_kind {
+                            *prev_kind = *app_kind;
+                            break;
                         }
                     }
                     continue;

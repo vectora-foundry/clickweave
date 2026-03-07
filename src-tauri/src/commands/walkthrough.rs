@@ -1158,16 +1158,30 @@ async fn setup_cdp_apps(
         };
 
         let launch_result = mcp.call_tool("launch_app", Some(launch_args)).await;
-        if let Err(e) = &launch_result {
-            tracing::warn!("Failed to launch '{}' with CDP: {}", cdp_app.name, e);
-            emit_cdp_progress(
-                app,
-                &cdp_app.name,
-                CdpSetupStatus::Failed {
-                    reason: e.to_string(),
-                },
-            );
-            continue;
+        match &launch_result {
+            Err(e) => {
+                tracing::warn!("Failed to launch '{}' with CDP: {}", cdp_app.name, e);
+                emit_cdp_progress(
+                    app,
+                    &cdp_app.name,
+                    CdpSetupStatus::Failed {
+                        reason: e.to_string(),
+                    },
+                );
+                continue;
+            }
+            Ok(r) if r.is_error == Some(true) => {
+                let reason = r
+                    .content
+                    .iter()
+                    .filter_map(|c| c.as_text())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                tracing::warn!("launch_app for '{}' returned error: {reason}", cdp_app.name);
+                emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Failed { reason });
+                continue;
+            }
+            _ => {}
         }
 
         // Wait for the app to start.

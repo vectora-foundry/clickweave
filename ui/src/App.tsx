@@ -389,7 +389,7 @@ function App() {
         mcpCommand={mcpCommand}
         cdpProgress={cdpProgress}
         onStart={(cdpApps) => useStore.getState().startWalkthrough(cdpApps)}
-        onSkip={() => useStore.getState().startWalkthrough([])}
+        onSkip={() => { useStore.getState().closeCdpModal(); useStore.getState().startWalkthrough([]); }}
         onCancel={() => useStore.getState().closeCdpModal()}
       />
 
