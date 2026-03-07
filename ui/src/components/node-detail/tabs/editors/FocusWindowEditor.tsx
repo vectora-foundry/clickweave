@@ -32,17 +32,21 @@ export function FocusWindowEditor({ nodeType, onUpdate }: NodeEditorProps) {
         value={nt.bring_to_front}
         onChange={(v) => updateType({ bring_to_front: v })}
       />
-      <SelectField
-        label="Automation"
-        value={appKind}
-        options={Object.keys(APP_KIND_LABELS) as AppKind[]}
-        labels={APP_KIND_LABELS}
-        onChange={(v) => updateType({ app_kind: v as AppKind })}
-      />
-      {appKind === "ElectronApp" && (
-        <p className="mt-1 text-[10px] text-[var(--text-muted)]">
-          App will be restarted with DevTools enabled on first run.
-        </p>
+      {nt.method === "AppName" && (
+        <>
+          <SelectField
+            label="Automation"
+            value={appKind}
+            options={Object.keys(APP_KIND_LABELS) as AppKind[]}
+            labels={APP_KIND_LABELS}
+            onChange={(v) => updateType({ app_kind: v as AppKind })}
+          />
+          {appKind === "ElectronApp" && (
+            <p className="mt-1 text-[10px] text-[var(--text-muted)]">
+              App will be restarted with DevTools enabled on first run.
+            </p>
+          )}
+        </>
       )}
     </FieldGroup>
   );
