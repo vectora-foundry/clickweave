@@ -12,10 +12,10 @@ use uuid::Uuid;
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(crate) async fn execute_deterministic(
-        &self,
+        &mut self,
         node_id: Uuid,
         node_type: &NodeType,
-        mcp: &McpRouter,
+        mcp: &mut McpRouter,
         mut node_run: Option<&mut NodeRun>,
     ) -> Result<Value, String> {
         if let NodeType::AppDebugKitOp(p) = node_type {

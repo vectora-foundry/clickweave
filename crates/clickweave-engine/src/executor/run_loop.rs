@@ -29,12 +29,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Execute a regular node with retry logic. Returns the result value on success.
     #[allow(clippy::too_many_arguments)]
     async fn execute_node_with_retries(
-        &self,
+        &mut self,
         node_id: Uuid,
         node_name: &str,
         node_type: &NodeType,
         tools: &[Value],
-        mcp: &McpRouter,
+        mcp: &mut McpRouter,
         timeout_ms: Option<u64>,
         retries: u32,
         command_rx: &mut Receiver<ExecutorCommand>,
@@ -104,9 +104,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             self.log("VLM not configured — images sent directly to agent");
         }
 
-        let mcp = McpRouter::spawn(&self.mcp_configs).await;
+        let mcp_result = McpRouter::spawn(&self.mcp_configs).await;
 
-        let mcp = match mcp {
+        let mut mcp = match mcp_result {
             Ok(m) => m,
             Err(e) => {
                 self.emit_error(format!("Failed to spawn MCP servers: {}", e));
@@ -260,7 +260,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         &node_name,
                         &node_type,
                         &tools,
-                        &mcp,
+                        &mut mcp,
                         timeout_ms,
                         retries,
                         &mut command_rx,

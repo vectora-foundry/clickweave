@@ -97,6 +97,8 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     /// Set by eval_control_flow when a loop exits; consumed by the main loop
     /// to run a deferred visual verification after the loop completes.
     pending_loop_exit: Option<PendingLoopExit>,
+    /// Maps app name → CDP MCP server name in the McpRouter.
+    cdp_servers: HashMap<String, String>,
 }
 
 pub(crate) struct PendingLoopExit {
@@ -159,6 +161,7 @@ impl WorkflowExecutor {
             supervision_history: RwLock::new(Vec::new()),
             runtime_verdicts: Vec::new(),
             pending_loop_exit: None,
+            cdp_servers: HashMap::new(),
         }
     }
 }
@@ -170,6 +173,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .map(|(name, _)| name.clone())
+    }
+
+    /// Get the CDP server name for the currently focused app, if one is registered.
+    pub(crate) fn focused_cdp_server(&self) -> Option<String> {
+        let app_name = self.focused_app_name()?;
+        self.cdp_servers.get(&app_name).cloned()
     }
 
     pub(crate) fn focused_app_kind(&self) -> AppKind {

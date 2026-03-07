@@ -162,6 +162,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             supervision_history: RwLock::new(Vec::new()),
             runtime_verdicts: Vec::new(),
             pending_loop_exit: None,
+            cdp_servers: HashMap::new(),
         }
     }
 }
