@@ -1,6 +1,7 @@
 use super::*;
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
+use clickweave_core::walkthrough::AppKind;
 use clickweave_core::{
     ClickParams, Condition, EdgeOutput, EndLoopParams, ExecutionMode, FindTextParams, FocusMethod,
     FocusWindowParams, IfParams, LiteralValue, LoopParams, McpToolCallParams, NodeType, Operator,
@@ -40,7 +41,7 @@ fn make_test_executor() -> WorkflowExecutor<StubBackend> {
         workflow,
         StubBackend,
         None,
-        "stub-mcp".to_string(),
+        vec![],
         ExecutionMode::Run,
         None,
         tx,
@@ -102,7 +103,7 @@ fn make_scripted_executor(responses: Vec<&str>) -> WorkflowExecutor<ScriptedBack
         workflow,
         ScriptedBackend::new(responses),
         None,
-        "stub-mcp".to_string(),
+        vec![],
         ExecutionMode::Run,
         None,
         tx,
@@ -135,7 +136,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         workflow: Workflow,
         agent: C,
         vlm: Option<C>,
-        mcp_command: String,
+        mcp_configs: Vec<clickweave_mcp::McpServerConfig>,
         execution_mode: ExecutionMode,
         project_path: Option<PathBuf>,
         event_tx: Sender<ExecutorEvent>,
@@ -148,7 +149,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             vlm,
             supervision: None,
             verdict_vlm: None,
-            mcp_command,
+            mcp_configs,
             execution_mode,
             project_path,
             event_tx,
@@ -161,6 +162,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             supervision_history: RwLock::new(Vec::new()),
             runtime_verdicts: Vec::new(),
             pending_loop_exit: None,
+            cdp_servers: HashMap::new(),
         }
     }
 }
@@ -297,6 +299,7 @@ fn evict_app_cache_for_focus_window_node() {
         method: FocusMethod::AppName,
         value: Some("chrome".to_string()),
         bring_to_front: true,
+        app_kind: clickweave_core::walkthrough::AppKind::Native,
     });
     exec.evict_caches_for_node(&node);
     assert!(!exec.app_cache.read().unwrap().contains_key("chrome"));
@@ -352,7 +355,7 @@ fn evict_element_cache_for_click_node() {
         .insert(cache_key.clone(), "Multiply".to_string());
 
     // Set focused_app so eviction uses the right cache key
-    *exec.focused_app.write().unwrap() = Some("Calculator".to_string());
+    *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native));
 
     let node = NodeType::Click(ClickParams {
         target: Some("×".to_string()),
@@ -413,7 +416,7 @@ fn evict_element_cache_for_mcp_find_text_node() {
         .unwrap()
         .insert(cache_key.clone(), "Multiply".to_string());
 
-    *exec.focused_app.write().unwrap() = Some("Calculator".to_string());
+    *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native));
 
     let node = NodeType::McpToolCall(McpToolCallParams {
         tool_name: "find_text".to_string(),
@@ -436,7 +439,7 @@ fn evict_element_cache_for_mcp_find_text_with_explicit_app_name() {
         .unwrap()
         .insert(cache_key.clone(), "AXLink".to_string());
 
-    *exec.focused_app.write().unwrap() = Some("Calculator".to_string());
+    *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native));
 
     let node = NodeType::McpToolCall(McpToolCallParams {
         tool_name: "find_text".to_string(),
@@ -594,7 +597,7 @@ async fn prepare_find_text_retry_preserves_extra_fields() {
 #[tokio::test]
 async fn prepare_find_text_retry_falls_back_to_focused_app() {
     let exec = make_scripted_executor(vec![r#"{"name": "Multiply"}"#]);
-    *exec.focused_app.write().unwrap() = Some("Calculator".to_string());
+    *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native));
 
     let args = exec
         .prepare_find_text_retry(
@@ -716,7 +719,7 @@ fn make_executor_with_workflow(workflow: Workflow) -> WorkflowExecutor<StubBacke
         workflow,
         StubBackend,
         None,
-        "stub".into(),
+        vec![],
         ExecutionMode::Run,
         None,
         tx,

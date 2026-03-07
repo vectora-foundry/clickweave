@@ -1,3 +1,5 @@
+pub mod app_detection;
+pub mod cdp;
 pub mod decision_cache;
 pub mod runtime;
 pub mod storage;

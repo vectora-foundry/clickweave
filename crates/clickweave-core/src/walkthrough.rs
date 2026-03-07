@@ -67,6 +67,49 @@ pub struct WalkthroughEvent {
     pub kind: WalkthroughEventKind,
 }
 
+/// Classification of an app's UI framework, used to decide whether
+/// Chrome DevTools Protocol (CDP) tools can provide better automation.
+///
+/// - `Native`: standard native app — use accessibility-based automation
+/// - `ChromeBrowser`: Chrome-family browser — CDP gives DOM access
+/// - `ElectronApp`: Electron-based app — native AX is unreliable, CDP preferred
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub enum AppKind {
+    #[default]
+    Native,
+    ChromeBrowser,
+    ElectronApp,
+}
+
+impl AppKind {
+    /// Parse from a string value (e.g. from JSON tool arguments).
+    /// Returns `None` for unrecognized values.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "Native" => Some(Self::Native),
+            "ChromeBrowser" => Some(Self::ChromeBrowser),
+            "ElectronApp" => Some(Self::ElectronApp),
+            _ => None,
+        }
+    }
+
+    /// Whether this app kind uses Chrome DevTools Protocol for automation.
+    pub fn uses_cdp(self) -> bool {
+        matches!(self, Self::ChromeBrowser | Self::ElectronApp)
+    }
+}
+
+/// CDP element data captured during walkthrough recording.
+/// Attached to MouseClicked events for clicks in CDP-enabled apps.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct CdpClickAnnotation {
+    pub uid: String,
+    pub label: String,
+    pub role: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "type")]
@@ -75,6 +118,8 @@ pub enum WalkthroughEventKind {
         app_name: String,
         pid: i32,
         window_title: Option<String>,
+        #[serde(default)]
+        app_kind: AppKind,
     },
     MouseClicked {
         x: f64,
@@ -82,6 +127,8 @@ pub enum WalkthroughEventKind {
         button: MouseButton,
         click_count: u32,
         modifiers: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cdp_element: Option<CdpClickAnnotation>,
     },
     KeyPressed {
         key: String,
@@ -117,6 +164,10 @@ pub enum WalkthroughEventKind {
     },
     VlmLabelResolved {
         label: String,
+    },
+    CdpSnapshotCaptured {
+        snapshot_text: String,
+        click_event_id: Uuid,
     },
     Paused,
     Resumed,
@@ -200,10 +251,12 @@ impl WalkthroughAction {
 pub enum WalkthroughActionKind {
     LaunchApp {
         app_name: String,
+        app_kind: AppKind,
     },
     FocusWindow {
         app_name: String,
         window_title: Option<String>,
+        app_kind: AppKind,
     },
     Click {
         x: f64,
@@ -245,6 +298,11 @@ pub enum TargetCandidate {
     Coordinates {
         x: f64,
         y: f64,
+    },
+    /// Element verified via Chrome DevTools Protocol snapshot.
+    CdpElement {
+        text: String,
+        uid: String,
     },
 }
 
@@ -288,6 +346,7 @@ impl TargetCandidate {
             }
             Self::VlmLabel { label } => Some(label),
             Self::OcrText { text } => Some(text),
+            Self::CdpElement { text, .. } => Some(text),
             _ => None,
         }
     }
@@ -548,12 +607,35 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
             WalkthroughEventKind::AppFocused {
                 app_name,
                 window_title,
+                app_kind,
                 ..
             } => {
                 flush_text(&mut text_buffer, &mut actions, &last_app);
 
-                // Collapse repeated focus on same app.
+                // Collapse repeated focus on same app, but update app_kind
+                // if it changed (e.g. reactive Electron reclassification).
                 if last_app.as_ref() == Some(app_name) {
+                    // Search backward for the most recent focus/launch action
+                    // for this app — it may not be the very last action (clicks
+                    // can appear between the original focus and the correction).
+                    for prev in actions.iter_mut().rev() {
+                        let (prev_name, prev_kind) = match &mut prev.kind {
+                            WalkthroughActionKind::LaunchApp {
+                                app_name: name,
+                                app_kind: kind,
+                            } => (name as &str, kind),
+                            WalkthroughActionKind::FocusWindow {
+                                app_name: name,
+                                app_kind: kind,
+                                ..
+                            } => (name as &str, kind),
+                            _ => continue,
+                        };
+                        if prev_name == app_name && *prev_kind != *app_kind {
+                            *prev_kind = *app_kind;
+                            break;
+                        }
+                    }
                     continue;
                 }
 
@@ -561,11 +643,13 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 let kind = if is_new {
                     WalkthroughActionKind::LaunchApp {
                         app_name: app_name.clone(),
+                        app_kind: *app_kind,
                     }
                 } else {
                     WalkthroughActionKind::FocusWindow {
                         app_name: app_name.clone(),
                         window_title: window_title.clone(),
+                        app_kind: *app_kind,
                     }
                 };
 
@@ -603,6 +687,7 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 let mut ax_label: Option<(String, Option<String>)> = None;
                 let mut vlm_label: Option<String> = None;
                 let mut crop_candidate: Option<(String, String)> = None;
+                let mut cdp_snapshot: Option<String> = None;
                 let mut peek = i;
                 while peek < events.len() {
                     match &events[peek].kind {
@@ -627,6 +712,9 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                         WalkthroughEventKind::VlmLabelResolved { label } => {
                             vlm_label = Some(label.clone());
                         }
+                        WalkthroughEventKind::CdpSnapshotCaptured { snapshot_text, .. } => {
+                            cdp_snapshot = Some(snapshot_text.clone());
+                        }
                         // Stop at the next action event.
                         _ => break,
                     }
@@ -635,8 +723,29 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 // Advance past consumed enrichment events.
                 i = peek;
 
-                // Build target candidates: accessibility label > OCR text > coordinates.
+                // Build target candidates: CDP > accessibility label > OCR text > coordinates.
                 let mut candidates = Vec::new();
+
+                // CDP element is the highest-priority target.
+                // Try AX label first, then VLM label as hint for matching.
+                if let Some(ref snapshot) = cdp_snapshot {
+                    let hints = ax_label
+                        .as_ref()
+                        .map(|(label, _)| label.as_str())
+                        .into_iter()
+                        .chain(vlm_label.as_deref());
+                    for hint in hints {
+                        let matches = crate::cdp::find_elements_in_snapshot(snapshot, hint);
+                        if matches.len() == 1 {
+                            let (uid, label) = &matches[0];
+                            candidates.push(TargetCandidate::CdpElement {
+                                text: label.clone(),
+                                uid: uid.clone(),
+                            });
+                            break;
+                        }
+                    }
+                }
 
                 // Accessibility label is the most reliable target.
                 if let Some((label, role)) = ax_label {
@@ -678,16 +787,19 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 let has_image_crop = candidates
                     .iter()
                     .any(|c| matches!(c, TargetCandidate::ImageCrop { .. }));
-                let confidence = if candidates.iter().any(|c| c.is_actionable_ax_label()) {
+                let confidence = if candidates
+                    .iter()
+                    .any(|c| matches!(c, TargetCandidate::CdpElement { .. }))
+                    || candidates.iter().any(|c| c.is_actionable_ax_label())
+                {
                     ActionConfidence::High
                 } else if candidates.iter().any(|c| {
                     matches!(
                         c,
                         TargetCandidate::VlmLabel { .. } | TargetCandidate::OcrText { .. }
                     )
-                }) {
-                    ActionConfidence::Medium
-                } else if has_image_crop {
+                }) || has_image_crop
+                {
                     ActionConfidence::Medium
                 } else {
                     ActionConfidence::Low
@@ -772,6 +884,9 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
             | WalkthroughEventKind::AccessibilityElementCaptured { .. }
             | WalkthroughEventKind::VlmLabelResolved { .. } => {}
 
+            // CDP snapshot events are consumed in the click peek loop above.
+            WalkthroughEventKind::CdpSnapshotCaptured { .. } => {}
+
             // Skip non-action events.
             WalkthroughEventKind::Paused
             | WalkthroughEventKind::Resumed
@@ -822,11 +937,12 @@ pub fn synthesize_draft(
         };
 
         let (node_type, name) = match &action.kind {
-            WalkthroughActionKind::LaunchApp { app_name } => (
+            WalkthroughActionKind::LaunchApp { app_name, app_kind } => (
                 NodeType::FocusWindow(FocusWindowParams {
                     method: FocusMethod::AppName,
                     value: Some(app_name.clone()),
                     bring_to_front: true,
+                    app_kind: *app_kind,
                 }),
                 format!("Launch {app_name}"),
             ),
@@ -834,11 +950,13 @@ pub fn synthesize_draft(
             WalkthroughActionKind::FocusWindow {
                 app_name,
                 window_title,
+                app_kind,
             } => (
                 NodeType::FocusWindow(FocusWindowParams {
                     method: FocusMethod::AppName,
                     value: Some(app_name.clone()),
                     bring_to_front: true,
+                    app_kind: *app_kind,
                 }),
                 match window_title {
                     Some(t) => format!("Focus '{t}'"),
@@ -1025,6 +1143,7 @@ mod tests {
                 app_name: "Calculator".to_string(),
                 pid: 1234,
                 window_title: Some("Calculator".to_string()),
+                app_kind: AppKind::Native,
             },
             WalkthroughEventKind::MouseClicked {
                 x: 100.0,
@@ -1032,6 +1151,7 @@ mod tests {
                 button: MouseButton::Left,
                 click_count: 1,
                 modifiers: vec![],
+                cdp_element: None,
             },
             WalkthroughEventKind::KeyPressed {
                 key: "Enter".to_string(),
@@ -1072,14 +1192,29 @@ mod tests {
     }
 
     #[test]
+    fn test_app_focused_backward_compat_without_app_kind() {
+        let json =
+            r#"{"type":"AppFocused","app_name":"Calculator","pid":1234,"window_title":null}"#;
+        let kind: WalkthroughEventKind = serde_json::from_str(json).unwrap();
+        match kind {
+            WalkthroughEventKind::AppFocused { app_kind, .. } => {
+                assert_eq!(app_kind, AppKind::Native);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
     fn test_action_kind_serialization_roundtrip() {
         let kinds = vec![
             WalkthroughActionKind::LaunchApp {
                 app_name: "Calculator".to_string(),
+                app_kind: AppKind::Native,
             },
             WalkthroughActionKind::FocusWindow {
                 app_name: "Calculator".to_string(),
                 window_title: Some("Calculator".to_string()),
+                app_kind: AppKind::Native,
             },
             WalkthroughActionKind::Click {
                 x: 100.0,
@@ -1119,6 +1254,10 @@ mod tests {
                 image_b64: "abc123".to_string(),
             },
             TargetCandidate::Coordinates { x: 100.0, y: 200.0 },
+            TargetCandidate::CdpElement {
+                text: "Submit".to_string(),
+                uid: "e1".to_string(),
+            },
         ];
 
         for candidate in &candidates {
@@ -1197,6 +1336,7 @@ mod tests {
                 app_name: "Calculator".to_string(),
                 pid: 1234,
                 window_title: Some("Calculator".to_string()),
+                app_kind: AppKind::Native,
             },
         };
 
@@ -1227,6 +1367,7 @@ mod tests {
                 app_name: "Calculator".into(),
                 pid: 100,
                 window_title: None,
+                app_kind: AppKind::Native,
             },
         };
         let ev2 = WalkthroughEvent {
@@ -1318,13 +1459,14 @@ mod tests {
                     app_name: "Calculator".into(),
                     pid: 100,
                     window_title: Some("Calculator".into()),
+                    app_kind: AppKind::Native,
                 },
             )];
             let (actions, _warnings) = normalize_events(&events);
             assert_eq!(actions.len(), 1);
             assert!(matches!(
                 &actions[0].kind,
-                WalkthroughActionKind::LaunchApp { app_name } if app_name == "Calculator"
+                WalkthroughActionKind::LaunchApp { app_name, .. } if app_name == "Calculator"
             ));
             assert_eq!(actions[0].confidence, ActionConfidence::High);
         }
@@ -1338,6 +1480,7 @@ mod tests {
                         app_name: "Calculator".into(),
                         pid: 100,
                         window_title: None,
+                        app_kind: AppKind::Native,
                     },
                 ),
                 make_event(
@@ -1346,6 +1489,7 @@ mod tests {
                         app_name: "Calculator".into(),
                         pid: 100,
                         window_title: None,
+                        app_kind: AppKind::Native,
                     },
                 ),
             ];
@@ -1362,6 +1506,7 @@ mod tests {
                         app_name: "Calculator".into(),
                         pid: 100,
                         window_title: None,
+                        app_kind: AppKind::Native,
                     },
                 ),
                 make_event(
@@ -1370,6 +1515,7 @@ mod tests {
                         app_name: "Notes".into(),
                         pid: 200,
                         window_title: None,
+                        app_kind: AppKind::Native,
                     },
                 ),
                 make_event(
@@ -1378,6 +1524,7 @@ mod tests {
                         app_name: "Calculator".into(),
                         pid: 100,
                         window_title: None,
+                        app_kind: AppKind::Native,
                     },
                 ),
             ];
@@ -1444,6 +1591,7 @@ mod tests {
                         button: MouseButton::Left,
                         click_count: 1,
                         modifiers: vec![],
+                        cdp_element: None,
                     },
                 ),
                 make_event(
@@ -1482,6 +1630,7 @@ mod tests {
                         button: MouseButton::Left,
                         click_count: 1,
                         modifiers: vec![],
+                        cdp_element: None,
                     },
                 ),
                 make_event(
@@ -1529,6 +1678,7 @@ mod tests {
                     button: MouseButton::Left,
                     click_count: 1,
                     modifiers: vec![],
+                    cdp_element: None,
                 },
             )];
             let (actions, _) = normalize_events(&events);
@@ -1553,6 +1703,7 @@ mod tests {
                         button: MouseButton::Left,
                         click_count: 1,
                         modifiers: vec![],
+                        cdp_element: None,
                     },
                 ),
                 make_event(
@@ -1585,6 +1736,7 @@ mod tests {
                         button: MouseButton::Left,
                         click_count: 1,
                         modifiers: vec![],
+                        cdp_element: None,
                     },
                 ),
                 make_event(
@@ -1614,6 +1766,67 @@ mod tests {
                 TargetCandidate::VlmLabel { label } if label == "Submit Button"
             ));
             // Actionable AX label means High confidence
+            assert_eq!(actions[0].confidence, ActionConfidence::High);
+        }
+
+        #[test]
+        fn test_cdp_element_resolved_via_vlm_hint_when_ax_is_window_title() {
+            let click_id = Uuid::new_v4();
+            let events = vec![
+                WalkthroughEvent {
+                    id: click_id,
+                    timestamp: 1000,
+                    kind: WalkthroughEventKind::MouseClicked {
+                        x: 45.0,
+                        y: 473.0,
+                        button: MouseButton::Left,
+                        click_count: 1,
+                        modifiers: vec![],
+                        cdp_element: None,
+                    },
+                },
+                make_event(
+                    1000,
+                    WalkthroughEventKind::CdpSnapshotCaptured {
+                        snapshot_text: concat!(
+                            "uid=1_0 RootWebArea \"MyApp\"\n",
+                            "  uid=1_1 button \"Go back\"\n",
+                            "  uid=1_2 treeitem \"Direct Messages\" level=\"1\" selectable\n",
+                            "  uid=1_3 button \"Settings\"\n",
+                        )
+                        .to_string(),
+                        click_event_id: click_id,
+                    },
+                ),
+                // AX label is the window title — won't match any single CDP element.
+                make_event(
+                    1000,
+                    WalkthroughEventKind::AccessibilityElementCaptured {
+                        label: "MyApp - Main Window".to_string(),
+                        role: Some("AXWindow".to_string()),
+                    },
+                ),
+                // VLM label matches the specific element.
+                make_event(
+                    1000,
+                    WalkthroughEventKind::VlmLabelResolved {
+                        label: "Direct Messages".to_string(),
+                    },
+                ),
+            ];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 1);
+            // CDP element should be the first candidate (highest priority).
+            assert!(
+                matches!(
+                    &actions[0].target_candidates[0],
+                    TargetCandidate::CdpElement { text, uid }
+                        if text == "Direct Messages" && uid == "1_2"
+                ),
+                "Expected CdpElement as first candidate, got: {:?}",
+                &actions[0].target_candidates
+            );
+            // CDP element presence means High confidence.
             assert_eq!(actions[0].confidence, ActionConfidence::High);
         }
 
@@ -1713,6 +1926,27 @@ mod tests {
             let (actions, _) = normalize_events(&events);
             assert!(actions.is_empty());
         }
+
+        #[test]
+        fn test_app_kind_propagated_to_actions() {
+            let events = vec![make_event(
+                1000,
+                WalkthroughEventKind::AppFocused {
+                    app_name: "Discord".into(),
+                    pid: 100,
+                    window_title: None,
+                    app_kind: AppKind::ElectronApp,
+                },
+            )];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 1);
+            match &actions[0].kind {
+                WalkthroughActionKind::LaunchApp { app_kind, .. } => {
+                    assert_eq!(*app_kind, AppKind::ElectronApp);
+                }
+                _ => panic!("expected LaunchApp"),
+            }
+        }
     }
 
     mod synthesis_tests {
@@ -1745,6 +1979,7 @@ mod tests {
         fn test_launch_app_becomes_focus_window_node() {
             let actions = vec![make_action(WalkthroughActionKind::LaunchApp {
                 app_name: "Calculator".into(),
+                app_kind: AppKind::Native,
             })];
             let wf = synthesize_draft(&actions, Uuid::new_v4(), "Test");
             assert_eq!(wf.nodes.len(), 1);
@@ -1753,6 +1988,22 @@ mod tests {
                 NodeType::FocusWindow(p) if p.method == FocusMethod::AppName && p.value.as_deref() == Some("Calculator")
             ));
             assert_eq!(wf.nodes[0].name, "Launch Calculator");
+        }
+
+        #[test]
+        fn test_app_kind_propagated_to_focus_window_node() {
+            let actions = vec![make_action(WalkthroughActionKind::LaunchApp {
+                app_name: "Discord".into(),
+                app_kind: AppKind::ElectronApp,
+            })];
+            let wf = synthesize_draft(&actions, Uuid::new_v4(), "Test");
+            assert_eq!(wf.nodes.len(), 1);
+            match &wf.nodes[0].node_type {
+                NodeType::FocusWindow(p) => {
+                    assert_eq!(p.app_kind, AppKind::ElectronApp);
+                }
+                _ => panic!("expected FocusWindow"),
+            }
         }
 
         #[test]
@@ -1798,6 +2049,7 @@ mod tests {
             let actions = vec![
                 make_action(WalkthroughActionKind::LaunchApp {
                     app_name: "App".into(),
+                    app_kind: AppKind::Native,
                 }),
                 make_action(WalkthroughActionKind::TypeText {
                     text: "hello".into(),

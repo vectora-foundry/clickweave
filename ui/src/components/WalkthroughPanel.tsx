@@ -2,7 +2,8 @@ import { useState, useCallback } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useStore } from "../store/useAppStore";
 import { useHorizontalResize } from "../hooks/useHorizontalResize";
-import type { WalkthroughAction, TargetCandidate, Node } from "../bindings";
+import type { AppKind, WalkthroughAction, TargetCandidate, Node } from "../bindings";
+import { APP_KIND_LABELS, usesCdp } from "../utils/appKind";
 import { buildActionByNodeId } from "../store/slices/walkthroughSlice";
 import { ImageLightbox, CrosshairOverlay, type LightboxImage } from "./ImageLightbox";
 
@@ -26,7 +27,7 @@ function actionLabel(action: WalkthroughAction): string {
       const idx = preferredTargetIndex(action.target_candidates);
       const best = action.target_candidates[idx];
       if (best && best.type !== "Coordinates" && best.type !== "ImageCrop") {
-        const label = best.type === "OcrText" ? best.text : best.label;
+        const label = (best.type === "OcrText" || best.type === "CdpElement") ? best.text : best.label;
         return `Click '${label.length > 25 ? label.slice(0, 25) + "…" : label}'`;
       }
       return `Click (${k.x}, ${k.y})`;
@@ -45,11 +46,23 @@ function actionLabel(action: WalkthroughAction): string {
 
 function targetCandidateLabel(candidate: TargetCandidate): string {
   switch (candidate.type) {
-    case "AccessibilityLabel": return `"${candidate.label}"${candidate.role ? ` (${candidate.role})` : ""}`;
+    case "AccessibilityLabel": return `"${candidate.label}"`;
     case "VlmLabel": return `"${candidate.label}"`;
     case "OcrText": return `"${candidate.text}"`;
     case "ImageCrop": return "Image crop";
     case "Coordinates": return `(${candidate.x}, ${candidate.y})`;
+    case "CdpElement": return `"${candidate.text}"`;
+  }
+}
+
+function targetCandidateMethod(candidate: TargetCandidate): string {
+  switch (candidate.type) {
+    case "AccessibilityLabel": return "Accessibility";
+    case "VlmLabel": return "Vision model";
+    case "OcrText": return "OCR";
+    case "ImageCrop": return "Image template";
+    case "Coordinates": return "Screen coordinates";
+    case "CdpElement": return "DevTools DOM";
   }
 }
 
@@ -64,6 +77,9 @@ const ACTIONABLE_AX_ROLES = new Set([
 /** Find the index of the preferred target candidate, mirroring backend `synthesize_draft` logic.
  *  Priority: actionable AX label > VlmLabel/OcrText > ImageCrop > Coordinates. */
 function preferredTargetIndex(candidates: TargetCandidate[]): number {
+  // CDP-verified elements are most reliable
+  const cdpIdx = candidates.findIndex((c) => c.type === "CdpElement");
+  if (cdpIdx >= 0) return cdpIdx;
   const idx = candidates.findIndex((c) => {
     if (c.type === "AccessibilityLabel") return ACTIONABLE_AX_ROLES.has(c.role ?? "");
     return c.type === "VlmLabel" || c.type === "OcrText";
@@ -83,6 +99,7 @@ function targetCandidateIcon(candidate: TargetCandidate): string {
     case "OcrText": return "\u{1F441}";
     case "ImageCrop": return "\u{1F5BC}";
     case "Coordinates": return "\u{1F4CD}";
+    case "CdpElement": return "\u{1F310}";
   }
 }
 
@@ -183,6 +200,15 @@ export function WalkthroughPanel() {
 
   // Build action lookup by node_id for metadata (screenshots, candidates, confidence).
   const actionByNodeId = buildActionByNodeId(walkthroughActionNodeMap, walkthroughActions);
+
+  // Build app_kind map from LaunchApp/FocusWindow actions so Click nodes can
+  // know whether they're targeting an Electron/Chrome app.
+  const appKindMap = new Map<string, AppKind>();
+  for (const a of walkthroughActions) {
+    if (a.kind.type === "LaunchApp" || a.kind.type === "FocusWindow") {
+      appKindMap.set(a.kind.app_name, a.kind.app_kind);
+    }
+  }
 
   const draftNodes = walkthroughDraft?.nodes ?? [];
   const deletedSet = new Set(walkthroughAnnotations.deleted_node_ids);
@@ -358,54 +384,73 @@ export function WalkthroughPanel() {
                       </div>
 
                       {/* Target candidates (Click nodes with action metadata) */}
-                      {action && action.kind.type === "Click" && action.target_candidates.length > 0 && (
-                        <div>
-                          <label className="mb-1 block text-[10px] text-[var(--text-muted)]">Click Target</label>
-                          <div className="space-y-1">
-                            {action.target_candidates.map((candidate, ci) => (
-                              <label
-                                key={ci}
-                                className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs transition-colors ${
-                                  ci === chosenTargetIdx
-                                    ? "bg-[var(--accent-coral)]/10 text-[var(--text-primary)]"
-                                    : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
-                                }`}
-                              >
-                                <input
-                                  type="radio"
-                                  name={`target-${node.id}`}
-                                  checked={ci === chosenTargetIdx}
-                                  onChange={() => overrideTarget(node.id, ci)}
-                                  className="accent-[var(--accent-coral)]"
-                                />
-                                <span>{targetCandidateIcon(candidate)}</span>
-                                <span className="truncate">{targetCandidateLabel(candidate)}</span>
-                              </label>
-                            ))}
+                      {action && action.kind.type === "Click" && action.target_candidates.length > 0 && (() => {
+                        const actionAppKind = action.app_name ? appKindMap.get(action.app_name) : undefined;
+                        const isCdpApp = actionAppKind ? usesCdp(actionAppKind) : false;
+                        // For Electron/Chrome apps, hide non-actionable AX labels (e.g. AXWindow)
+                        // since native accessibility is unreliable — DevTools is used at runtime instead.
+                        const displayCandidates = action.target_candidates
+                          .map((candidate, i) => ({ candidate, originalIndex: i }))
+                          .filter(({ candidate }) => {
+                            if (!isCdpApp) return true;
+                            if (candidate.type === "AccessibilityLabel" && !ACTIONABLE_AX_ROLES.has(candidate.role ?? "")) return false;
+                            return true;
+                          });
+                        return (
+                          <div>
+                            <label className="mb-1 block text-[10px] text-[var(--text-muted)]">Click Target</label>
+                            <div className="space-y-1">
+                              {displayCandidates.map(({ candidate, originalIndex }) => (
+                                <label
+                                  key={originalIndex}
+                                  className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs transition-colors ${
+                                    originalIndex === chosenTargetIdx
+                                      ? "bg-[var(--accent-coral)]/10 text-[var(--text-primary)]"
+                                      : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]"
+                                  }`}
+                                >
+                                  <input
+                                    type="radio"
+                                    name={`target-${node.id}`}
+                                    checked={originalIndex === chosenTargetIdx}
+                                    onChange={() => overrideTarget(node.id, originalIndex)}
+                                    className="accent-[var(--accent-coral)]"
+                                  />
+                                  <span>{targetCandidateIcon(candidate)}</span>
+                                  <span className="truncate">{targetCandidateLabel(candidate)}</span>
+                                  <span className="ml-auto shrink-0 text-[10px] text-[var(--text-muted)]">{targetCandidateMethod(candidate)}</span>
+                                </label>
+                              ))}
+                            </div>
+                            {isCdpApp && (
+                              <p className="mt-1.5 text-[10px] text-[var(--text-muted)]">
+                                {actionAppKind ? APP_KIND_LABELS[actionAppKind] : "DevTools"} — targeting used at runtime
+                              </p>
+                            )}
+                            {/* Crop thumbnail for selected ImageCrop candidate */}
+                            {(() => {
+                              const chosen = action.target_candidates[chosenTargetIdx];
+                              if (chosen?.type === "ImageCrop") {
+                                return (
+                                  <img
+                                    src={convertFileSrc(chosen.path)}
+                                    alt="Click crop"
+                                    className="mt-1 h-16 w-16 rounded border border-[var(--border)] object-contain"
+                                    onError={(e) => {
+                                      // Fall back to inline base64 if the artifact file is missing.
+                                      if (chosen.image_b64) {
+                                        (e.target as HTMLImageElement).src =
+                                          `data:image/jpeg;base64,${chosen.image_b64}`;
+                                      }
+                                    }}
+                                  />
+                                );
+                              }
+                              return null;
+                            })()}
                           </div>
-                          {/* Crop thumbnail for selected ImageCrop candidate */}
-                          {(() => {
-                            const chosen = action.target_candidates[chosenTargetIdx];
-                            if (chosen?.type === "ImageCrop") {
-                              return (
-                                <img
-                                  src={convertFileSrc(chosen.path)}
-                                  alt="Click crop"
-                                  className="mt-1 h-16 w-16 rounded border border-[var(--border)] object-contain"
-                                  onError={(e) => {
-                                    // Fall back to inline base64 if the artifact file is missing.
-                                    if (chosen.image_b64) {
-                                      (e.target as HTMLImageElement).src =
-                                        `data:image/jpeg;base64,${chosen.image_b64}`;
-                                    }
-                                  }}
-                                />
-                              );
-                            }
-                            return null;
-                          })()}
-                        </div>
-                      )}
+                        );
+                      })()}
 
                       {/* Variable promotion (TypeText nodes) */}
                       {(action ? action.kind.type === "TypeText" : node.node_type.type === "TypeText") && (

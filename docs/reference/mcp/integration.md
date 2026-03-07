@@ -1,8 +1,8 @@
 # MCP Integration (Reference)
 
-Verified at commit: `1cdb730`
+Verified at commit: `d0b526d`
 
-Clickweave executes desktop/browser automation by spawning an MCP server subprocess and talking JSON-RPC over stdio.
+Clickweave executes desktop/browser automation by spawning MCP server subprocesses and talking JSON-RPC over stdio. Multiple servers are managed by `McpRouter`, which merges tool lists and routes `call_tool` requests to the owning server.
 
 ## Architecture
 
@@ -10,8 +10,55 @@ Clickweave executes desktop/browser automation by spawning an MCP server subproc
 clickweave-engine
     |
     v
-clickweave-mcp::McpClient  <--- JSON-RPC over stdio --->  native-devtools-mcp
+clickweave-mcp::McpRouter
+    |
+    +--- McpClient  <--- JSON-RPC --->  native-devtools-mcp  (primary)
+    |
+    +--- McpClient  <--- JSON-RPC --->  chrome-devtools-mcp   (secondary)
 ```
+
+## McpRouter
+
+File: `crates/clickweave-mcp/src/router.rs`
+
+### McpServerConfig
+
+```rust
+pub struct McpServerConfig {
+    pub name: String,      // display name (e.g. "native-devtools")
+    pub command: String,    // binary or "npx"
+    pub args: Vec<String>,  // e.g. ["-y", "native-devtools-mcp"]
+}
+```
+
+### Spawn & Tool Routing
+
+`McpRouter::spawn(configs)` iterates configs and spawns each as an `McpClient`:
+
+- **Primary server** (index 0): failure is fatal — returns `Err`.
+- **Non-primary servers**: failure logs a warning and continues without that server.
+
+After spawning, the router builds a merged tool list. On tool-name conflicts, **first server wins** — the duplicate is logged and skipped.
+
+### default_server_configs
+
+`default_server_configs(mcp_command)` builds the standard two-server config:
+
+| Server | Command | Args |
+|--------|---------|------|
+| `native-devtools` | `mcp_command` (or `npx` with `-y native-devtools-mcp`) | varies |
+| `chrome-devtools` | `npx` | `-y chrome-devtools-mcp` |
+
+### Key Methods
+
+| Method | Behavior |
+|--------|----------|
+| `spawn(configs)` | Spawn all servers, build routing table |
+| `call_tool(name, args)` | Route to owning server |
+| `tools()` | Merged tool list |
+| `tools_as_openai()` | OpenAI function-calling format |
+| `server_count()` | Number of active servers |
+| `kill_all()` | Kill all server processes |
 
 ## McpClient Lifecycle
 
@@ -115,21 +162,56 @@ Unknown tool names map to `McpToolCall` only if present in known tool schema lis
 
 UI settings store `mcpCommand`:
 
-- `"npx"` => use `spawn_npx()`
-- any other string => execute as command path with no extra args
+- `"npx"` => `default_server_configs("npx")` spawns both servers via npx
+- any other string => used as direct command for native-devtools; chrome-devtools still uses npx
+
+The `mcpCommand` string is converted to `Vec<McpServerConfig>` via `default_server_configs()` in both the planner and executor Tauri commands.
 
 Relevant files:
 
 - `ui/src/store/settings.ts`
 - `ui/src/components/SettingsModal.tsx`
 - `src-tauri/src/commands/planner.rs`
+- `src-tauri/src/commands/executor.rs`
 - `crates/clickweave-engine/src/executor/run_loop.rs`
+
+## App Detection
+
+File: `crates/clickweave-core/src/app_detection.rs`
+
+During walkthrough recording, apps are classified as `Native`, `ChromeBrowser`, or `ElectronApp` when they receive focus. This classification is emitted on `AppFocused` events via the `app_kind` field.
+
+### Detection Strategy
+
+| App Type | Detection Method | Maintenance |
+|----------|-----------------|-------------|
+| Chrome-family | Bundle ID matching (6 entries) | Rarely changes |
+| Electron apps | Framework directory check | Zero — automatic |
+| Native apps | Default (neither matches) | N/A |
+
+**Chrome-family**: matched by bundle ID (`com.google.Chrome`, `com.brave.Browser`, `com.microsoft.edgemac`, `company.thebrowser.Browser`, `org.chromium.Chromium`).
+
+**Electron**: detected by checking for `Contents/Frameworks/Electron Framework.framework` (macOS) or `resources\electron.asar` (Windows) in the app bundle. Uses `proc_pidpath` (macOS) to resolve PID → bundle path.
+
+### Reactive Fallback
+
+If proactive detection classifies an app as `Native` but accessibility enrichment returns no actionable element, the framework check is re-run. This catches Electron apps with unusual bundle structures.
+
+### Key Files
+
+| File | Role |
+|------|------|
+| `crates/clickweave-core/src/app_detection.rs` | `classify_app`, `bundle_path_from_pid`, Chrome/Electron checks |
+| `crates/clickweave-core/src/walkthrough.rs` | `AppKind` enum, `AppFocused` event |
+| `src-tauri/src/commands/walkthrough.rs` | Event loop integration, reactive fallback |
 
 ## Key Files
 
 | File | Role |
 |------|------|
+| `crates/clickweave-mcp/src/router.rs` | McpRouter, McpServerConfig, default_server_configs |
 | `crates/clickweave-mcp/src/client.rs` | spawn, init, tools/list, tools/call |
 | `crates/clickweave-mcp/src/protocol.rs` | protocol data types |
 | `crates/clickweave-mcp/src/lib.rs` | re-exports |
 | `crates/clickweave-core/src/tool_mapping.rs` | shared node/tool mapping |
+| `crates/clickweave-core/src/app_detection.rs` | Electron/Chrome app classification |

@@ -83,6 +83,8 @@ fn main() {
         get_walkthrough_draft,
         apply_walkthrough_annotations,
         seed_walkthrough_cache,
+        detect_cdp_apps,
+        validate_app_path,
     ]);
 
     #[cfg(debug_assertions)]

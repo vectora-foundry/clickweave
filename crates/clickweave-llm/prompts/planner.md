@@ -47,6 +47,7 @@ Before outputting, verify: count nodes with zero incoming edges. If more than 1,
 - Prefer deterministic Tool steps over AiStep.
 - Do not add "End" or "Start" nodes. The workflow ends after the last node.
 - Output ONLY valid JSON. No explanation, no markdown fences.
+- For Chrome-family browsers (Chrome, Brave, Edge, Arc, Chromium), add `"app_kind": "ChromeBrowser"` to launch_app/focus_window arguments. For all other apps, omit app_kind (defaults to Native). Do NOT guess Electron apps — the executor detects those automatically.
 
 ## Conditional example
 

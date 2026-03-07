@@ -1,3 +1,4 @@
+use crate::walkthrough::AppKind;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -550,6 +551,8 @@ pub struct FocusWindowParams {
     pub method: FocusMethod,
     pub value: Option<String>,
     pub bring_to_front: bool,
+    #[serde(default)]
+    pub app_kind: AppKind,
 }
 
 impl Default for FocusWindowParams {
@@ -558,6 +561,7 @@ impl Default for FocusWindowParams {
             method: FocusMethod::AppName,
             value: None,
             bring_to_front: true,
+            app_kind: AppKind::Native,
         }
     }
 }

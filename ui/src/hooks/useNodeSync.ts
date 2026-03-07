@@ -4,7 +4,8 @@ import {
   type OnNodesChange,
   applyNodeChanges,
 } from "@xyflow/react";
-import type { Workflow } from "../bindings";
+import type { AppKind, Workflow } from "../bindings";
+import { usesCdp } from "../utils/appKind";
 
 // Layout constants for loop group positioning
 const LOOP_HEADER_HEIGHT = 40;
@@ -43,11 +44,84 @@ function clickSubtitle(nt: Workflow["nodes"][number]["node_type"]): string | und
   return undefined;
 }
 
+/** Forward-propagate app_kind from FocusWindow nodes to all downstream nodes. */
+export function buildAppKindMap(workflow: Workflow): Map<string, AppKind> {
+  const result = new Map<string, AppKind>();
+  const nodeById = new Map(workflow.nodes.map((n) => [n.id, n]));
+
+  // Collect EndLoop node IDs so we can exclude their back-edges (EndLoop→Loop)
+  const endLoopNodeIds = new Set(
+    workflow.nodes.filter((n) => n.node_type.type === "EndLoop").map((n) => n.id),
+  );
+
+  // Build outgoing adjacency and in-degree for topological walk.
+  // Exclude EndLoop back-edges to avoid cycles breaking the algorithm.
+  const outgoing = new Map<string, string[]>();
+  const inDegree = new Map<string, number>();
+  for (const node of workflow.nodes) inDegree.set(node.id, 0);
+  for (const edge of workflow.edges) {
+    if (endLoopNodeIds.has(edge.from)) continue;
+    const list = outgoing.get(edge.from) ?? [];
+    list.push(edge.to);
+    outgoing.set(edge.from, list);
+    inDegree.set(edge.to, (inDegree.get(edge.to) ?? 0) + 1);
+  }
+
+  // Kahn's algorithm: process nodes in topological order
+  const queue: string[] = [];
+  for (const [id, deg] of inDegree) {
+    if (deg === 0) queue.push(id);
+  }
+
+  let head = 0;
+  while (head < queue.length) {
+    const id = queue[head++];
+    const node = nodeById.get(id);
+
+    // FocusWindow nodes set the app_kind for their downstream chain
+    if (node?.node_type.type === "FocusWindow") {
+      const kind = (node.node_type as { app_kind?: AppKind }).app_kind ?? "Native";
+      result.set(id, kind);
+    }
+
+    const kind = result.get(id);
+    for (const target of outgoing.get(id) ?? []) {
+      // Propagate — a downstream FocusWindow will override in its own iteration
+      if (kind && !result.has(target)) {
+        result.set(target, kind);
+      }
+      inDegree.set(target, (inDegree.get(target) ?? 0) - 1);
+      if (inDegree.get(target) === 0) queue.push(target);
+    }
+  }
+
+  return result;
+}
+
+function nodeSubtitle(
+  nt: Workflow["nodes"][number]["node_type"],
+  appKind: AppKind | undefined,
+): string | undefined {
+  // Click nodes: show target info
+  const click = clickSubtitle(nt);
+  if (click) {
+    // Append DevTools context if applicable
+    if (appKind && usesCdp(appKind)) return `${click} · via DevTools`;
+    return click;
+  }
+  // Non-FocusWindow nodes: show DevTools context if inherited from upstream
+  if (nt.type !== "FocusWindow" && appKind && usesCdp(appKind)) {
+    return "via DevTools";
+  }
+  return undefined;
+}
+
 function toRFNode(
   node: Workflow["nodes"][number],
   selectedNode: string | null,
   activeNode: string | null,
   onDelete: () => void,
+  appKind: AppKind | undefined,
   existing?: RFNode,
 ): RFNode {
   const meta = nodeMetadata[node.node_type.type] ?? defaultMetadata;
@@ -73,7 +147,7 @@ function toRFNode(
         ? (node.node_type as { type: "Switch"; cases: { name: string }[] }).cases.map((c) => c.name)
         : [],
       role: node.role,
-      subtitle: clickSubtitle(node.node_type),
+      subtitle: nodeSubtitle(node.node_type, appKind),
     },
   };
 }
@@ -118,6 +192,7 @@ export function useNodeSync({
     setRfNodes((prev) => {
       const prevMap = new Map(prev.map((n) => [n.id, n]));
       const wfNodeMap = new Map(workflow.nodes.map((n) => [n.id, n]));
+      const appKindMap = buildAppKindMap(workflow);
 
       const nodes: RFNode[] = [];
       const groupNodeIndices = new Map<string, number>();
@@ -128,7 +203,7 @@ export function useNodeSync({
 
         // EndLoop nodes are always hidden
         if (endLoopIds.has(node.id)) {
-          const base = toRFNode(node, selectedNode, activeNode, () => onDeleteNodes([node.id]), existing);
+          const base = toRFNode(node, selectedNode, activeNode, () => onDeleteNodes([node.id]), appKindMap.get(node.id), existing);
           nodes.push({ ...base, hidden: true });
           continue;
         }
@@ -145,7 +220,7 @@ export function useNodeSync({
               if (endLoopId) ids.push(endLoopId);
               ids.push(node.id);
               onDeleteNodes(ids);
-            }, existing);
+            }, appKindMap.get(node.id), existing);
             nodes.push({
               ...base,
               type: "workflow",
@@ -156,7 +231,7 @@ export function useNodeSync({
               },
             });
           } else {
-            const base = toRFNode(node, selectedNode, activeNode, () => onDeleteNodes([node.id]), existing);
+            const base = toRFNode(node, selectedNode, activeNode, () => onDeleteNodes([node.id]), appKindMap.get(node.id), existing);
             expandedLoopChildren.set(node.id, []);
             const idx = nodes.length;
             nodes.push({
@@ -178,7 +253,7 @@ export function useNodeSync({
         // Body nodes of a loop
         const parentLoops = nodeToLoops.get(node.id);
         if (parentLoops && parentLoops.length > 0) {
-          const base = toRFNode(node, selectedNode, activeNode, () => onDeleteNodes([node.id]), existing);
+          const base = toRFNode(node, selectedNode, activeNode, () => onDeleteNodes([node.id]), appKindMap.get(node.id), existing);
 
           const anyCollapsed = parentLoops.some((lid) => collapsedLoops.has(lid));
           if (anyCollapsed) {
@@ -214,7 +289,7 @@ export function useNodeSync({
         }
 
         // Regular node
-        const base = toRFNode(node, selectedNode, activeNode, () => onDeleteNodes([node.id]), existing);
+        const base = toRFNode(node, selectedNode, activeNode, () => onDeleteNodes([node.id]), appKindMap.get(node.id), existing);
         nodes.push(base);
       }
 
@@ -252,6 +327,7 @@ export function useNodeSync({
     });
   }, [
     workflow.nodes,
+    workflow.edges,
     activeNode,
     onDeleteNodes,
     collapsedLoops,

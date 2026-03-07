@@ -1,6 +1,6 @@
 import type { StateCreator } from "zustand";
 import { commands } from "../../bindings";
-import type { Node, NodeRename, NodeType, TargetOverride, VariablePromotion, WalkthroughAction, WalkthroughAnnotations, Workflow } from "../../bindings";
+import type { CdpAppConfig, CdpSetupProgress, Node, NodeRename, NodeType, TargetOverride, VariablePromotion, WalkthroughAction, WalkthroughAnnotations, Workflow } from "../../bindings";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { currentMonitor } from "@tauri-apps/api/window";
 import { LogicalSize, LogicalPosition } from "@tauri-apps/api/dpi";
@@ -105,10 +105,13 @@ export interface WalkthroughSlice {
   walkthroughAnnotations: WalkthroughAnnotations;
   walkthroughExpandedAction: string | null;
   walkthroughActionNodeMap: ActionNodeEntry[];
+  walkthroughCdpModalOpen: boolean;
+  walkthroughCdpProgress: CdpSetupProgress[];
 
   setWalkthroughStatus: (status: WalkthroughStatus) => void;
   setWalkthroughPanelOpen: (open: boolean) => void;
   pushWalkthroughEvent: (event: WalkthroughCapturedEvent) => void;
+  pushCdpProgress: (progress: CdpSetupProgress) => void;
   setWalkthroughDraft: (payload: {
     actions: WalkthroughAction[];
     draft: Workflow | null;
@@ -116,7 +119,9 @@ export interface WalkthroughSlice {
     action_node_map: ActionNodeEntry[];
   }) => void;
   fetchWalkthroughDraft: () => Promise<void>;
-  startWalkthrough: () => Promise<void>;
+  openCdpModal: () => void;
+  closeCdpModal: () => void;
+  startWalkthrough: (cdpApps?: CdpAppConfig[]) => Promise<void>;
   pauseWalkthrough: () => Promise<void>;
   resumeWalkthrough: () => Promise<void>;
   stopWalkthrough: () => Promise<void>;
@@ -145,6 +150,8 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   walkthroughAnnotations: { ...emptyAnnotations },
   walkthroughExpandedAction: null,
   walkthroughActionNodeMap: [],
+  walkthroughCdpModalOpen: false,
+  walkthroughCdpProgress: [],
 
   setWalkthroughStatus: (status) => {
     set({ walkthroughStatus: status });
@@ -158,6 +165,16 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   pushWalkthroughEvent: (event) => set((s) => ({
     walkthroughEvents: [...s.walkthroughEvents, event],
   })),
+
+  pushCdpProgress: (progress) => {
+    if (typeof progress.status === "string" && progress.status === "Done") {
+      set({ walkthroughCdpModalOpen: false });
+      return;
+    }
+    set((s) => ({
+      walkthroughCdpProgress: [...s.walkthroughCdpProgress, progress],
+    }));
+  },
 
   setWalkthroughDraft: ({ actions, draft, warnings, action_node_map }) => set({
     walkthroughActions: actions,
@@ -182,7 +199,10 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     }
   },
 
-  startWalkthrough: async () => {
+  openCdpModal: () => set({ walkthroughCdpModalOpen: true, walkthroughCdpProgress: [] }),
+  closeCdpModal: () => set({ walkthroughCdpModalOpen: false }),
+
+  startWalkthrough: async (cdpApps: CdpAppConfig[] = []) => {
     const { workflow, mcpCommand, projectPath, pushLog, plannerConfig } = get();
     set({
       walkthroughError: null,
@@ -190,15 +210,16 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       walkthroughAnnotations: { ...emptyAnnotations },
       walkthroughExpandedAction: null,
       walkthroughActionNodeMap: [],
+      walkthroughCdpProgress: [],
 
       assistantOpen: false,
     });
     const planner = plannerConfig.baseUrl && plannerConfig.model
       ? toEndpoint(plannerConfig)
       : null;
-    const result = await commands.startWalkthrough(workflow.id, mcpCommand, projectPath ?? null, planner);
+    const result = await commands.startWalkthrough(workflow.id, mcpCommand, projectPath ?? null, planner, cdpApps);
     if (result.status === "error") {
-      set({ walkthroughError: result.error });
+      set({ walkthroughError: result.error, walkthroughCdpModalOpen: false });
       pushLog(`Walkthrough start failed: ${result.error}`);
     } else {
       openRecordingBarWindow();

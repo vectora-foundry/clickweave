@@ -3,7 +3,7 @@ use clickweave_core::{AiStepParams, NodeRun};
 use clickweave_llm::{
     ChatBackend, Message, analyze_images, build_step_prompt, workflow_system_prompt,
 };
-use clickweave_mcp::McpClient;
+use clickweave_mcp::McpRouter;
 use serde_json::Value;
 use std::time::Instant;
 use tokio::sync::mpsc::Receiver;
@@ -14,7 +14,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &self,
         params: &AiStepParams,
         tools: &[Value],
-        mcp: &McpClient,
+        mcp: &McpRouter,
         timeout_ms: Option<u64>,
         command_rx: &mut Receiver<ExecutorCommand>,
         mut node_run: Option<&mut NodeRun>,

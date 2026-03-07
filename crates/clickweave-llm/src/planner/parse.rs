@@ -45,11 +45,7 @@ pub(crate) fn truncate_intent(intent: &str) -> String {
     if intent.len() <= 50 {
         return intent.to_string();
     }
-    // Find the last char boundary at or before byte 47, leaving room for "..."
-    let mut end = 47;
-    while end > 0 && !intent.is_char_boundary(end) {
-        end -= 1;
-    }
+    let end = intent.floor_char_boundary(47);
     format!("{}...", &intent[..end])
 }
 

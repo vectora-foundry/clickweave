@@ -1,9 +1,9 @@
 import { useMemo } from "react";
 import type { NodeType } from "../../../../bindings";
 import { FieldGroup, NumberField, SelectField, TextField } from "../../fields";
-import { type NodeEditorProps, optionalString } from "./types";
+import { APP_KIND_LABELS, type NodeEditorProps, optionalString, usesCdp } from "./types";
 
-export function ClickEditor({ nodeType, onUpdate, projectPath }: NodeEditorProps) {
+export function ClickEditor({ nodeType, onUpdate, projectPath, appKind }: NodeEditorProps) {
   const nt = nodeType;
   if (nt.type !== "Click") return null;
 
@@ -12,6 +12,7 @@ export function ClickEditor({ nodeType, onUpdate, projectPath }: NodeEditorProps
   };
 
   const hasImage = !!nt.template_image;
+  const isCdp = appKind && usesCdp(appKind);
 
   return (
     <FieldGroup title="Click">
@@ -53,6 +54,16 @@ export function ClickEditor({ nodeType, onUpdate, projectPath }: NodeEditorProps
         max={3}
         onChange={(v) => updateType({ click_count: v })}
       />
+      {isCdp && (
+        <div>
+          <label className="mb-1 block text-xs text-[var(--text-secondary)]">
+            Automation
+          </label>
+          <span className="block px-2.5 py-1.5 text-xs text-[var(--accent-coral)]">
+            {APP_KIND_LABELS[appKind]}
+          </span>
+        </div>
+      )}
     </FieldGroup>
   );
 }

@@ -19,6 +19,8 @@ pub struct DecisionCache {
     /// since PIDs change between runs).
     #[serde(default)]
     pub app_resolution: HashMap<String, AppResolution>,
+    #[serde(default)]
+    pub cdp_port: HashMap<String, CdpPort>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +41,11 @@ pub struct ElementResolution {
 pub struct AppResolution {
     pub user_input: String,
     pub resolved_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CdpPort {
+    pub port: u16,
 }
 
 /// Build a cache key from a node ID, target, and optional app name.
@@ -137,6 +144,27 @@ mod tests {
             .unwrap();
         assert_eq!(disambig.chosen_text, "2");
         assert_eq!(disambig.chosen_role, "AXButton");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn round_trip_cdp_port() {
+        let dir = std::env::temp_dir()
+            .join("clickweave_test_cache")
+            .join(Uuid::new_v4().to_string());
+        let path = dir.join("decisions.json");
+
+        let mut cache = DecisionCache::new(Uuid::new_v4());
+        let key = "Discord".to_string();
+        cache.cdp_port.insert(key.clone(), CdpPort { port: 52341 });
+
+        cache.save(&path).expect("save");
+        let loaded = DecisionCache::load(&path).expect("load");
+
+        assert_eq!(loaded.cdp_port.len(), 1);
+        let entry = loaded.cdp_port.get("Discord").unwrap();
+        assert_eq!(entry.port, 52341);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

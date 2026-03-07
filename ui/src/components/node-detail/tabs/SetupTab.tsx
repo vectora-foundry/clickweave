@@ -1,4 +1,4 @@
-import type { Node } from "../../../bindings";
+import type { AppKind, Node } from "../../../bindings";
 import {
   CheckboxField,
   FieldGroup,
@@ -14,10 +14,12 @@ export function SetupTab({
   node,
   onUpdate,
   projectPath,
+  appKind,
 }: {
   node: Node;
   onUpdate: (u: Partial<Node>) => void;
   projectPath: string | null;
+  appKind?: AppKind;
 }) {
   const Editor = editorRegistry[node.node_type.type];
   const isReadOnly = READ_ONLY_TYPES.includes(node.node_type.type);
@@ -87,6 +89,7 @@ export function SetupTab({
           nodeType={node.node_type}
           onUpdate={onUpdate}
           projectPath={projectPath}
+          appKind={appKind}
         />
       ) : (
         <p className="text-xs text-[var(--text-muted)]">Unknown node type</p>

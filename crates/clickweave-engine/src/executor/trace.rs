@@ -105,12 +105,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         if text.len() <= max_bytes {
             return text.to_string();
         }
-        let end = text
-            .char_indices()
-            .map(|(i, _)| i)
-            .take_while(|&i| i <= max_bytes)
-            .last()
-            .unwrap_or(0);
+        let end = text.floor_char_boundary(max_bytes);
         format!("{}...[truncated, {} total]", &text[..end], text.len())
     }
 

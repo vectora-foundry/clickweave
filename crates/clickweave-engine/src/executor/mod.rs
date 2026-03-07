@@ -16,6 +16,7 @@ mod tests;
 use clickweave_core::decision_cache::DecisionCache;
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
+use clickweave_core::walkthrough::AppKind;
 use clickweave_core::{ExecutionMode, NodeRun, NodeVerdict, Workflow};
 use clickweave_llm::{ChatBackend, LlmClient, LlmConfig, Message};
 use serde::{Deserialize, Serialize};
@@ -79,13 +80,13 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     supervision: Option<C>,
     /// Dedicated VLM for screenshot verification: low max_tokens, thinking disabled.
     verdict_vlm: Option<LlmClient>,
-    mcp_command: String,
+    mcp_configs: Vec<clickweave_mcp::McpServerConfig>,
     execution_mode: ExecutionMode,
     project_path: Option<PathBuf>,
     event_tx: Sender<ExecutorEvent>,
     storage: RunStorage,
     app_cache: RwLock<HashMap<String, ResolvedApp>>,
-    focused_app: RwLock<Option<String>>,
+    focused_app: RwLock<Option<(String, AppKind)>>,
     element_cache: RwLock<HashMap<(String, Option<String>), String>>,
     context: RuntimeContext,
     decision_cache: RwLock<DecisionCache>,
@@ -96,6 +97,8 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     /// Set by eval_control_flow when a loop exits; consumed by the main loop
     /// to run a deferred visual verification after the loop completes.
     pending_loop_exit: Option<PendingLoopExit>,
+    /// Maps app name → CDP MCP server name in the McpRouter.
+    cdp_servers: HashMap<String, String>,
 }
 
 pub(crate) struct PendingLoopExit {
@@ -127,7 +130,7 @@ impl WorkflowExecutor {
         agent_config: LlmConfig,
         vlm_config: Option<LlmConfig>,
         supervision_config: Option<LlmConfig>,
-        mcp_command: String,
+        mcp_configs: Vec<clickweave_mcp::McpServerConfig>,
         execution_mode: ExecutionMode,
         project_path: Option<PathBuf>,
         event_tx: Sender<ExecutorEvent>,
@@ -145,7 +148,7 @@ impl WorkflowExecutor {
             vlm: vlm_config.map(|c| LlmClient::new(c.with_thinking(false))),
             supervision: supervision_config.map(|c| LlmClient::new(c.with_thinking(false))),
             verdict_vlm,
-            mcp_command,
+            mcp_configs,
             execution_mode,
             project_path,
             event_tx,
@@ -158,11 +161,35 @@ impl WorkflowExecutor {
             supervision_history: RwLock::new(Vec::new()),
             runtime_verdicts: Vec::new(),
             pending_loop_exit: None,
+            cdp_servers: HashMap::new(),
         }
     }
 }
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
+    pub(crate) fn focused_app_name(&self) -> Option<String> {
+        self.focused_app
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|(name, _)| name.clone())
+    }
+
+    /// Get the CDP server name for the currently focused app, if one is registered.
+    pub(crate) fn focused_cdp_server(&self) -> Option<String> {
+        let app_name = self.focused_app_name()?;
+        self.cdp_servers.get(&app_name).cloned()
+    }
+
+    pub(crate) fn focused_app_kind(&self) -> AppKind {
+        self.focused_app
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|(_, kind)| *kind)
+            .unwrap_or(AppKind::Native)
+    }
+
     /// Return the best available LLM for text reasoning tasks (app resolution,
     /// element resolution). Prefers supervision (planner-class), falls back to
     /// VLM, then agent. The tiny agent model often has insufficient context for

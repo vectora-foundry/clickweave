@@ -128,11 +128,13 @@ export function SelectField({
   label,
   value,
   options,
+  labels,
   onChange,
 }: {
   label: string;
   value: string;
   options: string[];
+  labels?: Record<string, string>;
   onChange: (v: string) => void;
 }) {
   return (
@@ -147,7 +149,7 @@ export function SelectField({
       >
         {options.map((opt) => (
           <option key={opt} value={opt}>
-            {opt}
+            {labels?.[opt] ?? opt}
           </option>
         ))}
       </select>

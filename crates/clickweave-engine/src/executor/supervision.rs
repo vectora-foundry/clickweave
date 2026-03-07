@@ -1,7 +1,7 @@
 use super::{LoopExitReason, PendingLoopExit, WorkflowExecutor};
 use clickweave_core::NodeType;
 use clickweave_llm::{ChatBackend, Message};
-use clickweave_mcp::{McpClient, ToolContent};
+use clickweave_mcp::{McpRouter, ToolContent};
 use serde_json::Value;
 use tracing::debug;
 
@@ -30,7 +30,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &self,
         node_name: &str,
         node_type: &NodeType,
-        mcp: &McpClient,
+        mcp: &McpRouter,
     ) -> VerificationResult {
         // Skip verification for read-only nodes (find_text, find_image,
         // take_screenshot, list_windows). These produce their own definitive
@@ -48,10 +48,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let action = node_type.action_description();
         let app_name = self
-            .focused_app
-            .read()
-            .ok()
-            .and_then(|g| g.clone())
+            .focused_app_name()
             .unwrap_or_else(|| "unknown".to_string());
 
         // Stage 1: Capture screenshot and get VLM description
@@ -89,7 +86,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(crate) async fn verify_loop_exit(
         &self,
         loop_exit: &PendingLoopExit,
-        mcp: &McpClient,
+        mcp: &McpRouter,
     ) -> VerificationResult {
         debug!(
             loop_name = loop_exit.loop_name.as_str(),
@@ -99,10 +96,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         );
 
         let app_name = self
-            .focused_app
-            .read()
-            .ok()
-            .and_then(|g| g.clone())
+            .focused_app_name()
             .unwrap_or_else(|| "unknown".to_string());
 
         let screenshot_data = self.capture_verification_screenshot(mcp).await;
@@ -284,11 +278,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Waits briefly for UI animations to settle, then tries an app-scoped
     /// window screenshot up to 3 times with 500ms delays (the window may not
     /// be ready right after `launch_app`).
-    async fn capture_verification_screenshot(&self, mcp: &McpClient) -> Option<String> {
+    async fn capture_verification_screenshot(&self, mcp: &McpRouter) -> Option<String> {
         // Let UI animations/transitions settle before capturing.
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        let app_name = self.focused_app.read().ok().and_then(|g| g.clone());
+        let app_name = self.focused_app_name();
         let mut args = serde_json::json!({ "mode": "window" });
         if let Some(ref name) = app_name {
             args["app_name"] = Value::String(name.clone());
@@ -310,7 +304,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Call `take_screenshot` and extract the base64-encoded image from the result.
     pub(crate) async fn extract_screenshot_image(
         &self,
-        mcp: &McpClient,
+        mcp: &McpRouter,
         args: Value,
     ) -> Option<String> {
         let result = mcp.call_tool("take_screenshot", Some(args)).await.ok()?;
@@ -329,7 +323,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// (used by find_image for server-side coordinate conversion).
     pub(crate) async fn take_screenshot_with_id(
         &self,
-        mcp: &McpClient,
+        mcp: &McpRouter,
         args: Value,
     ) -> Option<(String, Option<String>)> {
         let result = mcp.call_tool("take_screenshot", Some(args)).await.ok()?;
@@ -344,10 +338,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     image_b64 = Some(data.clone());
                 }
                 ToolContent::Text { text } => {
-                    if let Ok(meta) = serde_json::from_str::<Value>(text) {
-                        if let Some(id) = meta["screenshot_id"].as_str() {
-                            screenshot_id = Some(id.to_string());
-                        }
+                    if let Ok(meta) = serde_json::from_str::<Value>(text)
+                        && let Some(id) = meta["screenshot_id"].as_str()
+                    {
+                        screenshot_id = Some(id.to_string());
                     }
                 }
                 _ => {}

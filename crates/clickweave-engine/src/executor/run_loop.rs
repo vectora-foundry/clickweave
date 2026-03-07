@@ -1,7 +1,7 @@
 use super::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExecutor};
 use clickweave_core::{ExecutionMode, NodeRole, NodeRun, NodeType, RunStatus};
 use clickweave_llm::ChatBackend;
-use clickweave_mcp::McpClient;
+use clickweave_mcp::McpRouter;
 use serde_json::Value;
 use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
@@ -29,12 +29,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Execute a regular node with retry logic. Returns the result value on success.
     #[allow(clippy::too_many_arguments)]
     async fn execute_node_with_retries(
-        &self,
+        &mut self,
         node_id: Uuid,
         node_name: &str,
         node_type: &NodeType,
         tools: &[Value],
-        mcp: &McpClient,
+        mcp: &mut McpRouter,
         timeout_ms: Option<u64>,
         retries: u32,
         command_rx: &mut Receiver<ExecutorCommand>,
@@ -104,22 +104,22 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             self.log("VLM not configured — images sent directly to agent");
         }
 
-        let mcp = if self.mcp_command == "npx" {
-            McpClient::spawn_npx().await
-        } else {
-            McpClient::spawn(&self.mcp_command, &[]).await
-        };
+        let mcp_result = McpRouter::spawn(&self.mcp_configs).await;
 
-        let mcp = match mcp {
+        let mut mcp = match mcp_result {
             Ok(m) => m,
             Err(e) => {
-                self.emit_error(format!("Failed to spawn MCP server: {}", e));
+                self.emit_error(format!("Failed to spawn MCP servers: {}", e));
                 self.emit(ExecutorEvent::StateChanged(ExecutorState::Idle));
                 return;
             }
         };
 
-        self.log(format!("MCP server ready with {} tools", mcp.tools().len()));
+        self.log(format!(
+            "MCP router ready: {} servers, {} tools",
+            mcp.server_count(),
+            mcp.tools().len()
+        ));
 
         match self.storage.begin_execution() {
             Ok(exec_dir) => self.log(format!("Execution dir: {}", exec_dir)),
@@ -260,7 +260,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         &node_name,
                         &node_type,
                         &tools,
-                        &mcp,
+                        &mut mcp,
                         timeout_ms,
                         retries,
                         &mut command_rx,
@@ -277,8 +277,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         );
 
                         // Inline verdict for Verification-role nodes
-                        if node_role == NodeRole::Verification {
-                            if let Some(v) = self
+                        if node_role == NodeRole::Verification
+                            && let Some(v) = self
                                 .evaluate_verification(
                                     node_id,
                                     &node_name,
@@ -288,25 +288,21 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                     &mcp,
                                 )
                                 .await
-                            {
-                                let failed = v
-                                    .check_results
-                                    .iter()
-                                    .any(|r| r.verdict == clickweave_core::CheckVerdict::Fail);
-                                self.log(format!(
-                                    "Verification '{}': {}",
-                                    node_name,
-                                    if failed { "FAIL" } else { "PASS" },
-                                ));
-                                self.runtime_verdicts.push(v);
-                                if failed {
-                                    self.emit_error(format!(
-                                        "Verification failed: '{}'",
-                                        node_name,
-                                    ));
-                                    verification_failed = true;
-                                    break (false, false);
-                                }
+                        {
+                            let failed = v
+                                .check_results
+                                .iter()
+                                .any(|r| r.verdict == clickweave_core::CheckVerdict::Fail);
+                            self.log(format!(
+                                "Verification '{}': {}",
+                                node_name,
+                                if failed { "FAIL" } else { "PASS" },
+                            ));
+                            self.runtime_verdicts.push(v);
+                            if failed {
+                                self.emit_error(format!("Verification failed: '{}'", node_name,));
+                                verification_failed = true;
+                                break (false, false);
                             }
                         }
 
@@ -448,7 +444,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         node_type: &NodeType,
         expected_outcome: Option<&str>,
         node_result: &Value,
-        mcp: &McpClient,
+        mcp: &McpRouter,
     ) -> Option<clickweave_core::NodeVerdict> {
         if matches!(node_type, NodeType::TakeScreenshot(_)) {
             let Some(outcome) = expected_outcome else {
@@ -459,7 +455,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 return Some(super::verdict::missing_outcome_verdict(node_id, node_name));
             };
             let mut args = serde_json::json!({ "format": "png" });
-            if let Some(ref name) = self.focused_app.read().ok().and_then(|g| g.clone()) {
+            if let Some(ref name) = self.focused_app_name() {
                 args["app_name"] = serde_json::Value::String(name.clone());
             }
             let screenshot_b64 = self.extract_screenshot_image(mcp, args).await;

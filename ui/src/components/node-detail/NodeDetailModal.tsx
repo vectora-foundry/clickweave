@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Node } from "../../bindings";
+import type { AppKind, Node } from "../../bindings";
 import type { DetailTab } from "../../store/useAppStore";
 import { RunsTab, SetupTab, TraceTab } from "./tabs";
 
@@ -12,6 +12,7 @@ interface NodeDetailModalProps {
   onTabChange: (tab: DetailTab) => void;
   onUpdate: (id: string, updates: Partial<Node>) => void;
   onClose: () => void;
+  appKind?: AppKind;
 }
 
 const tabs: { key: DetailTab; label: string }[] = [
@@ -29,6 +30,7 @@ export function NodeDetailModal({
   onTabChange,
   onUpdate,
   onClose,
+  appKind,
 }: NodeDetailModalProps) {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
 
@@ -71,7 +73,7 @@ export function NodeDetailModal({
 
         <div className="flex-1 overflow-y-auto p-4">
           {tab === "setup" && (
-            <SetupTab node={node} onUpdate={(u) => onUpdate(node.id, u)} projectPath={projectPath} />
+            <SetupTab node={node} onUpdate={(u) => onUpdate(node.id, u)} projectPath={projectPath} appKind={appKind} />
           )}
           {tab === "trace" && (
             <TraceTab

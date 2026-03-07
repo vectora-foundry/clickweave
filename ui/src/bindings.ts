@@ -150,9 +150,9 @@ async importAsset(projectPath: string) : Promise<Result<ImportedAsset | null, st
     else return { status: "error", error: e  as any };
 }
 },
-async startWalkthrough(workflowId: string, mcpCommand: string, projectPath: string | null, planner: EndpointConfig | null) : Promise<Result<null, string>> {
+async startWalkthrough(workflowId: string, mcpCommand: string, projectPath: string | null, planner: EndpointConfig | null, cdpApps: CdpAppConfig[]) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("start_walkthrough", { workflowId, mcpCommand, projectPath, planner }) };
+    return { status: "ok", data: await TAURI_INVOKE("start_walkthrough", { workflowId, mcpCommand, projectPath, planner, cdpApps }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -213,6 +213,22 @@ async seedWalkthroughCache(workflowId: string, workflowName: string, projectPath
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async detectCdpApps(mcpCommand: string) : Promise<Result<DetectedCdpApp[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("detect_cdp_apps", { mcpCommand }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async validateAppPath(path: string) : Promise<Result<DetectedCdpApp, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("validate_app_path", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -229,11 +245,28 @@ async seedWalkthroughCache(workflowId: string, workflowName: string, projectPath
 export type ActionConfidence = "High" | "Medium" | "Low"
 export type AiStepParams = { prompt: string; button_text: string | null; template_image: string | null; max_tool_calls: number | null; allowed_tools: string[] | null; timeout_ms?: number | null }
 export type AppDebugKitParams = { operation_name: string; parameters: JsonValue }
+/**
+ * Classification of an app's UI framework, used to decide whether
+ * Chrome DevTools Protocol (CDP) tools can provide better automation.
+ * 
+ * - `Native`: standard native app — use accessibility-based automation
+ * - `ChromeBrowser`: Chrome-family browser — CDP gives DOM access
+ * - `ElectronApp`: Electron-based app — native AX is unreliable, CDP preferred
+ */
+export type AppKind = "Native" | "ChromeBrowser" | "ElectronApp"
 export type AppResolutionSeedEntry = { node_id: string; app_name: string }
 export type Artifact = { artifact_id: string; kind: ArtifactKind; path: string; metadata: JsonValue; overlays: JsonValue[] }
 export type ArtifactKind = "Screenshot" | "Ocr" | "TemplateMatch" | "Log" | "Other"
 export type AssistantChatRequest = { workflow: Workflow; user_message: string; history: ChatEntry[]; summary: string | null; summary_cutoff: number; run_context: RunContext | null; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string; max_repair_attempts: number }
 export type AssistantChatResponse = { assistant_message: string; patch: WorkflowPatch | null; new_summary: string | null; summary_cutoff: number; warnings: string[] }
+/**
+ * User-selected app for CDP during walkthrough.
+ */
+export type CdpAppConfig = { name: string; 
+/**
+ * Path to the app binary (from file picker). None for already-running apps.
+ */
+binary_path: string | null; app_kind: AppKind }
 /**
  * A single entry in the assistant conversation.
  */
@@ -245,6 +278,10 @@ export type Condition = { left: ValueRef; operator: Operator; right: ValueRef }
  * Persistent conversation session for a workflow.
  */
 export type ConversationSession = { messages: ChatEntry[]; summary?: string | null; summary_cutoff?: number }
+/**
+ * A running app detected as Electron or Chrome, returned to the frontend for CDP selection.
+ */
+export type DetectedCdpApp = { name: string; pid: number; app_kind: AppKind }
 export type Edge = { from: string; to: string; 
 /**
  * Which output port this edge connects from. None for regular single-output edges.
@@ -272,7 +309,7 @@ export type ExecutionMode = "Test" | "Run"
 export type FindImageParams = { template_image: string | null; threshold: number; max_results: number }
 export type FindTextParams = { search_text: string; match_mode: MatchMode; scope: string | null; select_result: string | null }
 export type FocusMethod = "WindowId" | "AppName" | "Pid"
-export type FocusWindowParams = { method: FocusMethod; value: string | null; bring_to_front: boolean }
+export type FocusWindowParams = { method: FocusMethod; value: string | null; bring_to_front: boolean; app_kind?: AppKind }
 export type IfParams = { condition: Condition }
 export type ImportedAsset = { relative_path: string; absolute_path: string }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
@@ -351,7 +388,11 @@ export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role:
 /**
  * Label identified by a vision language model from a screenshot crop.
  */
-{ type: "VlmLabel"; label: string } | { type: "OcrText"; text: string } | { type: "ImageCrop"; path: string; image_b64: string } | { type: "Coordinates"; x: number; y: number }
+{ type: "VlmLabel"; label: string } | { type: "OcrText"; text: string } | { type: "ImageCrop"; path: string; image_b64: string } | { type: "Coordinates"; x: number; y: number } | 
+/**
+ * Element verified via Chrome DevTools Protocol snapshot.
+ */
+{ type: "CdpElement"; text: string; uid: string }
 export type TargetOverride = { node_id: string; chosen_candidate_index: number }
 export type TraceEvent = { timestamp: number; event_type: string; payload: JsonValue }
 export type TraceLevel = "Off" | "Minimal" | "Full"
@@ -364,7 +405,7 @@ export type WalkthroughAction = { id: string; kind: WalkthroughActionKind; app_n
  * Screenshot coordinate metadata for VLM click target resolution.
  */
 screenshot_meta?: ScreenshotMeta | null }
-export type WalkthroughActionKind = { type: "LaunchApp"; app_name: string } | { type: "FocusWindow"; app_name: string; window_title: string | null } | { type: "Click"; x: number; y: number; button: MouseButton; click_count: number } | { type: "TypeText"; text: string } | { type: "PressKey"; key: string; modifiers: string[] } | { type: "Scroll"; delta_y: number }
+export type WalkthroughActionKind = { type: "LaunchApp"; app_name: string; app_kind: AppKind } | { type: "FocusWindow"; app_name: string; window_title: string | null; app_kind: AppKind } | { type: "Click"; x: number; y: number; button: MouseButton; click_count: number } | { type: "TypeText"; text: string } | { type: "PressKey"; key: string; modifiers: string[] } | { type: "Scroll"; delta_y: number }
 export type WalkthroughAnnotations = { deleted_node_ids: string[]; renamed_nodes: NodeRename[]; target_overrides: TargetOverride[]; variable_promotions: VariablePromotion[] }
 export type WalkthroughDraftResponse = { actions: WalkthroughAction[]; draft: Workflow | null; warnings: string[] }
 export type Workflow = { id: string; name: string; nodes: Node[]; edges: Edge[] }

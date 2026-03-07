@@ -5,7 +5,7 @@
 use crate::{
     ClickParams, FindImageParams, FindTextParams, FocusMethod, FocusWindowParams,
     ListWindowsParams, McpToolCallParams, MouseButton, NodeType, PressKeyParams, ScreenshotMode,
-    ScrollParams, TakeScreenshotParams, TypeTextParams,
+    ScrollParams, TakeScreenshotParams, TypeTextParams, walkthrough::AppKind,
 };
 use serde_json::Value;
 use std::fmt;
@@ -156,6 +156,9 @@ pub fn node_type_to_tool_invocation(
                     }
                 }
             }
+            if p.app_kind.uses_cdp() {
+                args["app_kind"] = serde_json::to_value(p.app_kind).unwrap();
+            }
             ("focus_window", args)
         }
         NodeType::McpToolCall(p) => {
@@ -298,10 +301,16 @@ pub fn tool_invocation_to_node_type(
             } else {
                 (FocusMethod::AppName, None)
             };
+            let app_kind = args
+                .get("app_kind")
+                .and_then(|v| v.as_str())
+                .and_then(AppKind::parse)
+                .unwrap_or(AppKind::Native);
             Ok(NodeType::FocusWindow(FocusWindowParams {
                 method,
                 value,
                 bring_to_front: true,
+                app_kind,
             }))
         }
         _ if known_tools
@@ -493,6 +502,7 @@ mod tests {
             method: FocusMethod::AppName,
             value: Some("Safari".into()),
             bring_to_front: true,
+            app_kind: AppKind::Native,
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         assert_eq!(inv.name, "focus_window");
@@ -508,6 +518,7 @@ mod tests {
             method: FocusMethod::WindowId,
             value: Some("42".into()),
             bring_to_front: true,
+            app_kind: AppKind::Native,
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
@@ -522,6 +533,7 @@ mod tests {
             method: FocusMethod::Pid,
             value: Some("1234".into()),
             bring_to_front: true,
+            app_kind: AppKind::Native,
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
@@ -605,5 +617,59 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(result, NodeType::McpToolCall(p) if p.tool_name == "custom_tool"));
+    }
+
+    #[test]
+    fn roundtrip_focus_window_preserves_app_kind() {
+        let nt = NodeType::FocusWindow(FocusWindowParams {
+            method: FocusMethod::AppName,
+            value: Some("Chrome".into()),
+            bring_to_front: true,
+            app_kind: AppKind::ChromeBrowser,
+        });
+        let inv = node_type_to_tool_invocation(&nt).unwrap();
+        assert_eq!(inv.arguments["app_kind"], "ChromeBrowser");
+        let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
+        match back {
+            NodeType::FocusWindow(p) => assert_eq!(p.app_kind, AppKind::ChromeBrowser),
+            _ => panic!("expected FocusWindow"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_focus_window_omits_native_app_kind() {
+        let nt = NodeType::FocusWindow(FocusWindowParams {
+            method: FocusMethod::AppName,
+            value: Some("Calculator".into()),
+            bring_to_front: true,
+            app_kind: AppKind::Native,
+        });
+        let inv = node_type_to_tool_invocation(&nt).unwrap();
+        assert!(inv.arguments.get("app_kind").is_none());
+    }
+
+    #[test]
+    fn focus_window_with_app_kind_chrome() {
+        let args = serde_json::json!({"app_name": "Chrome", "app_kind": "ChromeBrowser"});
+        let nt = tool_invocation_to_node_type("focus_window", &args, &[]).unwrap();
+        match nt {
+            NodeType::FocusWindow(p) => {
+                assert_eq!(p.value.as_deref(), Some("Chrome"));
+                assert_eq!(p.app_kind, AppKind::ChromeBrowser);
+            }
+            _ => panic!("expected FocusWindow"),
+        }
+    }
+
+    #[test]
+    fn focus_window_without_app_kind_defaults_native() {
+        let args = serde_json::json!({"app_name": "Calculator"});
+        let nt = tool_invocation_to_node_type("focus_window", &args, &[]).unwrap();
+        match nt {
+            NodeType::FocusWindow(p) => {
+                assert_eq!(p.app_kind, AppKind::Native);
+            }
+            _ => panic!("expected FocusWindow"),
+        }
     }
 }
