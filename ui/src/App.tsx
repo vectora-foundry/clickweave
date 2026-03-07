@@ -12,6 +12,7 @@ import { IntentEmptyState } from "./components/IntentEmptyState";
 import { VerdictBar } from "./components/VerdictBar";
 import { VerdictModal } from "./components/VerdictModal";
 import { SupervisionModal } from "./components/SupervisionModal";
+import { CdpAppSelectModal } from "./components/CdpAppSelectModal";
 import { useEffect, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useEscapeKey } from "./hooks/useEscapeKey";
@@ -56,6 +57,8 @@ function App() {
   const vlmConfig = useStore((s) => s.vlmConfig);
   const vlmEnabled = useStore((s) => s.vlmEnabled);
   const mcpCommand = useStore((s) => s.mcpCommand);
+  const cdpModalOpen = useStore((s) => s.walkthroughCdpModalOpen);
+  const cdpProgress = useStore((s) => s.walkthroughCdpProgress);
   const maxRepairAttempts = useStore((s) => s.maxRepairAttempts);
   const detailTab = useStore((s) => s.detailTab);
 
@@ -106,12 +109,13 @@ function App() {
     [selectedNode, workflow.nodes],
   );
 
+  const appKindMap = useMemo(() => buildAppKindMap(workflow), [workflow]);
+
   const selectedNodeAppKind = useMemo(() => {
     if (!selectedNode) return undefined;
-    const map = buildAppKindMap(workflow);
-    const kind = map.get(selectedNode);
+    const kind = appKindMap.get(selectedNode);
     return kind && kind !== "Native" ? kind : undefined;
-  }, [selectedNode, workflow]);
+  }, [selectedNode, appKindMap]);
 
   useEscapeKey();
   useUndoRedoKeyboard(undo, redo);
@@ -210,6 +214,9 @@ function App() {
           action_node_map: e.payload.action_node_map ?? [],
         });
       }),
+      listen<import("./bindings").CdpSetupProgress>("walkthrough://cdp-setup", (e) => {
+        useStore.getState().pushCdpProgress(e.payload);
+      }),
       listen<{ action: string }>("recording-bar://action", (e) => {
         const s = useStore.getState();
         switch (e.payload.action) {
@@ -258,7 +265,7 @@ function App() {
               onSkip={skipIntentEntry}
               onRecordWalkthrough={() => {
                 skipIntentEntry();
-                useStore.getState().startWalkthrough();
+                useStore.getState().openCdpModal();
               }}
               loading={assistantLoading}
             />
@@ -376,6 +383,15 @@ function App() {
           onRespond={supervisionRespond}
         />
       )}
+
+      <CdpAppSelectModal
+        open={cdpModalOpen}
+        mcpCommand={mcpCommand}
+        cdpProgress={cdpProgress}
+        onStart={(cdpApps) => useStore.getState().startWalkthrough(cdpApps)}
+        onSkip={() => useStore.getState().startWalkthrough([])}
+        onCancel={() => useStore.getState().closeCdpModal()}
+      />
 
     </div>
   );

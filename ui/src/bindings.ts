@@ -150,9 +150,25 @@ async importAsset(projectPath: string) : Promise<Result<ImportedAsset | null, st
     else return { status: "error", error: e  as any };
 }
 },
-async startWalkthrough(workflowId: string, mcpCommand: string, projectPath: string | null, planner: EndpointConfig | null) : Promise<Result<null, string>> {
+async detectCdpApps(mcpCommand: string) : Promise<Result<DetectedCdpApp[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("start_walkthrough", { workflowId, mcpCommand, projectPath, planner }) };
+    return { status: "ok", data: await TAURI_INVOKE("detect_cdp_apps", { mcpCommand }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async validateAppPath(path: string) : Promise<Result<DetectedCdpApp, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("validate_app_path", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async startWalkthrough(workflowId: string, mcpCommand: string, projectPath: string | null, planner: EndpointConfig | null, cdpApps: CdpAppConfig[]) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("start_walkthrough", { workflowId, mcpCommand, projectPath, planner, cdpApps }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -239,6 +255,20 @@ export type AppDebugKitParams = { operation_name: string; parameters: JsonValue 
  */
 export type AppKind = "Native" | "ChromeBrowser" | "ElectronApp"
 export type AppResolutionSeedEntry = { node_id: string; app_name: string }
+/**
+ * User-selected app for CDP during walkthrough.
+ */
+export type CdpAppConfig = { name: string; binary_path: string | null; app_kind: AppKind }
+/**
+ * CDP element data captured during walkthrough recording.
+ * Attached to MouseClicked events for clicks in CDP-enabled apps.
+ */
+export type CdpClickAnnotation = { uid: string; label: string; role: string }
+/**
+ * Status updates emitted during CDP setup.
+ */
+export type CdpSetupProgress = { app_name: string; status: CdpSetupStatus }
+export type CdpSetupStatus = "Restarting" | "Launching" | "Connecting" | "Ready" | { Failed: { reason: string } }
 export type Artifact = { artifact_id: string; kind: ArtifactKind; path: string; metadata: JsonValue; overlays: JsonValue[] }
 export type ArtifactKind = "Screenshot" | "Ocr" | "TemplateMatch" | "Log" | "Other"
 export type AssistantChatRequest = { workflow: Workflow; user_message: string; history: ChatEntry[]; summary: string | null; summary_cutoff: number; run_context: RunContext | null; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string; max_repair_attempts: number }
@@ -254,6 +284,10 @@ export type Condition = { left: ValueRef; operator: Operator; right: ValueRef }
  * Persistent conversation session for a workflow.
  */
 export type ConversationSession = { messages: ChatEntry[]; summary?: string | null; summary_cutoff?: number }
+/**
+ * A running app detected as Electron or Chrome, returned to the frontend for CDP selection.
+ */
+export type DetectedCdpApp = { name: string; pid: number; app_kind: AppKind }
 export type Edge = { from: string; to: string; 
 /**
  * Which output port this edge connects from. None for regular single-output edges.
