@@ -722,18 +722,16 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 let confidence = if candidates
                     .iter()
                     .any(|c| matches!(c, TargetCandidate::CdpElement { .. }))
+                    || candidates.iter().any(|c| c.is_actionable_ax_label())
                 {
-                    ActionConfidence::High
-                } else if candidates.iter().any(|c| c.is_actionable_ax_label()) {
                     ActionConfidence::High
                 } else if candidates.iter().any(|c| {
                     matches!(
                         c,
                         TargetCandidate::VlmLabel { .. } | TargetCandidate::OcrText { .. }
                     )
-                }) {
-                    ActionConfidence::Medium
-                } else if has_image_crop {
+                }) || has_image_crop
+                {
                     ActionConfidence::Medium
                 } else {
                     ActionConfidence::Low

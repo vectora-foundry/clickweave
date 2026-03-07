@@ -179,10 +179,10 @@ pub async fn start_walkthrough(
     let clear_session = |app: &tauri::AppHandle| {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
         let mut guard = handle.lock().unwrap();
-        if let Some(dir) = &guard.session_dir {
-            if let Err(e) = std::fs::remove_dir_all(dir) {
-                tracing::warn!("Failed to clean up session dir on rollback: {e}");
-            }
+        if let Some(dir) = &guard.session_dir
+            && let Err(e) = std::fs::remove_dir_all(dir)
+        {
+            tracing::warn!("Failed to clean up session dir on rollback: {e}");
         }
         guard.session = None;
         guard.session_dir = None;
@@ -362,11 +362,11 @@ pub async fn stop_walkthrough(
             }
 
             // CDP: verify click targets for Electron/Chrome apps.
-            if let Some(ref mcp_cmd) = mcp_command {
-                if let Some(mut mcp) = spawn_mcp(mcp_cmd).await {
-                    enrich_actions_with_cdp(&mut actions, &mcp).await;
-                    mcp.kill_all();
-                }
+            if let Some(ref mcp_cmd) = mcp_command
+                && let Some(mut mcp) = spawn_mcp(mcp_cmd).await
+            {
+                enrich_actions_with_cdp(&mut actions, &mcp).await;
+                mcp.kill_all();
             }
 
             // Save actions.
@@ -522,10 +522,10 @@ pub async fn cancel_walkthrough(app: tauri::AppHandle) -> Result<(), String> {
 
     // Clean up session artifacts from disk (events, screenshots, draft).
     // The recording may contain typed secrets, so we don't leave it behind.
-    if let Some(dir) = &session_dir {
-        if let Err(e) = std::fs::remove_dir_all(dir) {
-            tracing::warn!("Failed to clean up walkthrough session dir: {e}");
-        }
+    if let Some(dir) = &session_dir
+        && let Err(e) = std::fs::remove_dir_all(dir)
+    {
+        tracing::warn!("Failed to clean up walkthrough session dir: {e}");
     }
 
     emit_state(&app, WalkthroughStatus::Idle);
@@ -666,10 +666,10 @@ async fn process_capture_events(
                 let buf2 = buf.clone();
                 let _ = tokio::task::spawn_blocking(move || {
                     let (cx, cy) = crate::platform::macos::get_cursor_position();
-                    if let Some(shot) = crate::platform::macos::capture_cursor_region(cx, cy) {
-                        if let Ok(mut guard) = buf2.write() {
-                            *guard = Some(Arc::new(shot));
-                        }
+                    if let Some(shot) = crate::platform::macos::capture_cursor_region(cx, cy)
+                        && let Ok(mut guard) = buf2.write()
+                    {
+                        *guard = Some(Arc::new(shot));
                     }
                 })
                 .await;
@@ -926,13 +926,15 @@ fn strip_recording_bar_click(events: &mut Vec<WalkthroughEvent>, bar_rect: (f64,
         .iter()
         .rposition(|e| matches!(&e.kind, WalkthroughEventKind::MouseClicked { .. }));
 
-    if let Some(idx) = last_click_pos {
-        if let WalkthroughEventKind::MouseClicked { x, y, .. } = &events[idx].kind {
-            if *x >= bar_x && *x <= bar_x + bar_w && *y >= bar_y && *y <= bar_y + bar_h {
-                let click_ts = events[idx].timestamp;
-                events.retain(|e| e.timestamp != click_ts);
-            }
-        }
+    if let Some(idx) = last_click_pos
+        && let WalkthroughEventKind::MouseClicked { x, y, .. } = &events[idx].kind
+        && *x >= bar_x
+        && *x <= bar_x + bar_w
+        && *y >= bar_y
+        && *y <= bar_y + bar_h
+    {
+        let click_ts = events[idx].timestamp;
+        events.retain(|e| e.timestamp != click_ts);
     }
 }
 
@@ -975,13 +977,8 @@ async fn spawn_mcp(mcp_command: &str) -> Option<McpRouter> {
 /// For Electron/Chrome apps: takes a CDP snapshot via the chrome-devtools MCP
 /// and matches click actions against DOM elements by text.
 async fn enrich_actions_with_cdp(actions: &mut [WalkthroughAction], mcp: &McpRouter) {
-    use clickweave_core::cdp::{CDP_SERVER, find_elements_in_snapshot};
+    use clickweave_core::cdp::{cdp_server_name, find_elements_in_snapshot};
     use clickweave_core::walkthrough::TargetCandidate;
-
-    if !mcp.has_server(CDP_SERVER) {
-        tracing::debug!("CDP verification skipped: chrome-devtools server not available");
-        return;
-    }
 
     // Find CDM apps in the actions.
     let cdm_apps: Vec<String> = actions
@@ -1004,6 +1001,16 @@ async fn enrich_actions_with_cdp(actions: &mut [WalkthroughAction], mcp: &McpRou
     }
 
     for app_name in &cdm_apps {
+        let server_name = cdp_server_name(app_name);
+        if !mcp.has_server(&server_name) {
+            tracing::debug!(
+                "CDP verification skipped for '{}': server '{}' not available",
+                app_name,
+                server_name
+            );
+            continue;
+        }
+
         tracing::info!("CDP verification: attempting snapshot for '{}'", app_name);
 
         // Try to take a CDP snapshot directly — the app may already have
@@ -1012,7 +1019,7 @@ async fn enrich_actions_with_cdp(actions: &mut [WalkthroughAction], mcp: &McpRou
         // quit/relaunch user apps here because that destroys live sessions.
 
         // Take CDP snapshot (requires debug port already open).
-        let snapshot_text = match mcp.call_tool_on(CDP_SERVER, "take_snapshot", None).await {
+        let snapshot_text = match mcp.call_tool_on(&server_name, "take_snapshot", None).await {
             Ok(r) if r.is_error != Some(true) => r
                 .content
                 .iter()
@@ -1251,6 +1258,7 @@ async fn enrich_click(
 ///
 /// Runs entirely off the main event loop so click capture is never blocked.
 /// The crop and VLM resolution run concurrently — neither depends on the other.
+#[allow(clippy::too_many_arguments)]
 async fn enrich_click_background(
     mcp: std::sync::Arc<McpRouter>,
     vlm_backend: Option<std::sync::Arc<clickweave_llm::LlmClient>>,
@@ -1593,9 +1601,7 @@ async fn execute_vlm_click_request(
     let needs_retry = match &result {
         Ok(resp) => resp.choices.first().is_some_and(|c| {
             c.finish_reason.as_deref() == Some("length")
-                && c.message
-                    .content_text()
-                    .map_or(true, |t| t.trim().is_empty())
+                && c.message.content_text().is_none_or(|t| t.trim().is_empty())
         }),
         Err(_) => false,
     };

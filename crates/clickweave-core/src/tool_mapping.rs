@@ -157,7 +157,7 @@ pub fn node_type_to_tool_invocation(
                 }
             }
             if p.app_kind != AppKind::Native {
-                args["app_kind"] = serde_json::to_value(&p.app_kind).unwrap();
+                args["app_kind"] = serde_json::to_value(p.app_kind).unwrap();
             }
             ("focus_window", args)
         }

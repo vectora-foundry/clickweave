@@ -277,8 +277,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         );
 
                         // Inline verdict for Verification-role nodes
-                        if node_role == NodeRole::Verification {
-                            if let Some(v) = self
+                        if node_role == NodeRole::Verification
+                            && let Some(v) = self
                                 .evaluate_verification(
                                     node_id,
                                     &node_name,
@@ -288,25 +288,21 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                     &mcp,
                                 )
                                 .await
-                            {
-                                let failed = v
-                                    .check_results
-                                    .iter()
-                                    .any(|r| r.verdict == clickweave_core::CheckVerdict::Fail);
-                                self.log(format!(
-                                    "Verification '{}': {}",
-                                    node_name,
-                                    if failed { "FAIL" } else { "PASS" },
-                                ));
-                                self.runtime_verdicts.push(v);
-                                if failed {
-                                    self.emit_error(format!(
-                                        "Verification failed: '{}'",
-                                        node_name,
-                                    ));
-                                    verification_failed = true;
-                                    break (false, false);
-                                }
+                        {
+                            let failed = v
+                                .check_results
+                                .iter()
+                                .any(|r| r.verdict == clickweave_core::CheckVerdict::Fail);
+                            self.log(format!(
+                                "Verification '{}': {}",
+                                node_name,
+                                if failed { "FAIL" } else { "PASS" },
+                            ));
+                            self.runtime_verdicts.push(v);
+                            if failed {
+                                self.emit_error(format!("Verification failed: '{}'", node_name,));
+                                verification_failed = true;
+                                break (false, false);
                             }
                         }
 

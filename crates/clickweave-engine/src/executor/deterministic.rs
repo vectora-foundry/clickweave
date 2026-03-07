@@ -72,33 +72,25 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let app_kind = self.focused_app_kind();
             let is_cdm = app_kind == AppKind::ElectronApp || app_kind == AppKind::ChromeBrowser;
 
-            if is_cdm {
-                if let Some(cdp_server) = self.focused_cdp_server() {
-                    match self
-                        .resolve_and_click_cdp(
-                            node_id,
-                            target,
-                            &cdp_server,
-                            mcp,
+            if is_cdm && let Some(cdp_server) = self.focused_cdp_server() {
+                match self
+                    .resolve_and_click_cdp(node_id, target, &cdp_server, mcp, node_run.as_deref())
+                    .await
+                {
+                    Ok(result_text) => {
+                        self.record_event(
                             node_run.as_deref(),
-                        )
-                        .await
-                    {
-                        Ok(result_text) => {
-                            self.record_event(
-                                node_run.as_deref(),
-                                "tool_result",
-                                serde_json::json!({
-                                    "tool": "click",
-                                    "method": "cdp",
-                                    "result": Self::truncate_for_trace(&result_text, 8192),
-                                }),
-                            );
-                            return Ok(Self::parse_result_text(&result_text));
-                        }
-                        Err(e) => {
-                            self.log(format!("CDP click failed, falling back to native: {e}"));
-                        }
+                            "tool_result",
+                            serde_json::json!({
+                                "tool": "click",
+                                "method": "cdp",
+                                "result": Self::truncate_for_trace(&result_text, 8192),
+                            }),
+                        );
+                        return Ok(Self::parse_result_text(&result_text));
+                    }
+                    Err(e) => {
+                        self.log(format!("CDP click failed, falling back to native: {e}"));
                     }
                 }
             }
@@ -193,10 +185,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         if tool_name == "find_text"
             && let Some(ref mut a) = args
             && a.get("app_name").is_none()
+            && let Some(app_name) = self.focused_app_name()
         {
-            if let Some(app_name) = self.focused_app_name() {
-                a["app_name"] = serde_json::Value::String(app_name);
-            }
+            a["app_name"] = serde_json::Value::String(app_name);
         }
 
         // Save original args for find_text retry fallback (args will be moved into call_tool)

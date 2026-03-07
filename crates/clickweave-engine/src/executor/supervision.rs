@@ -338,10 +338,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     image_b64 = Some(data.clone());
                 }
                 ToolContent::Text { text } => {
-                    if let Ok(meta) = serde_json::from_str::<Value>(text) {
-                        if let Some(id) = meta["screenshot_id"].as_str() {
-                            screenshot_id = Some(id.to_string());
-                        }
+                    if let Ok(meta) = serde_json::from_str::<Value>(text)
+                        && let Some(id) = meta["screenshot_id"].as_str()
+                    {
+                        screenshot_id = Some(id.to_string());
                     }
                 }
                 _ => {}
