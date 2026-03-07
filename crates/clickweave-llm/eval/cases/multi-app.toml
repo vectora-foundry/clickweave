@@ -1,8 +1,8 @@
 name = "Multi-app workflow"
-prompt = "Take a screenshot of Safari, then open Calculator and calculate 2+2"
 
-[expect]
-valid = true
+[[turns]]
+prompt = "Take a screenshot of Safari, then open Calculator and calculate 2+2"
+[turns.expect]
 min_nodes = 5
 max_nodes = 10
 required_tools = ["take_screenshot", "click"]

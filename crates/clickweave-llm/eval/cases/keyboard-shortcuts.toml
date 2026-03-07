@@ -1,8 +1,8 @@
 name = "Keyboard shortcuts"
-prompt = "Open TextEdit, press Cmd+A to select all, then press Cmd+C to copy, then press Cmd+V to paste"
 
-[expect]
-valid = true
+[[turns]]
+prompt = "Open TextEdit, press Cmd+A to select all, then press Cmd+C to copy, then press Cmd+V to paste"
+[turns.expect]
 min_nodes = 4
 max_nodes = 7
 required_tools = ["launch_app", "press_key"]

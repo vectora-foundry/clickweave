@@ -1,8 +1,8 @@
 name = "Browser smoke test"
-prompt = "Open Safari, navigate to google.com, search for 'clickweave', and take a screenshot of the results"
 
-[expect]
-valid = true
+[[turns]]
+prompt = "Open Safari, navigate to google.com, search for 'clickweave', and take a screenshot of the results"
+[turns.expect]
 min_nodes = 5
 max_nodes = 10
 required_tools = ["launch_app", "type_text", "take_screenshot"]

@@ -1,8 +1,0 @@
-name = "Text form entry"
-prompt = "Open TextEdit, type 'Name: John', press Enter, type 'Email: john@test.com'"
-
-[expect]
-valid = true
-min_nodes = 4
-max_nodes = 8
-required_tools = ["launch_app", "type_text"]

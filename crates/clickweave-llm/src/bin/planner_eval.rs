@@ -1,12 +1,19 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use clickweave_core::{NodeType, Workflow};
-use clickweave_llm::planner::plan_workflow_with_backend;
+use clickweave_core::{NodeRole, NodeType, Workflow};
+use clickweave_llm::planner::{
+    PatchResult, patch_workflow_with_backend, plan_workflow_with_backend,
+};
 use clickweave_llm::{LlmClient, LlmConfig};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
+use tokio::sync::Semaphore;
+use uuid::Uuid;
 
 // ── CLI ─────────────────────────────────────────────────────────
 
@@ -32,6 +39,10 @@ struct Cli {
     /// Override model name
     #[arg(long)]
     model: Option<String>,
+
+    /// Max concurrent LLM requests (default: 4)
+    #[arg(long, default_value = "4")]
+    concurrency: usize,
 }
 
 // ── Config types ────────────────────────────────────────────────
@@ -45,12 +56,76 @@ struct EvalConfig {
 
 #[derive(Deserialize)]
 struct LlmSection {
-    endpoint: String,
+    /// Single endpoint (backwards-compatible).
+    #[serde(default)]
+    endpoint: Option<String>,
+    /// Multiple weighted endpoints.
+    #[serde(default)]
+    endpoints: Vec<EndpointEntry>,
     model: String,
     #[serde(default)]
     api_key: Option<String>,
     #[serde(default)]
     temperature: Option<f32>,
+}
+
+/// An endpoint entry — accepts either a plain string or a table with url + weight.
+#[derive(Deserialize, Clone)]
+#[serde(untagged)]
+enum EndpointEntry {
+    Url(String),
+    Weighted {
+        url: String,
+        #[serde(default = "default_weight")]
+        weight: u32,
+    },
+}
+
+fn default_weight() -> u32 {
+    1
+}
+
+impl EndpointEntry {
+    fn url(&self) -> &str {
+        match self {
+            Self::Url(u) => u,
+            Self::Weighted { url, .. } => url,
+        }
+    }
+    fn weight(&self) -> u32 {
+        match self {
+            Self::Url(_) => 1,
+            Self::Weighted { weight, .. } => *weight,
+        }
+    }
+}
+
+impl LlmSection {
+    /// Build a weighted assignment schedule. Each entry maps to a client index,
+    /// repeated by weight. E.g. weights [2, 1] → [0, 0, 1].
+    fn resolve(&self) -> Result<(Vec<String>, Vec<usize>)> {
+        let mut entries: Vec<(String, u32)> = self
+            .endpoints
+            .iter()
+            .map(|e| (e.url().to_string(), e.weight()))
+            .collect();
+        if let Some(ep) = &self.endpoint {
+            if !entries.iter().any(|(u, _)| u == ep) {
+                entries.insert(0, (ep.clone(), 1));
+            }
+        }
+        if entries.is_empty() {
+            anyhow::bail!("No LLM endpoints configured — set 'endpoint' or 'endpoints' in [llm]");
+        }
+        let urls: Vec<String> = entries.iter().map(|(u, _)| u.clone()).collect();
+        let mut schedule: Vec<usize> = Vec::new();
+        for (idx, (_, weight)) in entries.iter().enumerate() {
+            for _ in 0..*weight {
+                schedule.push(idx);
+            }
+        }
+        Ok((urls, schedule))
+    }
 }
 
 #[derive(Deserialize)]
@@ -75,12 +150,17 @@ fn default_runs() -> u32 {
 #[derive(Deserialize)]
 struct EvalCase {
     name: String,
-    prompt: String,
-    #[serde(default)]
-    expect: CaseExpectations,
+    turns: Vec<EvalTurn>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Clone)]
+struct EvalTurn {
+    prompt: String,
+    #[serde(default)]
+    expect: Option<CaseExpectations>,
+}
+
+#[derive(Deserialize, Default, Clone)]
 struct CaseExpectations {
     /// Whether the plan should parse successfully. Deserialized from TOML
     /// but not checked explicitly -- a successful parse implies valid=true.
@@ -100,7 +180,7 @@ struct CaseExpectations {
 // ── Result types ────────────────────────────────────────────────
 
 #[derive(Serialize)]
-struct RunResult {
+struct TurnResult {
     valid: bool,
     node_count: usize,
     tools_found: Vec<String>,
@@ -108,6 +188,26 @@ struct RunResult {
     warnings: Vec<String>,
     workflow: Option<Workflow>,
     error: Option<String>,
+}
+
+impl TurnResult {
+    fn error(msg: String) -> Self {
+        Self {
+            valid: false,
+            node_count: 0,
+            tools_found: vec![],
+            patterns_found: vec![],
+            warnings: vec![],
+            workflow: None,
+            error: Some(msg),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct RunResult {
+    endpoint: String,
+    turn_results: Vec<TurnResult>,
 }
 
 // ── Config loading ──────────────────────────────────────────────
@@ -197,8 +297,60 @@ fn extract_patterns(workflow: &Workflow) -> HashSet<String> {
             }
             _ => {}
         }
+        if node.role == NodeRole::Verification {
+            patterns.insert("verification".to_string());
+        }
     }
     patterns
+}
+
+fn sorted_tools(workflow: &Workflow) -> Vec<String> {
+    let mut tools: Vec<_> = extract_tools(workflow).into_iter().collect();
+    tools.sort();
+    tools
+}
+
+fn sorted_patterns(workflow: &Workflow) -> Vec<String> {
+    let mut patterns: Vec<_> = extract_patterns(workflow).into_iter().collect();
+    patterns.sort();
+    patterns
+}
+
+fn apply_patch(workflow: &Workflow, patch: &PatchResult) -> Workflow {
+    let removed_ids: HashSet<Uuid> = patch.removed_node_ids.iter().copied().collect();
+    let removed_edge_keys: HashSet<(Uuid, Uuid)> =
+        patch.removed_edges.iter().map(|e| (e.from, e.to)).collect();
+
+    let nodes: Vec<_> = workflow
+        .nodes
+        .iter()
+        .filter(|n| !removed_ids.contains(&n.id))
+        .map(|n| {
+            patch
+                .updated_nodes
+                .iter()
+                .find(|u| u.id == n.id)
+                .cloned()
+                .unwrap_or_else(|| n.clone())
+        })
+        .chain(patch.added_nodes.iter().cloned())
+        .collect();
+
+    let node_ids: HashSet<Uuid> = nodes.iter().map(|n| n.id).collect();
+    let edges: Vec<_> = workflow
+        .edges
+        .iter()
+        .filter(|e| !removed_edge_keys.contains(&(e.from, e.to)))
+        .filter(|e| node_ids.contains(&e.from) && node_ids.contains(&e.to))
+        .cloned()
+        .chain(patch.added_edges.iter().cloned())
+        .collect();
+
+    Workflow {
+        nodes,
+        edges,
+        ..workflow.clone()
+    }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────
@@ -216,6 +368,52 @@ fn short_hash(content: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
     format!("{:x}", hasher.finalize())[..8].to_string()
+}
+
+// ── Progress tracking ───────────────────────────────────────────
+
+struct Progress {
+    completed: AtomicU32,
+    total: u32,
+    start: Instant,
+}
+
+impl Progress {
+    fn new(total: u32) -> Self {
+        Self {
+            completed: AtomicU32::new(0),
+            total,
+            start: Instant::now(),
+        }
+    }
+
+    fn tick(&self) {
+        let done = self.completed.fetch_add(1, Ordering::Relaxed) + 1;
+        let elapsed = self.start.elapsed().as_secs_f64();
+        let runs_per_min = if elapsed > 0.0 {
+            done as f64 / elapsed * 60.0
+        } else {
+            0.0
+        };
+        eprint!(
+            "\r  [{}/{}] {:.0}s elapsed, {:.1} runs/min    ",
+            done, self.total, elapsed, runs_per_min,
+        );
+    }
+
+    fn finish(&self) {
+        let elapsed = self.start.elapsed().as_secs_f64();
+        let done = self.completed.load(Ordering::Relaxed);
+        let runs_per_min = if elapsed > 0.0 {
+            done as f64 / elapsed * 60.0
+        } else {
+            0.0
+        };
+        eprintln!(
+            "\r  [{}/{}] done in {:.0}s ({:.1} runs/min)        ",
+            done, self.total, elapsed, runs_per_min,
+        );
+    }
 }
 
 // ── Results output ──────────────────────────────────────────────
@@ -305,119 +503,288 @@ async fn main() -> Result<()> {
         anyhow::bail!("No cases found");
     }
 
-    // Create LLM client
-    let llm = LlmClient::new(LlmConfig {
-        base_url: config
-            .llm
-            .endpoint
-            .trim_end_matches('/')
-            .trim_end_matches("/chat/completions")
-            .to_string(),
-        api_key: config.llm.api_key.clone(),
-        model: model.to_string(),
-        temperature: config.llm.temperature,
-        max_tokens: Some(4096),
-        ..LlmConfig::default()
-    });
+    let total_runs = cases.len() as u32 * runs_per_case;
 
-    println!("planner-eval — model: {model}, prompt: {prompt_rel} ({prompt_hash})\n");
+    // Create LLM clients — one per endpoint, weighted round-robin assigned to tasks.
+    let (urls, schedule) = config.llm.resolve()?;
+    let clients: Vec<Arc<LlmClient>> = urls
+        .iter()
+        .map(|ep| {
+            Arc::new(LlmClient::new(LlmConfig {
+                base_url: ep
+                    .trim_end_matches('/')
+                    .trim_end_matches("/chat/completions")
+                    .to_string(),
+                api_key: config.llm.api_key.clone(),
+                model: model.to_string(),
+                temperature: config.llm.temperature,
+                max_tokens: Some(4096),
+                ..LlmConfig::default()
+            }))
+        })
+        .collect();
 
+    let ep_label = if urls.len() == 1 {
+        urls[0].clone()
+    } else {
+        let weights: Vec<String> = urls
+            .iter()
+            .map(|u| {
+                let w = schedule.iter().filter(|&&i| urls[i] == *u).count();
+                format!("{}(w={})", u, w)
+            })
+            .collect();
+        format!("{} endpoints: {}", urls.len(), weights.join(", "))
+    };
+    println!(
+        "planner-eval — model: {model}, {ep_label}, prompt: {prompt_rel} ({prompt_hash}), {total_runs} runs ({}x{})\n",
+        cases.len(),
+        runs_per_case,
+    );
+
+    // Per-endpoint semaphores so a slow/dead endpoint can't starve others.
+    let per_endpoint_sems: Vec<Arc<Semaphore>> = urls
+        .iter()
+        .enumerate()
+        .map(|(idx, _)| {
+            let weight = schedule.iter().filter(|&&i| i == idx).count();
+            // Scale concurrency by weight proportion, minimum 1.
+            let slots = (cli.concurrency * weight / schedule.len()).max(1);
+            Arc::new(Semaphore::new(slots))
+        })
+        .collect();
+
+    let tools_json = Arc::new(tools_json);
+    let prompt_template = Arc::new(prompt_template);
+    let progress = Arc::new(Progress::new(total_runs));
+
+    let mut handles = Vec::new();
+    let schedule_len = schedule.len();
+    for (case_idx, case) in cases.iter().enumerate() {
+        for run_idx in 0..runs_per_case {
+            let task_idx = case_idx * runs_per_case as usize + run_idx as usize;
+            let client_idx = schedule[task_idx % schedule_len];
+            let llm = Arc::clone(&clients[client_idx]);
+            let endpoint = urls[client_idx].clone();
+            let tools = Arc::clone(&tools_json);
+            let template = Arc::clone(&prompt_template);
+            let sem = Arc::clone(&per_endpoint_sems[client_idx]);
+            let prog = Arc::clone(&progress);
+            let turns = case.turns.clone();
+
+            handles.push((
+                case_idx,
+                run_idx,
+                tokio::spawn(async move {
+                    let _permit = sem.acquire().await.unwrap();
+                    let mut current_workflow: Option<Workflow> = None;
+                    let mut turn_results: Vec<TurnResult> = Vec::new();
+
+                    for (turn_idx, turn) in turns.iter().enumerate() {
+                        let turn_result = if turn_idx == 0 {
+                            // Turn 1: plan from scratch
+                            match plan_workflow_with_backend(
+                                llm.as_ref(),
+                                &turn.prompt,
+                                &tools,
+                                false,
+                                false,
+                                Some(&template),
+                            )
+                            .await
+                            {
+                                Ok(plan_result) => {
+                                    current_workflow = Some(plan_result.workflow.clone());
+                                    TurnResult {
+                                        valid: true,
+                                        node_count: plan_result.workflow.nodes.len(),
+                                        tools_found: sorted_tools(&plan_result.workflow),
+                                        patterns_found: sorted_patterns(&plan_result.workflow),
+                                        warnings: plan_result.warnings,
+                                        workflow: Some(plan_result.workflow),
+                                        error: None,
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "\r  [error] turn {}: {:#}                    ",
+                                        turn_idx + 1,
+                                        e
+                                    );
+                                    TurnResult::error(e.to_string())
+                                }
+                            }
+                        } else {
+                            // Turn 2+: patch existing workflow
+                            let Some(ref wf) = current_workflow else {
+                                turn_results.push(TurnResult::error(
+                                    "no workflow from previous turn".into(),
+                                ));
+                                continue;
+                            };
+                            match patch_workflow_with_backend(
+                                llm.as_ref(),
+                                wf,
+                                &turn.prompt,
+                                &tools,
+                                false,
+                                false,
+                            )
+                            .await
+                            {
+                                Ok(patch_result) => {
+                                    let patched = apply_patch(wf, &patch_result);
+                                    let tr = TurnResult {
+                                        valid: true,
+                                        node_count: patched.nodes.len(),
+                                        tools_found: sorted_tools(&patched),
+                                        patterns_found: sorted_patterns(&patched),
+                                        warnings: patch_result.warnings,
+                                        workflow: Some(patched.clone()),
+                                        error: None,
+                                    };
+                                    current_workflow = Some(patched);
+                                    tr
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "\r  [error] turn {}: {:#}                    ",
+                                        turn_idx + 1,
+                                        e
+                                    );
+                                    TurnResult::error(e.to_string())
+                                }
+                            }
+                        };
+                        turn_results.push(turn_result);
+                    }
+
+                    prog.tick();
+                    RunResult {
+                        endpoint,
+                        turn_results,
+                    }
+                }),
+            ));
+        }
+    }
+
+    // Collect results back into per-case groups
+    let mut case_runs: Vec<Vec<RunResult>> = cases.iter().map(|_| Vec::new()).collect();
+    for (case_idx, _run_idx, handle) in handles {
+        let result = handle.await.context("eval task panicked")?;
+        case_runs[case_idx].push(result);
+    }
+
+    progress.finish();
+    println!();
+
+    // Score and print
     let mut all_results = Vec::new();
     let mut total_passed = 0u32;
     let mut total_runs = 0u32;
 
-    for case in &cases {
-        let mut case_runs = Vec::new();
+    for (case, runs) in cases.iter().zip(case_runs.iter()) {
+        let num_turns = case.turns.len();
         let mut case_passed = 0u32;
 
-        for _ in 0..runs_per_case {
-            let run_result = match plan_workflow_with_backend(
-                &llm,
-                &case.prompt,
-                &tools_json,
-                false,
-                false,
-                Some(&prompt_template),
-            )
-            .await
-            {
-                Ok(plan_result) => {
-                    if score_run(&plan_result.workflow, &case.expect) {
-                        case_passed += 1;
-                    }
-                    let mut tools_found: Vec<_> =
-                        extract_tools(&plan_result.workflow).into_iter().collect();
-                    tools_found.sort();
-                    let mut patterns_found: Vec<_> = extract_patterns(&plan_result.workflow)
-                        .into_iter()
-                        .collect();
-                    patterns_found.sort();
-                    RunResult {
-                        valid: true,
-                        node_count: plan_result.workflow.nodes.len(),
-                        tools_found,
-                        patterns_found,
-                        warnings: plan_result.warnings,
-                        workflow: Some(plan_result.workflow),
-                        error: None,
-                    }
+        for run in runs {
+            let all_turns_pass = case.turns.iter().enumerate().all(|(ti, turn)| {
+                if let Some(ref expect) = turn.expect {
+                    run.turn_results
+                        .get(ti)
+                        .and_then(|tr| {
+                            if tr.valid {
+                                tr.workflow.as_ref().map(|wf| score_run(wf, expect))
+                            } else {
+                                Some(false)
+                            }
+                        })
+                        .unwrap_or(false)
+                } else {
+                    true // no expectations = pass
                 }
-                Err(e) => RunResult {
-                    valid: false,
-                    node_count: 0,
-                    tools_found: vec![],
-                    patterns_found: vec![],
-                    warnings: vec![],
-                    workflow: None,
-                    error: Some(e.to_string()),
-                },
-            };
-            case_runs.push(run_result);
+            });
+            if all_turns_pass {
+                case_passed += 1;
+            }
         }
 
         total_passed += case_passed;
         total_runs += runs_per_case;
 
         // Print scorecard line
-        let node_counts: Vec<String> = case_runs.iter().map(|r| r.node_count.to_string()).collect();
-        let tools_ok = case.expect.required_tools.is_empty()
-            || case_runs.iter().all(|r| {
-                case.expect
-                    .required_tools
-                    .iter()
-                    .all(|t| r.tools_found.contains(t))
+        if num_turns == 1 {
+            let node_counts: Vec<String> = runs
+                .iter()
+                .map(|r| r.turn_results[0].node_count.to_string())
+                .collect();
+            let expect = case.turns[0].expect.as_ref();
+            let tools_ok = expect.is_none_or(|exp| {
+                exp.required_tools.is_empty()
+                    || runs.iter().all(|r| {
+                        exp.required_tools
+                            .iter()
+                            .all(|t| r.turn_results[0].tools_found.contains(t))
+                    })
             });
-        let patterns_ok = case.expect.required_patterns.is_empty()
-            || case_runs.iter().all(|r| {
-                case.expect
-                    .required_patterns
-                    .iter()
-                    .all(|p| r.patterns_found.contains(p))
+            let patterns_ok = expect.is_none_or(|exp| {
+                exp.required_patterns.is_empty()
+                    || runs.iter().all(|r| {
+                        exp.required_patterns
+                            .iter()
+                            .all(|p| r.turn_results[0].patterns_found.contains(p))
+                    })
             });
-
-        let patterns_status = if case.expect.required_patterns.is_empty() {
-            "-"
-        } else if patterns_ok {
-            "ok"
+            let patterns_status = match expect {
+                Some(exp) if !exp.required_patterns.is_empty() => {
+                    if patterns_ok {
+                        "ok"
+                    } else {
+                        "MISSING"
+                    }
+                }
+                _ => "-",
+            };
+            println!(
+                "  {:<35} {}/{} pass  nodes: {}  tools: {}  patterns: {}",
+                case.name,
+                case_passed,
+                runs_per_case,
+                node_counts.join(","),
+                if tools_ok { "ok" } else { "MISSING" },
+                patterns_status,
+            );
         } else {
-            "MISSING"
-        };
-        println!(
-            "  {:<30} {}/{} pass  nodes: {}  tools: {}  patterns: {}",
-            case.name,
-            case_passed,
-            runs_per_case,
-            node_counts.join(","),
-            if tools_ok { "ok" } else { "MISSING" },
-            patterns_status,
-        );
+            let turn_summaries: Vec<String> = (0..num_turns)
+                .map(|ti| {
+                    let counts: Vec<String> = runs
+                        .iter()
+                        .map(|r| {
+                            r.turn_results
+                                .get(ti)
+                                .map_or("x".into(), |tr| tr.node_count.to_string())
+                        })
+                        .collect();
+                    format!("T{}: {}", ti + 1, counts.join(","))
+                })
+                .collect();
+            println!(
+                "  {:<35} {}/{} pass  {}",
+                case.name,
+                case_passed,
+                runs_per_case,
+                turn_summaries.join("  "),
+            );
+        }
 
         all_results.push(serde_json::json!({
             "name": case.name,
-            "runs": case_runs,
+            "turns": num_turns,
+            "runs": runs,
             "score": {
                 "pass_rate": format!("{}/{}", case_passed, runs_per_case),
-                "valid": case_runs.iter().all(|r| r.valid),
+                "all_valid": runs.iter().all(|r| r.turn_results.iter().all(|tr| tr.valid)),
                 "structure_match": case_passed == runs_per_case,
             }
         }));

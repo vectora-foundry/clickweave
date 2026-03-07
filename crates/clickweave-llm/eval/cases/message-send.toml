@@ -1,8 +1,8 @@
 name = "Send message in Signal"
-prompt = "Open Signal and send the message 'hello' to Alice"
 
-[expect]
-valid = true
+[[turns]]
+prompt = "Open Signal and send the message 'hello' to Alice"
+[turns.expect]
 min_nodes = 5
 max_nodes = 10
 required_tools = ["launch_app", "find_text", "click", "type_text"]

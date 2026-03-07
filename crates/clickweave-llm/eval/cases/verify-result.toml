@@ -1,0 +1,9 @@
+name = "Verify calculation result"
+
+[[turns]]
+prompt = "Open Calculator, compute 5 + 3, and verify the result is 8"
+[turns.expect]
+min_nodes = 5
+max_nodes = 10
+required_tools = ["launch_app", "click", "find_text"]
+required_patterns = ["verification"]

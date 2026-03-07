@@ -1,8 +1,8 @@
 name = "Switch between two apps"
-prompt = "Open Calculator, calculate 3+4, then switch to TextEdit and type the result"
 
-[expect]
-valid = true
+[[turns]]
+prompt = "Open Calculator, calculate 3+4, then switch to TextEdit and type the result"
+[turns.expect]
 min_nodes = 6
 max_nodes = 12
 required_tools = ["launch_app", "click", "type_text"]

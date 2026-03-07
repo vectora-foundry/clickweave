@@ -1,0 +1,8 @@
+name = "Redirect action to earlier folder"
+
+[[turns]]
+prompt = "Open Finder. Navigate to the Documents folder, then to the Downloads folder, then to the Desktop folder. Go back to the Documents folder and create a new folder called 'Reports'"
+[turns.expect]
+min_nodes = 6
+max_nodes = 14
+required_tools = ["launch_app", "click"]

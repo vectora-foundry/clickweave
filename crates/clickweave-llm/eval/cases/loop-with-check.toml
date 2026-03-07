@@ -1,8 +1,8 @@
 name = "Loop with find_text check"
-prompt = "Open Notes, keep clicking the 'Next' button until you see the text 'Done' on screen"
 
-[expect]
-valid = true
+[[turns]]
+prompt = "Open Notes, keep clicking the 'Next' button until you see the text 'Done' on screen"
+[turns.expect]
 min_nodes = 4
 max_nodes = 9
 required_tools = ["launch_app", "click"]

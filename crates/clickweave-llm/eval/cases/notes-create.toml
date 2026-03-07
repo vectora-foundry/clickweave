@@ -1,8 +1,8 @@
 name = "Create a note in Notes app"
-prompt = "Open Notes, create a new note, type 'Meeting notes for Monday', press Enter, and type '- Review Q3 targets'"
 
-[expect]
-valid = true
+[[turns]]
+prompt = "Open Notes, create a new note, type 'Meeting notes for Monday', press Enter, and type '- Review Q3 targets'"
+[turns.expect]
 min_nodes = 4
 max_nodes = 8
 required_tools = ["launch_app", "type_text"]
