@@ -100,6 +100,16 @@ impl AppKind {
     }
 }
 
+/// CDP element data captured during walkthrough recording.
+/// Attached to MouseClicked events for clicks in CDP-enabled apps.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct CdpClickAnnotation {
+    pub uid: String,
+    pub label: String,
+    pub role: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "type")]
@@ -117,6 +127,8 @@ pub enum WalkthroughEventKind {
         button: MouseButton,
         click_count: u32,
         modifiers: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cdp_element: Option<CdpClickAnnotation>,
     },
     KeyPressed {
         key: String,
@@ -152,6 +164,10 @@ pub enum WalkthroughEventKind {
     },
     VlmLabelResolved {
         label: String,
+    },
+    CdpSnapshotCaptured {
+        snapshot_text: String,
+        click_event_id: Uuid,
     },
     Paused,
     Resumed,
@@ -837,6 +853,9 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
             | WalkthroughEventKind::AccessibilityElementCaptured { .. }
             | WalkthroughEventKind::VlmLabelResolved { .. } => {}
 
+            // CDP snapshot events are consumed in the click peek loop above.
+            WalkthroughEventKind::CdpSnapshotCaptured { .. } => {}
+
             // Skip non-action events.
             WalkthroughEventKind::Paused
             | WalkthroughEventKind::Resumed
@@ -1101,6 +1120,7 @@ mod tests {
                 button: MouseButton::Left,
                 click_count: 1,
                 modifiers: vec![],
+                cdp_element: None,
             },
             WalkthroughEventKind::KeyPressed {
                 key: "Enter".to_string(),
@@ -1540,6 +1560,7 @@ mod tests {
                         button: MouseButton::Left,
                         click_count: 1,
                         modifiers: vec![],
+                        cdp_element: None,
                     },
                 ),
                 make_event(
@@ -1578,6 +1599,7 @@ mod tests {
                         button: MouseButton::Left,
                         click_count: 1,
                         modifiers: vec![],
+                        cdp_element: None,
                     },
                 ),
                 make_event(
@@ -1625,6 +1647,7 @@ mod tests {
                     button: MouseButton::Left,
                     click_count: 1,
                     modifiers: vec![],
+                    cdp_element: None,
                 },
             )];
             let (actions, _) = normalize_events(&events);
@@ -1649,6 +1672,7 @@ mod tests {
                         button: MouseButton::Left,
                         click_count: 1,
                         modifiers: vec![],
+                        cdp_element: None,
                     },
                 ),
                 make_event(
@@ -1681,6 +1705,7 @@ mod tests {
                         button: MouseButton::Left,
                         click_count: 1,
                         modifiers: vec![],
+                        cdp_element: None,
                     },
                 ),
                 make_event(

@@ -106,6 +106,87 @@ impl WalkthroughHandle {
     }
 }
 
+/// A running app detected as Electron or Chrome, returned to the frontend for CDP selection.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct DetectedCdpApp {
+    pub name: String,
+    pub pid: i32,
+    pub app_kind: AppKind,
+}
+
+/// User-selected app for CDP during walkthrough.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct CdpAppConfig {
+    pub name: String,
+    /// Path to the app binary (from file picker). None for already-running apps.
+    pub binary_path: Option<String>,
+    pub app_kind: AppKind,
+}
+
+/// Status updates emitted during CDP setup.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct CdpSetupProgress {
+    pub app_name: String,
+    pub status: CdpSetupStatus,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub enum CdpSetupStatus {
+    Restarting,
+    Launching,
+    Connecting,
+    Ready,
+    Failed { reason: String },
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn detect_cdp_apps(mcp_command: String) -> Result<Vec<DetectedCdpApp>, String> {
+    let mcp = spawn_mcp(&mcp_command)
+        .await
+        .ok_or("Failed to spawn MCP server")?;
+
+    let mut cache: HashMap<i32, CachedApp> = HashMap::new();
+    populate_app_cache(&mcp, &mut cache).await;
+
+    let mut cdp_apps = Vec::new();
+    for (pid, cached) in &cache {
+        let bundle_path = bundle_path_from_pid(*pid);
+        let kind = classify_app(cached.bundle_id.as_deref(), bundle_path.as_deref());
+        if kind.uses_cdp() {
+            cdp_apps.push(DetectedCdpApp {
+                name: cached.name.clone(),
+                pid: *pid,
+                app_kind: kind,
+            });
+        }
+    }
+
+    // MCP router is dropped here, killing the server processes.
+    Ok(cdp_apps)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn validate_app_path(path: String) -> Result<DetectedCdpApp, String> {
+    let kind = classify_app(None, Some(std::path::Path::new(&path)));
+    if !kind.uses_cdp() {
+        return Err(format!("Not an Electron or Chrome app: {}", path));
+    }
+
+    let name = std::path::Path::new(&path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Unknown")
+        .to_string();
+
+    Ok(DetectedCdpApp {
+        name,
+        pid: 0,
+        app_kind: kind,
+    })
+}
+
 fn emit_state(app: &tauri::AppHandle, status: WalkthroughStatus) {
     let _ = app.emit("walkthrough://state", WalkthroughStatePayload { status });
 }
@@ -127,6 +208,7 @@ pub async fn start_walkthrough(
     mcp_command: String,
     project_path: Option<String>,
     planner: Option<super::types::EndpointConfig>,
+    cdp_apps: Vec<CdpAppConfig>,
 ) -> Result<(), String> {
     let wf_id = parse_uuid(&workflow_id, "workflow")?;
 
@@ -211,6 +293,7 @@ pub async fn start_walkthrough(
                 processing_storage,
                 session_dir,
                 cancel,
+                cdp_apps,
             )
             .await;
         });
@@ -619,6 +702,7 @@ async fn process_capture_events(
     storage: WalkthroughStorage,
     session_dir: std::path::PathBuf,
     mut cancel: tokio::sync::watch::Receiver<bool>,
+    cdp_apps: Vec<CdpAppConfig>,
 ) {
     // Spawn the MCP server for enrichment (screenshots + OCR).
     // Wrapped in Arc so background enrichment tasks can share it.
@@ -770,6 +854,7 @@ async fn process_capture_events(
                         button,
                         click_count,
                         modifiers,
+                        cdp_element: None,
                     },
                 };
 
