@@ -137,6 +137,7 @@ pub enum CdpSetupStatus {
     Connecting,
     Ready,
     Failed { reason: String },
+    Done,
 }
 
 #[tauri::command]
@@ -720,6 +721,17 @@ async fn process_capture_events(
         HashMap::new()
     };
 
+    // Signal frontend that CDP setup is complete so the modal can close.
+    if !cdp_apps.is_empty() {
+        emit_cdp_progress(&app, "", CdpSetupStatus::Done);
+    }
+
+    // Drain any events captured during CDP setup (app restarts generate
+    // focus/input events that are not user-initiated).
+    if !cdp_state.is_empty() {
+        while event_rx.try_recv().is_ok() {}
+    }
+
     // Wrap in Arc so background enrichment tasks can share it.
     let mcp: Option<std::sync::Arc<McpRouter>> = mcp_raw.map(std::sync::Arc::new);
 
@@ -921,6 +933,7 @@ async fn process_capture_events(
                             let task_dir = session_dir.clone();
                             let server = server_name.clone();
                             let click_id = click_event.id;
+                            let click_ts = capture.timestamp;
 
                             bg_tasks.spawn(async move {
                                 cdp_snapshot_for_click(
@@ -930,6 +943,7 @@ async fn process_capture_events(
                                     &task_storage,
                                     &task_dir,
                                     click_id,
+                                    click_ts,
                                 )
                                 .await;
                             });
@@ -1258,6 +1272,7 @@ async fn cdp_snapshot_for_click(
     storage: &WalkthroughStorage,
     session_dir: &std::path::Path,
     click_event_id: Uuid,
+    click_timestamp: u64,
 ) {
     let snapshot = match mcp.call_tool_on(server_name, "take_snapshot", None).await {
         Ok(r) if r.is_error != Some(true) => r
@@ -1283,7 +1298,7 @@ async fn cdp_snapshot_for_click(
 
     let event = WalkthroughEvent {
         id: Uuid::new_v4(),
-        timestamp: clickweave_core::storage::now_millis(),
+        timestamp: click_timestamp,
         kind: WalkthroughEventKind::CdpSnapshotCaptured {
             snapshot_text: snapshot,
             click_event_id,

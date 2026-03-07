@@ -26,6 +26,7 @@ export function CdpAppSelectModal({
   const [apps, setApps] = useState<DetectedCdpApp[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [addedApps, setAddedApps] = useState<DetectedCdpApp[]>([]);
+  const [addedPaths, setAddedPaths] = useState<Map<string, string>>(new Map());
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -34,6 +35,7 @@ export function CdpAppSelectModal({
     setApps([]);
     setSelected(new Set());
     setAddedApps([]);
+    setAddedPaths(new Map());
     setError(null);
 
     commands.detectCdpApps(mcpCommand).then((result) => {
@@ -71,6 +73,7 @@ export function CdpAppSelectModal({
     if (result.status === "ok") {
       const app = result.data;
       setAddedApps((prev) => [...prev, app]);
+      setAddedPaths((prev) => new Map(prev).set(app.name, path as string));
       setSelected((prev) => new Set(prev).add(app.name));
     } else {
       setError(result.error);
@@ -82,11 +85,7 @@ export function CdpAppSelectModal({
       .filter((a) => selected.has(a.name))
       .map((a) => ({
         name: a.name,
-        binary_path: a.pid === 0
-          ? addedApps.find((aa) => aa.name === a.name)
-            ? null // file picker apps already have name set
-            : null
-          : null,
+        binary_path: addedPaths.get(a.name) ?? null,
         app_kind: a.app_kind,
       }));
     setPhase("setup");

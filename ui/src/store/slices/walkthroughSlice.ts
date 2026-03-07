@@ -166,9 +166,15 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     walkthroughEvents: [...s.walkthroughEvents, event],
   })),
 
-  pushCdpProgress: (progress) => set((s) => ({
-    walkthroughCdpProgress: [...s.walkthroughCdpProgress, progress],
-  })),
+  pushCdpProgress: (progress) => {
+    if (typeof progress.status === "string" && progress.status === "Done") {
+      set({ walkthroughCdpModalOpen: false });
+      return;
+    }
+    set((s) => ({
+      walkthroughCdpProgress: [...s.walkthroughCdpProgress, progress],
+    }));
+  },
 
   setWalkthroughDraft: ({ actions, draft, warnings, action_node_map }) => set({
     walkthroughActions: actions,
@@ -204,7 +210,6 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       walkthroughAnnotations: { ...emptyAnnotations },
       walkthroughExpandedAction: null,
       walkthroughActionNodeMap: [],
-      walkthroughCdpModalOpen: false,
       walkthroughCdpProgress: [],
 
       assistantOpen: false,

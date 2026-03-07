@@ -268,7 +268,7 @@ export type CdpClickAnnotation = { uid: string; label: string; role: string }
  * Status updates emitted during CDP setup.
  */
 export type CdpSetupProgress = { app_name: string; status: CdpSetupStatus }
-export type CdpSetupStatus = "Restarting" | "Launching" | "Connecting" | "Ready" | { Failed: { reason: string } }
+export type CdpSetupStatus = "Restarting" | "Launching" | "Connecting" | "Ready" | "Done" | { Failed: { reason: string } }
 export type Artifact = { artifact_id: string; kind: ArtifactKind; path: string; metadata: JsonValue; overlays: JsonValue[] }
 export type ArtifactKind = "Screenshot" | "Ocr" | "TemplateMatch" | "Log" | "Other"
 export type AssistantChatRequest = { workflow: Workflow; user_message: string; history: ChatEntry[]; summary: string | null; summary_cutoff: number; run_context: RunContext | null; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string; max_repair_attempts: number }
