@@ -3,12 +3,15 @@ mod app_resolve;
 mod control_flow;
 mod deterministic;
 mod element_resolve;
+pub mod error;
 mod graph_nav;
 mod run_loop;
 mod supervision;
 mod trace;
 mod variables;
 mod verdict;
+
+pub use error::*;
 
 #[cfg(test)]
 mod tests;
