@@ -1,6 +1,6 @@
 # MCP Integration (Reference)
 
-Verified at commit: `d0b526d`
+Verified at commit: `d0fd809`
 
 Clickweave executes desktop/browser automation by spawning MCP server subprocesses and talking JSON-RPC over stdio. Multiple servers are managed by `McpRouter`, which merges tool lists and routes `call_tool` requests to the owning server.
 
@@ -12,9 +12,9 @@ clickweave-engine
     v
 clickweave-mcp::McpRouter
     |
-    +--- McpClient  <--- JSON-RPC --->  native-devtools-mcp  (primary)
+    +--- McpClient  <--- JSON-RPC --->  native-devtools-mcp  (primary, always)
     |
-    +--- McpClient  <--- JSON-RPC --->  chrome-devtools-mcp   (secondary)
+    +--- McpClient  <--- JSON-RPC --->  chrome-devtools-mcp   (spawned lazily per CDP app)
 ```
 
 ## McpRouter
@@ -33,7 +33,7 @@ pub struct McpServerConfig {
 
 ### Spawn & Tool Routing
 
-`McpRouter::spawn(configs)` iterates configs and spawns each as an `McpClient`:
+`McpRouter::spawn(configs)` spawns all configured servers concurrently via `JoinSet`:
 
 - **Primary server** (index 0): failure is fatal — returns `Err`.
 - **Non-primary servers**: failure logs a warning and continues without that server.
@@ -42,12 +42,11 @@ After spawning, the router builds a merged tool list. On tool-name conflicts, **
 
 ### default_server_configs
 
-`default_server_configs(mcp_command)` builds the standard two-server config:
+`default_server_configs(mcp_command)` builds a single-server config (native-devtools only). CDP servers are spawned lazily per-app by the executor via `spawn_server()`.
 
 | Server | Command | Args |
 |--------|---------|------|
 | `native-devtools` | `mcp_command` (or `npx` with `-y native-devtools-mcp`) | varies |
-| `chrome-devtools` | `npx` | `-y chrome-devtools-mcp` |
 
 ### Key Methods
 
@@ -59,6 +58,9 @@ After spawning, the router builds a merged tool list. On tool-name conflicts, **
 | `tools_as_openai()` | OpenAI function-calling format |
 | `server_count()` | Number of active servers |
 | `kill_all()` | Kill all server processes |
+| `call_tool_on(server, name, args)` | Route to a specific server by name |
+| `has_server(name)` | Check whether a named server is connected |
+| `spawn_server(config)` | Spawn a single MCP server at runtime and add to routing table |
 
 ## McpClient Lifecycle
 
@@ -116,7 +118,7 @@ Client sends JSON-RPC 2.0 messages and parses server responses into typed struct
 
 ## Tool Schema Conversion
 
-`tools_as_openai()` converts MCP tool definitions to OpenAI function-calling schema:
+`tools_as_openai()` (and the free function `tools_to_openai()` in `protocol.rs`) converts MCP tool definitions to OpenAI function-calling schema:
 
 ```json
 {
@@ -147,7 +149,7 @@ File: `crates/clickweave-core/src/tool_mapping.rs`
 | `PressKey` | `press_key` | `key`, optional `modifiers` |
 | `Scroll` | `scroll` | `delta_y`, optional `x`,`y` |
 | `ListWindows` | `list_windows` | optional `app_name` |
-| `FocusWindow` | `focus_window` | one of `app_name` / `window_id` / `pid` |
+| `FocusWindow` | `focus_window` | one of `app_name` / `window_id` / `pid`; optional `app_kind` |
 | `McpToolCall` | dynamic | pass-through tool + args |
 
 Returns `NotAToolNode` for control-flow nodes and `AiStep`.
@@ -162,8 +164,8 @@ Unknown tool names map to `McpToolCall` only if present in known tool schema lis
 
 UI settings store `mcpCommand`:
 
-- `"npx"` => `default_server_configs("npx")` spawns both servers via npx
-- any other string => used as direct command for native-devtools; chrome-devtools still uses npx
+- `"npx"` => `default_server_configs("npx")` spawns native-devtools via npx
+- any other string => used as direct command for native-devtools
 
 The `mcpCommand` string is converted to `Vec<McpServerConfig>` via `default_server_configs()` in both the planner and executor Tauri commands.
 
@@ -202,8 +204,8 @@ If proactive detection classifies an app as `Native` but accessibility enrichmen
 | File | Role |
 |------|------|
 | `crates/clickweave-core/src/app_detection.rs` | `classify_app`, `bundle_path_from_pid`, Chrome/Electron checks |
-| `crates/clickweave-core/src/walkthrough.rs` | `AppKind` enum, `AppFocused` event |
-| `src-tauri/src/commands/walkthrough.rs` | Event loop integration, reactive fallback |
+| `crates/clickweave-core/src/walkthrough/types.rs` | `AppKind` enum, `AppFocused` event |
+| `src-tauri/src/commands/walkthrough_session.rs` | Event loop integration, reactive fallback, CDP setup |
 
 ## Key Files
 

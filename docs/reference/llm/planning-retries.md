@@ -1,6 +1,6 @@
 # Planning & LLM Retry Logic (Reference)
 
-Verified at commit: `1cdb730`
+Verified at commit: `d0fd809`
 
 Planner/assistant flows layer retries and parsing tolerance to handle malformed LLM output.
 
@@ -146,7 +146,7 @@ Composed for `patch_workflow`. Structure:
 Role: "You are a workflow editor for UI automation."
   ↓
 Current workflow snapshot:
-  - Nodes: [{id, name, tool_name, arguments}] (Click nodes include target field)
+  - Nodes: [{id, name, tool_name, arguments}] (Click nodes include target field; nodes with a template image include has_template_image)
   - Edges: [{from, to}]
   ↓
 MCP tool schemas
@@ -241,19 +241,6 @@ Both `assistant_chat` and `assistant_chat_with_backend` accept an `on_repair_att
 4. If patch and validation enabled: merge + validate + retry loop (fires `on_repair_attempt` callback on each retry)
 5. Return assistant text, optional patch, warnings, optional summary update
 
-## Walkthrough Pipeline (`generalize_walkthrough`)
-
-`generalize_walkthrough(backend, deterministic_draft, actions, mcp_tools_openai)` in `planner/walkthrough.rs` generalizes a recorded walkthrough into a workflow.
-
-1. Format action trace (action sequence with screenshots)
-2. Build walkthrough system prompt (step type catalog + verification role docs)
-3. LLM call via `chat_with_repair`
-4. `parse_and_build_walkthrough` (delegates to `parse_and_build_workflow` with AI features disabled)
-5. Build enhanced action-node map (maps original actions to generated nodes)
-6. Return `WalkthroughPlanResult { workflow, warnings, action_node_map, used_fallback }`
-
-If LLM generalization fails, falls back to the deterministic draft (`used_fallback: true`).
-
 ## Key Files
 
 | File | Role |
@@ -267,6 +254,5 @@ If LLM generalization fails, falls back to the deterministic draft (`used_fallba
 | `crates/clickweave-llm/src/planner/patch.rs` | patcher entrypoint |
 | `crates/clickweave-llm/src/planner/mod.rs` | lenient parsing, patch build, control-flow inference |
 | `crates/clickweave-llm/src/planner/parse.rs` | JSON extraction and layout helpers |
-| `crates/clickweave-llm/src/planner/walkthrough.rs` | walkthrough generalization pipeline and prompt |
 | `crates/clickweave-core/src/validation.rs` | workflow structural validation |
 | `ui/src/store/settings.ts` | settings persistence (`maxRepairAttempts`) |

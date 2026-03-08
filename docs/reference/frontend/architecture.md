@@ -1,6 +1,6 @@
 # Frontend Architecture (Reference)
 
-Verified at commit: `1cdb730`
+Verified at commit: `d0fd809`
 
 The UI is a React 19 + Vite app using Zustand for app state and React Flow for graph editing.
 
@@ -30,23 +30,31 @@ ui/src/
 │   ├── LoopGroupNode.tsx
 │   ├── NodePalette.tsx
 │   ├── AssistantPanel.tsx
+│   ├── ChatMessage.tsx
 │   ├── LogsDrawer.tsx
 │   ├── FloatingToolbar.tsx
 │   ├── Header.tsx
-│   ├── NodePalette.tsx
 │   ├── VerdictBar.tsx
 │   ├── VerdictModal.tsx
 │   ├── SettingsModal.tsx
 │   ├── SupervisionModal.tsx
 │   ├── WalkthroughPanel.tsx
 │   ├── RecordingBarView.tsx
+│   ├── CdpAppSelectModal.tsx
+│   ├── ImageLightbox.tsx
+│   ├── IntentEmptyState.tsx
 │   └── node-detail/
 │       ├── NodeDetailModal.tsx
+│       ├── fields/
+│       │   └── index.tsx
 │       └── tabs/
 │           ├── SetupTab.tsx
 │           ├── TraceTab.tsx
-│           └── RunsTab.tsx
-│   ├── IntentEmptyState.tsx
+│           ├── RunsTab.tsx
+│           └── editors/
+│               ├── ClickEditor.tsx
+│               ├── FocusWindowEditor.tsx
+│               └── ... (per-node-type editors)
 ├── hooks/
 │   ├── useEscapeKey.ts
 │   ├── useHorizontalResize.ts
@@ -55,7 +63,10 @@ ui/src/
 │   ├── useNodeSync.ts
 │   ├── useEdgeSync.ts
 │   ├── useWorkflowActions.ts
+│   ├── useExecutorEvents.ts
 │   └── test-helpers.ts
+├── constants/
+│   └── nodeMetadata.ts
 ├── store/
 │   ├── useAppStore.ts
 │   ├── useWorkflowMutations.ts
@@ -73,6 +84,12 @@ ui/src/
 │       ├── uiSlice.ts
 │       └── types.ts
 └── utils/
+    ├── appKind.ts
+    ├── edgeHandles.ts
+    ├── graphValidation.ts
+    ├── loopMembers.ts
+    ├── walkthroughDraft.ts
+    └── walkthroughFormatting.ts
 ```
 
 ## State Model
@@ -138,13 +155,13 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 
 **WalkthroughSlice** (`walkthroughSlice.ts`)
 
-- `walkthroughStatus`, `walkthroughPanelOpen`, `walkthroughError`, `walkthroughEvents`, `walkthroughActions`, `walkthroughDraft`, `walkthroughWarnings`, `walkthroughAnnotations`, `walkthroughActionNodeMap`, `walkthroughUsedFallback`
-- actions: `startWalkthrough`, `pauseWalkthrough`, `resumeWalkthrough`, `stopWalkthrough`, `cancelWalkthrough`, `fetchWalkthroughDraft`, `applyDraftToCanvas`, `discardDraft`, annotation editing actions (`deleteNode`, `restoreNode`, `renameNode`, `overrideTarget`, `promoteToVariable`, etc.)
-- manages recording bar overlay window lifecycle
+- `walkthroughStatus`, `walkthroughPanelOpen`, `walkthroughError`, `walkthroughEvents`, `walkthroughActions`, `walkthroughDraft`, `walkthroughWarnings`, `walkthroughAnnotations`, `walkthroughActionNodeMap`, `walkthroughCdpModalOpen`, `walkthroughCdpProgress`
+- actions: `startWalkthrough(cdpApps?)`, `pauseWalkthrough`, `resumeWalkthrough`, `stopWalkthrough`, `cancelWalkthrough`, `fetchWalkthroughDraft`, `applyDraftToCanvas`, `discardDraft`, `openCdpModal`, `closeCdpModal`, `pushCdpProgress`, annotation editing actions (`deleteNode`, `restoreNode`, `renameNode`, `overrideTarget`, `promoteToVariable`, etc.)
+- manages recording bar overlay window lifecycle and CDP app selection modal
 
 ## App Event Wiring
 
-`ui/src/App.tsx` subscribes to backend events:
+`ui/src/hooks/useExecutorEvents.ts` subscribes to backend events (called from `App.tsx`):
 
 - `executor://log`
 - `executor://state`
@@ -159,9 +176,10 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 - `walkthrough://state`
 - `walkthrough://event`
 - `walkthrough://draft_ready`
+- `walkthrough://cdp-setup`
 - `recording-bar://action`
 
-It also listens to menu events (`menu://new`, `menu://open`, etc.) and maps them to store actions.
+`App.tsx` also listens to menu events (`menu://new`, `menu://open`, etc.) and maps them to store actions.
 
 ## Graph Editor (`GraphCanvas`)
 
@@ -234,7 +252,7 @@ Do not edit manually.
 
 | File | Role |
 |------|------|
-| `ui/src/App.tsx` | top-level layout and event listeners |
+| `ui/src/App.tsx` | top-level layout, menu event listeners, app kind map |
 | `ui/src/components/GraphCanvas.tsx` | React Flow graph editor |
 | `ui/src/components/WorkflowNode.tsx` | standard node renderer |
 | `ui/src/components/LoopGroupNode.tsx` | expanded loop group renderer |
@@ -256,4 +274,10 @@ Do not edit manually.
 | `ui/src/hooks/useWorkflowActions.ts` | workflow mutation dispatchers (wraps `useWorkflowMutations`) |
 | `ui/src/hooks/useEscapeKey.ts` | global Escape key handler that closes panels in priority order |
 | `ui/src/hooks/useHorizontalResize.ts` | horizontal panel resize drag handle |
+| `ui/src/hooks/useExecutorEvents.ts` | Backend event subscriptions (executor, walkthrough, assistant) |
 | `ui/src/hooks/useUndoRedoKeyboard.ts` | Ctrl+Z / Ctrl+Shift+Z keyboard binding |
+| `ui/src/components/CdpAppSelectModal.tsx` | CDP app selection modal for walkthrough recording |
+| `ui/src/utils/appKind.ts` | App kind classification helpers |
+| `ui/src/utils/walkthroughDraft.ts` | Walkthrough draft processing utilities |
+| `ui/src/utils/walkthroughFormatting.ts` | Walkthrough event formatting for display |
+| `ui/src/constants/nodeMetadata.ts` | Node type display metadata (icons, colors, labels) |

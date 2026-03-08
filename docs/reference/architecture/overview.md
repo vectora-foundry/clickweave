@@ -1,6 +1,6 @@
 # Architecture Overview (Reference)
 
-Verified at commit: `1cdb730`
+Verified at commit: `d0fd809`
 
 Clickweave is a Tauri v2 desktop app with a Rust backend and a React frontend.
 
@@ -38,13 +38,16 @@ src-tauri
 
 | Module | Purpose |
 |--------|---------|
-| `workflow.rs` | Core types: `Workflow`, `Node`, `Edge`, `NodeType`, `ExecutionMode`, `NodeRole`, control-flow params, verdicts, trace/run types |
+| `workflow.rs` | Core types: `Workflow`, `Node`, `Edge`, `NodeType`, `ExecutionMode`, `NodeRole` |
+| `node_params.rs` | Parameter structs for all node types (re-exported via `pub use`) |
 | `validation.rs` | `validate_workflow()` graph validation |
 | `runtime.rs` | `RuntimeContext` variable store + condition evaluation + loop counters |
 | `storage.rs` | `RunStorage` execution/run/event/artifact persistence, `cache_path()` for decision cache |
-| `decision_cache.rs` | `DecisionCache` — persists LLM decisions (click disambiguation, element/app resolution) as `decisions.json` for replay in Run mode |
+| `decision_cache.rs` | `DecisionCache` — persists LLM decisions (click disambiguation, element/app resolution, CDP port) as `decisions.json` for replay in Run mode |
 | `tool_mapping.rs` | `NodeType` ↔ MCP tool invocation mapping |
-| `walkthrough.rs` | Walkthrough recording types (`WalkthroughSession`, `WalkthroughStatus`, `WalkthroughEvent`, `WalkthroughAction`, `WalkthroughAnnotations`), event normalization, draft synthesis, session storage |
+| `cdp.rs` | Shared CDP (Chrome DevTools Protocol) utilities: server naming, snapshot search |
+| `app_detection.rs` | App classification (Electron, Chrome, native) from bundle ID / path / PID |
+| `walkthrough/` | Walkthrough recording types, event normalization, draft synthesis, session storage (submodules: `types.rs`, `synthesis.rs`, `storage.rs`) |
 
 ### `clickweave-engine`
 
@@ -81,7 +84,6 @@ See [Workflow Execution](../engine/execution.md).
 | `planner/mapping.rs` | `PlanStep` → `NodeType` mapping |
 | `planner/conversation.rs` | Conversation session windowing |
 | `planner/summarize.rs` | Overflow summarization |
-| `planner/walkthrough.rs` | `generalize_walkthrough()` — LLM generalization of recorded walkthrough into workflow |
 
 See [Planning & LLM Retry Logic](../llm/planning-retries.md).
 
@@ -137,14 +139,16 @@ Commands are registered in `src-tauri/src/main.rs` and implemented under `src-ta
 
 ```
 src-tauri/src/commands/
-├── mod.rs          # Re-exports all public commands and handles
-├── types.rs        # IPC request/response payloads, shared helpers (resolve_storage, project_dir)
-├── planner.rs      # plan_workflow, patch_workflow, fetch_mcp_tool_schemas
-├── assistant.rs    # assistant_chat, cancel_assistant_chat (AssistantHandle with AbortHandle)
-├── executor.rs     # run_workflow, stop_workflow, supervision_respond (ExecutorHandle with stop/command channel)
-├── project.rs      # open/save/validate, node_type_defaults, import_asset, pick_*_file, conversation I/O, ping
-├── runs.rs         # list_runs, load_run_events, read_artifact_base64
-└── walkthrough.rs  # start/pause/resume/stop/cancel_walkthrough, get/apply/seed walkthrough (WalkthroughHandle)
+├── mod.rs                    # Re-exports all public commands and handles
+├── types.rs                  # IPC request/response payloads, shared helpers (resolve_storage, project_dir)
+├── planner.rs                # plan_workflow, patch_workflow, fetch_mcp_tool_schemas
+├── assistant.rs              # assistant_chat, cancel_assistant_chat (AssistantHandle with AbortHandle)
+├── executor.rs               # run_workflow, stop_workflow, supervision_respond (ExecutorHandle with cancel token + command channel)
+├── project.rs                # open/save/validate, node_type_defaults, import_asset, pick_*_file, conversation I/O, ping
+├── runs.rs                   # list_runs, load_run_events, read_artifact_base64
+├── walkthrough.rs            # start/pause/resume/stop/cancel_walkthrough, get/apply/seed walkthrough, detect_cdp_apps, validate_app_path
+├── walkthrough_session.rs    # WalkthroughHandle, event processing loop, CDP setup, MCP helpers
+└── walkthrough_enrichment.rs # VLM click-target resolution and accessibility enrichment
 ```
 
 ### Managed State
@@ -153,9 +157,9 @@ Three `Mutex`-wrapped handles are registered as Tauri managed state:
 
 | Handle | State | Purpose |
 |--------|-------|---------|
-| `ExecutorHandle` | `stop_tx: Option<Sender<ExecutorCommand>>`, `task_handle: Option<JoinHandle<()>>` | `force_stop()` aborts the executor task and drops the MCP subprocess; also used by `supervision_respond` to send `Resume`/`Skip`/`Abort` commands |
+| `ExecutorHandle` | `cancel_token: Option<CancellationToken>`, `cmd_tx: Option<Sender<ExecutorCommand>>`, `task_handle: Option<JoinHandle<()>>` | Cancels the executor task via token (graceful) then abort (forceful); `cmd_tx` sends `Resume`/`Skip`/`Abort` commands |
 | `AssistantHandle` | `Option<AbortHandle>` | Cancels in-flight assistant LLM call |
-| `WalkthroughHandle` | `session`, `session_dir`, `storage`, `mcp_command`, `event_tap`, `processing_task` | Manages walkthrough recording session lifecycle and event capture |
+| `WalkthroughHandle` | `session`, `session_dir`, `storage`, `mcp_command`, `event_tap`, `processing_task`, `cancel_tx` | Manages walkthrough recording session lifecycle, event capture, and cancellation |
 
 ### Command Summary
 
@@ -184,6 +188,8 @@ Three `Mutex`-wrapped handles are registered as Tauri managed state:
 | `get_walkthrough_draft` | `walkthrough.rs` | Return draft workflow from recorded walkthrough |
 | `apply_walkthrough_annotations` | `walkthrough.rs` | Apply user annotations (renames, deletions, target overrides) to draft |
 | `seed_walkthrough_cache` | `walkthrough.rs` | Populate decision cache from walkthrough recording data |
+| `detect_cdp_apps` | `walkthrough.rs` | Detect running Electron/Chrome apps for CDP walkthrough |
+| `validate_app_path` | `walkthrough.rs` | Validate a user-selected app binary path for CDP support |
 | `ping` | `project.rs` | Health check |
 
 ## Event Contract
@@ -204,7 +210,8 @@ Emitted from `src-tauri/src/commands/executor.rs` and `src-tauri/src/commands/as
 | `assistant://repairing` | `[attempt: number, max: number]` |
 | `walkthrough://state` | `{ status: WalkthroughStatus }` |
 | `walkthrough://event` | `{ event: WalkthroughEvent }` |
-| `walkthrough://draft_ready` | `{ actions, draft, warnings, action_node_map, used_fallback }` |
+| `walkthrough://draft_ready` | `{ actions, draft, warnings, action_node_map }` |
+| `walkthrough://cdp-setup` | `CdpSetupProgress` |
 | `recording-bar://action` | `{ action: string }` |
 
 Notes:

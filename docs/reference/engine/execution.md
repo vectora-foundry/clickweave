@@ -1,6 +1,6 @@
 # Workflow Execution (Reference)
 
-Verified at commit: `1cdb730`
+Verified at commit: `d0fd809`
 
 The engine executes a workflow graph sequentially, evaluating control-flow nodes in place and dispatching execution nodes to MCP tools or an AI-step tool loop.
 
@@ -8,7 +8,7 @@ The engine executes a workflow graph sequentially, evaluating control-flow nodes
 
 Execution starts at Tauri command `run_workflow` (`src-tauri/src/commands/executor.rs`), which creates `WorkflowExecutor` and calls `run()`.
 
-`WorkflowExecutor::new()` takes `agent_config`, `vlm_config`, `supervision_config`, `mcp_command`, `execution_mode`, `project_path`, `event_tx`, and `storage`. Key fields on the executor:
+`WorkflowExecutor::new()` takes `agent_config`, `vlm_config`, `supervision_config`, `mcp_configs`, `execution_mode`, `project_path`, `event_tx`, `storage`, and `cancel_token`. Key fields on the executor:
 
 | Field | Type | Purpose |
 |-------|------|---------|
@@ -20,12 +20,15 @@ Execution starts at Tauri command `run_workflow` (`src-tauri/src/commands/execut
 | `supervision_history` | `RwLock<Vec<Message>>` | Persistent conversation history for supervision across the entire run |
 | `runtime_verdicts` | `Vec<NodeVerdict>` | Accumulated inline verification verdicts from Verification-role nodes |
 | `pending_loop_exit` | `Option<PendingLoopExit>` | Set when a loop exits; consumed by the main loop to run deferred verification |
+| `verdict_vlm` | `Option<LlmClient>` | Dedicated VLM for screenshot verification with low max_tokens and thinking disabled |
+| `cdp_servers` | `HashMap<String, String>` | Maps app name → CDP MCP server name in the McpRouter |
+| `cancel_token` | `CancellationToken` | Graceful cancellation signal (replaces the removed `ExecutorCommand::Stop`) |
 
 High-level flow in `run()`:
 
 1. Emit `StateChanged(Running)`
 2. Log agent/VLM model info
-3. Spawn MCP server (`npx` or custom command)
+3. Spawn MCP servers via `McpRouter` (one or more `McpServerConfig`s)
 4. `RunStorage::begin_execution()`
 5. Find entry points
 6. Walk graph (with inline verification for Verification-role nodes and per-step supervision in Test mode)
@@ -38,7 +41,7 @@ High-level flow in `run()`:
 
 Main state machine (in `executor/run_loop.rs`):
 
-1. Stop check (`ExecutorCommand::Stop`)
+1. Cancellation check (`cancel_token.is_cancelled()`)
 2. Skip disabled nodes (`follow_disabled_edge`)
 3. For control-flow nodes, evaluate branch and jump
 4. If a loop just exited (Test mode): run `verify_loop_exit` supervision check
@@ -52,7 +55,6 @@ Main state machine (in `executor/run_loop.rs`):
 
 | Command | Purpose |
 |---------|---------|
-| `Stop` | Gracefully stop workflow execution |
 | `Resume` | Continue after a supervision pause (re-executes the current node) |
 | `Skip` | Skip past a supervision failure and continue to the next node |
 | `Abort` | Abort execution after a supervision failure |
@@ -131,6 +133,8 @@ Special handling:
 - `FocusWindow` by app name: resolve app to pid via `list_apps` + LLM
 - `TakeScreenshot(Window)` with target app name: same app-resolution path
 - `launch_app` implicitly sets `focused_app` to the launched app name
+- `Click` with `template_image` and no coordinates: resolve via `find_image` using the template
+- CDP click path: for apps with `AppKind` that `uses_cdp()`, attempt CDP-based click (snapshot + uid click via `chrome-devtools-mcp`) before falling back to native `find_text`
 
 App resolution and element resolution use `reasoning_backend()` priority: supervision LLM (planner-class) -> VLM -> agent. The small agent model often has insufficient context for these prompts.
 
@@ -172,7 +176,7 @@ After a loop exits (`LoopDone` edge), `verify_loop_exit` runs a deferred visual 
 3. A screenshot is taken and the supervision LLM is asked whether the loop achieved its goal
 4. The same `SupervisionPassed`/`SupervisionPaused` flow applies
 
-Screenshot-only nodes (`TakeScreenshot`) skip verification entirely (no observable effect).
+Read-only nodes (`FindText`, `FindImage`, `TakeScreenshot`, `ListWindows`) skip verification entirely — checked via `node_type.is_read_only()`.
 
 ## Retry Behavior
 
@@ -223,7 +227,7 @@ String/number/bool result:
 |-------|-----|-------|---------|
 | `app_cache` | user app text | `{name, pid}` | FocusWindow, TakeScreenshot |
 | `element_cache` | `(target, app_name?)` | resolved element name | Click, FindText |
-| `focused_app` | none | app name | scoped find-text and resolution |
+| `focused_app` | none | `(app_name, AppKind)` | scoped find-text, resolution, and CDP routing |
 | `decision_cache` | varies by type (see below) | `AppResolution`, `ElementResolution`, `ClickDisambiguation` | App resolution, element resolution, click disambiguation |
 
 ### Decision Cache
@@ -237,6 +241,7 @@ Types stored:
 | `AppResolution` | `"node_id\0user_input"` | `user_input`, `resolved_name` | Maps user app text to resolved app name (not PID, since PIDs change between runs) |
 | `ElementResolution` | `"node_id\0target\0app_name"` | `target`, `resolved_name` | Maps UI element text to accessibility element name |
 | `ClickDisambiguation` | `"node_id\0target\0app_name"` | `target`, `app_name?`, `chosen_text`, `chosen_role` | Records which match was chosen when multiple `find_text` results exist |
+| `CdpPort` | `app_name` | `port` | Persists the CDP debugging port for an app between Test and Run modes |
 
 Lifecycle:
 
@@ -291,6 +296,8 @@ Common event types recorded in trace files:
 - `app_resolved`
 - `element_resolved`
 - `match_disambiguated`
+- `cdp_click`
+- `cdp_connected`
 
 ## Inline Verification Verdicts
 
@@ -321,4 +328,6 @@ See [Verification Nodes](../../verification/node-checks.md).
 | `crates/clickweave-engine/src/executor/verdict.rs` | Inline verification verdicts |
 | `crates/clickweave-core/src/decision_cache.rs` | Decision cache types and save/load |
 | `crates/clickweave-core/src/runtime.rs` | Runtime context and condition evaluation |
+| `crates/clickweave-engine/src/executor/error.rs` | `ExecutorError` and `ExecutorResult<T>` typed error handling |
+| `crates/clickweave-engine/src/executor/trace.rs` | Event emission, logging, image saving, run finalization, cancellation check |
 | `crates/clickweave-core/src/storage.rs` | Run/event/artifact persistence |
