@@ -142,7 +142,7 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 let mut ax_label: Option<(String, Option<String>)> = None;
                 let mut vlm_label: Option<String> = None;
                 let mut crop_candidate: Option<(String, String)> = None;
-                let mut cdp_snapshot: Option<String> = None;
+                let mut cdp_resolved: Option<(String, Option<String>, Option<String>)> = None;
                 let mut peek = i;
                 while peek < events.len() {
                     match &events[peek].kind {
@@ -167,8 +167,10 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                         WalkthroughEventKind::VlmLabelResolved { label } => {
                             vlm_label = Some(label.clone());
                         }
-                        WalkthroughEventKind::CdpSnapshotCaptured { snapshot_text, .. } => {
-                            cdp_snapshot = Some(snapshot_text.clone());
+                        WalkthroughEventKind::CdpClickResolved {
+                            name, role, href, ..
+                        } => {
+                            cdp_resolved = Some((name.clone(), role.clone(), href.clone()));
                         }
                         // Stop at the next action event.
                         _ => break,
@@ -181,25 +183,9 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 // Build target candidates: CDP > accessibility label > OCR text > coordinates.
                 let mut candidates = Vec::new();
 
-                // CDP element is the highest-priority target.
-                // Try AX label first, then VLM label as hint for matching.
-                if let Some(ref snapshot) = cdp_snapshot {
-                    let hints = ax_label
-                        .as_ref()
-                        .map(|(label, _)| label.as_str())
-                        .into_iter()
-                        .chain(vlm_label.as_deref());
-                    for hint in hints {
-                        let matches = crate::cdp::find_elements_in_snapshot(snapshot, hint);
-                        if matches.len() == 1 {
-                            let (uid, label) = &matches[0];
-                            candidates.push(TargetCandidate::CdpElement {
-                                text: label.clone(),
-                                uid: uid.clone(),
-                            });
-                            break;
-                        }
-                    }
+                // CDP element from click listener is the highest-priority target.
+                if let Some((name, role, href)) = cdp_resolved {
+                    candidates.push(TargetCandidate::CdpElement { name, role, href });
                 }
 
                 // Accessibility label is the most reliable target.
@@ -339,8 +325,8 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
             | WalkthroughEventKind::AccessibilityElementCaptured { .. }
             | WalkthroughEventKind::VlmLabelResolved { .. } => {}
 
-            // CDP snapshot events are consumed in the click peek loop above.
-            WalkthroughEventKind::CdpSnapshotCaptured { .. } => {}
+            // CDP click resolved events are consumed in the click peek loop above.
+            WalkthroughEventKind::CdpClickResolved { .. } => {}
 
             // Skip non-action events.
             WalkthroughEventKind::Paused
@@ -610,7 +596,6 @@ mod tests {
                 button: MouseButton::Left,
                 click_count: 1,
                 modifiers: vec![],
-                cdp_element: None,
             },
             WalkthroughEventKind::KeyPressed {
                 key: "Enter".to_string(),
@@ -714,8 +699,9 @@ mod tests {
             },
             TargetCandidate::Coordinates { x: 100.0, y: 200.0 },
             TargetCandidate::CdpElement {
-                text: "Submit".to_string(),
-                uid: "e1".to_string(),
+                name: "Submit".to_string(),
+                role: Some("button".to_string()),
+                href: None,
             },
         ];
 
@@ -1056,7 +1042,6 @@ mod tests {
                         button: MouseButton::Left,
                         click_count: 1,
                         modifiers: vec![],
-                        cdp_element: None,
                     },
                 ),
                 make_event(
@@ -1095,7 +1080,6 @@ mod tests {
                         button: MouseButton::Left,
                         click_count: 1,
                         modifiers: vec![],
-                        cdp_element: None,
                     },
                 ),
                 make_event(
@@ -1143,7 +1127,6 @@ mod tests {
                     button: MouseButton::Left,
                     click_count: 1,
                     modifiers: vec![],
-                    cdp_element: None,
                 },
             )];
             let (actions, _) = normalize_events(&events);
@@ -1168,7 +1151,6 @@ mod tests {
                         button: MouseButton::Left,
                         click_count: 1,
                         modifiers: vec![],
-                        cdp_element: None,
                     },
                 ),
                 make_event(
@@ -1201,7 +1183,6 @@ mod tests {
                         button: MouseButton::Left,
                         click_count: 1,
                         modifiers: vec![],
-                        cdp_element: None,
                     },
                 ),
                 make_event(
@@ -1235,7 +1216,7 @@ mod tests {
         }
 
         #[test]
-        fn test_cdp_element_resolved_via_vlm_hint_when_ax_is_window_title() {
+        fn test_cdp_click_resolved_creates_cdp_element_candidate() {
             let click_id = Uuid::new_v4();
             let events = vec![
                 WalkthroughEvent {
@@ -1247,35 +1228,24 @@ mod tests {
                         button: MouseButton::Left,
                         click_count: 1,
                         modifiers: vec![],
-                        cdp_element: None,
                     },
                 },
-                make_event(
-                    1000,
-                    WalkthroughEventKind::CdpSnapshotCaptured {
-                        snapshot_text: concat!(
-                            "uid=1_0 RootWebArea \"MyApp\"\n",
-                            "  uid=1_1 button \"Go back\"\n",
-                            "  uid=1_2 treeitem \"Direct Messages\" level=\"1\" selectable\n",
-                            "  uid=1_3 button \"Settings\"\n",
-                        )
-                        .to_string(),
+                WalkthroughEvent {
+                    id: Uuid::new_v4(),
+                    timestamp: 1000,
+                    kind: WalkthroughEventKind::CdpClickResolved {
+                        name: "Direct Messages".to_string(),
+                        role: Some("treeitem".to_string()),
+                        href: None,
                         click_event_id: click_id,
                     },
-                ),
-                // AX label is the window title — won't match any single CDP element.
+                },
+                // AX label is the window title — non-actionable.
                 make_event(
                     1000,
                     WalkthroughEventKind::AccessibilityElementCaptured {
                         label: "MyApp - Main Window".to_string(),
                         role: Some("AXWindow".to_string()),
-                    },
-                ),
-                // VLM label matches the specific element.
-                make_event(
-                    1000,
-                    WalkthroughEventKind::VlmLabelResolved {
-                        label: "Direct Messages".to_string(),
                     },
                 ),
             ];
@@ -1285,8 +1255,8 @@ mod tests {
             assert!(
                 matches!(
                     &actions[0].target_candidates[0],
-                    TargetCandidate::CdpElement { text, uid }
-                        if text == "Direct Messages" && uid == "1_2"
+                    TargetCandidate::CdpElement { name, role, .. }
+                        if name == "Direct Messages" && role.as_deref() == Some("treeitem")
                 ),
                 "Expected CdpElement as first candidate, got: {:?}",
                 &actions[0].target_candidates

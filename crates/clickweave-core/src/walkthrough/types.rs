@@ -100,16 +100,6 @@ impl AppKind {
     }
 }
 
-/// CDP element data captured during walkthrough recording.
-/// Attached to MouseClicked events for clicks in CDP-enabled apps.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct CdpClickAnnotation {
-    pub uid: String,
-    pub label: String,
-    pub role: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "type")]
@@ -127,8 +117,6 @@ pub enum WalkthroughEventKind {
         button: MouseButton,
         click_count: u32,
         modifiers: Vec<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        cdp_element: Option<CdpClickAnnotation>,
     },
     KeyPressed {
         key: String,
@@ -165,8 +153,10 @@ pub enum WalkthroughEventKind {
     VlmLabelResolved {
         label: String,
     },
-    CdpSnapshotCaptured {
-        snapshot_text: String,
+    CdpClickResolved {
+        name: String,
+        role: Option<String>,
+        href: Option<String>,
         click_event_id: Uuid,
     },
     Paused,
@@ -299,10 +289,11 @@ pub enum TargetCandidate {
         x: f64,
         y: f64,
     },
-    /// Element verified via Chrome DevTools Protocol snapshot.
+    /// Element captured via Chrome DevTools Protocol click listener.
     CdpElement {
-        text: String,
-        uid: String,
+        name: String,
+        role: Option<String>,
+        href: Option<String>,
     },
 }
 
@@ -346,7 +337,7 @@ impl TargetCandidate {
             }
             Self::VlmLabel { label } => Some(label),
             Self::OcrText { text } => Some(text),
-            Self::CdpElement { text, .. } => Some(text),
+            Self::CdpElement { name, .. } => Some(name),
             _ => None,
         }
     }

@@ -309,7 +309,6 @@ pub(super) async fn process_capture_events(
                         button,
                         click_count,
                         modifiers,
-                        cdp_element: None,
                     },
                 };
 
@@ -352,48 +351,7 @@ pub(super) async fn process_capture_events(
                         .await;
                     });
 
-                    // CDP snapshot (async, independent of AX/VLM enrichment).
-                    let focused_app = app_cache.get(&capture.target_pid).map(|c| c.name.as_str());
-                    if let Some(app_name) = focused_app {
-                        if let Some(server_name) = cdp_state.get(app_name) {
-                            tracing::debug!(
-                                "CDP snapshot: dispatching for '{}' (server '{}')",
-                                app_name,
-                                server_name
-                            );
-                            let task_mcp = mcp_arc.clone();
-                            let task_app = app.clone();
-                            let task_storage = storage.clone();
-                            let task_dir = session_dir.clone();
-                            let server = server_name.clone();
-                            let click_id = click_event.id;
-                            let click_ts = capture.timestamp;
-
-                            bg_tasks.spawn(async move {
-                                cdp_snapshot_for_click(
-                                    &task_mcp,
-                                    &server,
-                                    &task_app,
-                                    &task_storage,
-                                    &task_dir,
-                                    click_id,
-                                    click_ts,
-                                )
-                                .await;
-                            });
-                        } else {
-                            tracing::debug!(
-                                "CDP snapshot: no server for app '{}', cdp_state keys: {:?}",
-                                app_name,
-                                cdp_state.keys().collect::<Vec<_>>()
-                            );
-                        }
-                    } else {
-                        tracing::debug!(
-                            "CDP snapshot: PID {} not in app_cache",
-                            capture.target_pid
-                        );
-                    }
+                    // CDP click listener retrieval will be added here (Task 7).
                 }
 
                 continue;
@@ -836,61 +794,6 @@ pub(super) fn emit_cdp_progress(app: &tauri::AppHandle, app_name: &str, status: 
             status,
         },
     );
-}
-
-/// Capture a CDP snapshot for a click and persist as a CdpSnapshotCaptured event.
-async fn cdp_snapshot_for_click(
-    mcp: &McpRouter,
-    server_name: &str,
-    app: &tauri::AppHandle,
-    storage: &WalkthroughStorage,
-    session_dir: &std::path::Path,
-    click_event_id: Uuid,
-    click_timestamp: u64,
-) {
-    let call_fut = mcp.call_tool_on(server_name, "take_snapshot", Some(serde_json::json!({})));
-    let snapshot = match tokio::time::timeout(CDP_SNAPSHOT_TIMEOUT, call_fut).await {
-        Ok(Ok(r)) if r.is_error != Some(true) => r
-            .content
-            .iter()
-            .filter_map(|c| c.as_text())
-            .collect::<Vec<_>>()
-            .join("\n"),
-        Ok(Ok(r)) => {
-            let err_text: String = r
-                .content
-                .iter()
-                .filter_map(|c| c.as_text())
-                .collect::<Vec<_>>()
-                .join("\n");
-            tracing::debug!(
-                "CDP take_snapshot returned error for click {click_event_id}: {err_text}"
-            );
-            return;
-        }
-        Ok(Err(e)) => {
-            tracing::debug!("CDP take_snapshot failed for click {click_event_id}: {e}");
-            return;
-        }
-        Err(_) => {
-            tracing::debug!("CDP take_snapshot timed out for click {click_event_id}");
-            return;
-        }
-    };
-
-    if snapshot.is_empty() {
-        return;
-    }
-
-    let event = WalkthroughEvent {
-        id: Uuid::new_v4(),
-        timestamp: click_timestamp,
-        kind: WalkthroughEventKind::CdpSnapshotCaptured {
-            snapshot_text: snapshot,
-            click_event_id,
-        },
-    };
-    persist_and_emit(app, storage, session_dir, &event);
 }
 
 // ---------------------------------------------------------------------------
