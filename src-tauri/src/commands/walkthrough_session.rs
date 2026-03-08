@@ -353,12 +353,39 @@ pub(super) async fn process_capture_events(
                 // background task so the event loop stays responsive.
                 // Only spawn enrichment if MCP is available.
                 if let Some(ref mcp_arc) = mcp {
+                    let task_app_name = app_cache.get(&capture.target_pid).map(|c| c.name.clone());
+
+                    // Retrieve CDP click data if the click was in a CDP-enabled app.
+                    if let Some(server_name) = task_app_name
+                        .as_deref()
+                        .and_then(|name| cdp_state.get(name))
+                    {
+                        let cdp_mcp = mcp_arc.clone();
+                        let cdp_app = app.clone();
+                        let cdp_storage = storage.clone();
+                        let cdp_dir = session_dir.clone();
+                        let cdp_server = server_name.clone();
+                        let click_id = click_event.id;
+                        let click_ts = capture.timestamp;
+                        bg_tasks.spawn(async move {
+                            cdp_retrieve_click(
+                                &cdp_mcp,
+                                &cdp_server,
+                                &cdp_app,
+                                &cdp_storage,
+                                &cdp_dir,
+                                click_id,
+                                click_ts,
+                            )
+                            .await;
+                        });
+                    }
+
                     let task_mcp = mcp_arc.clone();
                     let task_vlm = vlm_backend.clone();
                     let task_app = app.clone();
                     let task_storage = storage.clone();
                     let task_dir = session_dir.clone();
-                    let task_app_name = app_cache.get(&capture.target_pid).map(|c| c.name.clone());
                     let ts = capture.timestamp;
                     let task_kind_cache = app_kind_cache.clone();
                     let task_pid = capture.target_pid;
@@ -384,8 +411,6 @@ pub(super) async fn process_capture_events(
                         )
                         .await;
                     });
-
-                    // CDP click listener retrieval will be added here (Task 7).
                 }
 
                 continue;
@@ -846,6 +871,98 @@ pub(super) fn emit_cdp_progress(app: &tauri::AppHandle, app_name: &str, status: 
     );
 }
 
+/// Retrieve the last click's DOM element data from the injected listener.
+///
+/// Returns a `CdpClickResolved` event if data is available, or None if the
+/// click landed outside the CDP app / listener was lost.
+async fn cdp_retrieve_click(
+    mcp: &McpRouter,
+    server_name: &str,
+    app: &tauri::AppHandle,
+    storage: &WalkthroughStorage,
+    session_dir: &std::path::Path,
+    click_event_id: Uuid,
+    click_timestamp: u64,
+) {
+    // Small delay to let the capture-phase listener fire.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let retrieve_args = serde_json::json!({ "expression": CDP_RETRIEVE_CLICK_JS });
+    let call_fut = mcp.call_tool_on(server_name, "evaluate_script", Some(retrieve_args));
+    let result = match tokio::time::timeout(CDP_SNAPSHOT_TIMEOUT, call_fut).await {
+        Ok(Ok(r)) if r.is_error != Some(true) => r,
+        Ok(Ok(r)) => {
+            let err: String = r.content.iter().filter_map(|c| c.as_text()).collect();
+            tracing::debug!("CDP click retrieve error for {click_event_id}: {err}");
+            return;
+        }
+        Ok(Err(e)) => {
+            tracing::debug!("CDP click retrieve failed for {click_event_id}: {e}");
+            return;
+        }
+        Err(_) => {
+            tracing::debug!("CDP click retrieve timed out for {click_event_id}");
+            return;
+        }
+    };
+
+    let text: String = result.content.iter().filter_map(|c| c.as_text()).collect();
+    if text.trim() == "null" || text.trim().is_empty() {
+        tracing::debug!("CDP click listener returned null for {click_event_id}");
+
+        // Check if listener is still alive; re-inject if lost.
+        let check_args = serde_json::json!({ "expression": CDP_CHECK_LISTENER_JS });
+        if let Ok(r) = mcp
+            .call_tool_on(server_name, "evaluate_script", Some(check_args))
+            .await
+        {
+            let alive: String = r.content.iter().filter_map(|c| c.as_text()).collect();
+            if alive.trim() != "true" {
+                tracing::info!("CDP click listener lost, re-injecting");
+                let inject_args = serde_json::json!({ "expression": CDP_CLICK_LISTENER_JS });
+                let _ = mcp
+                    .call_tool_on(server_name, "evaluate_script", Some(inject_args))
+                    .await;
+            }
+        }
+        return;
+    }
+
+    // Parse the JSON result from evaluate_script.
+    let parsed: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::debug!("CDP click data parse failed for {click_event_id}: {e}");
+            return;
+        }
+    };
+
+    // Build name from ariaLabel or textContent.
+    let name = parsed["ariaLabel"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .or_else(|| parsed["textContent"].as_str().filter(|s| !s.is_empty()));
+    let Some(name) = name else {
+        tracing::debug!("CDP click has no usable name for {click_event_id}");
+        return;
+    };
+
+    let role = parsed["role"].as_str().map(|s| s.to_string());
+    let href = parsed["href"].as_str().map(|s| s.to_string());
+
+    let event = WalkthroughEvent {
+        id: Uuid::new_v4(),
+        timestamp: click_timestamp,
+        kind: WalkthroughEventKind::CdpClickResolved {
+            name: name.to_string(),
+            role,
+            href,
+            click_event_id,
+        },
+    };
+    persist_and_emit(app, storage, session_dir, &event);
+}
+
 // ---------------------------------------------------------------------------
 // MCP helpers
 // ---------------------------------------------------------------------------
@@ -1176,7 +1293,6 @@ mod tests {
                 button: MouseButton::Left,
                 click_count: 1,
                 modifiers: vec![],
-                cdp_element: None,
             },
         }
     }

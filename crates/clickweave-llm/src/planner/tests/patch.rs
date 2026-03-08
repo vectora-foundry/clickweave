@@ -2,8 +2,8 @@ use super::helpers::*;
 use crate::planner::prompt::patcher_system_prompt;
 use crate::planner::*;
 use clickweave_core::{
-    ClickParams, FindTextParams, FocusMethod, FocusWindowParams, MouseButton, NodeType, Position,
-    ScreenshotMode, TakeScreenshotParams,
+    ClickParams, ClickTarget, FindTextParams, FocusMethod, FocusWindowParams, MouseButton,
+    NodeType, Position, ScreenshotMode, TakeScreenshotParams,
 };
 
 #[test]
@@ -27,7 +27,9 @@ fn test_patcher_prompt_includes_node_arguments() {
     );
     workflow.add_node(
         NodeType::Click(ClickParams {
-            target: Some("Vesna".into()),
+            target: Some(ClickTarget::Text {
+                text: "Vesna".into(),
+            }),
             ..Default::default()
         }),
         Position { x: 0.0, y: 200.0 },

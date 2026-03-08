@@ -1,8 +1,8 @@
 use super::helpers::*;
 use clickweave_core::walkthrough::AppKind;
 use clickweave_core::{
-    ClickParams, FindTextParams, FocusMethod, FocusWindowParams, McpToolCallParams, NodeType,
-    ScreenshotMode, TakeScreenshotParams, TypeTextParams,
+    ClickParams, ClickTarget, FindTextParams, FocusMethod, FocusWindowParams, McpToolCallParams,
+    NodeType, ScreenshotMode, TakeScreenshotParams, TypeTextParams,
 };
 
 use super::super::ResolvedApp;
@@ -147,7 +147,9 @@ fn evict_element_cache_for_click_node() {
     *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native));
 
     let node = NodeType::Click(ClickParams {
-        target: Some("×".to_string()),
+        target: Some(ClickTarget::Text {
+            text: "×".to_string(),
+        }),
         ..ClickParams::default()
     });
     exec.evict_caches_for_node(&node);

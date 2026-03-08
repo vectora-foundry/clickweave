@@ -675,6 +675,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Takes a snapshot of the page's accessibility tree, finds the element
     /// matching the target text, and clicks it via CDP. Returns the click
     /// result text on success, or an error string to trigger native fallback.
+    #[allow(clippy::too_many_arguments)]
     async fn resolve_and_click_cdp(
         &self,
         _node_id: Uuid,
