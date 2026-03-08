@@ -19,6 +19,40 @@ use super::walkthrough_enrichment::{
 };
 use crate::platform::{CaptureCommand, CaptureEvent, CaptureEventKind};
 
+/// JavaScript click listener injected into CDP-enabled apps.
+/// Captures the semantic target element on each click (capture phase,
+/// fires before navigation/DOM mutation).
+const CDP_CLICK_LISTENER_JS: &str = r#"
+(() => {
+  if (window.__clickweave_lastClick !== undefined) return;
+  window.__clickweave_lastClick = null;
+  document.addEventListener('click', (e) => {
+    const el = e.target.closest('[role], a, button, [tabindex]') || e.target;
+    window.__clickweave_lastClick = {
+      tagName: el.tagName,
+      role: el.getAttribute('role') || el.ariaRoleDescription || null,
+      ariaLabel: el.ariaLabel || el.getAttribute('aria-label') || null,
+      textContent: (el.textContent || '').trim().substring(0, 200),
+      href: el.closest('a')?.href || null,
+      id: el.id || null,
+      className: el.className || null,
+    };
+  }, true);
+})()
+"#;
+
+/// JavaScript to retrieve and clear the last click data.
+const CDP_RETRIEVE_CLICK_JS: &str = r#"
+(() => {
+  const c = window.__clickweave_lastClick;
+  window.__clickweave_lastClick = null;
+  return c;
+})()
+"#;
+
+/// JavaScript to check if the click listener is still alive.
+const CDP_CHECK_LISTENER_JS: &str = "typeof window.__clickweave_lastClick !== 'undefined'";
+
 #[cfg(target_os = "macos")]
 use crate::platform::macos::{CursorRegionCapture, MacOSEventTap};
 
@@ -724,6 +758,22 @@ async fn setup_cdp_apps(
                     port,
                     server_name,
                 );
+
+                // Inject click listener for record-time element capture.
+                let inject_args = serde_json::json!({ "expression": CDP_CLICK_LISTENER_JS });
+                match mcp
+                    .call_tool_on(&server_name, "evaluate_script", Some(inject_args))
+                    .await
+                {
+                    Ok(_) => {
+                        tracing::info!("Injected click listener into '{}'", cdp_app.name)
+                    }
+                    Err(e) => tracing::warn!(
+                        "Failed to inject click listener into '{}': {e}",
+                        cdp_app.name
+                    ),
+                }
+
                 emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Ready);
                 state.insert(cdp_app.name.clone(), server_name);
             }
