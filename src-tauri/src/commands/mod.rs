@@ -5,6 +5,8 @@ mod project;
 mod runs;
 mod types;
 mod walkthrough;
+mod walkthrough_enrichment;
+mod walkthrough_session;
 
 pub use assistant::{AssistantHandle, assistant_chat, cancel_assistant_chat};
 pub use executor::{ExecutorHandle, run_workflow, stop_workflow, supervision_respond};
