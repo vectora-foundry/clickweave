@@ -1000,7 +1000,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         Ok(server_name)
     }
 
-    /// Quit the app, relaunch with --remote-debugging-port, wait briefly.
+    /// Quit the app, confirm it exited, relaunch with --remote-debugging-port.
     async fn relaunch_with_debug_port(
         &self,
         app_name: &str,
@@ -1016,8 +1016,29 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             ));
         }
 
-        // Brief wait for the app to fully exit.
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // Poll list_apps until the app is no longer running (up to 10s).
+        let poll_args = serde_json::json!({ "app_name": app_name, "user_apps_only": true });
+        let mut quit_confirmed = false;
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            if let Ok(r) = mcp.call_tool("list_apps", Some(poll_args.clone())).await {
+                let text = Self::extract_result_text(&r);
+                if text.trim() == "[]" {
+                    quit_confirmed = true;
+                    break;
+                }
+            }
+        }
+
+        if !quit_confirmed {
+            self.log(format!(
+                "'{}' did not quit within 10s, force-killing",
+                app_name
+            ));
+            let force_args = serde_json::json!({ "app_name": app_name, "force": true });
+            let _ = mcp.call_tool("quit_app", Some(force_args)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
 
         // Relaunch with debug port.
         let launch_args = serde_json::json!({
@@ -1067,8 +1088,23 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     }) {
                         return Ok(());
                     }
+                    tracing::debug!(
+                        "CDP list_pages for '{}' returned but no pages yet: {:?}",
+                        server_name,
+                        &text[..text.len().min(500)]
+                    );
                 }
-                _ => {}
+                Ok(result) => {
+                    let text = Self::extract_result_text(&result);
+                    tracing::debug!(
+                        "CDP list_pages error for '{}': {}",
+                        server_name,
+                        &text[..text.len().min(500)]
+                    );
+                }
+                Err(e) => {
+                    tracing::debug!("CDP list_pages call failed for '{}': {}", server_name, e);
+                }
             }
 
             if tokio::time::Instant::now() >= deadline {
