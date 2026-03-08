@@ -47,10 +47,10 @@ pub fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<(Stri
 fn parse_line_uid(line: &str) -> Option<(String, bool)> {
     let uid_pos = line.find("uid=")?;
     let rest = &line[uid_pos + 4..];
-    let (uid, after_uid) = if rest.starts_with('"') {
-        let end = rest[1..].find('"')?;
-        let uid = &rest[1..1 + end];
-        (uid, &rest[1 + end + 1..])
+    let (uid, after_uid) = if let Some(quoted) = rest.strip_prefix('"') {
+        let end = quoted.find('"')?;
+        let uid = &quoted[..end];
+        (uid, &quoted[end + 1..])
     } else {
         let end = rest.find(' ').unwrap_or(rest.len());
         let uid = &rest[..end];
@@ -96,7 +96,7 @@ fn extract_label(line: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{cdp_server_name, find_elements_in_snapshot, parse_line_uid};
+    use super::{cdp_server_name, extract_label, find_elements_in_snapshot, parse_line_uid};
 
     // Real chrome-devtools-mcp format (unquoted UIDs).
     const SNAPSHOT: &str = r##"
@@ -208,5 +208,76 @@ uid=1_0 RootWebArea "#avail | DevCrew" url="https://discord.com/"
     fn empty_snapshot() {
         let matches = find_elements_in_snapshot("", "Submit");
         assert!(matches.is_empty());
+    }
+
+    // --- extract_label ---
+
+    #[test]
+    fn extract_label_standalone_quoted() {
+        let label = extract_label(r#"uid=1_5 treeitem "Direct Messages" level="1""#);
+        assert_eq!(label, "Direct Messages");
+    }
+
+    #[test]
+    fn extract_label_only_attr_values_falls_back() {
+        // All quoted strings preceded by '=' — should fall back to trimmed line.
+        let line = r#"uid=1_0 RootWebArea url="https://example.com""#;
+        let label = extract_label(line);
+        assert_eq!(label, line);
+    }
+
+    #[test]
+    fn extract_label_first_standalone_wins() {
+        let label = extract_label(r#"uid=1 button "First" "Second""#);
+        assert_eq!(label, "First");
+    }
+
+    #[test]
+    fn extract_label_skips_empty_quoted() {
+        // Empty standalone "" should be skipped, next standalone wins.
+        let label = extract_label(r#"uid=1 button "" "Real Label""#);
+        assert_eq!(label, "Real Label");
+    }
+
+    #[test]
+    fn extract_label_no_quotes_falls_back() {
+        let line = "uid=1_0 RootWebArea";
+        let label = extract_label(line);
+        assert_eq!(label, line);
+    }
+
+    // --- parse_line_uid edge cases ---
+
+    #[test]
+    fn parse_uid_empty_value() {
+        // "uid= button ..." has empty unquoted UID — should return None.
+        assert!(parse_line_uid(r#"uid= button "Foo""#).is_none());
+    }
+
+    #[test]
+    fn parse_uid_detects_inline_text_box() {
+        let (_, is_leaf) = parse_line_uid(r#"uid=1_8 InlineTextBox "Hello""#).unwrap();
+        assert!(is_leaf);
+    }
+
+    // --- find_elements_in_snapshot: line-level substring ---
+
+    #[test]
+    fn line_substring_match_when_target_in_role() {
+        // "button" doesn't appear in the label "Go back", but does in the line.
+        let matches = find_elements_in_snapshot(SNAPSHOT, "button");
+        let uids: Vec<&str> = matches.iter().map(|(uid, _)| uid.as_str()).collect();
+        assert!(
+            uids.contains(&"1_1"),
+            "should match 'Go back' button via line"
+        );
+        assert!(
+            uids.contains(&"1_4"),
+            "should match 'Submit Form' button via line"
+        );
+        assert!(
+            uids.contains(&"1_7"),
+            "should match 'Add Friends to DM' button via line"
+        );
     }
 }

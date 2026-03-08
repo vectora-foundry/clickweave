@@ -113,6 +113,7 @@ impl WalkthroughHandle {
 ///
 /// Click enrichment (screenshot + accessibility + VLM) runs in background tasks
 /// so the event loop never blocks on MCP calls and captures every click.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn process_capture_events(
     app: tauri::AppHandle,
     mut event_rx: tokio::sync::mpsc::UnboundedReceiver<CaptureEvent>,
@@ -560,12 +561,10 @@ async fn existing_debug_port(app_name: &str) -> Option<u16> {
         if let Some(flag) = args
             .split_whitespace()
             .find(|a| a.starts_with("--remote-debugging-port="))
+            && let Some(port_str) = flag.strip_prefix("--remote-debugging-port=")
+            && let Ok(port) = port_str.parse::<u16>()
         {
-            if let Some(port_str) = flag.strip_prefix("--remote-debugging-port=") {
-                if let Ok(port) = port_str.parse::<u16>() {
-                    return Some(port);
-                }
-            }
+            return Some(port);
         }
     }
     None
@@ -1206,4 +1205,110 @@ async fn enrich_click_background(
     };
 
     tokio::join!(crop_fut, vlm_fut);
+}
+
+#[cfg(test)]
+mod tests {
+    use clickweave_core::MouseButton;
+
+    use super::*;
+
+    fn click_event(timestamp: u64, x: f64, y: f64) -> WalkthroughEvent {
+        WalkthroughEvent {
+            id: Uuid::new_v4(),
+            timestamp,
+            kind: WalkthroughEventKind::MouseClicked {
+                x,
+                y,
+                button: MouseButton::Left,
+                click_count: 1,
+                modifiers: vec![],
+                cdp_element: None,
+            },
+        }
+    }
+
+    fn stopped_event(timestamp: u64) -> WalkthroughEvent {
+        WalkthroughEvent {
+            id: Uuid::new_v4(),
+            timestamp,
+            kind: WalkthroughEventKind::Stopped,
+        }
+    }
+
+    // --- strip_recording_bar_click ---
+
+    #[test]
+    fn strip_removes_click_inside_bar() {
+        let bar = (100.0, 200.0, 300.0, 50.0);
+        let mut events = vec![
+            click_event(1, 50.0, 50.0),   // outside bar — keep
+            click_event(2, 150.0, 220.0), // inside bar (last click)
+        ];
+        strip_recording_bar_click(&mut events, bar);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].timestamp, 1);
+    }
+
+    #[test]
+    fn strip_keeps_click_outside_bar() {
+        let bar = (100.0, 200.0, 300.0, 50.0);
+        let mut events = vec![
+            click_event(1, 50.0, 50.0),
+            click_event(2, 50.0, 100.0), // outside bar
+        ];
+        strip_recording_bar_click(&mut events, bar);
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn strip_noop_when_no_clicks() {
+        let bar = (100.0, 200.0, 300.0, 50.0);
+        let mut events = vec![stopped_event(1)];
+        strip_recording_bar_click(&mut events, bar);
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn strip_removes_all_events_with_same_timestamp() {
+        let bar = (100.0, 200.0, 300.0, 50.0);
+        let mut events = vec![
+            click_event(1, 50.0, 50.0),   // different ts — keep
+            click_event(2, 150.0, 220.0), // inside bar, ts=2
+            stopped_event(2),             // same ts as bar click — also removed
+        ];
+        strip_recording_bar_click(&mut events, bar);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].timestamp, 1);
+    }
+
+    // --- rand_ephemeral_port ---
+
+    #[test]
+    fn ephemeral_port_in_range() {
+        for _ in 0..100 {
+            let port = rand_ephemeral_port();
+            assert!(
+                (49152..=65535).contains(&port),
+                "port {port} outside ephemeral range"
+            );
+        }
+    }
+
+    // --- cdp_server_config ---
+
+    #[test]
+    fn cdp_server_config_builds_correctly() {
+        let config = cdp_server_config("cdp:Discord", 9222);
+        assert_eq!(config.name, "cdp:Discord");
+        assert_eq!(config.command, "npx");
+        assert_eq!(
+            config.args,
+            vec![
+                "-y",
+                "chrome-devtools-mcp",
+                "--browserUrl=http://127.0.0.1:9222"
+            ]
+        );
+    }
 }
