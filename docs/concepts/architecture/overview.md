@@ -18,7 +18,7 @@ Clickweave has one core idea: describe desktop automation as a graph, then execu
 
 - Core model layer: workflow graph types and validation rules.
 - Planning layer: translates natural language into graph structures.
-- Walkthrough layer: records user actions via OS-level event capture, normalizes and synthesizes them into a draft workflow, optionally generalizes via LLM, and seeds a decision cache for replay.
+- Walkthrough layer: records user actions via OS-level event capture, normalizes and synthesizes them into a draft workflow, and seeds a decision cache for replay.
 - Execution layer: runs deterministic tool steps and AI-agentic steps.
 - Verification layer: nodes marked as Verification produce inline verdicts during execution. Deterministic checks (FindText, FindImage, ListWindows) inspect results directly; VLM-based checks (TakeScreenshot) evaluate screenshots against expected outcomes. A failed verdict stops the walk immediately (fail-fast).
 - Supervision layer: after each step, a VLM captures the screen state and a supervision LLM judges whether the step succeeded. On failure, execution pauses and the user can retry, skip, or abort. Active in Test mode only.

@@ -4,16 +4,15 @@ LLM output is probabilistic; workflow execution must be dependable. The planner 
 
 ![LLM Pipelines](llm-pipelines.drawio.png)
 
-## Four Pipelines
+## Three Pipelines
 
-The LLM layer has four distinct entry points:
+The LLM layer has three distinct entry points:
 
 - **Planner** -- generates a full workflow from a user intent description (empty canvas).
 - **Patcher** -- modifies an existing workflow based on a user instruction. The current workflow snapshot is included in the system prompt so the LLM knows what already exists.
 - **Assistant** -- the conversational interface that dispatches to planner (if workflow is empty) or patcher (if workflow has nodes). Maintains a windowed conversation history (last 5 exchanges) with overflow summarization.
-- **Walkthrough generalization** -- takes a recorded walkthrough (a sequence of observed user actions with screenshots) and generalizes it into a structured workflow. Uses the planner's step type catalog and verification role documentation. Falls back to the deterministic draft if LLM generalization fails.
 
-The first three produce a `WorkflowPatch` that the UI merges into the current workflow. The walkthrough pipeline produces a full `Workflow` plus an action-node map linking original recorded actions to generated nodes.
+All three produce a `WorkflowPatch` that the UI merges into the current workflow.
 
 ## Repair Strategy in Plain Terms
 
@@ -39,6 +38,6 @@ The planner prompt includes a Verification role section: any read-only Tool step
 
 ## Product Outcome
 
-Users still get fast AI-assisted planning, but unsafe graph states are blocked before execution. The walkthrough pipeline provides an alternative path: demonstrate the task first, let the LLM generalize the recording into a structured workflow, then review and refine.
+Users still get fast AI-assisted planning, but unsafe graph states are blocked before execution.
 
 For implementation-level behavior, see `docs/reference/llm/planning-retries.md`.

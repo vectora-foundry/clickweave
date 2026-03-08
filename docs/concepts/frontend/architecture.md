@@ -35,7 +35,7 @@ A single Zustand store composed from 9 slices keeps cross-feature coordination s
 - assistant conversation and pending patches (AssistantSlice),
 - settings -- persisted to disk via `tauri-plugin-store` (SettingsSlice),
 - logs and verdicts (LogSlice, VerdictSlice),
-- walkthrough recording -- session state, events, draft, annotations, recording bar lifecycle (WalkthroughSlice),
+- walkthrough recording -- session state, events, draft, annotations, recording bar lifecycle, CDP app selection modal (WalkthroughSlice),
 - UI chrome/selection state (UiSlice).
 
 All workflow mutations (add/remove nodes, connect edges, update positions) go through `useWorkflowMutations`, which automatically pushes undo history on each change.

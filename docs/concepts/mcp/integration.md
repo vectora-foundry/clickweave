@@ -5,15 +5,17 @@ MCP is the runtime boundary between Clickweave and external automation capabilit
 ## Role of MCP in the System
 
 - Clickweave does not directly automate OS/browser surfaces.
-- It delegates concrete operations to an MCP server subprocess, communicating via JSON-RPC 2.0 over stdio (stdin/stdout pipes).
+- It delegates concrete operations to MCP server subprocesses, communicating via JSON-RPC 2.0 over stdio (stdin/stdout pipes).
+- Multiple servers are managed by `McpRouter`, which merges tool lists and routes `call_tool` requests to the owning server.
+- The primary server (`native-devtools-mcp`) is always spawned. CDP servers (`chrome-devtools-mcp`) are spawned lazily per-app when an Electron or Chrome-family app is targeted.
 - The executor stays focused on orchestration, retries, and state.
 
 ## Lifecycle Model
 
 There are two distinct spawn lifecycles:
 
-- **Planning**: MCP is spawned briefly to fetch tool schemas (`tools_as_openai()` converts MCP tool definitions to OpenAI function-calling format for use in LLM prompts), then torn down immediately.
-- **Execution**: MCP is spawned once at the start of a workflow run, stays alive for all tool calls during the graph walk, and is terminated when the run completes (via Rust `Drop`, which ensures cleanup even on errors).
+- **Planning**: The primary MCP server is spawned briefly to fetch tool schemas (`tools_as_openai()` converts MCP tool definitions to OpenAI function-calling format for use in LLM prompts), then torn down immediately.
+- **Execution**: The primary MCP server is spawned at the start of a workflow run. Additional CDP servers may be spawned lazily during the run when the executor encounters Electron or Chrome-family apps. All servers stay alive for tool calls during the graph walk and are terminated when the run completes (via Rust `Drop`, which ensures cleanup even on errors).
 
 Within each lifecycle: initialize the connection, query available tools and schemas, call tools as needed, tear down.
 

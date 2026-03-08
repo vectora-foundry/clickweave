@@ -1,13 +1,13 @@
-# Clickweave — Open-Source Desktop Automation with AI Planning
+# Clickweave — Open-Source Desktop Automation with AI Planning & Record-and-Replay
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)
 ![Tauri](https://img.shields.io/badge/tauri-v2-blueviolet.svg)
 ![React](https://img.shields.io/badge/react-19-61dafb.svg)
 
-Clickweave is an open-source desktop automation platform that combines a visual workflow builder with AI-powered planning and execution. Build automations by adding nodes from a palette, describe what you want in natural language, or mix both approaches. Clickweave acts as a computer use agent (CUA) — it can see your screen, click, type, and make decisions — while giving you full control over every step.
+Clickweave is an open-source desktop automation platform that combines a visual workflow builder with AI-powered planning and execution. Build automations by adding nodes from a palette, describe what you want in natural language, record a walkthrough of the task you want to automate, or mix all three approaches. Clickweave acts as a computer use agent (CUA) — it can see your screen, click, type, and make decisions — while giving you full control over every step.
 
-**Keywords:** desktop automation, UI automation, RPA, computer use agent, CUA, agentic workflow, visual workflow builder, AI automation, no-code automation, Model Context Protocol, MCP
+**Keywords:** desktop automation, UI automation, RPA, computer use agent, CUA, agentic workflow, visual workflow builder, AI automation, no-code automation, record and replay, macro recorder, workflow recording, desktop recording, programming by demonstration, Model Context Protocol, MCP
 
 ![Clickweave Banner](assets/banner.svg)
 
@@ -48,6 +48,15 @@ Describe your automation goal in natural language and Clickweave generates a com
 
 Modify existing workflows through conversation. The assistant panel lets you describe changes in natural language, and Clickweave generates patches that add, remove, or update nodes. Patches are staged for review before applying. The assistant validates patches against the workflow graph and retries with feedback when the result would be invalid.
 
+### Record & Replay — Workflow Recording
+
+Record a demonstration of the task you want to automate and Clickweave synthesizes it into a replayable workflow graph — like a macro recorder that produces an editable, AI-enhanced automation:
+- **OS-level event capture** records mouse clicks, key presses, and app focus changes
+- **Action normalization** deduplicates, merges, and classifies raw events into meaningful steps
+- **Draft synthesis** converts the normalized action sequence into a typed workflow graph with nodes and edges
+- **Review panel** lets you rename, delete, and annotate steps before applying the draft to the canvas
+- **CDP support** — Electron and Chrome-family apps are detected automatically and can be recorded with element-level precision via Chrome DevTools Protocol
+
 ### Control Flow
 
 Workflows support branching and looping without scripting:
@@ -66,14 +75,13 @@ Clickweave sees and interacts with the desktop via [native-devtools-mcp](https:/
 
 ### Test Mode & Per-Step Supervision
 
-Clickweave has two execution modes: **Test** and **Run**. In Test mode, the engine verifies each step after execution — it captures a screenshot, sends it to a VLM for description, then asks an LLM judge whether the step succeeded. Steps that pass continue automatically; on failure the UI presents **Retry**, **Skip**, or **Abort** options. Some steps are exempt from verification: TakeScreenshot nodes (no observable side-effect) and nodes inside loops (verified in aggregate when the loop exits). LLM decisions made during Test (element resolution, click disambiguation, app-name resolution) are saved to a **decision cache**. In Run mode, the cache replays those decisions deterministically — skipping redundant LLM calls and running without supervision for faster, unattended execution.
+Clickweave has two execution modes: **Test** and **Run**. In Test mode, the engine verifies each step after execution — it captures a screenshot, sends it to a VLM for description, then asks an LLM judge whether the step succeeded. Steps that pass continue automatically; on failure the UI presents **Retry**, **Skip**, or **Abort** options. Read-only nodes (FindText, FindImage, ListWindows, TakeScreenshot) are exempt from verification since they have no observable side-effect. Nodes inside loops are verified in aggregate when the loop exits. LLM decisions made during Test (element resolution, click disambiguation, app-name resolution) are saved to a **decision cache**. In Run mode, the cache replays those decisions deterministically — skipping redundant LLM calls and running without supervision for faster, unattended execution.
 
-### Post-Run Verification
+### Inline Verification
 
-Attach verification checks to any node:
-- **Typed checks:** `TextPresent`, `TextAbsent`, `TemplateFound`, `WindowTitleMatches`
-- **Expected outcome:** free-text description of what should happen after the node runs
-- **VLM evaluation:** after a workflow completes, a vision-language model examines trace events and a post-execution screenshot against each check
+Any read-only Tool step (`FindText`, `FindImage`, `ListWindows`, `TakeScreenshot`) can be marked with a Verification role, turning it into an inline test assertion that runs during execution:
+- **Fail-fast:** a failed verification verdict stops the workflow immediately
+- **Expected outcome:** `TakeScreenshot` verification nodes require a free-text expected outcome for VLM evaluation
 - **Verdicts:** pass, fail, or warn — displayed in a verdict bar with expandable per-node breakdowns and VLM reasoning
 - **Failure policy:** each check can be set to `FailNode` (hard stop) or `WarnOnly` (soft warning)
 
@@ -98,18 +106,24 @@ Three independently configurable LLM endpoints (set in **Settings**):
 
 All endpoints use the OpenAI-compatible `/v1/chat/completions` format. Works with local servers (LM Studio, vLLM, Ollama) or hosted providers (OpenRouter, OpenAI). No API key required for local endpoints.
 
+### CDP / Electron / Chrome DevTools Protocol
+
+For Electron and Chrome-family apps, Clickweave can spawn a [chrome-devtools-mcp](https://github.com/anthropics/chrome-devtools-mcp) server to get element-level precision:
+- **Automatic detection:** Electron apps are detected by framework directory checks; Chrome-family browsers are matched by bundle ID
+- **Lazy spawning:** CDP servers are spawned per-app only when needed, managed by `McpRouter` alongside the primary `native-devtools-mcp` server
+- **Walkthrough integration:** during recording, detected CDP apps trigger a selection modal for the user to choose the target page
+
 ### Local-First & Cross-Platform
 
 Desktop actions run locally. LLM/VLM requests go only to the endpoints you configure (defaults to `localhost`). Built with Tauri v2, producing lightweight native apps for macOS, Windows, and Linux.
 
 ## How It Works
 
-1. **Describe or build** — Type your automation goal in the planner or drag nodes onto the canvas
-2. **Review the graph** — Inspect the generated workflow, tweak node parameters, add checks
+1. **Describe, build, or record** — Type your automation goal in the planner, add nodes from the palette, or record a walkthrough of the task
+2. **Review the graph** — Inspect the generated workflow, tweak node parameters, add verification nodes
 3. **Test** — Run in **Test mode** with per-step supervision: after each step, a VLM + LLM judge verifies the screen and pauses on failures so you can Retry, Skip, or Abort. LLM decisions (element resolution, click disambiguation) are recorded to a decision cache.
 4. **Run** — Switch to **Run mode** for unattended execution. The decision cache replays recorded choices deterministically — no LLM calls for previously resolved decisions, no supervision pauses.
-5. **Verify** — Post-run checks evaluate results with VLM-assisted screenshot analysis
-6. **Iterate** — Use the assistant to patch workflows conversationally, or edit nodes directly
+5. **Iterate** — Use the assistant to patch workflows conversationally, or edit nodes directly
 
 ## Architecture
 
@@ -128,8 +142,8 @@ Clickweave is a Tauri v2 hybrid app with a Rust backend and a React frontend.
 ├── ui/                     # React frontend (Vite + Tailwind CSS v4)
 │   ├── src/
 │   │   ├── components/     # Graph canvas, nodes, modals, assistant, verdict bar
-│   │   ├── store/          # Zustand state (8 slices: project, execution, assistant, history, settings, log, verdict, UI)
-│   │   └── hooks/          # Keyboard shortcuts (undo/redo)
+│   │   ├── store/          # Zustand state (9 slices: project, execution, assistant, history, settings, log, verdict, walkthrough, UI)
+│   │   └── hooks/          # React hooks (undo/redo, loop grouping, node/edge sync, workflow actions, executor events)
 ├── docs/                   # Reference & conceptual documentation
 └── assets/                 # Static assets
 ```
@@ -186,6 +200,7 @@ Each node supports:
 
 ## Use Cases
 
+- **Record & Replay** — Demonstrate a task once by recording your clicks and keystrokes, then replay it reliably as an editable workflow
 - **Desktop RPA** — Automate repetitive back-office workflows across multiple desktop applications
 - **QA & Regression Testing** — Build smoke and regression test flows with screenshots, OCR verification, and run traces for debugging
 - **AI-Assisted Automation** — Let AI plan workflows from natural language, then keep deterministic execution where precision matters
@@ -288,13 +303,13 @@ Log files: `clickweave.YYYY-MM-DD.txt`. Console level defaults to `info` (overri
 ## FAQ
 
 ### What is Clickweave?
-Clickweave is an open-source desktop automation platform that acts as a computer use agent. It combines a visual node-based workflow builder with AI-powered planning and execution for automating UI tasks on macOS, Windows, and Linux.
+Clickweave is an open-source desktop automation platform that acts as a computer use agent. It combines a visual node-based workflow builder, AI-powered planning, and record-and-replay workflow recording for automating UI tasks on macOS, Windows, and Linux.
 
 ### How does Clickweave automate the desktop?
 Clickweave drives desktop interactions through the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/specification) by spawning [native-devtools-mcp](https://github.com/anthropics/native-devtools-mcp) as a subprocess. This provides screenshots, OCR, mouse/keyboard control, and window management — all without injecting code into target applications.
 
 ### Does Clickweave require coding?
-No. You can build workflows visually by adding nodes from a categorized palette, use natural-language prompts for AI-assisted planning and patching, or combine both approaches.
+No. You can build workflows visually by adding nodes from a categorized palette, use natural-language prompts for AI-assisted planning and patching, record a walkthrough of the task to generate a workflow automatically, or combine all three approaches.
 
 ### What is a computer use agent (CUA)?
 A computer use agent is software that can see and interact with a computer's graphical interface — taking screenshots, reading text via OCR, clicking buttons, and typing — to accomplish tasks autonomously or semi-autonomously. Clickweave is a CUA that gives you a visual editor to control what the agent does.
@@ -312,7 +327,10 @@ Traditional RPA tools rely on selectors, DOM scraping, or accessibility APIs tie
 Yes. Clickweave supports If, Switch, and Loop control-flow nodes. Node outputs are extracted into runtime variables that conditions and loops can reference, so workflows can branch and repeat without scripting.
 
 ### How does workflow verification work?
-Clickweave has two layers of verification. **Per-step supervision** (Test mode only) checks each step as it runs: a VLM describes the screen and an LLM judge decides pass/fail, pausing for user action on failure. **Post-run checks** run after the workflow completes: you attach typed checks (TextPresent, TextAbsent, TemplateFound, WindowTitleMatches) and free-text expected outcomes to nodes, and a VLM examines trace events and screenshots to produce pass/fail/warn verdicts.
+Clickweave has two layers of verification. **Per-step supervision** (Test mode only) checks each step as it runs: a VLM describes the screen and an LLM judge decides pass/fail, pausing for user action on failure. **Inline verification** uses Verification-role nodes (any read-only tool step: FindText, FindImage, ListWindows, TakeScreenshot) as test assertions that produce pass/fail/warn verdicts during execution and fail-fast on failure.
+
+### How does record-and-replay work?
+Record a walkthrough by performing the task while Clickweave captures OS-level events (clicks, key presses, app focus). The recording is normalized — deduplicating and merging raw events — then synthesized into a typed workflow graph. A review panel lets you rename, delete, and annotate steps before applying the draft. The resulting workflow is fully editable and replayable, just like one built by hand or generated by AI.
 
 ### What is MCP and why does Clickweave use it?
 The [Model Context Protocol (MCP)](https://modelcontextprotocol.io/specification) is a standard for connecting AI models to external tools. Clickweave uses MCP to decouple its orchestration engine from specific automation backends — the same workflow graph can drive different MCP servers without changing the workflow definition.
