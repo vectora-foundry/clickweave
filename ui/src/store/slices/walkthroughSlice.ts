@@ -1,6 +1,7 @@
 import type { StateCreator } from "zustand";
 import { commands } from "../../bindings";
-import type { CdpAppConfig, CdpSetupProgress, Node, NodeRename, NodeType, TargetOverride, VariablePromotion, WalkthroughAction, WalkthroughAnnotations, Workflow } from "../../bindings";
+import type { CdpAppConfig, CdpSetupProgress, NodeRename, TargetOverride, VariablePromotion, WalkthroughAction, WalkthroughAnnotations, Workflow } from "../../bindings";
+import { applyAnnotationsToDraft } from "../../utils/walkthroughDraft";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { currentMonitor } from "@tauri-apps/api/window";
 import { LogicalSize, LogicalPosition } from "@tauri-apps/api/dpi";
@@ -329,73 +330,9 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
             walkthroughActionNodeMap } = get();
     if (!walkthroughDraft) return;
 
-    // Collect deleted node IDs directly (annotations already use node_id).
-    const deletedNodeIds = new Set(ann.deleted_node_ids);
-
-    // Build action lookup by node_id for target candidates.
-    const actionByNodeId = buildActionByNodeId(walkthroughActionNodeMap, walkthroughActions);
-
-    // Pre-build annotation lookups for O(1) access in the loop.
-    const renameMap = new Map(ann.renamed_nodes.map((r) => [r.node_id, r]));
-    const targetMap = new Map(ann.target_overrides.map((o) => [o.node_id, o]));
-    const varPromoMap = new Map(ann.variable_promotions.map((p) => [p.node_id, p]));
-
-    // Filter and transform nodes.
-    const nodes = walkthroughDraft.nodes
-      .filter((n) => !deletedNodeIds.has(n.id))
-      .map((n): Node => {
-        let updated = { ...n };
-
-        // Apply rename.
-        const rename = renameMap.get(n.id);
-        if (rename) updated = { ...updated, name: rename.new_name };
-
-        // Apply target override (Click nodes).
-        const targetOvr = targetMap.get(n.id);
-        if (targetOvr && updated.node_type.type === "Click") {
-          const action = actionByNodeId.get(n.id);
-          const candidate = action?.target_candidates[targetOvr.chosen_candidate_index];
-          if (candidate) {
-            let nodeType: NodeType;
-            if (candidate.type === "AccessibilityLabel" || candidate.type === "VlmLabel") {
-              nodeType = { ...updated.node_type, target: candidate.label, template_image: null, x: null, y: null };
-            } else if (candidate.type === "OcrText") {
-              nodeType = { ...updated.node_type, target: candidate.text, template_image: null, x: null, y: null };
-            } else if (candidate.type === "ImageCrop") {
-              nodeType = { ...updated.node_type, target: null, template_image: candidate.image_b64, x: null, y: null };
-            } else if (candidate.type === "Coordinates") {
-              nodeType = { ...updated.node_type, target: null, template_image: null, x: candidate.x, y: candidate.y };
-            } else {
-              nodeType = updated.node_type;
-            }
-            updated = { ...updated, node_type: nodeType };
-          }
-        }
-
-        // Apply variable promotion (TypeText nodes).
-        const varPromo = varPromoMap.get(n.id);
-        if (varPromo?.variable_name && updated.node_type.type === "TypeText") {
-          updated = { ...updated, node_type: { ...updated.node_type, text: `{{${varPromo.variable_name}}}` } };
-        }
-
-        return updated;
-      });
-
-    // Rebuild edges: keep original edges between non-deleted nodes, and
-    // bridge gaps left by deleted nodes. Walkthrough drafts are linear, so
-    // consecutive non-deleted nodes should be connected.
-    const keptEdges = walkthroughDraft.edges.filter(
-      (e) => !deletedNodeIds.has(e.from) && !deletedNodeIds.has(e.to),
+    const { nodes, edges } = applyAnnotationsToDraft(
+      walkthroughDraft, ann, walkthroughActions, walkthroughActionNodeMap,
     );
-    const connectedPairs = new Set(keptEdges.map((e) => `${e.from}->${e.to}`));
-    const activeNodeIds = nodes.map((n) => n.id);
-    for (let i = 0; i < activeNodeIds.length - 1; i++) {
-      const key = `${activeNodeIds[i]}->${activeNodeIds[i + 1]}`;
-      if (!connectedPairs.has(key)) {
-        keptEdges.push({ from: activeNodeIds[i], to: activeNodeIds[i + 1], output: null });
-      }
-    }
-    const edges = keptEdges;
 
     // Preserve the existing workflow's name and ID instead of clobbering
     // them with the draft's placeholder "Walkthrough Draft" title.

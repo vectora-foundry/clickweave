@@ -6,6 +6,7 @@ import {
 } from "@xyflow/react";
 import type { AppKind, Workflow } from "../bindings";
 import { usesCdp } from "../utils/appKind";
+import { nodeMetadata, defaultNodeMetadata } from "../constants/nodeMetadata";
 
 // Layout constants for loop group positioning
 const LOOP_HEADER_HEIGHT = 40;
@@ -14,27 +15,6 @@ const APPROX_NODE_WIDTH = 160;
 const APPROX_NODE_HEIGHT = 50;
 const MIN_GROUP_WIDTH = 300;
 const MIN_GROUP_HEIGHT = 150;
-
-const nodeMetadata: Record<string, { color: string; icon: string }> = {
-  AiStep:         { color: "#4c9ee8", icon: "AI" },
-  TakeScreenshot: { color: "#a855f7", icon: "SS" },
-  FindText:       { color: "#a855f7", icon: "FT" },
-  FindImage:      { color: "#a855f7", icon: "FI" },
-  Click:          { color: "#f59e0b", icon: "CK" },
-  TypeText:       { color: "#f59e0b", icon: "TT" },
-  Scroll:         { color: "#f59e0b", icon: "SC" },
-  ListWindows:    { color: "#50c878", icon: "LW" },
-  FocusWindow:    { color: "#50c878", icon: "FW" },
-  PressKey:       { color: "#f59e0b", icon: "PK" },
-  McpToolCall:    { color: "#666",    icon: "MC" },
-  AppDebugKitOp:  { color: "#ef4444", icon: "DK" },
-  If:             { color: "#10b981", icon: "IF" },
-  Switch:         { color: "#10b981", icon: "SW" },
-  Loop:           { color: "#10b981", icon: "LP" },
-  EndLoop:        { color: "#10b981", icon: "EL" },
-};
-
-const defaultMetadata = { color: "#666", icon: "??" };
 
 function clickSubtitle(nt: Workflow["nodes"][number]["node_type"]): string | undefined {
   if (nt.type !== "Click") return undefined;
@@ -124,7 +104,7 @@ function toRFNode(
   appKind: AppKind | undefined,
   existing?: RFNode,
 ): RFNode {
-  const meta = nodeMetadata[node.node_type.type] ?? defaultMetadata;
+  const meta = nodeMetadata[node.node_type.type] ?? defaultNodeMetadata;
   return {
     ...(existing ?? {}),
     parentId: undefined,
