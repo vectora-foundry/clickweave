@@ -53,23 +53,21 @@ pub fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<Snaps
             }
         }
 
-        let (parent_role, parent_name) = parent_stack
-            .last()
-            .map(|(_, r, n)| (Some(r.clone()), n.clone()))
-            .unwrap_or((None, None));
+        // Leaf text nodes (StaticText, InlineTextBox) are terminal — they
+        // can never be parents, so skip label extraction and stack push.
+        if is_leaf {
+            continue;
+        }
 
         let label = extract_label(line);
 
         // Push this element onto the stack so deeper children pop correctly.
-        let label_for_stack = {
-            let l = label.clone();
-            if l == line.trim() { None } else { Some(l) }
+        let label_for_stack = if label == line.trim() {
+            None
+        } else {
+            Some(label.clone())
         };
         parent_stack.push((indent, role.to_string(), label_for_stack));
-
-        if is_leaf {
-            continue;
-        }
 
         let label_lower = label.to_lowercase();
         let is_match = if label_lower == target_lower {
@@ -81,6 +79,14 @@ pub fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<Snaps
             None
         };
         if let Some(is_exact) = is_match {
+            // Clone parent context only for actual matches (not every line).
+            let (parent_role, parent_name) = parent_stack
+                .iter()
+                .rev()
+                .nth(1)
+                .map(|(_, r, n)| (Some(r.clone()), n.clone()))
+                .unwrap_or((None, None));
+
             let m = SnapshotMatch {
                 uid,
                 label: label.clone(),
@@ -155,6 +161,30 @@ fn extract_label(line: &str) -> String {
     line.trim().to_string()
 }
 
+/// Retain only matches satisfying `predicate`, but keep the original set
+/// if no match satisfies it (avoids eliminating all candidates).
+fn narrow_if_any(matches: &mut Vec<SnapshotMatch>, predicate: impl Fn(&SnapshotMatch) -> bool) {
+    if matches.iter().any(&predicate) {
+        matches.retain(predicate);
+    }
+}
+
+/// Narrow matches by element role and/or URL.
+/// Keeps the original set if filtering would eliminate all candidates.
+pub fn narrow_matches(
+    matches: &mut Vec<SnapshotMatch>,
+    expected_role: Option<&str>,
+    expected_href: Option<&str>,
+) {
+    if let Some(role) = expected_role {
+        let role_lower = role.to_lowercase();
+        narrow_if_any(matches, |m| m.role.to_lowercase() == role_lower);
+    }
+    if let Some(href) = expected_href {
+        narrow_if_any(matches, |m| m.url.as_deref() == Some(href));
+    }
+}
+
 /// Narrow matches by parent role and/or parent name.
 /// Keeps the original set if filtering would eliminate all candidates.
 pub fn narrow_by_parent(
@@ -164,31 +194,19 @@ pub fn narrow_by_parent(
 ) {
     if let Some(role) = expected_parent_role {
         let role_lower = role.to_lowercase();
-        if matches.iter().any(|m| {
+        narrow_if_any(matches, |m| {
             m.parent_role
                 .as_ref()
                 .is_some_and(|r| r.to_lowercase() == role_lower)
-        }) {
-            matches.retain(|m| {
-                m.parent_role
-                    .as_ref()
-                    .is_some_and(|r| r.to_lowercase() == role_lower)
-            });
-        }
+        });
     }
     if let Some(name) = expected_parent_name {
         let name_lower = name.to_lowercase();
-        if matches.iter().any(|m| {
+        narrow_if_any(matches, |m| {
             m.parent_name
                 .as_ref()
                 .is_some_and(|n| n.to_lowercase().contains(&name_lower))
-        }) {
-            matches.retain(|m| {
-                m.parent_name
-                    .as_ref()
-                    .is_some_and(|n| n.to_lowercase().contains(&name_lower))
-            });
-        }
+        });
     }
 }
 
