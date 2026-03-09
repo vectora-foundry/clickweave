@@ -157,6 +157,8 @@ pub enum WalkthroughEventKind {
         name: String,
         role: Option<String>,
         href: Option<String>,
+        parent_role: Option<String>,
+        parent_name: Option<String>,
         click_event_id: Uuid,
     },
     Paused,

@@ -73,6 +73,21 @@ const CDP_CLICK_LISTENER_JS: &str = r#"() => {
         p = p.parentElement;
       }
     }
+    let parentRole = null;
+    let parentName = null;
+    {
+      let p = el.parentElement;
+      while (p && p !== d.documentElement) {
+        const r = p.getAttribute('role');
+        const a = p.ariaLabel || p.getAttribute('aria-label');
+        if (r || a) {
+          parentRole = r || null;
+          parentName = a || accessibleText(p).substring(0, 200) || null;
+          break;
+        }
+        p = p.parentElement;
+      }
+    }
     d.__cw_clicks.push({
       ts: Date.now(),
       tagName: el.tagName,
@@ -84,6 +99,8 @@ const CDP_CLICK_LISTENER_JS: &str = r#"() => {
       href: el.closest('a')?.href || null,
       id: el.id || null,
       className: el.className || null,
+      parentRole: parentRole,
+      parentName: parentName,
     });
   };
   if (d.__cw_listener) {
@@ -1191,6 +1208,8 @@ async fn cdp_retrieve_click(
 
     let role = parsed["role"].as_str().map(|s| s.to_string());
     let href = parsed["href"].as_str().map(|s| s.to_string());
+    let parent_role = parsed["parentRole"].as_str().map(|s| s.to_string());
+    let parent_name = parsed["parentName"].as_str().map(|s| s.to_string());
 
     tracing::info!(
         "CDP resolved click {click_event_id} → name={:?} role={:?}",
@@ -1205,6 +1224,8 @@ async fn cdp_retrieve_click(
             name: name.to_string(),
             role,
             href,
+            parent_role,
+            parent_name,
             click_event_id,
         },
     };

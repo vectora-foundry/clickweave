@@ -1259,6 +1259,8 @@ mod tests {
                         name: "Direct Messages".to_string(),
                         role: Some("treeitem".to_string()),
                         href: None,
+                        parent_role: None,
+                        parent_name: None,
                         click_event_id: click_id,
                     },
                 },
