@@ -11,6 +11,8 @@ pub struct SnapshotMatch {
     pub label: String,
     pub role: String,
     pub url: Option<String>,
+    pub parent_role: Option<String>,
+    pub parent_name: Option<String>,
 }
 
 /// Parse a CDP snapshot and find interactive elements whose text contains the target.
@@ -29,14 +31,46 @@ pub fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<Snaps
     let target_lower = target.to_lowercase();
     let mut exact = Vec::new();
     let mut substring = Vec::new();
+
+    // Track parent context via an indentation-based stack.
+    // Each entry: (indent_level, role, label).
+    let mut parent_stack: Vec<(usize, String, Option<String>)> = Vec::new();
+
     for line in snapshot_text.lines() {
         let Some((uid, role, is_leaf)) = parse_line_uid(line) else {
             continue;
         };
+
+        // Compute indent level (number of leading spaces).
+        let indent = line.len() - line.trim_start().len();
+
+        // Pop stack entries at same or deeper level to find the parent.
+        while let Some(top) = parent_stack.last() {
+            if top.0 >= indent {
+                parent_stack.pop();
+            } else {
+                break;
+            }
+        }
+
+        let (parent_role, parent_name) = parent_stack
+            .last()
+            .map(|(_, r, n)| (Some(r.clone()), n.clone()))
+            .unwrap_or((None, None));
+
+        let label = extract_label(line);
+
+        // Push this element onto the stack so deeper children pop correctly.
+        let label_for_stack = {
+            let l = label.clone();
+            if l == line.trim() { None } else { Some(l) }
+        };
+        parent_stack.push((indent, role.to_string(), label_for_stack));
+
         if is_leaf {
             continue;
         }
-        let label = extract_label(line);
+
         let label_lower = label.to_lowercase();
         let is_match = if label_lower == target_lower {
             Some(true)
@@ -52,6 +86,8 @@ pub fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<Snaps
                 label: label.clone(),
                 role: role.to_string(),
                 url: extract_url(line),
+                parent_role,
+                parent_name,
             };
             if is_exact {
                 exact.push(m);
@@ -352,5 +388,40 @@ uid=1_1 link "Home" url="https://example.com/other""#;
         let matches = find_elements_in_snapshot(SNAPSHOT, "Friends");
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].role, "link");
+    }
+
+    // --- Parent context ---
+
+    #[test]
+    fn find_elements_includes_parent_context() {
+        // "Direct Messages" has parent RootWebArea in SNAPSHOT.
+        let matches = find_elements_in_snapshot(SNAPSHOT, "Direct Messages");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].parent_role.as_deref(), Some("RootWebArea"));
+        assert_eq!(matches[0].parent_name.as_deref(), Some("#avail | DevCrew"));
+    }
+
+    const SNAPSHOT_MULTI_DM: &str = r##"
+uid=1_0 RootWebArea "Discord" url="https://discord.com/"
+  uid=1_1 navigation "Servers sidebar"
+    uid=1_2 treeitem "Direct Messages"
+      uid=1_3 StaticText "Direct Messages"
+  uid=1_4 complementary "Channel sidebar"
+    uid=1_5 heading "Direct Messages" level="1"
+      uid=1_6 StaticText "Direct Messages"
+"##;
+
+    #[test]
+    fn find_elements_disambiguates_by_parent() {
+        let matches = find_elements_in_snapshot(SNAPSHOT_MULTI_DM, "Direct Messages");
+        assert_eq!(matches.len(), 2);
+        // treeitem under navigation
+        assert_eq!(matches[0].uid, "1_2");
+        assert_eq!(matches[0].parent_role.as_deref(), Some("navigation"));
+        assert_eq!(matches[0].parent_name.as_deref(), Some("Servers sidebar"));
+        // heading under complementary
+        assert_eq!(matches[1].uid, "1_5");
+        assert_eq!(matches[1].parent_role.as_deref(), Some("complementary"));
+        assert_eq!(matches[1].parent_name.as_deref(), Some("Channel sidebar"));
     }
 }
