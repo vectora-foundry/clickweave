@@ -224,7 +224,7 @@ fn extract_url(line: &str) -> Option<String> {
 mod tests {
     use super::{
         cdp_server_name, extract_label, extract_url, find_elements_in_snapshot, narrow_by_parent,
-        parse_line_uid,
+        narrow_matches, parse_line_uid,
     };
 
     // Real chrome-devtools-mcp format (unquoted UIDs).
@@ -479,6 +479,39 @@ uid=1_0 RootWebArea "Discord" url="https://discord.com/"
         assert_eq!(matches[1].uid, "1_5");
         assert_eq!(matches[1].parent_role.as_deref(), Some("complementary"));
         assert_eq!(matches[1].parent_name.as_deref(), Some("Channel sidebar"));
+    }
+
+    // --- narrow_matches ---
+
+    const SNAPSHOT_MIXED_HOME: &str = r#"
+uid=1_0 link "Home" url="https://example.com/home"
+uid=1_1 button "Home"
+"#;
+
+    #[test]
+    fn narrow_matches_by_role() {
+        let mut matches = find_elements_in_snapshot(SNAPSHOT_MIXED_HOME, "Home");
+        assert_eq!(matches.len(), 2);
+        narrow_matches(&mut matches, Some("button"), None);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].uid, "1_1");
+    }
+
+    #[test]
+    fn narrow_matches_by_href() {
+        let mut matches = find_elements_in_snapshot(SNAPSHOT_MIXED_HOME, "Home");
+        assert_eq!(matches.len(), 2);
+        narrow_matches(&mut matches, None, Some("https://example.com/home"));
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].uid, "1_0");
+    }
+
+    #[test]
+    fn narrow_matches_preserves_all_when_no_match() {
+        let mut matches = find_elements_in_snapshot(SNAPSHOT_MIXED_HOME, "Home");
+        assert_eq!(matches.len(), 2);
+        narrow_matches(&mut matches, Some("checkbox"), None);
+        assert_eq!(matches.len(), 2, "should keep all if no candidate matches");
     }
 
     // --- narrow_by_parent ---
