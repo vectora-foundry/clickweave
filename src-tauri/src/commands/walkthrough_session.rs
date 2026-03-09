@@ -163,6 +163,21 @@ const CDP_CHECK_AND_REINJECT_JS: &str = r#"() => {
         p = p.parentElement;
       }
     }
+    let parentRole = null;
+    let parentName = null;
+    {
+      let p = el.parentElement;
+      while (p && p !== d.documentElement) {
+        const r = p.getAttribute('role');
+        const a = p.ariaLabel || p.getAttribute('aria-label');
+        if (r || a) {
+          parentRole = r || null;
+          parentName = a || accessibleText(p).substring(0, 200) || null;
+          break;
+        }
+        p = p.parentElement;
+      }
+    }
     d.__cw_clicks.push({
       ts: Date.now(),
       tagName: el.tagName,
@@ -174,6 +189,8 @@ const CDP_CHECK_AND_REINJECT_JS: &str = r#"() => {
       href: el.closest('a')?.href || null,
       id: el.id || null,
       className: el.className || null,
+      parentRole: parentRole,
+      parentName: parentName,
     });
   };
   d.__cw_listener = (e) => d.__cw_handler(e);
