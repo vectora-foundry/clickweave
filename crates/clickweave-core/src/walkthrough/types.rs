@@ -296,6 +296,8 @@ pub enum TargetCandidate {
         name: String,
         role: Option<String>,
         href: Option<String>,
+        parent_role: Option<String>,
+        parent_name: Option<String>,
     },
 }
 

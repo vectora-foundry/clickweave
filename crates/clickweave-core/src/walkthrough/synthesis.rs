@@ -142,7 +142,13 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 let mut ax_label: Option<(String, Option<String>)> = None;
                 let mut vlm_label: Option<String> = None;
                 let mut crop_candidate: Option<(String, String)> = None;
-                let mut cdp_resolved: Option<(String, Option<String>, Option<String>)> = None;
+                let mut cdp_resolved: Option<(
+                    String,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                )> = None;
                 let mut peek = i;
                 while peek < events.len() {
                     match &events[peek].kind {
@@ -168,9 +174,20 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                             vlm_label = Some(label.clone());
                         }
                         WalkthroughEventKind::CdpClickResolved {
-                            name, role, href, ..
+                            name,
+                            role,
+                            href,
+                            parent_role,
+                            parent_name,
+                            ..
                         } => {
-                            cdp_resolved = Some((name.clone(), role.clone(), href.clone()));
+                            cdp_resolved = Some((
+                                name.clone(),
+                                role.clone(),
+                                href.clone(),
+                                parent_role.clone(),
+                                parent_name.clone(),
+                            ));
                         }
                         // Stop at the next action event.
                         _ => break,
@@ -184,8 +201,14 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 let mut candidates = Vec::new();
 
                 // CDP element from click listener is the highest-priority target.
-                if let Some((name, role, href)) = cdp_resolved {
-                    candidates.push(TargetCandidate::CdpElement { name, role, href });
+                if let Some((name, role, href, parent_role, parent_name)) = cdp_resolved {
+                    candidates.push(TargetCandidate::CdpElement {
+                        name,
+                        role,
+                        href,
+                        parent_role,
+                        parent_name,
+                    });
                 }
 
                 // Accessibility label is the most reliable target.
@@ -413,7 +436,13 @@ pub fn synthesize_draft(
             } => {
                 // Check for CDP element candidate first (structured target).
                 let cdp_candidate = action.target_candidates.iter().find_map(|c| match c {
-                    TargetCandidate::CdpElement { name, role, href } => Some((name, role, href)),
+                    TargetCandidate::CdpElement {
+                        name,
+                        role,
+                        href,
+                        parent_role,
+                        parent_name,
+                    } => Some((name, role, href, parent_role, parent_name)),
                     _ => None,
                 });
 
@@ -433,59 +462,64 @@ pub fn synthesize_draft(
                     None
                 };
 
-                let (params, name) = if let Some((cdp_name, cdp_role, cdp_href)) = cdp_candidate {
-                    (
-                        ClickParams {
-                            target: Some(ClickTarget::CdpElement {
-                                name: cdp_name.clone(),
-                                role: cdp_role.clone(),
-                                href: cdp_href.clone(),
-                            }),
-                            x: None,
-                            y: None,
-                            button: *button,
-                            click_count: *click_count,
-                            ..Default::default()
-                        },
-                        format!("Click '{cdp_name}'"),
-                    )
-                } else if let Some(ref target) = best_target {
-                    (
-                        ClickParams {
-                            target: Some(ClickTarget::Text {
-                                text: target.clone(),
-                            }),
-                            x: None,
-                            y: None,
-                            button: *button,
-                            click_count: *click_count,
-                            ..Default::default()
-                        },
-                        format!("Click '{target}'"),
-                    )
-                } else if let Some(ref b64) = image_crop_b64 {
-                    (
-                        ClickParams {
-                            template_image: Some(b64.clone()),
-                            button: *button,
-                            click_count: *click_count,
-                            ..Default::default()
-                        },
-                        format!("Click (image match at {x:.0}, {y:.0})"),
-                    )
-                } else {
-                    (
-                        ClickParams {
-                            target: None,
-                            x: Some(*x),
-                            y: Some(*y),
-                            button: *button,
-                            click_count: *click_count,
-                            ..Default::default()
-                        },
-                        format!("Click ({x:.0}, {y:.0})"),
-                    )
-                };
+                let (params, name) =
+                    if let Some((cdp_name, cdp_role, cdp_href, cdp_parent_role, cdp_parent_name)) =
+                        cdp_candidate
+                    {
+                        (
+                            ClickParams {
+                                target: Some(ClickTarget::CdpElement {
+                                    name: cdp_name.clone(),
+                                    role: cdp_role.clone(),
+                                    href: cdp_href.clone(),
+                                    parent_role: cdp_parent_role.clone(),
+                                    parent_name: cdp_parent_name.clone(),
+                                }),
+                                x: None,
+                                y: None,
+                                button: *button,
+                                click_count: *click_count,
+                                ..Default::default()
+                            },
+                            format!("Click '{cdp_name}'"),
+                        )
+                    } else if let Some(ref target) = best_target {
+                        (
+                            ClickParams {
+                                target: Some(ClickTarget::Text {
+                                    text: target.clone(),
+                                }),
+                                x: None,
+                                y: None,
+                                button: *button,
+                                click_count: *click_count,
+                                ..Default::default()
+                            },
+                            format!("Click '{target}'"),
+                        )
+                    } else if let Some(ref b64) = image_crop_b64 {
+                        (
+                            ClickParams {
+                                template_image: Some(b64.clone()),
+                                button: *button,
+                                click_count: *click_count,
+                                ..Default::default()
+                            },
+                            format!("Click (image match at {x:.0}, {y:.0})"),
+                        )
+                    } else {
+                        (
+                            ClickParams {
+                                target: None,
+                                x: Some(*x),
+                                y: Some(*y),
+                                button: *button,
+                                click_count: *click_count,
+                                ..Default::default()
+                            },
+                            format!("Click ({x:.0}, {y:.0})"),
+                        )
+                    };
                 (NodeType::Click(params), name)
             }
 
@@ -724,6 +758,8 @@ mod tests {
                 name: "Submit".to_string(),
                 role: Some("button".to_string()),
                 href: None,
+                parent_role: None,
+                parent_name: None,
             },
         ];
 
@@ -1516,6 +1552,8 @@ mod tests {
                     name: "Friends".into(),
                     role: Some("link".into()),
                     href: Some("https://discord.com/friends".into()),
+                    parent_role: None,
+                    parent_name: None,
                 },
                 TargetCandidate::Coordinates { x: 100.0, y: 200.0 },
             ];
@@ -1528,7 +1566,9 @@ mod tests {
             match &click_node.node_type {
                 NodeType::Click(p) => {
                     match &p.target {
-                        Some(crate::ClickTarget::CdpElement { name, role, href }) => {
+                        Some(crate::ClickTarget::CdpElement {
+                            name, role, href, ..
+                        }) => {
                             assert_eq!(name, "Friends");
                             assert_eq!(role.as_deref(), Some("link"));
                             assert_eq!(href.as_deref(), Some("https://discord.com/friends"));
