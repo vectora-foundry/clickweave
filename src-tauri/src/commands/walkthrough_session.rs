@@ -33,9 +33,22 @@ const CDP_CLICK_LISTENER_JS: &str = r#"() => {
   const d = document;
   d.__cw_clicks = [];
   const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
+  const INTERACTIVE = '[role="button"],[role="link"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="tab"],[role="treeitem"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="textbox"],[role="combobox"],[role="searchbox"],[role="slider"],[role="spinbutton"],a,button,select,textarea,input,[tabindex]';
   function accessibleText(node) {
     const a = node.ariaLabel || node.getAttribute('aria-label');
     if (a) return a;
+    const lb = node.getAttribute('aria-labelledby');
+    if (lb) {
+      const t = lb.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
+      if (t) return t.substring(0, 200);
+    }
+    if (node.title) return node.title;
+    if (node.alt) return node.alt;
+    if (node.placeholder) return node.placeholder;
+    if ((node.tagName === 'svg' || node.tagName === 'SVG') || (node.namespaceURI === 'http://www.w3.org/2000/svg' && node.tagName === 'svg')) {
+      const st = node.querySelector('title');
+      if (st?.textContent) return st.textContent.trim().substring(0, 200);
+    }
     let t = '';
     for (const ch of node.childNodes) {
       if (ch.nodeType === 3) { t += ch.textContent; continue; }
@@ -44,13 +57,29 @@ const CDP_CLICK_LISTENER_JS: &str = r#"() => {
     return t.trim().substring(0, 200);
   }
   d.__cw_handler = (e) => {
-    const el = e.target.closest('[role], a, button, [tabindex]') || e.target;
+    const el = e.target.closest(INTERACTIVE) || e.target.closest('[aria-label]') || e.target;
+    let text = accessibleText(el);
+    if (!text) {
+      let p = el.parentElement;
+      while (p && p !== d.documentElement) {
+        const la = p.ariaLabel || p.getAttribute('aria-label');
+        if (la) { text = la; break; }
+        const lb = p.getAttribute('aria-labelledby');
+        if (lb) {
+          const r = lb.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
+          if (r) { text = r; break; }
+        }
+        if (p.title) { text = p.title; break; }
+        p = p.parentElement;
+      }
+    }
     d.__cw_clicks.push({
       ts: Date.now(),
       tagName: el.tagName,
       role: el.getAttribute('role') || TAG_ROLES[el.tagName] || null,
       ariaLabel: el.ariaLabel || el.getAttribute('aria-label') || null,
-      textContent: accessibleText(el),
+      textContent: text || null,
+      title: el.title || el.closest('[title]')?.title || null,
       value: el.value || null,
       href: el.closest('a')?.href || null,
       id: el.id || null,
@@ -77,9 +106,22 @@ const CDP_CHECK_AND_REINJECT_JS: &str = r#"() => {
   if (d.__cw_listener) return 'alive';
   d.__cw_clicks = [];
   const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
+  const INTERACTIVE = '[role="button"],[role="link"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="tab"],[role="treeitem"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="textbox"],[role="combobox"],[role="searchbox"],[role="slider"],[role="spinbutton"],a,button,select,textarea,input,[tabindex]';
   function accessibleText(node) {
     const a = node.ariaLabel || node.getAttribute('aria-label');
     if (a) return a;
+    const lb = node.getAttribute('aria-labelledby');
+    if (lb) {
+      const t = lb.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
+      if (t) return t.substring(0, 200);
+    }
+    if (node.title) return node.title;
+    if (node.alt) return node.alt;
+    if (node.placeholder) return node.placeholder;
+    if ((node.tagName === 'svg' || node.tagName === 'SVG') || (node.namespaceURI === 'http://www.w3.org/2000/svg' && node.tagName === 'svg')) {
+      const st = node.querySelector('title');
+      if (st?.textContent) return st.textContent.trim().substring(0, 200);
+    }
     let t = '';
     for (const ch of node.childNodes) {
       if (ch.nodeType === 3) { t += ch.textContent; continue; }
@@ -88,13 +130,29 @@ const CDP_CHECK_AND_REINJECT_JS: &str = r#"() => {
     return t.trim().substring(0, 200);
   }
   d.__cw_handler = (e) => {
-    const el = e.target.closest('[role], a, button, [tabindex]') || e.target;
+    const el = e.target.closest(INTERACTIVE) || e.target.closest('[aria-label]') || e.target;
+    let text = accessibleText(el);
+    if (!text) {
+      let p = el.parentElement;
+      while (p && p !== d.documentElement) {
+        const la = p.ariaLabel || p.getAttribute('aria-label');
+        if (la) { text = la; break; }
+        const lb = p.getAttribute('aria-labelledby');
+        if (lb) {
+          const r = lb.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
+          if (r) { text = r; break; }
+        }
+        if (p.title) { text = p.title; break; }
+        p = p.parentElement;
+      }
+    }
     d.__cw_clicks.push({
       ts: Date.now(),
       tagName: el.tagName,
       role: el.getAttribute('role') || TAG_ROLES[el.tagName] || null,
       ariaLabel: el.ariaLabel || el.getAttribute('aria-label') || null,
-      textContent: accessibleText(el),
+      textContent: text || null,
+      title: el.title || el.closest('[title]')?.title || null,
       value: el.value || null,
       href: el.closest('a')?.href || null,
       id: el.id || null,
@@ -1097,15 +1155,38 @@ async fn cdp_retrieve_click(
         }
     };
 
-    // Build name from ariaLabel, textContent, or value (for inputs).
-    let name = parsed["ariaLabel"]
+    // Build name from ariaLabel, textContent, value, or title.
+    let text_name = parsed["ariaLabel"]
         .as_str()
         .filter(|s| !s.is_empty())
         .or_else(|| parsed["textContent"].as_str().filter(|s| !s.is_empty()))
-        .or_else(|| parsed["value"].as_str().filter(|s| !s.is_empty()));
-    let Some(name) = name else {
-        tracing::debug!("CDP click has no usable name for {click_event_id}");
-        return;
+        .or_else(|| parsed["value"].as_str().filter(|s| !s.is_empty()))
+        .or_else(|| parsed["title"].as_str().filter(|s| !s.is_empty()));
+
+    // Synthesize a structural fallback when no text-based name is available.
+    // These won't help at execution time but make the click visible in the
+    // review panel so the user can pick a different target candidate.
+    let fallback;
+    let name = match text_name {
+        Some(n) => n,
+        None => {
+            if let Some(id) = parsed["id"].as_str().filter(|s| !s.is_empty()) {
+                fallback = format!("#{id}");
+            } else {
+                let tag = parsed["tagName"]
+                    .as_str()
+                    .unwrap_or("element")
+                    .to_lowercase();
+                fallback = match parsed["role"].as_str().filter(|s| !s.is_empty()) {
+                    Some(role) => format!("{tag}[{role}]"),
+                    None => tag,
+                };
+            }
+            tracing::debug!(
+                "CDP click has no text name for {click_event_id}, using fallback: {fallback}"
+            );
+            &fallback
+        }
     };
 
     let role = parsed["role"].as_str().map(|s| s.to_string());
