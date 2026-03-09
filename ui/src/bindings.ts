@@ -335,7 +335,7 @@ max_iterations: number }
 export type MatchMode = "Contains" | "Exact"
 export type McpToolCallParams = { tool_name: string; arguments: JsonValue }
 export type MouseButton = "Left" | "Right" | "Center"
-export type Node = { id: string; node_type: NodeType; position: Position; name: string; enabled: boolean; timeout_ms: number | null; settle_ms: number | null; retries: number; trace_level: TraceLevel; role?: NodeRole; expected_outcome: string | null }
+export type Node = { id: string; node_type: NodeType; position: Position; name: string; enabled: boolean; timeout_ms: number | null; settle_ms: number | null; retries: number; supervision_retries?: number; trace_level: TraceLevel; role?: NodeRole; expected_outcome: string | null }
 export type NodeRename = { node_id: string; new_name: string }
 export type NodeResult = { node_name: string; status: string; error?: string | null }
 export type NodeRole = "Default" | "Verification"

@@ -2,6 +2,12 @@ use crate::node_params::*;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+const DEFAULT_SUPERVISION_RETRIES: u32 = 2;
+
+fn default_supervision_retries() -> u32 {
+    DEFAULT_SUPERVISION_RETRIES
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct Workflow {
@@ -33,6 +39,8 @@ pub struct Node {
     pub timeout_ms: Option<u64>,
     pub settle_ms: Option<u64>,
     pub retries: u32,
+    #[serde(default = "default_supervision_retries")]
+    pub supervision_retries: u32,
     pub trace_level: TraceLevel,
     #[serde(default)]
     pub role: NodeRole,
@@ -82,6 +90,7 @@ impl Node {
             timeout_ms: None,
             settle_ms: None,
             retries: 0,
+            supervision_retries: default_supervision_retries(),
             trace_level: TraceLevel::Minimal,
             role: NodeRole::Default,
             expected_outcome: None,
