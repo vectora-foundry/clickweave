@@ -18,6 +18,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         mcp: &mut McpRouter,
         mut node_run: Option<&mut NodeRun>,
     ) -> ExecutorResult<Value> {
+        // Reset per-execution; set to true only on CDP click success.
+        self.last_click_was_cdp = false;
+
         if let NodeType::AppDebugKitOp(p) = node_type {
             self.log(format!("AppDebugKit operation: {}", p.operation_name));
             let args = if p.parameters.is_null() {
@@ -109,6 +112,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     .await
                 {
                     Ok(result_text) => {
+                        self.last_click_was_cdp = true;
                         self.record_event(
                             node_run.as_deref(),
                             "tool_result",

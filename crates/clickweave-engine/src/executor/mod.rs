@@ -110,6 +110,11 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     tried_click_indices: RwLock<Vec<usize>>,
     /// CDP element UIDs already tried during supervision retries.
     tried_cdp_uids: RwLock<Vec<String>>,
+    /// Set when the last click was resolved and executed via CDP.
+    /// CDP provides structural verification (element found in DOM by
+    /// text/role/parent and click event dispatched), making VLM-based
+    /// supervision redundant and error-prone for these clicks.
+    last_click_was_cdp: bool,
 }
 
 pub(crate) struct PendingLoopExit {
@@ -178,6 +183,7 @@ impl WorkflowExecutor {
             supervision_hint: None,
             tried_click_indices: RwLock::new(Vec::new()),
             tried_cdp_uids: RwLock::new(Vec::new()),
+            last_click_was_cdp: false,
         }
     }
 }

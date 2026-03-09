@@ -164,6 +164,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             supervision_hint: None,
             tried_click_indices: RwLock::new(Vec::new()),
             tried_cdp_uids: RwLock::new(Vec::new()),
+            last_click_was_cdp: false,
         }
     }
 }

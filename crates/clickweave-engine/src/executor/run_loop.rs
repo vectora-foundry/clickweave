@@ -329,6 +329,27 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                 break (true, false);
                             }
 
+                            // Skip VLM supervision for successful CDP clicks.
+                            // CDP provides structural verification: the element
+                            // was found in the DOM by text/role/parent and the
+                            // click event was dispatched. VLM-based verification
+                            // is redundant and can false-fail when the click
+                            // targets an already-active element (no visual change).
+                            if self.last_click_was_cdp {
+                                self.supervision_hint = None;
+                                self.log(format!(
+                                    "Skipping supervision for '{}' (CDP click verified structurally)",
+                                    node_name
+                                ));
+                                self.emit(ExecutorEvent::SupervisionPassed {
+                                    node_id,
+                                    node_name: node_name.clone(),
+                                    summary: "CDP click — element found and clicked in DOM"
+                                        .to_string(),
+                                });
+                                break (true, false);
+                            }
+
                             let verification = self.verify_step(&node_name, &node_type, &mcp).await;
                             if verification.passed {
                                 self.supervision_hint = None;
