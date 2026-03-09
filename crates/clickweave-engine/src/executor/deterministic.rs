@@ -680,26 +680,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
 use clickweave_core::cdp::{SnapshotMatch, find_elements_in_snapshot};
 
-/// Narrow CDP matches by role and/or href, keeping the original set if
-/// filtering would eliminate all candidates.
-fn narrow_matches(
-    matches: &mut Vec<SnapshotMatch>,
-    expected_role: Option<&str>,
-    expected_href: Option<&str>,
-) {
-    if let Some(role) = expected_role {
-        let role_lower = role.to_lowercase();
-        if matches.iter().any(|m| m.role.to_lowercase() == role_lower) {
-            matches.retain(|m| m.role.to_lowercase() == role_lower);
-        }
-    }
-    if let Some(href) = expected_href {
-        if matches.iter().any(|m| m.url.as_deref() == Some(href)) {
-            matches.retain(|m| m.url.as_deref() == Some(href));
-        }
-    }
-}
-
 impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Try to resolve and click a text target via CDP (chrome-devtools).
     ///
@@ -735,10 +715,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // 2. Find matching elements
         let mut matches = find_elements_in_snapshot(&snapshot_text, target);
 
-        // Narrow by role and/or href if available (single pass, in-place).
-        narrow_matches(&mut matches, expected_role, expected_href);
-
-        // Narrow by parent context for disambiguation.
+        // Narrow by role/href then parent context for disambiguation.
+        clickweave_core::cdp::narrow_matches(&mut matches, expected_role, expected_href);
         clickweave_core::cdp::narrow_by_parent(
             &mut matches,
             expected_parent_role,
