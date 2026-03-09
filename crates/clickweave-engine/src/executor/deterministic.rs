@@ -79,17 +79,29 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             if app_kind.uses_cdp()
                 && let Some(cdp_server) = self.focused_cdp_server()
             {
-                let (expected_role, expected_href) = match click_target {
-                    clickweave_core::ClickTarget::CdpElement { role, href, .. } => {
-                        (role.as_deref(), href.as_deref())
-                    }
-                    _ => (None, None),
-                };
+                let (expected_role, expected_href, expected_parent_role, expected_parent_name) =
+                    match click_target {
+                        clickweave_core::ClickTarget::CdpElement {
+                            role,
+                            href,
+                            parent_role,
+                            parent_name,
+                            ..
+                        } => (
+                            role.as_deref(),
+                            href.as_deref(),
+                            parent_role.as_deref(),
+                            parent_name.as_deref(),
+                        ),
+                        _ => (None, None, None, None),
+                    };
                 match self
                     .resolve_and_click_cdp(
                         target,
                         expected_role,
                         expected_href,
+                        expected_parent_role,
+                        expected_parent_name,
                         &cdp_server,
                         mcp,
                         node_run.as_deref(),
@@ -699,6 +711,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         target: &str,
         expected_role: Option<&str>,
         expected_href: Option<&str>,
+        expected_parent_role: Option<&str>,
+        expected_parent_name: Option<&str>,
         cdp_server: &str,
         mcp: &McpRouter,
         node_run: Option<&NodeRun>,
@@ -723,6 +737,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         // Narrow by role and/or href if available (single pass, in-place).
         narrow_matches(&mut matches, expected_role, expected_href);
+
+        // Narrow by parent context for disambiguation.
+        clickweave_core::cdp::narrow_by_parent(
+            &mut matches,
+            expected_parent_role,
+            expected_parent_name,
+        );
 
         let uid = if matches.is_empty() {
             self.log(format!(
