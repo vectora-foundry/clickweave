@@ -155,6 +155,43 @@ fn extract_label(line: &str) -> String {
     line.trim().to_string()
 }
 
+/// Narrow matches by parent role and/or parent name.
+/// Keeps the original set if filtering would eliminate all candidates.
+pub fn narrow_by_parent(
+    matches: &mut Vec<SnapshotMatch>,
+    expected_parent_role: Option<&str>,
+    expected_parent_name: Option<&str>,
+) {
+    if let Some(role) = expected_parent_role {
+        let role_lower = role.to_lowercase();
+        if matches.iter().any(|m| {
+            m.parent_role
+                .as_ref()
+                .is_some_and(|r| r.to_lowercase() == role_lower)
+        }) {
+            matches.retain(|m| {
+                m.parent_role
+                    .as_ref()
+                    .is_some_and(|r| r.to_lowercase() == role_lower)
+            });
+        }
+    }
+    if let Some(name) = expected_parent_name {
+        let name_lower = name.to_lowercase();
+        if matches.iter().any(|m| {
+            m.parent_name
+                .as_ref()
+                .is_some_and(|n| n.to_lowercase().contains(&name_lower))
+        }) {
+            matches.retain(|m| {
+                m.parent_name
+                    .as_ref()
+                    .is_some_and(|n| n.to_lowercase().contains(&name_lower))
+            });
+        }
+    }
+}
+
 /// Extract `url=` attribute value from a snapshot line.
 ///
 /// For `uid=1_0 link "Home" url="https://example.com"` → `Some("https://example.com")`.
@@ -168,7 +205,8 @@ fn extract_url(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cdp_server_name, extract_label, extract_url, find_elements_in_snapshot, parse_line_uid,
+        cdp_server_name, extract_label, extract_url, find_elements_in_snapshot, narrow_by_parent,
+        parse_line_uid,
     };
 
     // Real chrome-devtools-mcp format (unquoted UIDs).
@@ -423,5 +461,33 @@ uid=1_0 RootWebArea "Discord" url="https://discord.com/"
         assert_eq!(matches[1].uid, "1_5");
         assert_eq!(matches[1].parent_role.as_deref(), Some("complementary"));
         assert_eq!(matches[1].parent_name.as_deref(), Some("Channel sidebar"));
+    }
+
+    // --- narrow_by_parent ---
+
+    #[test]
+    fn narrow_by_parent_role() {
+        let mut matches = find_elements_in_snapshot(SNAPSHOT_MULTI_DM, "Direct Messages");
+        assert_eq!(matches.len(), 2);
+        narrow_by_parent(&mut matches, Some("navigation"), None);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].uid, "1_2");
+    }
+
+    #[test]
+    fn narrow_by_parent_name() {
+        let mut matches = find_elements_in_snapshot(SNAPSHOT_MULTI_DM, "Direct Messages");
+        assert_eq!(matches.len(), 2);
+        narrow_by_parent(&mut matches, None, Some("Channel sidebar"));
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].uid, "1_5");
+    }
+
+    #[test]
+    fn narrow_by_parent_preserves_all_when_no_match() {
+        let mut matches = find_elements_in_snapshot(SNAPSHOT_MULTI_DM, "Direct Messages");
+        assert_eq!(matches.len(), 2);
+        narrow_by_parent(&mut matches, Some("nonexistent"), None);
+        assert_eq!(matches.len(), 2, "should keep all if no candidate matches");
     }
 }
