@@ -4,8 +4,8 @@
 
 use crate::{
     ClickParams, ClickTarget, FindImageParams, FindTextParams, FocusMethod, FocusWindowParams,
-    ListWindowsParams, McpToolCallParams, MouseButton, NodeType, PressKeyParams, ScreenshotMode,
-    ScrollParams, TakeScreenshotParams, TypeTextParams, walkthrough::AppKind,
+    HoverParams, ListWindowsParams, McpToolCallParams, MouseButton, NodeType, PressKeyParams,
+    ScreenshotMode, ScrollParams, TakeScreenshotParams, TypeTextParams, walkthrough::AppKind,
 };
 use serde_json::Value;
 use std::fmt;
@@ -161,6 +161,16 @@ pub fn node_type_to_tool_invocation(
             }
             ("focus_window", args)
         }
+        NodeType::Hover(p) => {
+            let mut args = serde_json::json!({});
+            if let Some(x) = p.x {
+                args["x"] = serde_json::json!(x);
+            }
+            if let Some(y) = p.y {
+                args["y"] = serde_json::json!(y);
+            }
+            ("move_mouse", args)
+        }
         NodeType::McpToolCall(p) => {
             let args = if p.arguments.is_null() {
                 serde_json::json!({})
@@ -292,6 +302,13 @@ pub fn tool_invocation_to_node_type(
                 .get("app_name")
                 .and_then(|v| v.as_str())
                 .map(String::from),
+        })),
+        "move_mouse" => Ok(NodeType::Hover(HoverParams {
+            target: None,
+            template_image: None,
+            x: args.get("x").and_then(|v| v.as_f64()),
+            y: args.get("y").and_then(|v| v.as_f64()),
+            dwell_ms: args.get("dwell_ms").and_then(|v| v.as_u64()).unwrap_or(500),
         })),
         "focus_window" => {
             let (method, value) = if let Some(app) = args.get("app_name").and_then(|v| v.as_str()) {
@@ -663,6 +680,44 @@ mod tests {
             }
             _ => panic!("expected FocusWindow"),
         }
+    }
+
+    #[test]
+    fn hover_maps_to_move_mouse() {
+        let nt = NodeType::Hover(crate::HoverParams {
+            target: None,
+            template_image: None,
+            x: Some(100.0),
+            y: Some(200.0),
+            dwell_ms: 500,
+        });
+        let inv = node_type_to_tool_invocation(&nt).unwrap();
+        assert_eq!(inv.name, "move_mouse");
+        assert_eq!(inv.arguments["x"], 100.0);
+        assert_eq!(inv.arguments["y"], 200.0);
+    }
+
+    #[test]
+    fn hover_no_coords_maps_to_move_mouse_without_xy() {
+        let nt = NodeType::Hover(crate::HoverParams::default());
+        let inv = node_type_to_tool_invocation(&nt).unwrap();
+        assert_eq!(inv.name, "move_mouse");
+        assert!(inv.arguments.get("x").is_none());
+        assert!(inv.arguments.get("y").is_none());
+    }
+
+    #[test]
+    fn roundtrip_move_mouse() {
+        let nt = NodeType::Hover(crate::HoverParams {
+            target: None,
+            template_image: None,
+            x: Some(100.0),
+            y: Some(200.0),
+            dwell_ms: 500,
+        });
+        let inv = node_type_to_tool_invocation(&nt).unwrap();
+        let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
+        assert!(matches!(back, NodeType::Hover(p) if p.x == Some(100.0) && p.y == Some(200.0)));
     }
 
     #[test]

@@ -139,6 +139,29 @@ impl Default for ClickParams {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct HoverParams {
+    pub target: Option<ClickTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_image: Option<String>,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub dwell_ms: u64,
+}
+
+impl Default for HoverParams {
+    fn default() -> Self {
+        Self {
+            target: None,
+            template_image: None,
+            x: None,
+            y: None,
+            dwell_ms: 500,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum MouseButton {

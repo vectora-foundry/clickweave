@@ -245,6 +245,7 @@ pub enum NodeType {
     FindText(FindTextParams),
     FindImage(FindImageParams),
     Click(ClickParams),
+    Hover(HoverParams),
     TypeText(TypeTextParams),
     PressKey(PressKeyParams),
     Scroll(ScrollParams),
@@ -266,6 +267,7 @@ impl NodeType {
                 NodeCategory::Vision
             }
             NodeType::Click(_)
+            | NodeType::Hover(_)
             | NodeType::TypeText(_)
             | NodeType::PressKey(_)
             | NodeType::Scroll(_) => NodeCategory::Input,
@@ -296,6 +298,7 @@ impl NodeType {
             NodeType::FindText(_) => "Find Text",
             NodeType::FindImage(_) => "Find Image",
             NodeType::Click(_) => "Click",
+            NodeType::Hover(_) => "Hover",
             NodeType::TypeText(_) => "Type Text",
             NodeType::PressKey(_) => "Press Key",
             NodeType::Scroll(_) => "Scroll",
@@ -318,6 +321,15 @@ impl NodeType {
                 None if p.template_image.is_some() => "Clicked on image match".to_string(),
                 None => format!(
                     "Clicked at ({}, {})",
+                    p.x.unwrap_or(0.0),
+                    p.y.unwrap_or(0.0)
+                ),
+            },
+            NodeType::Hover(p) => match &p.target {
+                Some(t) => format!("Hovered over '{}'", t.text()),
+                None if p.template_image.is_some() => "Hovered over image match".to_string(),
+                None => format!(
+                    "Hovered at ({}, {})",
                     p.x.unwrap_or(0.0),
                     p.y.unwrap_or(0.0)
                 ),
@@ -346,6 +358,7 @@ impl NodeType {
             NodeType::FindText(_) => "🔍",
             NodeType::FindImage(_) => "🖼",
             NodeType::Click(_) => "🖱",
+            NodeType::Hover(_) => "👆",
             NodeType::TypeText(_) => "⌨",
             NodeType::PressKey(_) => "⌨",
             NodeType::Scroll(_) => "📜",
@@ -370,6 +383,7 @@ impl NodeType {
             NodeType::FindText(FindTextParams::default()),
             NodeType::FindImage(FindImageParams::default()),
             NodeType::Click(ClickParams::default()),
+            NodeType::Hover(HoverParams::default()),
             NodeType::TypeText(TypeTextParams::default()),
             NodeType::PressKey(PressKeyParams::default()),
             NodeType::Scroll(ScrollParams::default()),
@@ -462,6 +476,10 @@ mod tests {
             NodeCategory::Input
         );
         assert_eq!(
+            NodeType::Hover(HoverParams::default()).category(),
+            NodeCategory::Input
+        );
+        assert_eq!(
             NodeType::TypeText(TypeTextParams::default()).category(),
             NodeCategory::Input
         );
@@ -488,6 +506,7 @@ mod tests {
         assert!(!NodeType::AiStep(AiStepParams::default()).is_deterministic());
         assert!(NodeType::TakeScreenshot(TakeScreenshotParams::default()).is_deterministic());
         assert!(NodeType::Click(ClickParams::default()).is_deterministic());
+        assert!(NodeType::Hover(HoverParams::default()).is_deterministic());
         assert!(NodeType::TypeText(TypeTextParams::default()).is_deterministic());
         assert!(NodeType::Scroll(ScrollParams::default()).is_deterministic());
         assert!(NodeType::FindText(FindTextParams::default()).is_deterministic());
@@ -530,7 +549,7 @@ mod tests {
     #[test]
     fn test_all_defaults_covers_all_categories() {
         let defaults = NodeType::all_defaults();
-        assert_eq!(defaults.len(), 16);
+        assert_eq!(defaults.len(), 17);
 
         let categories: std::collections::HashSet<NodeCategory> =
             defaults.iter().map(|nt| nt.category()).collect();
