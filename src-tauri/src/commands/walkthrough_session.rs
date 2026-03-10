@@ -1383,7 +1383,7 @@ async fn enrich_click_background(
                 screenshot_path = Some(path.clone());
                 screenshot_meta = *meta;
             }
-            WalkthroughEventKind::AccessibilityElementCaptured { label, role } => {
+            WalkthroughEventKind::AccessibilityElementCaptured { label, role, .. } => {
                 has_actionable_ax =
                     clickweave_core::walkthrough::is_actionable_ax_role(role.as_deref());
                 ax_label_data = Some((label.clone(), role.clone()));

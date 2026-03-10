@@ -88,6 +88,40 @@ impl Default for FindImageParams {
     }
 }
 
+/// macOS window control button (traffic light) actions.
+///
+/// At execution time these are resolved to window-relative clicks by
+/// querying the focused window's position and applying a fixed pixel offset.
+/// This is more reliable than keyboard shortcuts — e.g. Cmd+W closes a tab
+/// in tabbed apps, not the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub enum WindowControlAction {
+    Close,
+    Minimize,
+    Maximize,
+}
+
+impl WindowControlAction {
+    /// Pixel offset from the window's top-left corner to the button center.
+    /// Standard macOS traffic light positions (consistent across versions).
+    pub fn window_offset(self) -> (f64, f64) {
+        match self {
+            Self::Close => (14.0, 14.0),
+            Self::Minimize => (34.0, 14.0),
+            Self::Maximize => (54.0, 14.0),
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Close => "Close window",
+            Self::Minimize => "Minimize window",
+            Self::Maximize => "Maximize window",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "type")]
@@ -102,6 +136,11 @@ pub enum ClickTarget {
         parent_role: Option<String>,
         parent_name: Option<String>,
     },
+    /// macOS window control button — resolved at execution time to
+    /// window-relative coordinates via `list_windows`.
+    WindowControl {
+        action: WindowControlAction,
+    },
 }
 
 impl ClickTarget {
@@ -110,6 +149,7 @@ impl ClickTarget {
         match self {
             Self::Text { text } => text,
             Self::CdpElement { name, .. } => name,
+            Self::WindowControl { action } => action.display_name(),
         }
     }
 }

@@ -149,6 +149,8 @@ pub enum WalkthroughEventKind {
     AccessibilityElementCaptured {
         label: String,
         role: Option<String>,
+        #[serde(default)]
+        subrole: Option<String>,
     },
     VlmLabelResolved {
         label: String,
@@ -299,6 +301,11 @@ pub enum TargetCandidate {
         parent_role: Option<String>,
         parent_name: Option<String>,
     },
+    /// macOS window control button (close, minimize, maximize).
+    /// Resolved at execution time to a window-relative click.
+    WindowControl {
+        action: crate::WindowControlAction,
+    },
 }
 
 /// Accessibility roles that represent specific, actionable UI elements.
@@ -342,6 +349,7 @@ impl TargetCandidate {
             Self::VlmLabel { label } => Some(label),
             Self::OcrText { text } => Some(text),
             Self::CdpElement { name, .. } => Some(name),
+            Self::WindowControl { action } => Some(action.display_name()),
             _ => None,
         }
     }

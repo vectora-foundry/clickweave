@@ -61,16 +61,18 @@ pub(super) async fn enrich_click(
         Ok(result) => {
             if let Some(ax) = parse_accessibility_result(&result.content) {
                 tracing::info!(
-                    "Accessibility enrichment: label={:?} role={:?} at ({x:.0}, {y:.0})",
-                    ax.0,
-                    ax.1
+                    "Accessibility enrichment: label={:?} role={:?} subrole={:?} at ({x:.0}, {y:.0})",
+                    ax.label,
+                    ax.role,
+                    ax.subrole,
                 );
                 events.push(WalkthroughEvent {
                     id: Uuid::new_v4(),
                     timestamp,
                     kind: WalkthroughEventKind::AccessibilityElementCaptured {
-                        label: ax.0,
-                        role: ax.1,
+                        label: ax.label,
+                        role: ax.role,
+                        subrole: ax.subrole,
                     },
                 });
             } else {
@@ -130,21 +132,43 @@ pub(super) fn find_json_in_content(
     })
 }
 
-/// Parse the `element_at_point` MCP response into `(label, role)`.
+/// Parsed accessibility data from `element_at_point`.
+pub(super) struct AccessibilityData {
+    pub label: String,
+    pub role: Option<String>,
+    pub subrole: Option<String>,
+}
+
+/// Parse the `element_at_point` MCP response into accessibility data.
 ///
 /// Picks the best display text from the response fields:
 /// `name` (AXTitle) > `value` (AXValue) > `label` (AXDescription).
+///
+/// Returns `None` only if no display text AND no subrole are present.
+/// Window control buttons (close/minimize/zoom) may lack text labels
+/// but always have a subrole set by the macOS window server.
 pub(super) fn parse_accessibility_result(
     content: &[clickweave_mcp::ToolContent],
-) -> Option<(String, Option<String>)> {
+) -> Option<AccessibilityData> {
     let obj = find_json_in_content(content)?;
     let label = obj["name"]
         .as_str()
         .or_else(|| obj["value"].as_str())
         .or_else(|| obj["label"].as_str())
-        .filter(|s| !s.is_empty())?;
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
     let role = obj["role"].as_str().map(|s| s.to_string());
-    Some((label.to_string(), role))
+    let subrole = obj["subrole"].as_str().map(|s| s.to_string());
+
+    if label.is_some() || subrole.is_some() {
+        Some(AccessibilityData {
+            label: label.unwrap_or_default(),
+            role,
+            subrole,
+        })
+    } else {
+        None
+    }
 }
 
 /// Parse screenshot metadata (origin, scale) from the MCP take_screenshot response.
