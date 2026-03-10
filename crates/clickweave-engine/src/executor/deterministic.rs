@@ -2,7 +2,7 @@ use super::{ExecutorError, ExecutorResult, WorkflowExecutor};
 use clickweave_core::decision_cache::cache_key;
 use clickweave_core::walkthrough::AppKind;
 use clickweave_core::{
-    ClickParams, FocusMethod, FocusWindowParams, NodeRun, NodeType, ScreenshotMode,
+    ClickParams, FocusMethod, FocusWindowParams, HoverParams, NodeRun, NodeType, ScreenshotMode,
     TakeScreenshotParams, tool_mapping,
 };
 use clickweave_llm::ChatBackend;
@@ -20,6 +20,117 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     ) -> ExecutorResult<Value> {
         // Reset per-execution; set to true only on CDP click success.
         self.last_click_was_cdp = false;
+
+        // --- Hover: CDP path + native fallback + dwell ---
+        if let NodeType::Hover(p) = node_type {
+            self.log(format!("Hover: {}", node_type.action_description()));
+
+            let app_kind = self.focused_app_kind();
+
+            // CDP path: try hover via chrome-devtools-mcp for Electron/Chrome apps
+            if app_kind.uses_cdp()
+                && let Some(cdp_server) = self.focused_cdp_server()
+                && let Some(target) = &p.target
+            {
+                let (expected_role, expected_href, expected_parent_role, expected_parent_name) =
+                    match target {
+                        clickweave_core::ClickTarget::CdpElement {
+                            role,
+                            href,
+                            parent_role,
+                            parent_name,
+                            ..
+                        } => (
+                            role.as_deref(),
+                            href.as_deref(),
+                            parent_role.as_deref(),
+                            parent_name.as_deref(),
+                        ),
+                        _ => (None, None, None, None),
+                    };
+                match self
+                    .resolve_and_hover_cdp(
+                        target.text(),
+                        expected_role,
+                        expected_href,
+                        expected_parent_role,
+                        expected_parent_name,
+                        &cdp_server,
+                        mcp,
+                        node_run.as_deref(),
+                    )
+                    .await
+                {
+                    Ok(result_text) => {
+                        self.record_event(
+                            node_run.as_deref(),
+                            "tool_result",
+                            serde_json::json!({
+                                "tool": "hover",
+                                "method": "cdp",
+                                "result": Self::truncate_for_trace(&result_text, 8192),
+                            }),
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_millis(p.dwell_ms)).await;
+                        return Ok(Self::parse_result_text(&result_text));
+                    }
+                    Err(e) => {
+                        self.log(format!("CDP hover failed, falling back to native: {e}"));
+                    }
+                }
+            }
+
+            // Native path: resolve coordinates, then move_mouse + dwell
+            let resolved_hover;
+            let effective = if p.template_image.is_some() && p.x.is_none() {
+                resolved_hover = self
+                    .resolve_hover_target_by_image(node_id, mcp, p, &mut node_run)
+                    .await?;
+                &resolved_hover
+            } else if p.target.is_some() && p.x.is_none() {
+                resolved_hover = self
+                    .resolve_hover_target(node_id, mcp, p, &mut node_run)
+                    .await?;
+                &resolved_hover
+            } else {
+                node_type
+            };
+
+            let inv = tool_mapping::node_type_to_tool_invocation(effective)
+                .map_err(|e| ExecutorError::Validation(e.to_string()))?;
+
+            self.record_event(
+                node_run.as_deref(),
+                "tool_call",
+                serde_json::json!({"name": inv.name, "args": &inv.arguments}),
+            );
+
+            let result = mcp
+                .call_tool(&inv.name, Some(inv.arguments))
+                .await
+                .map_err(|e| ExecutorError::ToolCall {
+                    tool: inv.name.clone(),
+                    message: e.to_string(),
+                })?;
+
+            Self::check_tool_error(&result, &inv.name)?;
+            let result_text = Self::extract_result_text(&result);
+
+            self.record_event(
+                node_run.as_deref(),
+                "tool_result",
+                serde_json::json!({
+                    "name": inv.name,
+                    "text": Self::truncate_for_trace(&result_text, 8192),
+                    "text_len": result_text.len(),
+                }),
+            );
+
+            // Dwell: hold position for the configured duration
+            tokio::time::sleep(tokio::time::Duration::from_millis(p.dwell_ms)).await;
+
+            return Ok(Self::parse_result_text(&result_text));
+        }
 
         if let NodeType::AppDebugKitOp(p) = node_type {
             self.log(format!("AppDebugKit operation: {}", p.operation_name));
@@ -680,6 +791,251 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             ..Default::default()
         }))
     }
+
+    async fn resolve_hover_target(
+        &self,
+        node_id: Uuid,
+        mcp: &McpRouter,
+        params: &HoverParams,
+        node_run: &mut Option<&mut NodeRun>,
+    ) -> ExecutorResult<NodeType> {
+        let target = params.target.as_ref().map(|t| t.text()).ok_or_else(|| {
+            ExecutorError::ClickTarget("resolve_hover_target called with no target".to_string())
+        })?;
+
+        let scoped_app = self.focused_app_name();
+
+        let element_key = (target.to_string(), scoped_app.clone());
+        let search_text = self
+            .element_cache
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&element_key)
+            .cloned()
+            .unwrap_or_else(|| target.to_string());
+
+        let mut find_args = serde_json::json!({"text": search_text});
+        if let Some(ref app_name) = scoped_app {
+            find_args["app_name"] = serde_json::Value::String(app_name.clone());
+        }
+
+        self.log(format!("Resolving hover target: '{}'", target));
+
+        let find_result = mcp
+            .call_tool("find_text", Some(find_args.clone()))
+            .await
+            .map_err(|e| {
+                ExecutorError::ClickTarget(format!("find_text for '{}' failed: {}", target, e))
+            })?;
+
+        Self::check_tool_error(&find_result, "find_text")?;
+
+        let result_text = Self::extract_result_text(&find_result);
+        let mut matches: Vec<Value> = serde_json::from_str(&result_text).unwrap_or_default();
+
+        if matches.is_empty()
+            && let Some(retry_text) = self
+                .try_resolve_find_text(node_id, &find_args, &result_text, mcp, node_run.as_deref())
+                .await
+        {
+            matches = serde_json::from_str(&retry_text).unwrap_or_default();
+        }
+
+        let best = if matches.is_empty() {
+            return Err(ExecutorError::ClickTarget(format!(
+                "Could not find text '{}' on screen for hover",
+                target,
+            )));
+        } else if matches.len() == 1 {
+            &matches[0]
+        } else {
+            let ck = cache_key(node_id, target, scoped_app.as_deref());
+            let cached_idx = self
+                .decision_cache
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .click_disambiguation
+                .get(&ck)
+                .and_then(|cached| {
+                    matches.iter().position(|m| {
+                        m["text"].as_str() == Some(cached.chosen_text.as_str())
+                            && m["role"].as_str() == Some(cached.chosen_role.as_str())
+                    })
+                });
+
+            let idx = if let Some(idx) = cached_idx {
+                self.log(format!("Using cached disambiguation for '{}'", target));
+                idx
+            } else {
+                self.disambiguate_click_matches(
+                    node_id,
+                    target,
+                    &matches,
+                    scoped_app.as_deref(),
+                    node_run.as_deref(),
+                )
+                .await?
+            };
+            &matches[idx]
+        };
+
+        let x = best["x"].as_f64().ok_or_else(|| {
+            ExecutorError::ClickTarget(format!(
+                "find_text match for '{}' missing 'x' coordinate",
+                target
+            ))
+        })?;
+        let y = best["y"].as_f64().ok_or_else(|| {
+            ExecutorError::ClickTarget(format!(
+                "find_text match for '{}' missing 'y' coordinate",
+                target
+            ))
+        })?;
+
+        self.log(format!(
+            "Resolved hover target '{}' -> ({}, {})",
+            target, x, y
+        ));
+
+        self.record_event(
+            node_run.as_deref(),
+            "target_resolved",
+            serde_json::json!({
+                "target": target,
+                "x": x,
+                "y": y,
+                "action": "hover",
+            }),
+        );
+
+        Ok(NodeType::Hover(HoverParams {
+            target: params.target.clone(),
+            x: Some(x),
+            y: Some(y),
+            dwell_ms: params.dwell_ms,
+            ..Default::default()
+        }))
+    }
+
+    async fn resolve_hover_target_by_image(
+        &self,
+        _node_id: Uuid,
+        mcp: &McpRouter,
+        params: &HoverParams,
+        node_run: &mut Option<&mut NodeRun>,
+    ) -> ExecutorResult<NodeType> {
+        let b64 = params.template_image.as_deref().ok_or_else(|| {
+            ExecutorError::ClickTarget(
+                "resolve_hover_target_by_image called without template_image".to_string(),
+            )
+        })?;
+
+        self.log("Resolving hover target by image template".to_string());
+
+        let app_name = self.focused_app_name();
+        let screenshot_args = match &app_name {
+            Some(name) => serde_json::json!({ "app_name": name }),
+            None => serde_json::json!({}),
+        };
+        let (screenshot_b64, screenshot_id) = self
+            .take_screenshot_with_id(mcp, screenshot_args)
+            .await
+            .ok_or(ExecutorError::ClickTarget(
+                "Failed to take screenshot for hover image template matching".to_string(),
+            ))?;
+
+        let mut find_args = serde_json::json!({
+            "template_image_base64": b64,
+            "threshold": 0.75,
+            "max_results": 1,
+        });
+        if let Some(id) = &screenshot_id {
+            find_args["screenshot_id"] = serde_json::Value::String(id.clone());
+        } else {
+            find_args["screenshot_image_base64"] = serde_json::Value::String(screenshot_b64);
+        }
+
+        self.record_event(
+            node_run.as_deref(),
+            "tool_call",
+            serde_json::json!({"name": "find_image", "args": {
+                "threshold": 0.75,
+                "max_results": 1,
+                "has_template": true,
+                "action": "hover",
+            }}),
+        );
+
+        let result = mcp
+            .call_tool("find_image", Some(find_args))
+            .await
+            .map_err(|e| ExecutorError::ClickTarget(format!("find_image failed: {}", e)))?;
+        Self::check_tool_error(&result, "find_image")?;
+
+        let result_text = Self::extract_result_text(&result);
+
+        self.record_event(
+            node_run.as_deref(),
+            "tool_result",
+            serde_json::json!({
+                "name": "find_image",
+                "text": Self::truncate_for_trace(&result_text, 8192),
+                "text_len": result_text.len(),
+            }),
+        );
+
+        let parsed: Value = serde_json::from_str(&result_text).map_err(|e| {
+            ExecutorError::ClickTarget(format!("Failed to parse find_image result: {}", e))
+        })?;
+
+        let matches = parsed["matches"].as_array().ok_or_else(|| {
+            ExecutorError::ClickTarget("find_image returned no matches array".to_string())
+        })?;
+        let best = matches
+            .first()
+            .ok_or_else(|| ExecutorError::ClickTarget("find_image found no matches".to_string()))?;
+
+        let x = best["screen_x"]
+            .as_f64()
+            .or_else(|| best["center"]["x"].as_f64())
+            .ok_or(ExecutorError::ClickTarget(
+                "Missing x in find_image match".to_string(),
+            ))?;
+        let y = best["screen_y"]
+            .as_f64()
+            .or_else(|| best["center"]["y"].as_f64())
+            .ok_or(ExecutorError::ClickTarget(
+                "Missing y in find_image match".to_string(),
+            ))?;
+
+        self.log(format!(
+            "Resolved hover image target -> ({}, {}), score={}",
+            x,
+            y,
+            best["score"].as_f64().unwrap_or(0.0)
+        ));
+
+        self.record_event(
+            node_run.as_deref(),
+            "target_resolved",
+            serde_json::json!({
+                "method": "find_image",
+                "x": x,
+                "y": y,
+                "score": best["score"],
+                "action": "hover",
+            }),
+        );
+
+        Ok(NodeType::Hover(HoverParams {
+            target: params.target.clone(),
+            template_image: params.template_image.clone(),
+            x: Some(x),
+            y: Some(y),
+            dwell_ms: params.dwell_ms,
+            ..Default::default()
+        }))
+    }
 }
 
 use clickweave_core::cdp::{SnapshotMatch, find_elements_in_snapshot};
@@ -778,6 +1134,95 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         );
 
         Ok(Self::extract_result_text(&click_result))
+    }
+
+    /// Try to resolve and hover a text target via CDP (chrome-devtools).
+    ///
+    /// Takes a snapshot of the page's accessibility tree, finds the element
+    /// matching the target text, and hovers it via CDP. Returns the hover
+    /// result text on success, or an error string to trigger native fallback.
+    async fn resolve_and_hover_cdp(
+        &self,
+        target: &str,
+        expected_role: Option<&str>,
+        expected_href: Option<&str>,
+        expected_parent_role: Option<&str>,
+        expected_parent_name: Option<&str>,
+        cdp_server: &str,
+        mcp: &McpRouter,
+        node_run: Option<&NodeRun>,
+    ) -> ExecutorResult<String> {
+        // 1. Ensure a page is selected
+        let _ = mcp
+            .call_tool_on(cdp_server, "list_pages", Some(serde_json::json!({})))
+            .await;
+
+        // 2. Take CDP snapshot
+        self.log(format!("CDP: taking snapshot to hover '{}'", target));
+        let snapshot_result = mcp
+            .call_tool_on(cdp_server, "take_snapshot", Some(serde_json::json!({})))
+            .await
+            .map_err(|e| ExecutorError::Cdp(format!("take_snapshot failed: {e}")))?;
+
+        if snapshot_result.is_error == Some(true) {
+            let error_text = Self::extract_result_text(&snapshot_result);
+            return Err(ExecutorError::Cdp(format!(
+                "take_snapshot error: {}",
+                error_text
+            )));
+        }
+
+        let snapshot_text = Self::extract_result_text(&snapshot_result);
+
+        // 3. Find matching elements
+        let mut matches = find_elements_in_snapshot(&snapshot_text, target);
+        clickweave_core::cdp::narrow_matches(&mut matches, expected_role, expected_href);
+        clickweave_core::cdp::narrow_by_parent(
+            &mut matches,
+            expected_parent_role,
+            expected_parent_name,
+        );
+
+        let uid = if matches.is_empty() {
+            self.log(format!(
+                "CDP: no exact match for '{}', trying LLM resolution",
+                target
+            ));
+            self.resolve_cdp_element_name(target, &snapshot_text)
+                .await?
+        } else if matches.len() == 1 {
+            matches[0].uid.clone()
+        } else {
+            self.log(format!(
+                "CDP: {} matches for '{}', disambiguating",
+                matches.len(),
+                target
+            ));
+            self.disambiguate_cdp_elements(target, &matches).await?
+        };
+
+        // 4. Hover the element
+        self.log(format!("CDP: hovering element uid='{}'", uid));
+        let hover_args = serde_json::json!({ "uid": uid });
+        let hover_result = mcp
+            .call_tool_on(cdp_server, "hover", Some(hover_args))
+            .await
+            .map_err(|e| ExecutorError::Cdp(format!("hover failed: {e}")))?;
+
+        if hover_result.is_error == Some(true) {
+            return Err(ExecutorError::Cdp(format!(
+                "hover error: {}",
+                Self::extract_result_text(&hover_result)
+            )));
+        }
+
+        self.record_event(
+            node_run,
+            "cdp_hover",
+            serde_json::json!({ "target": target, "uid": uid }),
+        );
+
+        Ok(Self::extract_result_text(&hover_result))
     }
 
     /// Ask the LLM to find the best matching element in the CDP snapshot.
