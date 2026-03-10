@@ -142,6 +142,7 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 let mut ax_label: Option<(String, Option<String>)> = None;
                 let mut vlm_label: Option<String> = None;
                 let mut crop_candidate: Option<(String, String)> = None;
+                #[allow(clippy::type_complexity)]
                 let mut cdp_resolved: Option<(
                     String,
                     Option<String>,

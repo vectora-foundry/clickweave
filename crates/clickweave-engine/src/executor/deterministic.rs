@@ -1033,7 +1033,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             x: Some(x),
             y: Some(y),
             dwell_ms: params.dwell_ms,
-            ..Default::default()
         }))
     }
 }
@@ -1046,6 +1045,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Takes a snapshot of the page's accessibility tree, finds the element
     /// matching the target text, and clicks it via CDP. Returns the click
     /// result text on success, or an error string to trigger native fallback.
+    #[allow(clippy::too_many_arguments)]
     async fn resolve_and_click_cdp(
         &self,
         target: &str,
@@ -1141,6 +1141,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Takes a snapshot of the page's accessibility tree, finds the element
     /// matching the target text, and hovers it via CDP. Returns the hover
     /// result text on success, or an error string to trigger native fallback.
+    #[allow(clippy::too_many_arguments)]
     async fn resolve_and_hover_cdp(
         &self,
         target: &str,
