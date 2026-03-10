@@ -130,6 +130,8 @@ export interface WalkthroughSlice {
   cancelWalkthrough: () => Promise<void>;
 
   setWalkthroughExpandedAction: (id: string | null) => void;
+  keepCandidate: (actionId: string) => void;
+  dismissCandidate: (actionId: string) => void;
   deleteNode: (nodeId: string) => void;
   restoreNode: (nodeId: string) => void;
   renameNode: (nodeId: string, newName: string) => void;
@@ -277,6 +279,16 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
 
   setWalkthroughExpandedAction: (id) => set((s) => ({
     walkthroughExpandedAction: s.walkthroughExpandedAction === id ? null : id,
+  })),
+
+  keepCandidate: (actionId) => set((s) => ({
+    walkthroughActions: s.walkthroughActions.map((a) =>
+      a.id === actionId ? { ...a, candidate: false } : a,
+    ),
+  })),
+
+  dismissCandidate: (actionId) => set((s) => ({
+    walkthroughActions: s.walkthroughActions.filter((a) => a.id !== actionId),
   })),
 
   deleteNode: (nodeId) => set((s) => ({

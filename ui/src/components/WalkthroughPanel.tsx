@@ -30,6 +30,8 @@ export function WalkthroughPanel() {
   const setWalkthroughExpandedAction = useStore((s) => s.setWalkthroughExpandedAction);
   const walkthroughDraft = useStore((s) => s.walkthroughDraft);
   const walkthroughActionNodeMap = useStore((s) => s.walkthroughActionNodeMap);
+  const keepCandidate = useStore((s) => s.keepCandidate);
+  const dismissCandidate = useStore((s) => s.dismissCandidate);
   const deleteNode = useStore((s) => s.deleteNode);
   const restoreNode = useStore((s) => s.restoreNode);
   const renameNode = useStore((s) => s.renameNode);
@@ -98,6 +100,9 @@ export function WalkthroughPanel() {
       stepNumbers.set(n.id, ++step);
     }
   }
+
+  // Candidate actions (hovers awaiting Keep/Dismiss) — not yet in the draft
+  const candidateActions = walkthroughActions.filter((a) => a.candidate);
 
   // Precompute lightbox image if one is open
   const lightboxImage: LightboxImage | null = (() => {
@@ -268,7 +273,7 @@ export function WalkthroughPanel() {
                           });
                         return (
                           <div>
-                            <label className="mb-1 block text-[10px] text-[var(--text-muted)]">Click Target</label>
+                            <label className="mb-1 block text-[10px] text-[var(--text-muted)]">{action.kind.type === "Hover" ? "Hover" : "Click"} Target</label>
                             <div className="space-y-1">
                               {displayCandidates.map(({ candidate, originalIndex }) => (
                                 <label
@@ -388,6 +393,41 @@ export function WalkthroughPanel() {
                       })()}
                     </div>
                   )}
+                </div>
+              );
+            })}
+
+            {/* Candidate hover actions (ghost nodes) */}
+            {candidateActions.map((action) => {
+              const { icon, color } = actionIcon(action.kind);
+              const label = actionLabel(action);
+              return (
+                <div
+                  key={`candidate-${action.id}`}
+                  className="rounded-lg border border-dashed border-purple-500/50 opacity-60"
+                >
+                  <div className="flex items-center gap-2 px-3 py-2">
+                    <span className="w-5 text-right text-[10px] text-[var(--text-muted)]">?</span>
+                    <span className={`w-4 text-center text-sm ${color}`}>{icon}</span>
+                    <span className="truncate text-xs text-[var(--text-secondary)]">{label}</span>
+                    <span className="ml-1 rounded bg-purple-900/50 px-1.5 py-0.5 text-[10px] text-purple-300">
+                      candidate
+                    </span>
+                    <div className="flex gap-1 ml-auto">
+                      <button
+                        onClick={() => keepCandidate(action.id)}
+                        className="rounded bg-green-700 px-2 py-0.5 text-[10px] text-white hover:bg-green-600"
+                      >
+                        Keep
+                      </button>
+                      <button
+                        onClick={() => dismissCandidate(action.id)}
+                        className="rounded bg-[var(--bg-input)] px-2 py-0.5 text-[10px] text-[var(--text-muted)] hover:bg-red-500/20"
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  </div>
                 </div>
               );
             })}
