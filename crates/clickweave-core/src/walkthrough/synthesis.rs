@@ -351,6 +351,9 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
             // CDP click resolved events are consumed in the click peek loop above.
             WalkthroughEventKind::CdpClickResolved { .. } => {}
 
+            // Hover events are processed separately (not during normalization).
+            WalkthroughEventKind::HoverDetected { .. } => {}
+
             // Skip non-action events.
             WalkthroughEventKind::Paused
             | WalkthroughEventKind::Resumed
@@ -383,8 +386,8 @@ pub fn synthesize_draft(
     workflow_name: &str,
 ) -> crate::Workflow {
     use crate::{
-        ClickParams, ClickTarget, Edge, FocusMethod, FocusWindowParams, Node, NodeType, Position,
-        PressKeyParams, ScrollParams, TypeTextParams, Workflow,
+        ClickParams, ClickTarget, Edge, FocusMethod, FocusWindowParams, HoverParams, Node,
+        NodeType, Position, PressKeyParams, ScrollParams, TypeTextParams, Workflow,
     };
 
     let mut workflow = Workflow {
@@ -394,11 +397,17 @@ pub fn synthesize_draft(
         edges: Vec::new(),
     };
 
-    for (i, action) in actions.iter().enumerate() {
+    let mut node_index = 0usize;
+    for action in actions {
+        // Skip unconfirmed candidates (e.g. hover suggestions the user hasn't kept).
+        if action.candidate {
+            continue;
+        }
         let position = Position {
             x: NODE_X_POSITION,
-            y: (i as f32) * NODE_Y_SPACING,
+            y: (node_index as f32) * NODE_Y_SPACING,
         };
+        node_index += 1;
 
         let (node_type, name) = match &action.kind {
             WalkthroughActionKind::LaunchApp { app_name, app_kind } => (
@@ -559,6 +568,90 @@ pub fn synthesize_draft(
                 }),
                 format!("Scroll {}", if *delta_y < 0.0 { "up" } else { "down" }),
             ),
+
+            WalkthroughActionKind::Hover { x, y, dwell_ms } => {
+                // Same target resolution logic as Click: CDP > text > image > coordinates
+                let cdp_candidate = action.target_candidates.iter().find_map(|c| match c {
+                    TargetCandidate::CdpElement {
+                        name,
+                        role,
+                        href,
+                        parent_role,
+                        parent_name,
+                    } => Some((name, role, href, parent_role, parent_name)),
+                    _ => None,
+                });
+
+                let best_target = action
+                    .target_candidates
+                    .iter()
+                    .find_map(|c| c.preferred_label().map(|s| s.to_string()));
+
+                let image_crop_b64 = if cdp_candidate.is_none() && best_target.is_none() {
+                    action.target_candidates.iter().find_map(|c| match c {
+                        TargetCandidate::ImageCrop { image_b64, .. } => Some(image_b64.clone()),
+                        _ => None,
+                    })
+                } else {
+                    None
+                };
+
+                let (params, name) =
+                    if let Some((cdp_name, cdp_role, cdp_href, cdp_parent_role, cdp_parent_name)) =
+                        cdp_candidate
+                    {
+                        (
+                            HoverParams {
+                                target: Some(ClickTarget::CdpElement {
+                                    name: cdp_name.clone(),
+                                    role: cdp_role.clone(),
+                                    href: cdp_href.clone(),
+                                    parent_role: cdp_parent_role.clone(),
+                                    parent_name: cdp_parent_name.clone(),
+                                }),
+                                x: None,
+                                y: None,
+                                dwell_ms: *dwell_ms,
+                                ..Default::default()
+                            },
+                            format!("Hover '{cdp_name}'"),
+                        )
+                    } else if let Some(ref target) = best_target {
+                        (
+                            HoverParams {
+                                target: Some(ClickTarget::Text {
+                                    text: target.clone(),
+                                }),
+                                x: None,
+                                y: None,
+                                dwell_ms: *dwell_ms,
+                                ..Default::default()
+                            },
+                            format!("Hover '{target}'"),
+                        )
+                    } else if let Some(ref b64) = image_crop_b64 {
+                        (
+                            HoverParams {
+                                template_image: Some(b64.clone()),
+                                dwell_ms: *dwell_ms,
+                                ..Default::default()
+                            },
+                            format!("Hover (image match at {x:.0}, {y:.0})"),
+                        )
+                    } else {
+                        (
+                            HoverParams {
+                                target: None,
+                                x: Some(*x),
+                                y: Some(*y),
+                                dwell_ms: *dwell_ms,
+                                ..Default::default()
+                            },
+                            format!("Hover ({x:.0}, {y:.0})"),
+                        )
+                    };
+                (NodeType::Hover(params), name)
+            }
         };
 
         let node = Node::new(node_type, position, name);
@@ -917,6 +1010,7 @@ mod tests {
                 confidence: ActionConfidence::High,
                 warnings: vec![],
                 screenshot_meta: None,
+                candidate: false,
             },
             WalkthroughAction {
                 id: Uuid::new_v4(),
@@ -931,6 +1025,7 @@ mod tests {
                 confidence: ActionConfidence::High,
                 warnings: vec![],
                 screenshot_meta: None,
+                candidate: false,
             },
         ];
         let draft = synthesize_draft(&actions, Uuid::new_v4(), "test");
@@ -1460,6 +1555,7 @@ mod tests {
                 confidence: ActionConfidence::High,
                 warnings: vec![],
                 screenshot_meta: None,
+                candidate: false,
             }
         }
 
@@ -1614,6 +1710,84 @@ mod tests {
             ];
             let wf = synthesize_draft(&actions, Uuid::new_v4(), "Test");
             assert!(wf.nodes[1].position.y > wf.nodes[0].position.y);
+        }
+
+        #[test]
+        fn test_synthesize_hover_action() {
+            let action = WalkthroughAction {
+                id: Uuid::new_v4(),
+                kind: WalkthroughActionKind::Hover {
+                    x: 100.0,
+                    y: 200.0,
+                    dwell_ms: 800,
+                },
+                app_name: Some("Calculator".into()),
+                window_title: None,
+                target_candidates: vec![TargetCandidate::AccessibilityLabel {
+                    label: "Edit".into(),
+                    role: Some("AXMenuItem".into()),
+                }],
+                artifact_paths: vec![],
+                source_event_ids: vec![],
+                confidence: ActionConfidence::High,
+                warnings: vec![],
+                screenshot_meta: None,
+                candidate: false,
+            };
+            let wf = synthesize_draft(&[action], Uuid::new_v4(), "test");
+            assert_eq!(wf.nodes.len(), 1);
+            match &wf.nodes[0].node_type {
+                crate::NodeType::Hover(p) => {
+                    assert!(p.target.is_some());
+                    assert_eq!(p.target.as_ref().unwrap().text(), "Edit");
+                    assert_eq!(p.dwell_ms, 800);
+                }
+                other => panic!("Expected Hover, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn test_synthesize_skips_candidate_actions() {
+            let actions = vec![
+                WalkthroughAction {
+                    id: Uuid::new_v4(),
+                    kind: WalkthroughActionKind::Hover {
+                        x: 100.0,
+                        y: 200.0,
+                        dwell_ms: 800,
+                    },
+                    app_name: None,
+                    window_title: None,
+                    target_candidates: vec![],
+                    artifact_paths: vec![],
+                    source_event_ids: vec![],
+                    confidence: ActionConfidence::High,
+                    warnings: vec![],
+                    screenshot_meta: None,
+                    candidate: true, // should be skipped
+                },
+                WalkthroughAction {
+                    id: Uuid::new_v4(),
+                    kind: WalkthroughActionKind::Click {
+                        x: 50.0,
+                        y: 50.0,
+                        button: MouseButton::Left,
+                        click_count: 1,
+                    },
+                    app_name: None,
+                    window_title: None,
+                    target_candidates: vec![],
+                    artifact_paths: vec![],
+                    source_event_ids: vec![],
+                    confidence: ActionConfidence::High,
+                    warnings: vec![],
+                    screenshot_meta: None,
+                    candidate: false,
+                },
+            ];
+            let wf = synthesize_draft(&actions, Uuid::new_v4(), "test");
+            assert_eq!(wf.nodes.len(), 1); // only the click, not the candidate hover
+            assert!(matches!(wf.nodes[0].node_type, crate::NodeType::Click(_)));
         }
 
         #[test]
