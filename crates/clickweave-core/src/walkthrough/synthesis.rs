@@ -1,5 +1,7 @@
 use uuid::Uuid;
 
+use crate::{MouseButton, WindowControlAction};
+
 use super::types::{
     ActionConfidence, OcrAnnotation, ScreenshotKind, ScreenshotMeta, TargetCandidate,
     WalkthroughAction, WalkthroughActionKind, WalkthroughEvent, WalkthroughEventKind,
@@ -15,6 +17,101 @@ pub const OCR_PROXIMITY_PX: f64 = 50.0;
 
 /// Maximum gap between scroll events to coalesce (milliseconds).
 const SCROLL_COALESCE_GAP_MS: u64 = 300;
+
+/// macOS window control button actions detected from accessibility data.
+///
+/// Traffic light buttons (close, minimize, zoom/full-screen) report
+/// `role: AXButton` with an AXDescription label like "close button".
+/// This enum is the single source of truth for the mapping between
+/// accessibility labels, keyboard shortcuts, and display names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowControl {
+    Close,
+    Minimize,
+    Maximize,
+    Zoom,
+}
+
+impl WindowControl {
+    /// Detect from accessibility label, role, and subrole.
+    ///
+    /// Subrole (`AXCloseButton`, `AXMinimizeButton`, `AXZoomButton`,
+    /// `AXFullScreenButton`) is the most reliable signal — set by the
+    /// macOS window server for all apps including Electron. Falls back
+    /// to label matching for older MCP versions that don't return subrole.
+    fn from_accessibility(label: &str, role: Option<&str>, subrole: Option<&str>) -> Option<Self> {
+        // Subrole is definitive — works even for Electron apps with no label.
+        if let Some(sr) = subrole {
+            return match sr {
+                "AXCloseButton" => Some(Self::Close),
+                "AXMinimizeButton" => Some(Self::Minimize),
+                "AXZoomButton" => Some(Self::Zoom),
+                "AXFullScreenButton" => Some(Self::Maximize),
+                _ => None,
+            };
+        }
+
+        // Fallback: label matching (native apps with AXDescription).
+        if role != Some("AXButton") {
+            return None;
+        }
+        if label.eq_ignore_ascii_case("close button") {
+            Some(Self::Close)
+        } else if label.eq_ignore_ascii_case("minimize button") {
+            Some(Self::Minimize)
+        } else if label.eq_ignore_ascii_case("full screen button") {
+            Some(Self::Maximize)
+        } else if label.eq_ignore_ascii_case("zoom button") {
+            Some(Self::Zoom)
+        } else {
+            None
+        }
+    }
+
+    /// Reverse-detect from a PressKey's key + modifiers.
+    /// Note: Close is NOT here — Cmd+W closes a tab, not the window.
+    /// Close is only detected via accessibility (subrole/label).
+    fn from_shortcut(key: &str, modifiers: &[String]) -> Option<Self> {
+        match (key, modifiers) {
+            ("m", [m]) if m == "command" => Some(Self::Minimize),
+            ("f", [m1, m2]) if m1 == "command" && m2 == "control" => Some(Self::Maximize),
+            _ => None,
+        }
+    }
+
+    /// Keyboard shortcut key. Returns `None` for Close (Cmd+W closes tabs, not windows).
+    fn shortcut(self) -> Option<(&'static str, Vec<String>)> {
+        match self {
+            Self::Minimize => Some(("m", vec!["command".into()])),
+            Self::Maximize => Some(("f", vec!["command".into(), "control".into()])),
+            Self::Close | Self::Zoom => None,
+        }
+    }
+
+    fn display_name(self) -> &'static str {
+        self.to_action().display_name()
+    }
+
+    /// Convert to the public `WindowControlAction` for use in target candidates
+    /// and click targets.
+    fn to_action(self) -> WindowControlAction {
+        match self {
+            Self::Close => WindowControlAction::Close,
+            Self::Minimize => WindowControlAction::Minimize,
+            Self::Maximize => WindowControlAction::Maximize,
+            Self::Zoom => WindowControlAction::Zoom,
+        }
+    }
+}
+
+/// Human-readable names for well-known keyboard shortcuts that aren't
+/// window control buttons (those are handled by `WindowControl::from_shortcut`).
+fn shortcut_display_name(key: &str, modifiers: &[String]) -> Option<String> {
+    match (key, modifiers) {
+        ("w", [m]) if m == "command" => Some("Close tab".to_string()),
+        _ => None,
+    }
+}
 
 /// Flush accumulated text buffer into a single TypeText action.
 fn flush_text(
@@ -139,7 +236,7 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 let mut screenshot_path: Option<String> = None;
                 let mut screenshot_meta: Option<ScreenshotMeta> = None;
                 let mut ocr_annotations: Option<&Vec<OcrAnnotation>> = None;
-                let mut ax_label: Option<(String, Option<String>)> = None;
+                let mut ax_label: Option<(String, Option<String>, Option<String>)> = None;
                 let mut vlm_label: Option<String> = None;
                 let mut crop_candidate: Option<(String, String)> = None;
                 let mut cdp_resolved: Option<(
@@ -167,8 +264,12 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                         WalkthroughEventKind::OcrCaptured { annotations, .. } => {
                             ocr_annotations = Some(annotations);
                         }
-                        WalkthroughEventKind::AccessibilityElementCaptured { label, role } => {
-                            ax_label = Some((label.clone(), role.clone()));
+                        WalkthroughEventKind::AccessibilityElementCaptured {
+                            label,
+                            role,
+                            subrole,
+                        } => {
+                            ax_label = Some((label.clone(), role.clone(), subrole.clone()));
                         }
                         WalkthroughEventKind::VlmLabelResolved { label } => {
                             vlm_label = Some(label.clone());
@@ -197,6 +298,47 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 // Advance past consumed enrichment events.
                 i = peek;
 
+                // Window control buttons (close, minimize, maximize/zoom):
+                // - Close/Zoom → window-relative click (no reliable shortcut)
+                // - Minimize → Cmd+M, Maximize (full screen) → Ctrl+Cmd+F
+                if let Some((ref label, ref role, ref subrole)) = ax_label
+                    && let Some(wc) = WindowControl::from_accessibility(
+                        label,
+                        role.as_deref(),
+                        subrole.as_deref(),
+                    )
+                {
+                    if wc.shortcut().is_none() {
+                        // Emit a Click action with a WindowControl target candidate.
+                        // The executor resolves this to window-relative coordinates.
+                        let mut action = WalkthroughAction::new(
+                            WalkthroughActionKind::Click {
+                                x: *x,
+                                y: *y,
+                                button: MouseButton::Left,
+                                click_count: 1,
+                            },
+                            last_app.clone(),
+                            vec![event.id],
+                        );
+                        action.target_candidates = vec![TargetCandidate::WindowControl {
+                            action: wc.to_action(),
+                        }];
+                        action.confidence = ActionConfidence::High;
+                        actions.push(action);
+                    } else if let Some((key, modifiers)) = wc.shortcut() {
+                        actions.push(WalkthroughAction::new(
+                            WalkthroughActionKind::PressKey {
+                                key: key.to_string(),
+                                modifiers,
+                            },
+                            last_app.clone(),
+                            vec![event.id],
+                        ));
+                    }
+                    continue;
+                }
+
                 // Build target candidates: CDP > accessibility label > OCR text > coordinates.
                 let mut candidates = Vec::new();
 
@@ -212,8 +354,13 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 }
 
                 // Accessibility label is the most reliable target.
-                if let Some((label, role)) = ax_label {
-                    candidates.push(TargetCandidate::AccessibilityLabel { label, role });
+                // Skip empty labels — these come from elements with a subrole but
+                // no display text (e.g. unlabeled buttons), and would suppress VLM
+                // fallback without providing a usable target string.
+                if let Some((label, role, _subrole)) = ax_label {
+                    if !label.is_empty() {
+                        candidates.push(TargetCandidate::AccessibilityLabel { label, role });
+                    }
                 }
 
                 // VLM label as second-best target (after actionable AX labels).
@@ -434,37 +581,57 @@ pub fn synthesize_draft(
                 button,
                 click_count,
             } => {
-                // Check for CDP element candidate first (structured target).
-                let cdp_candidate = action.target_candidates.iter().find_map(|c| match c {
-                    TargetCandidate::CdpElement {
-                        name,
-                        role,
-                        href,
-                        parent_role,
-                        parent_name,
-                    } => Some((name, role, href, parent_role, parent_name)),
+                // Window control target — highest priority, resolved at execution time.
+                if let Some(wc_action) = action.target_candidates.iter().find_map(|c| match c {
+                    TargetCandidate::WindowControl { action } => Some(*action),
                     _ => None,
-                });
-
-                // Use the best text target candidate.
-                let best_target = action
-                    .target_candidates
-                    .iter()
-                    .find_map(|c| c.preferred_label().map(|s| s.to_string()));
-
-                // Fallback: if no text target, try image crop.
-                let image_crop_b64 = if cdp_candidate.is_none() && best_target.is_none() {
-                    action.target_candidates.iter().find_map(|c| match c {
-                        TargetCandidate::ImageCrop { image_b64, .. } => Some(image_b64.clone()),
-                        _ => None,
-                    })
+                }) {
+                    let name = wc_action.display_name().to_string();
+                    let params = ClickParams {
+                        target: Some(ClickTarget::WindowControl { action: wc_action }),
+                        x: None,
+                        y: None,
+                        button: *button,
+                        click_count: *click_count,
+                        ..Default::default()
+                    };
+                    (NodeType::Click(params), name)
                 } else {
-                    None
-                };
+                    // Check for CDP element candidate first (structured target).
+                    let cdp_candidate = action.target_candidates.iter().find_map(|c| match c {
+                        TargetCandidate::CdpElement {
+                            name,
+                            role,
+                            href,
+                            parent_role,
+                            parent_name,
+                        } => Some((name, role, href, parent_role, parent_name)),
+                        _ => None,
+                    });
 
-                let (params, name) =
-                    if let Some((cdp_name, cdp_role, cdp_href, cdp_parent_role, cdp_parent_name)) =
-                        cdp_candidate
+                    // Use the best text target candidate.
+                    let best_target = action
+                        .target_candidates
+                        .iter()
+                        .find_map(|c| c.preferred_label().map(|s| s.to_string()));
+
+                    // Fallback: if no text target, try image crop.
+                    let image_crop_b64 = if cdp_candidate.is_none() && best_target.is_none() {
+                        action.target_candidates.iter().find_map(|c| match c {
+                            TargetCandidate::ImageCrop { image_b64, .. } => Some(image_b64.clone()),
+                            _ => None,
+                        })
+                    } else {
+                        None
+                    };
+
+                    let (params, name) = if let Some((
+                        cdp_name,
+                        cdp_role,
+                        cdp_href,
+                        cdp_parent_role,
+                        cdp_parent_name,
+                    )) = cdp_candidate
                     {
                         (
                             ClickParams {
@@ -520,7 +687,8 @@ pub fn synthesize_draft(
                             format!("Click ({x:.0}, {y:.0})"),
                         )
                     };
-                (NodeType::Click(params), name)
+                    (NodeType::Click(params), name)
+                }
             }
 
             WalkthroughActionKind::TypeText { text } => {
@@ -537,11 +705,16 @@ pub fn synthesize_draft(
             }
 
             WalkthroughActionKind::PressKey { key, modifiers } => {
-                let name = if modifiers.is_empty() {
-                    format!("Press {key}")
-                } else {
-                    format!("Press {}+{key}", modifiers.join("+"))
-                };
+                let name = WindowControl::from_shortcut(key, modifiers)
+                    .map(|wc| wc.display_name().to_string())
+                    .or_else(|| shortcut_display_name(key, modifiers))
+                    .unwrap_or_else(|| {
+                        if modifiers.is_empty() {
+                            format!("Press {key}")
+                        } else {
+                            format!("Press {}+{key}", modifiers.join("+"))
+                        }
+                    });
                 (
                     NodeType::PressKey(PressKeyParams {
                         key: key.clone(),
@@ -1248,6 +1421,7 @@ mod tests {
                     WalkthroughEventKind::AccessibilityElementCaptured {
                         label: "Submit".to_string(),
                         role: Some("AXButton".to_string()),
+                        subrole: None,
                     },
                 ),
                 make_event(
@@ -1271,6 +1445,40 @@ mod tests {
             ));
             // Actionable AX label means High confidence
             assert_eq!(actions[0].confidence, ActionConfidence::High);
+        }
+
+        #[test]
+        fn test_empty_ax_label_not_added_as_candidate() {
+            let events = vec![
+                make_event(
+                    1000,
+                    WalkthroughEventKind::MouseClicked {
+                        x: 100.0,
+                        y: 200.0,
+                        button: MouseButton::Left,
+                        click_count: 1,
+                        modifiers: vec![],
+                    },
+                ),
+                make_event(
+                    1000,
+                    WalkthroughEventKind::AccessibilityElementCaptured {
+                        label: String::new(),
+                        role: Some("AXButton".to_string()),
+                        subrole: Some("AXSortButton".to_string()),
+                    },
+                ),
+            ];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 1);
+            // Empty label should NOT become an AccessibilityLabel candidate
+            assert!(
+                !actions[0]
+                    .target_candidates
+                    .iter()
+                    .any(|c| matches!(c, TargetCandidate::AccessibilityLabel { .. })),
+                "empty AX label should not be a candidate"
+            );
         }
 
         #[test]
@@ -1306,6 +1514,7 @@ mod tests {
                     WalkthroughEventKind::AccessibilityElementCaptured {
                         label: "MyApp - Main Window".to_string(),
                         role: Some("AXWindow".to_string()),
+                        subrole: None,
                     },
                 ),
             ];
@@ -1441,6 +1650,256 @@ mod tests {
                 }
                 _ => panic!("expected LaunchApp"),
             }
+        }
+
+        // --- Window control detection ---
+
+        #[test]
+        fn test_window_control_from_subrole() {
+            assert_eq!(
+                WindowControl::from_accessibility("", None, Some("AXCloseButton")),
+                Some(WindowControl::Close)
+            );
+            assert_eq!(
+                WindowControl::from_accessibility("", None, Some("AXMinimizeButton")),
+                Some(WindowControl::Minimize)
+            );
+            assert_eq!(
+                WindowControl::from_accessibility("", None, Some("AXZoomButton")),
+                Some(WindowControl::Zoom)
+            );
+            assert_eq!(
+                WindowControl::from_accessibility("", None, Some("AXFullScreenButton")),
+                Some(WindowControl::Maximize)
+            );
+        }
+
+        #[test]
+        fn test_window_control_from_label_fallback() {
+            // No subrole — falls back to label matching.
+            assert_eq!(
+                WindowControl::from_accessibility("close button", Some("AXButton"), None),
+                Some(WindowControl::Close)
+            );
+            assert_eq!(
+                WindowControl::from_accessibility("minimize button", Some("AXButton"), None),
+                Some(WindowControl::Minimize)
+            );
+            assert_eq!(
+                WindowControl::from_accessibility("full screen button", Some("AXButton"), None),
+                Some(WindowControl::Maximize)
+            );
+            assert_eq!(
+                WindowControl::from_accessibility("zoom button", Some("AXButton"), None),
+                Some(WindowControl::Zoom)
+            );
+        }
+
+        #[test]
+        fn test_window_control_wrong_role_returns_none() {
+            assert!(
+                WindowControl::from_accessibility("close button", Some("AXGroup"), None).is_none()
+            );
+            assert!(WindowControl::from_accessibility("close button", None, None).is_none());
+        }
+
+        #[test]
+        fn test_window_control_unrelated_button_returns_none() {
+            assert!(WindowControl::from_accessibility("Submit", Some("AXButton"), None).is_none());
+        }
+
+        #[test]
+        fn test_window_control_unrelated_subrole_returns_none() {
+            assert!(
+                WindowControl::from_accessibility("", Some("AXButton"), Some("AXSortButton"))
+                    .is_none()
+            );
+        }
+
+        #[test]
+        fn test_window_control_shortcut_roundtrip() {
+            // Close has no shortcut — only Minimize and Maximize round-trip.
+            assert!(WindowControl::Close.shortcut().is_none());
+            for wc in [WindowControl::Minimize, WindowControl::Maximize] {
+                let (key, modifiers) = wc.shortcut().unwrap();
+                let recovered = WindowControl::from_shortcut(key, &modifiers);
+                assert_eq!(recovered, Some(wc), "roundtrip failed for {wc:?}");
+            }
+        }
+
+        #[test]
+        fn test_close_button_click_becomes_window_control_via_label() {
+            let events = vec![
+                make_event(
+                    1000,
+                    WalkthroughEventKind::MouseClicked {
+                        x: 14.0,
+                        y: 12.0,
+                        button: MouseButton::Left,
+                        click_count: 1,
+                        modifiers: vec![],
+                    },
+                ),
+                make_event(
+                    1000,
+                    WalkthroughEventKind::AccessibilityElementCaptured {
+                        label: "close button".to_string(),
+                        role: Some("AXButton".to_string()),
+                        subrole: None,
+                    },
+                ),
+            ];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 1);
+            // Close becomes a Click with WindowControl target (not PressKey).
+            assert!(matches!(
+                &actions[0].kind,
+                WalkthroughActionKind::Click { .. }
+            ));
+            assert!(matches!(
+                actions[0].target_candidates.first(),
+                Some(TargetCandidate::WindowControl {
+                    action: WindowControlAction::Close
+                })
+            ));
+        }
+
+        #[test]
+        fn test_close_via_subrole_no_label() {
+            // Electron apps: traffic light buttons have subrole but no label.
+            let events = vec![
+                make_event(
+                    1000,
+                    WalkthroughEventKind::MouseClicked {
+                        x: 48.0,
+                        y: 52.0,
+                        button: MouseButton::Left,
+                        click_count: 1,
+                        modifiers: vec![],
+                    },
+                ),
+                make_event(
+                    1000,
+                    WalkthroughEventKind::AccessibilityElementCaptured {
+                        label: String::new(),
+                        role: Some("AXButton".to_string()),
+                        subrole: Some("AXCloseButton".to_string()),
+                    },
+                ),
+            ];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 1);
+            assert!(matches!(
+                &actions[0].kind,
+                WalkthroughActionKind::Click { .. }
+            ));
+            assert!(matches!(
+                actions[0].target_candidates.first(),
+                Some(TargetCandidate::WindowControl {
+                    action: WindowControlAction::Close
+                })
+            ));
+        }
+
+        #[test]
+        fn test_minimize_button_click_becomes_press_key() {
+            let events = vec![
+                make_event(
+                    1000,
+                    WalkthroughEventKind::MouseClicked {
+                        x: 34.0,
+                        y: 12.0,
+                        button: MouseButton::Left,
+                        click_count: 1,
+                        modifiers: vec![],
+                    },
+                ),
+                make_event(
+                    1000,
+                    WalkthroughEventKind::AccessibilityElementCaptured {
+                        label: String::new(),
+                        role: Some("AXButton".to_string()),
+                        subrole: Some("AXMinimizeButton".to_string()),
+                    },
+                ),
+            ];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 1);
+            assert!(matches!(
+                &actions[0].kind,
+                WalkthroughActionKind::PressKey { key, modifiers }
+                    if key == "m" && modifiers == &["command"]
+            ));
+        }
+
+        #[test]
+        fn test_zoom_button_click_becomes_window_relative_click() {
+            let events = vec![
+                make_event(
+                    1000,
+                    WalkthroughEventKind::MouseClicked {
+                        x: 54.0,
+                        y: 12.0,
+                        button: MouseButton::Left,
+                        click_count: 1,
+                        modifiers: vec![],
+                    },
+                ),
+                make_event(
+                    1000,
+                    WalkthroughEventKind::AccessibilityElementCaptured {
+                        label: String::new(),
+                        role: Some("AXButton".to_string()),
+                        subrole: Some("AXZoomButton".to_string()),
+                    },
+                ),
+            ];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 1);
+            // Zoom button emits a Click with WindowControl target (resolved at
+            // execution time), NOT a PressKey — Ctrl+Cmd+F would toggle full
+            // screen instead of zooming the window.
+            assert!(matches!(
+                &actions[0].kind,
+                WalkthroughActionKind::Click { .. }
+            ));
+            assert!(matches!(
+                actions[0].target_candidates.as_slice(),
+                [TargetCandidate::WindowControl {
+                    action: WindowControlAction::Zoom
+                }]
+            ));
+        }
+
+        #[test]
+        fn test_fullscreen_button_click_becomes_press_key() {
+            let events = vec![
+                make_event(
+                    1000,
+                    WalkthroughEventKind::MouseClicked {
+                        x: 54.0,
+                        y: 12.0,
+                        button: MouseButton::Left,
+                        click_count: 1,
+                        modifiers: vec![],
+                    },
+                ),
+                make_event(
+                    1000,
+                    WalkthroughEventKind::AccessibilityElementCaptured {
+                        label: String::new(),
+                        role: Some("AXButton".to_string()),
+                        subrole: Some("AXFullScreenButton".to_string()),
+                    },
+                ),
+            ];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 1);
+            assert!(matches!(
+                &actions[0].kind,
+                WalkthroughActionKind::PressKey { key, modifiers }
+                    if key == "f" && modifiers == &["command", "control"]
+            ));
         }
     }
 
@@ -1621,6 +2080,64 @@ mod tests {
             let action = make_action(WalkthroughActionKind::Scroll { delta_y: -5.7 });
             let wf = synthesize_draft(&[action], Uuid::new_v4(), "Test");
             assert!(matches!(&wf.nodes[0].node_type, NodeType::Scroll(p) if p.delta_y == -5));
+        }
+
+        #[test]
+        fn test_window_control_synthesizes_semantic_node_name() {
+            // Cmd+W is "Close tab", not "Close window".
+            let action = make_action(WalkthroughActionKind::PressKey {
+                key: "w".to_string(),
+                modifiers: vec!["command".to_string()],
+            });
+            let wf = synthesize_draft(&[action], Uuid::new_v4(), "Test");
+            assert_eq!(wf.nodes[0].name, "Close tab");
+
+            let action = make_action(WalkthroughActionKind::PressKey {
+                key: "m".to_string(),
+                modifiers: vec!["command".to_string()],
+            });
+            let wf = synthesize_draft(&[action], Uuid::new_v4(), "Test");
+            assert_eq!(wf.nodes[0].name, "Minimize window");
+
+            let action = make_action(WalkthroughActionKind::PressKey {
+                key: "f".to_string(),
+                modifiers: vec!["command".to_string(), "control".to_string()],
+            });
+            let wf = synthesize_draft(&[action], Uuid::new_v4(), "Test");
+            assert_eq!(wf.nodes[0].name, "Maximize window");
+        }
+
+        #[test]
+        fn test_close_window_control_synthesizes_click_node() {
+            // Close buttons produce Click actions with WindowControl target candidate.
+            let mut action = make_action(WalkthroughActionKind::Click {
+                x: 14.0,
+                y: 14.0,
+                button: MouseButton::Left,
+                click_count: 1,
+            });
+            action.target_candidates = vec![TargetCandidate::WindowControl {
+                action: WindowControlAction::Close,
+            }];
+            let wf = synthesize_draft(&[action], Uuid::new_v4(), "Test");
+            assert_eq!(wf.nodes[0].name, "Close window");
+            assert!(matches!(
+                &wf.nodes[0].node_type,
+                NodeType::Click(p) if matches!(
+                    &p.target,
+                    Some(crate::ClickTarget::WindowControl { action: WindowControlAction::Close })
+                )
+            ));
+        }
+
+        #[test]
+        fn test_regular_press_key_name_unchanged() {
+            let action = make_action(WalkthroughActionKind::PressKey {
+                key: "return".to_string(),
+                modifiers: vec![],
+            });
+            let wf = synthesize_draft(&[action], Uuid::new_v4(), "Test");
+            assert_eq!(wf.nodes[0].name, "Press return");
         }
     }
 }

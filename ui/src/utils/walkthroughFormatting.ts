@@ -48,6 +48,7 @@ export function actionLabel(action: WalkthroughAction): string {
       if (best && best.type !== "Coordinates" && best.type !== "ImageCrop") {
         const label = (best.type === "OcrText") ? best.text
           : (best.type === "CdpElement") ? best.name
+          : (best.type === "WindowControl") ? best.action
           : best.label;
         return `Click '${label.length > 25 ? label.slice(0, 25) + "\u2026" : label}'`;
       }
@@ -73,6 +74,7 @@ export function targetCandidateLabel(candidate: TargetCandidate): string {
     case "ImageCrop": return "Image crop";
     case "Coordinates": return `(${candidate.x}, ${candidate.y})`;
     case "CdpElement": return `"${candidate.name}"`;
+    case "WindowControl": return candidate.action;
   }
 }
 
@@ -84,6 +86,7 @@ export function targetCandidateMethod(candidate: TargetCandidate): string {
     case "ImageCrop": return "Image template";
     case "Coordinates": return "Screen coordinates";
     case "CdpElement": return "DevTools DOM";
+    case "WindowControl": return "Window control";
   }
 }
 
@@ -95,6 +98,7 @@ export function targetCandidateIcon(candidate: TargetCandidate): string {
     case "ImageCrop": return "\u{1F5BC}";
     case "Coordinates": return "\u{1F4CD}";
     case "CdpElement": return "\u{1F310}";
+    case "WindowControl": return "\u{1F6AA}";
   }
 }
 

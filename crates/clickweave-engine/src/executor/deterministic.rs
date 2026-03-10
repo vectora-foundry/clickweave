@@ -63,6 +63,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let resolved_click;
         let effective = if let NodeType::Click(p) = node_type
+            && let Some(clickweave_core::ClickTarget::WindowControl { action }) = &p.target
+        {
+            // Window control buttons are resolved to window-relative coordinates.
+            resolved_click = self
+                .resolve_window_control_click(*action, mcp, p, &mut node_run)
+                .await?;
+            &resolved_click
+        } else if let NodeType::Click(p) = node_type
             && p.template_image.is_some()
             && p.x.is_none()
         {
@@ -675,6 +683,132 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             target: params.target.clone(),
             x: Some(x),
             y: Some(y),
+            button: params.button,
+            click_count: params.click_count,
+            ..Default::default()
+        }))
+    }
+
+    /// Resolve a window control click (close/minimize/maximize) to absolute
+    /// screen coordinates by querying the focused window's bounds and applying
+    /// the standard macOS traffic-light button offset.
+    async fn resolve_window_control_click(
+        &self,
+        action: clickweave_core::WindowControlAction,
+        mcp: &McpRouter,
+        params: &ClickParams,
+        node_run: &mut Option<&mut NodeRun>,
+    ) -> ExecutorResult<NodeType> {
+        let app_name = self.focused_app_name();
+        self.log(format!(
+            "Resolving window control '{}' for app {:?}",
+            action.display_name(),
+            app_name
+        ));
+
+        // Focus the window first — it may be off-screen (different Space,
+        // behind other windows) after a CDP relaunch or app switch.
+        if let Some(ref name) = app_name {
+            let focus_args = Some(serde_json::json!({"app_name": name}));
+            let _ = mcp.call_tool("focus_window", focus_args).await;
+        }
+
+        // Call list_windows to get window bounds.
+        let args = app_name
+            .as_ref()
+            .map(|name| serde_json::json!({"app_name": name}));
+        self.record_event(
+            node_run.as_deref(),
+            "tool_call",
+            serde_json::json!({"name": "list_windows", "args": args}),
+        );
+        let result = mcp
+            .call_tool("list_windows", args)
+            .await
+            .map_err(|e| ExecutorError::ClickTarget(format!("list_windows failed: {}", e)))?;
+        Self::check_tool_error(&result, "list_windows")?;
+
+        let result_text = Self::extract_result_text(&result);
+        let windows: Vec<Value> = serde_json::from_str(&result_text).map_err(|e| {
+            ExecutorError::ClickTarget(format!("Failed to parse list_windows response: {e}"))
+        })?;
+
+        // Find the best window: prefer on-screen windows, but accept off-screen
+        // ones (the focus_window call above may not have taken effect yet).
+        // Bounds are valid regardless of is_on_screen — we just need the
+        // window's position to compute the traffic light button coordinates.
+        let window = if let Some(ref name) = app_name {
+            let candidates: Vec<_> = windows
+                .iter()
+                .filter(|w| w["owner_name"].as_str() == Some(name))
+                .collect();
+            // Prefer on-screen, fall back to any matching window.
+            candidates
+                .iter()
+                .copied()
+                .filter(|w| w["is_on_screen"].as_bool().unwrap_or(false))
+                .min_by_key(|w| w["layer"].as_i64().unwrap_or(i64::MAX))
+                .or_else(|| {
+                    candidates
+                        .into_iter()
+                        .min_by_key(|w| w["layer"].as_i64().unwrap_or(i64::MAX))
+                })
+        } else {
+            let candidates: Vec<_> = windows.iter().collect();
+            candidates
+                .iter()
+                .copied()
+                .filter(|w| w["is_on_screen"].as_bool().unwrap_or(false))
+                .min_by_key(|w| w["layer"].as_i64().unwrap_or(i64::MAX))
+                .or_else(|| {
+                    candidates
+                        .into_iter()
+                        .min_by_key(|w| w["layer"].as_i64().unwrap_or(i64::MAX))
+                })
+        };
+
+        let window = window.ok_or_else(|| {
+            ExecutorError::ClickTarget(format!(
+                "No window found for app {:?} to resolve {}",
+                app_name,
+                action.display_name()
+            ))
+        })?;
+
+        let bounds = &window["bounds"];
+        let win_x = bounds["x"]
+            .as_f64()
+            .ok_or_else(|| ExecutorError::ClickTarget("Window bounds missing 'x'".to_string()))?;
+        let win_y = bounds["y"]
+            .as_f64()
+            .ok_or_else(|| ExecutorError::ClickTarget("Window bounds missing 'y'".to_string()))?;
+
+        let (offset_x, offset_y) = action.window_offset();
+        let click_x = win_x + offset_x;
+        let click_y = win_y + offset_y;
+
+        self.log(format!(
+            "Resolved {} -> ({click_x}, {click_y}) (window at {win_x}, {win_y})",
+            action.display_name()
+        ));
+
+        self.record_event(
+            node_run.as_deref(),
+            "target_resolved",
+            serde_json::json!({
+                "method": "window_control",
+                "action": action.display_name(),
+                "window_x": win_x,
+                "window_y": win_y,
+                "click_x": click_x,
+                "click_y": click_y,
+            }),
+        );
+
+        Ok(NodeType::Click(ClickParams {
+            target: params.target.clone(),
+            x: Some(click_x),
+            y: Some(click_y),
             button: params.button,
             click_count: params.click_count,
             ..Default::default()

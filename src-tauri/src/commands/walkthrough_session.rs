@@ -1383,9 +1383,12 @@ async fn enrich_click_background(
                 screenshot_path = Some(path.clone());
                 screenshot_meta = *meta;
             }
-            WalkthroughEventKind::AccessibilityElementCaptured { label, role } => {
-                has_actionable_ax =
-                    clickweave_core::walkthrough::is_actionable_ax_role(role.as_deref());
+            WalkthroughEventKind::AccessibilityElementCaptured { label, role, .. } => {
+                // Only treat as actionable if we also have a non-empty label.
+                // Elements with an actionable role but no label (e.g. unlabeled
+                // buttons with a subrole) should still get VLM fallback.
+                has_actionable_ax = !label.is_empty()
+                    && clickweave_core::walkthrough::is_actionable_ax_role(role.as_deref());
                 ax_label_data = Some((label.clone(), role.clone()));
             }
             _ => {}

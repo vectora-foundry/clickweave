@@ -273,7 +273,12 @@ binary_path: string | null; app_kind: AppKind }
 export type ChatEntry = { role: ChatRole; content: string; timestamp: number; patch_summary?: PatchSummary | null; run_context?: RunContext | null }
 export type ChatRole = "user" | "assistant"
 export type ClickParams = { target: ClickTarget | null; template_image?: string | null; x: number | null; y: number | null; button: MouseButton; click_count: number }
-export type ClickTarget = { type: "Text"; text: string } | { type: "CdpElement"; name: string; role: string | null; href: string | null; parent_role: string | null; parent_name: string | null }
+export type ClickTarget = { type: "Text"; text: string } | { type: "CdpElement"; name: string; role: string | null; href: string | null; parent_role: string | null; parent_name: string | null } | 
+/**
+ * macOS window control button — resolved at execution time to
+ * window-relative coordinates via `list_windows`.
+ */
+{ type: "WindowControl"; action: WindowControlAction }
 export type Condition = { left: ValueRef; operator: Operator; right: ValueRef }
 /**
  * Persistent conversation session for a workflow.
@@ -393,7 +398,12 @@ export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role:
 /**
  * Element captured via Chrome DevTools Protocol click listener.
  */
-{ type: "CdpElement"; name: string; role: string | null; href: string | null; parent_role: string | null; parent_name: string | null }
+{ type: "CdpElement"; name: string; role: string | null; href: string | null; parent_role: string | null; parent_name: string | null } | 
+/**
+ * macOS window control button (close, minimize, maximize).
+ * Resolved at execution time to a window-relative click.
+ */
+{ type: "WindowControl"; action: WindowControlAction }
 export type TargetOverride = { node_id: string; chosen_candidate_index: number }
 export type TraceEvent = { timestamp: number; event_type: string; payload: JsonValue }
 export type TraceLevel = "Off" | "Minimal" | "Full"
@@ -409,6 +419,15 @@ screenshot_meta?: ScreenshotMeta | null }
 export type WalkthroughActionKind = { type: "LaunchApp"; app_name: string; app_kind: AppKind } | { type: "FocusWindow"; app_name: string; window_title: string | null; app_kind: AppKind } | { type: "Click"; x: number; y: number; button: MouseButton; click_count: number } | { type: "TypeText"; text: string } | { type: "PressKey"; key: string; modifiers: string[] } | { type: "Scroll"; delta_y: number }
 export type WalkthroughAnnotations = { deleted_node_ids: string[]; renamed_nodes: NodeRename[]; target_overrides: TargetOverride[]; variable_promotions: VariablePromotion[] }
 export type WalkthroughDraftResponse = { actions: WalkthroughAction[]; draft: Workflow | null; warnings: string[] }
+/**
+ * macOS window control button (traffic light) actions.
+ * 
+ * At execution time these are resolved to window-relative clicks by
+ * querying the focused window's position and applying a fixed pixel offset.
+ * This is more reliable than keyboard shortcuts — e.g. Cmd+W closes a tab
+ * in tabbed apps, not the window.
+ */
+export type WindowControlAction = "Close" | "Minimize" | "Maximize" | "Zoom"
 export type Workflow = { id: string; name: string; nodes: Node[]; edges: Edge[] }
 export type WorkflowPatch = { added_nodes: Node[]; removed_node_ids: string[]; updated_nodes: Node[]; added_edges: Edge[]; removed_edges: Edge[]; warnings: string[] }
 
