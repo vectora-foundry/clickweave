@@ -273,6 +273,7 @@ binary_path: string | null; app_kind: AppKind }
 export type ChatEntry = { role: ChatRole; content: string; timestamp: number; patch_summary?: PatchSummary | null; run_context?: RunContext | null }
 export type ChatRole = "user" | "assistant"
 export type ClickParams = { target: ClickTarget | null; template_image?: string | null; x: number | null; y: number | null; button: MouseButton; click_count: number }
+export type HoverParams = { target: ClickTarget | null; template_image?: string | null; x: number | null; y: number | null; dwell_ms: number }
 export type ClickTarget = { type: "Text"; text: string } | { type: "CdpElement"; name: string; role: string | null; href: string | null; parent_role: string | null; parent_name: string | null }
 export type Condition = { left: ValueRef; operator: Operator; right: ValueRef }
 /**
@@ -340,7 +341,7 @@ export type NodeRename = { node_id: string; new_name: string }
 export type NodeResult = { node_name: string; status: string; error?: string | null }
 export type NodeRole = "Default" | "Verification"
 export type NodeRun = { run_id: string; node_id: string; node_name?: string; execution_dir?: string; started_at: number; ended_at: number | null; status: RunStatus; trace_level: TraceLevel; events: TraceEvent[]; artifacts: Artifact[]; observed_summary: string | null }
-export type NodeType = ({ type: "AiStep" } & AiStepParams) | ({ type: "TakeScreenshot" } & TakeScreenshotParams) | ({ type: "FindText" } & FindTextParams) | ({ type: "FindImage" } & FindImageParams) | ({ type: "Click" } & ClickParams) | ({ type: "TypeText" } & TypeTextParams) | ({ type: "PressKey" } & PressKeyParams) | ({ type: "Scroll" } & ScrollParams) | ({ type: "ListWindows" } & ListWindowsParams) | ({ type: "FocusWindow" } & FocusWindowParams) | ({ type: "McpToolCall" } & McpToolCallParams) | ({ type: "AppDebugKitOp" } & AppDebugKitParams) | ({ type: "If" } & IfParams) | ({ type: "Switch" } & SwitchParams) | ({ type: "Loop" } & LoopParams) | ({ type: "EndLoop" } & EndLoopParams)
+export type NodeType = ({ type: "AiStep" } & AiStepParams) | ({ type: "TakeScreenshot" } & TakeScreenshotParams) | ({ type: "FindText" } & FindTextParams) | ({ type: "FindImage" } & FindImageParams) | ({ type: "Click" } & ClickParams) | ({ type: "Hover" } & HoverParams) | ({ type: "TypeText" } & TypeTextParams) | ({ type: "PressKey" } & PressKeyParams) | ({ type: "Scroll" } & ScrollParams) | ({ type: "ListWindows" } & ListWindowsParams) | ({ type: "FocusWindow" } & FocusWindowParams) | ({ type: "McpToolCall" } & McpToolCallParams) | ({ type: "AppDebugKitOp" } & AppDebugKitParams) | ({ type: "If" } & IfParams) | ({ type: "Switch" } & SwitchParams) | ({ type: "Loop" } & LoopParams) | ({ type: "EndLoop" } & EndLoopParams)
 export type NodeTypeInfo = { name: string; category: string; icon: string; node_type: NodeType }
 export type Operator = "Equals" | "NotEquals" | "GreaterThan" | "LessThan" | "GreaterThanOrEqual" | "LessThanOrEqual" | "Contains" | "NotContains" | "IsEmpty" | "IsNotEmpty"
 export type PatchRequest = { workflow: Workflow; user_prompt: string; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean; mcp_command: string }
@@ -405,8 +406,8 @@ export type WalkthroughAction = { id: string; kind: WalkthroughActionKind; app_n
 /**
  * Screenshot coordinate metadata for VLM click target resolution.
  */
-screenshot_meta?: ScreenshotMeta | null }
-export type WalkthroughActionKind = { type: "LaunchApp"; app_name: string; app_kind: AppKind } | { type: "FocusWindow"; app_name: string; window_title: string | null; app_kind: AppKind } | { type: "Click"; x: number; y: number; button: MouseButton; click_count: number } | { type: "TypeText"; text: string } | { type: "PressKey"; key: string; modifiers: string[] } | { type: "Scroll"; delta_y: number }
+screenshot_meta?: ScreenshotMeta | null; candidate: boolean }
+export type WalkthroughActionKind = { type: "LaunchApp"; app_name: string; app_kind: AppKind } | { type: "FocusWindow"; app_name: string; window_title: string | null; app_kind: AppKind } | { type: "Click"; x: number; y: number; button: MouseButton; click_count: number } | { type: "TypeText"; text: string } | { type: "PressKey"; key: string; modifiers: string[] } | { type: "Scroll"; delta_y: number } | { type: "Hover"; x: number; y: number; dwell_ms: number }
 export type WalkthroughAnnotations = { deleted_node_ids: string[]; renamed_nodes: NodeRename[]; target_overrides: TargetOverride[]; variable_promotions: VariablePromotion[] }
 export type WalkthroughDraftResponse = { actions: WalkthroughAction[]; draft: Workflow | null; warnings: string[] }
 export type Workflow = { id: string; name: string; nodes: Node[]; edges: Edge[] }

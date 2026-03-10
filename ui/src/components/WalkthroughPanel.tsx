@@ -253,8 +253,8 @@ export function WalkthroughPanel() {
                         />
                       </div>
 
-                      {/* Target candidates (Click nodes with action metadata) */}
-                      {action && action.kind.type === "Click" && action.target_candidates.length > 0 && (() => {
+                      {/* Target candidates (Click/Hover nodes with action metadata) */}
+                      {action && (action.kind.type === "Click" || action.kind.type === "Hover") && action.target_candidates.length > 0 && (() => {
                         const actionAppKind = action.app_name ? appKindMap.get(action.app_name) : undefined;
                         const isCdpApp = actionAppKind ? usesCdp(actionAppKind) : false;
                         // For Electron/Chrome apps, hide non-actionable AX labels (e.g. AXWindow)

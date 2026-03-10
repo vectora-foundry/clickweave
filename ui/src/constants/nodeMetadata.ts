@@ -5,6 +5,7 @@ export const nodeMetadata: Record<string, { color: string; icon: string }> = {
   FindText:       { color: "#a855f7", icon: "FT" },
   FindImage:      { color: "#a855f7", icon: "FI" },
   Click:          { color: "#f59e0b", icon: "CK" },
+  Hover:          { color: "#f59e0b", icon: "HV" },
   TypeText:       { color: "#f59e0b", icon: "TT" },
   Scroll:         { color: "#f59e0b", icon: "SC" },
   ListWindows:    { color: "#50c878", icon: "LW" },

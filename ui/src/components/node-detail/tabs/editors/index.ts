@@ -4,6 +4,7 @@ import { AppDebugKitOpEditor } from "./AppDebugKitOpEditor";
 import { ClickEditor } from "./ClickEditor";
 import { EndLoopEditor } from "./EndLoopEditor";
 import { FindImageEditor } from "./FindImageEditor";
+import { HoverEditor } from "./HoverEditor";
 import { FindTextEditor } from "./FindTextEditor";
 import { FocusWindowEditor } from "./FocusWindowEditor";
 import { IfEditor } from "./IfEditor";
@@ -28,6 +29,7 @@ export const editorRegistry: Record<string, React.FC<NodeEditorProps>> = {
   FindImage: FindImageEditor,
   FindText: FindTextEditor,
   FocusWindow: FocusWindowEditor,
+  Hover: HoverEditor,
   If: IfEditor,
   ListWindows: ListWindowsEditor,
   Loop: LoopEditor,
