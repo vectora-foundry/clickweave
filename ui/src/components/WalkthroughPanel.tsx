@@ -165,7 +165,7 @@ export function WalkthroughPanel() {
 
       {/* Action list */}
       <div className="flex-1 overflow-y-auto px-3 py-3">
-        {draftNodes.length === 0 ? (
+        {draftNodes.length === 0 && candidateActions.length === 0 ? (
           <div className="flex h-full items-center justify-center">
             <p className="text-center text-xs text-[var(--text-muted)]">No actions captured</p>
           </div>

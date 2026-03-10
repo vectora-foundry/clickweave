@@ -356,7 +356,7 @@ pub(super) async fn process_capture_events(
     // Start hover tracking for the recording session (non-fatal if unavailable).
     if let Some(ref mcp) = mcp {
         let mut hover_args = serde_json::json!({
-            "min_dwell_ms": 300,
+            "min_dwell_ms": 100,
             "poll_interval_ms": 100,
             "max_duration_ms": 600_000,
         });

@@ -74,22 +74,15 @@ export function applyAnnotationsToDraft(
       return updated;
     });
 
-  // Rebuild edges: keep original edges between non-deleted nodes, and
-  // bridge gaps left by deleted nodes. Walkthrough drafts are linear, so
-  // consecutive non-deleted nodes should be connected.
-  const keptEdges = draft.edges.filter(
-    (e) => !deletedNodeIds.has(e.from) && !deletedNodeIds.has(e.to),
-  );
-  const connectedPairs = new Set(keptEdges.map((e) => `${e.from}->${e.to}`));
-  const activeNodeIds = nodes.map((n) => n.id);
-  for (let i = 0; i < activeNodeIds.length - 1; i++) {
-    const key = `${activeNodeIds[i]}->${activeNodeIds[i + 1]}`;
-    if (!connectedPairs.has(key)) {
-      keptEdges.push({ from: activeNodeIds[i], to: activeNodeIds[i + 1], output: null });
-    }
+  // Rebuild edges from scratch using consecutive node ordering.
+  // Walkthrough drafts are always linear, so this is both simpler and
+  // correct even when nodes have been inserted (kept candidates) or deleted.
+  const edges: Edge[] = [];
+  for (let i = 0; i < nodes.length - 1; i++) {
+    edges.push({ from: nodes[i].id, to: nodes[i + 1].id, output: null });
   }
 
-  return { nodes, edges: keptEdges };
+  return { nodes, edges };
 }
 
 /**

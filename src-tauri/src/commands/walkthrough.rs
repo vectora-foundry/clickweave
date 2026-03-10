@@ -623,7 +623,7 @@ fn retrieve_hover_candidates(
 ) -> Vec<WalkthroughAction> {
     let mut candidates = Vec::new();
 
-    for (i, event) in events.iter().enumerate() {
+    for event in events {
         if let WalkthroughEventKind::HoverDetected {
             x,
             y,
@@ -637,13 +637,15 @@ fn retrieve_hover_candidates(
                 continue;
             }
 
-            // Skip if next non-enrichment event is a click near same coordinates
-            // (the click subsumes the hover intent).
-            let click_follows = events[i + 1..].iter().any(|e| {
+            // Skip if any click near the same coordinates occurred shortly after
+            // this hover (the click subsumes the hover intent).  Scans all events
+            // because hover entries may be appended after clicks in the file.
+            let click_follows = events.iter().any(|e| {
                 matches!(
                     &e.kind,
                     WalkthroughEventKind::MouseClicked { x: cx, y: cy, .. }
                     if (cx - x).abs() < 20.0 && (cy - y).abs() < 20.0
+                        && e.timestamp > event.timestamp
                         && e.timestamp.saturating_sub(event.timestamp) < 2000
                 )
             });
