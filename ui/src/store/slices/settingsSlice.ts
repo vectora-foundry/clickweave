@@ -12,6 +12,7 @@ export interface SettingsSlice {
   vlmEnabled: boolean;
   mcpCommand: string;
   maxRepairAttempts: number;
+  hoverDwellThreshold: number;
   _settingsLoaded: boolean;
 
   loadSettingsFromDisk: () => void;
@@ -21,6 +22,7 @@ export interface SettingsSlice {
   setVlmEnabled: (enabled: boolean) => void;
   setMcpCommand: (cmd: string) => void;
   setMaxRepairAttempts: (n: number) => void;
+  setHoverDwellThreshold: (ms: number) => void;
 }
 
 function persistSetting<K extends keyof PersistedSettings>(
@@ -47,6 +49,7 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
   vlmEnabled: DEFAULT_VLM_ENABLED,
   mcpCommand: DEFAULT_MCP_COMMAND,
   maxRepairAttempts: 3,
+  hoverDwellThreshold: 1000,
   _settingsLoaded: false,
 
   loadSettingsFromDisk: () => {
@@ -61,6 +64,7 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
           vlmEnabled: s.vlmEnabled,
           mcpCommand: s.mcpCommand,
           maxRepairAttempts: clampInt(s.maxRepairAttempts, 0, 10, 3),
+          hoverDwellThreshold: clampInt(s.hoverDwellThreshold, 100, 10000, 1000),
         });
       })
       .catch((e) => console.error("Failed to load settings:", e));
@@ -72,4 +76,5 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
   setVlmEnabled: (enabled) => persistSetting("vlmEnabled", enabled, set),
   setMcpCommand: (cmd) => persistSetting("mcpCommand", cmd, set),
   setMaxRepairAttempts: (n) => persistSetting("maxRepairAttempts", clampInt(n, 0, 10, 3), set),
+  setHoverDwellThreshold: (ms) => persistSetting("hoverDwellThreshold", clampInt(ms, 100, 10000, 1000), set),
 });

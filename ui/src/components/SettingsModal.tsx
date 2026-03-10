@@ -8,6 +8,7 @@ interface SettingsModalProps {
   vlmEnabled: boolean;
   mcpCommand: string;
   maxRepairAttempts: number;
+  hoverDwellThreshold: number;
   onClose: () => void;
   onPlannerConfigChange: (config: EndpointConfig) => void;
   onAgentConfigChange: (config: EndpointConfig) => void;
@@ -15,6 +16,7 @@ interface SettingsModalProps {
   onVlmEnabledChange: (enabled: boolean) => void;
   onMcpCommandChange: (cmd: string) => void;
   onMaxRepairAttemptsChange: (n: number) => void;
+  onHoverDwellThresholdChange: (ms: number) => void;
 }
 
 const inputClass =
@@ -88,6 +90,7 @@ export function SettingsModal({
   vlmEnabled,
   mcpCommand,
   maxRepairAttempts,
+  hoverDwellThreshold,
   onClose,
   onPlannerConfigChange,
   onAgentConfigChange,
@@ -95,6 +98,7 @@ export function SettingsModal({
   onVlmEnabledChange,
   onMcpCommandChange,
   onMaxRepairAttemptsChange,
+  onHoverDwellThresholdChange,
 }: SettingsModalProps) {
   if (!open) return null;
 
@@ -210,6 +214,34 @@ export function SettingsModal({
               />
               <p className="mt-1 text-[10px] text-[var(--text-muted)]">
                 Leave empty to use npx, or set a path to a local binary
+              </p>
+            </div>
+          </div>
+
+          <div>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+              Walkthrough
+            </h3>
+            <p className="mb-2 text-[10px] text-[var(--text-muted)]">
+              Controls walkthrough recording behavior.
+            </p>
+            <div>
+              <label className="mb-1 block text-xs text-[var(--text-secondary)]">
+                Hover Detection Threshold (ms)
+              </label>
+              <input
+                type="number"
+                min={100}
+                max={10000}
+                value={hoverDwellThreshold}
+                onChange={(e) => {
+                  const clamped = Math.max(100, Math.min(10000, Math.floor(Number(e.target.value) || 1000)));
+                  onHoverDwellThresholdChange(clamped);
+                }}
+                className={inputClass}
+              />
+              <p className="mt-1 text-[10px] text-[var(--text-muted)]">
+                How long the cursor must stay on an element before it counts as a hover action (100-10000ms).
               </p>
             </div>
           </div>

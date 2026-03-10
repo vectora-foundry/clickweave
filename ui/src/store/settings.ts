@@ -9,6 +9,7 @@ export interface PersistedSettings {
   vlmEnabled: boolean;
   mcpCommand: string;
   maxRepairAttempts: number;
+  hoverDwellThreshold: number;
 }
 
 const SETTINGS_DEFAULTS: PersistedSettings = {
@@ -18,6 +19,7 @@ const SETTINGS_DEFAULTS: PersistedSettings = {
   vlmEnabled: DEFAULT_VLM_ENABLED,
   mcpCommand: DEFAULT_MCP_COMMAND,
   maxRepairAttempts: 3,
+  hoverDwellThreshold: 1000,
 };
 
 export async function loadSettings(): Promise<PersistedSettings> {
@@ -33,6 +35,7 @@ export async function loadSettings(): Promise<PersistedSettings> {
   const vlmEnabled = await store.get<boolean>("vlmEnabled");
   const mcpCommand = await store.get<string>("mcpCommand");
   const maxRepairAttempts = await store.get<number>("maxRepairAttempts");
+  const hoverDwellThreshold = await store.get<number>("hoverDwellThreshold");
   return {
     plannerConfig: plannerConfig ?? fallback,
     agentConfig: agentConfig ?? fallback,
@@ -40,6 +43,7 @@ export async function loadSettings(): Promise<PersistedSettings> {
     vlmEnabled: vlmEnabled ?? SETTINGS_DEFAULTS.vlmEnabled,
     mcpCommand: mcpCommand ?? SETTINGS_DEFAULTS.mcpCommand,
     maxRepairAttempts: maxRepairAttempts ?? SETTINGS_DEFAULTS.maxRepairAttempts,
+    hoverDwellThreshold: hoverDwellThreshold ?? SETTINGS_DEFAULTS.hoverDwellThreshold,
   };
 }
 

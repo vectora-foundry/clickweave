@@ -60,6 +60,7 @@ function App() {
   const cdpModalOpen = useStore((s) => s.walkthroughCdpModalOpen);
   const cdpProgress = useStore((s) => s.walkthroughCdpProgress);
   const maxRepairAttempts = useStore((s) => s.maxRepairAttempts);
+  const hoverDwellThreshold = useStore((s) => s.hoverDwellThreshold);
   const detailTab = useStore((s) => s.detailTab);
 
   // ── Action selectors ─────────────────────────────────────────────
@@ -79,6 +80,7 @@ function App() {
   const setVlmEnabled = useStore((s) => s.setVlmEnabled);
   const setMcpCommand = useStore((s) => s.setMcpCommand);
   const setMaxRepairAttempts = useStore((s) => s.setMaxRepairAttempts);
+  const setHoverDwellThreshold = useStore((s) => s.setHoverDwellThreshold);
   const setExecutionMode = useStore((s) => s.setExecutionMode);
   const supervisionRespond = useStore((s) => s.supervisionRespond);
   const runWorkflow = useStore((s) => s.runWorkflow);
@@ -257,6 +259,7 @@ function App() {
         vlmEnabled={vlmEnabled}
         mcpCommand={mcpCommand}
         maxRepairAttempts={maxRepairAttempts}
+        hoverDwellThreshold={hoverDwellThreshold}
         onClose={() => setShowSettings(false)}
         onPlannerConfigChange={setPlannerConfig}
         onAgentConfigChange={setAgentConfig}
@@ -264,6 +267,7 @@ function App() {
         onVlmEnabledChange={setVlmEnabled}
         onMcpCommandChange={setMcpCommand}
         onMaxRepairAttemptsChange={setMaxRepairAttempts}
+        onHoverDwellThresholdChange={setHoverDwellThreshold}
       />
 
       <VerdictModal />
