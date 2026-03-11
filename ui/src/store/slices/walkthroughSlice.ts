@@ -404,7 +404,9 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     // reorder, and flatten back.
     const groupIdRanges: string[][] = groups.map((g) => g.items.map((item) => item.id));
     const [movedRange] = groupIdRanges.splice(fromGroupIndex, 1);
-    groupIdRanges.splice(toGroupIndex, 0, movedRange);
+    // Compensate for source removal on downward moves
+    const insertAt = fromGroupIndex < toGroupIndex ? toGroupIndex - 1 : toGroupIndex;
+    groupIdRanges.splice(insertAt, 0, movedRange);
 
     return { walkthroughNodeOrder: groupIdRanges.flat() };
   }),
