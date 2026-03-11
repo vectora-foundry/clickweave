@@ -433,7 +433,13 @@ export type WalkthroughDraftResponse = { actions: WalkthroughAction[]; draft: Wo
  * This is more reliable than keyboard shortcuts — e.g. Cmd+W closes a tab
  * in tabbed apps, not the window.
  */
-export type WindowControlAction = "Close" | "Minimize" | "Maximize" | "Zoom"
+export type WindowControlAction = "Close" | "Minimize" | "Maximize" | 
+/**
+ * Green button in "zoom" mode — resizes/maximizes the window without
+ * entering full screen. Same physical button as Maximize but different
+ * macOS subrole (`AXZoomButton` vs `AXFullScreenButton`).
+ */
+"Zoom"
 export type Workflow = { id: string; name: string; nodes: Node[]; edges: Edge[] }
 export type WorkflowPatch = { added_nodes: Node[]; removed_node_ids: string[]; updated_nodes: Node[]; added_edges: Edge[]; removed_edges: Edge[]; warnings: string[] }
 
