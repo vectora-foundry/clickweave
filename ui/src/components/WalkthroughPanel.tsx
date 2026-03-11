@@ -561,27 +561,36 @@ export function WalkthroughPanel() {
             ))}
 
             {/* Trailing drop zone */}
-            <div
-              className="h-4"
-              onDragOver={(e) => {
-                e.preventDefault();
-                setDragOverIndex(groups.reduce((sum, g) => sum + g.items.length, 0));
-              }}
-              onDragLeave={() => setDragOverIndex(null)}
-              onDrop={(e) => {
-                e.preventDefault();
-                setDragOverIndex(null);
-                const itemId = e.dataTransfer.getData(DND_ITEM_ID);
-                const groupIdxStr = e.dataTransfer.getData(DND_GROUP_INDEX);
-                if (itemId) {
-                  const fromIdx = walkthroughNodeOrder.indexOf(itemId);
-                  if (fromIdx >= 0) reorderNode(fromIdx, walkthroughNodeOrder.length - 1);
-                } else if (groupIdxStr) {
-                  const fromGroupIdx = parseInt(groupIdxStr, 10);
-                  if (!isNaN(fromGroupIdx)) reorderGroup(fromGroupIdx, groups.length);
-                }
-              }}
-            />
+            {(() => {
+              const totalItems = groups.reduce((sum, g) => sum + g.items.length, 0);
+              return (
+                <div
+                  className="relative h-4"
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setDragOverIndex(totalItems);
+                  }}
+                  onDragLeave={() => setDragOverIndex(null)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDragOverIndex(null);
+                    const itemId = e.dataTransfer.getData(DND_ITEM_ID);
+                    const groupIdxStr = e.dataTransfer.getData(DND_GROUP_INDEX);
+                    if (itemId) {
+                      const fromIdx = walkthroughNodeOrder.indexOf(itemId);
+                      if (fromIdx >= 0) reorderNode(fromIdx, walkthroughNodeOrder.length - 1);
+                    } else if (groupIdxStr) {
+                      const fromGroupIdx = parseInt(groupIdxStr, 10);
+                      if (!isNaN(fromGroupIdx)) reorderGroup(fromGroupIdx, groups.length);
+                    }
+                  }}
+                >
+                  {dragOverIndex === totalItems && (
+                    <div className="absolute left-0 right-0 top-0 h-0.5 bg-[var(--accent-coral)]" />
+                  )}
+                </div>
+              );
+            })()}
           </div>
         )}
       </div>

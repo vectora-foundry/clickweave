@@ -119,21 +119,32 @@ export function isValidItemDrop(
   targetIndex: number,
   groups: AppGroup[],
 ): boolean {
-  // Anchors cannot be dragged
-  for (const g of groups) {
-    for (const ai of g.anchorIndices) {
-      if (g.items[ai].id === dragId) return false;
+  // Find the source group for the dragged item
+  let sourceGroupIdx = -1;
+  for (let gi = 0; gi < groups.length; gi++) {
+    const g = groups[gi];
+    for (const item of g.items) {
+      if (item.id === dragId) {
+        // Anchors cannot be dragged
+        if (g.anchorIndices.has(g.items.indexOf(item))) return false;
+        sourceGroupIdx = gi;
+        break;
+      }
     }
+    if (sourceGroupIdx >= 0) break;
   }
+  if (sourceGroupIdx < 0) return false;
 
-  // Find which group the target index falls into.
-  // targetIndex is a flat index into the ordered items.
+  // Find which group the target index falls into
   let flatIndex = 0;
-  for (const group of groups) {
+  for (let gi = 0; gi < groups.length; gi++) {
+    const group = groups[gi];
     const groupStart = flatIndex;
     const groupEnd = flatIndex + group.items.length;
     if (targetIndex >= groupStart && targetIndex < groupEnd) {
-      // Dropping within this group — can't go above any anchor
+      // Items can only be dropped within their source group
+      if (gi !== sourceGroupIdx) return false;
+      // Can't go above any anchor
       if (group.anchorIndices.size > 0) {
         const lowestAnchorFlat = groupStart + Math.min(...group.anchorIndices);
         if (targetIndex <= lowestAnchorFlat) {
@@ -145,8 +156,11 @@ export function isValidItemDrop(
     flatIndex = groupEnd;
   }
 
-  // Dropping at the very end or between groups — always valid
-  return true;
+  // Dropping at the very end — only valid if it's the source group's tail
+  const sourceGroup = groups[sourceGroupIdx];
+  const sourceStart = groups.slice(0, sourceGroupIdx).reduce((s, g) => s + g.items.length, 0);
+  const sourceEnd = sourceStart + sourceGroup.items.length;
+  return targetIndex === sourceEnd;
 }
 
 // --- Initial order ---
