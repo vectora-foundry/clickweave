@@ -3,6 +3,7 @@ import { commands } from "../../bindings";
 import type { CdpAppConfig, NodeRename, TargetOverride, VariablePromotion, WalkthroughAction, WalkthroughAnnotations, Workflow } from "../../bindings";
 import type { CdpSetupProgress } from "../../components/CdpAppSelectModal";
 import { applyAnnotationsToDraft, findCandidateInsertIndex, recomputeNodePositions, synthesizeNodeForKeptCandidate } from "../../utils/walkthroughDraft";
+import { buildInitialOrder, computeAppGroups } from "../../utils/walkthroughGrouping";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { currentMonitor } from "@tauri-apps/api/window";
 import { LogicalSize, LogicalPosition } from "@tauri-apps/api/dpi";
@@ -109,6 +110,7 @@ export interface WalkthroughSlice {
   walkthroughActionNodeMap: ActionNodeEntry[];
   walkthroughCdpModalOpen: boolean;
   walkthroughCdpProgress: CdpSetupProgress[];
+  walkthroughNodeOrder: string[];
 
   setWalkthroughStatus: (status: WalkthroughStatus) => void;
   setWalkthroughPanelOpen: (open: boolean) => void;
@@ -139,6 +141,8 @@ export interface WalkthroughSlice {
   promoteToVariable: (nodeId: string, variableName: string) => void;
   removeVariablePromotion: (nodeId: string) => void;
   resetAnnotations: () => void;
+  reorderNode: (fromIndex: number, toIndex: number) => void;
+  reorderGroup: (fromGroupIndex: number, toGroupIndex: number) => void;
   applyDraftToCanvas: () => Promise<void>;
   discardDraft: () => Promise<void>;
 }
@@ -156,6 +160,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   walkthroughActionNodeMap: [],
   walkthroughCdpModalOpen: false,
   walkthroughCdpProgress: [],
+  walkthroughNodeOrder: [],
 
   setWalkthroughStatus: (status) => {
     set({ walkthroughStatus: status });
@@ -188,17 +193,22 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     walkthroughStatus: "Review",
     walkthroughPanelOpen: true,
     walkthroughAnnotations: { ...emptyAnnotations },
+    walkthroughNodeOrder: draft ? buildInitialOrder(actions, draft.nodes, action_node_map) : [],
   }),
 
   fetchWalkthroughDraft: async () => {
     const result = await commands.getWalkthroughDraft();
     if (result.status === "ok") {
+      const existingMap = get().walkthroughActionNodeMap;
       set({
         walkthroughActions: result.data.actions,
         walkthroughDraft: result.data.draft ?? null,
         walkthroughWarnings: result.data.warnings,
         walkthroughStatus: "Review",
         walkthroughPanelOpen: true,
+        walkthroughNodeOrder: result.data.draft
+          ? buildInitialOrder(result.data.actions, result.data.draft.nodes, existingMap)
+          : [],
       });
     }
   },
@@ -215,6 +225,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       walkthroughExpandedAction: null,
       walkthroughActionNodeMap: [],
       walkthroughCdpProgress: [],
+      walkthroughNodeOrder: [],
 
       assistantOpen: false,
     });
@@ -269,6 +280,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       walkthroughAnnotations: { ...emptyAnnotations },
       walkthroughExpandedAction: null,
       walkthroughActionNodeMap: [],
+      walkthroughNodeOrder: [],
 
       walkthroughPanelOpen: false,
     });
@@ -313,11 +325,15 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
         ...s.walkthroughActionNodeMap,
         { action_id: actionId, node_id: nodeId },
       ],
+      walkthroughNodeOrder: s.walkthroughNodeOrder.map((id) =>
+        id === actionId ? nodeId : id,
+      ),
     };
   }),
 
   dismissCandidate: (actionId) => set((s) => ({
     walkthroughActions: s.walkthroughActions.filter((a) => a.id !== actionId),
+    walkthroughNodeOrder: s.walkthroughNodeOrder.filter((id) => id !== actionId),
   })),
 
   deleteNode: (nodeId) => set((s) => ({
@@ -367,6 +383,53 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     walkthroughExpandedAction: null,
   }),
 
+  reorderNode: (fromIndex, toIndex) => set((s) => {
+    const order = [...s.walkthroughNodeOrder];
+    const [moved] = order.splice(fromIndex, 1);
+    order.splice(toIndex, 0, moved);
+    return { walkthroughNodeOrder: order };
+  }),
+
+  reorderGroup: (fromGroupIndex, toGroupIndex) => set((s) => {
+    if (!s.walkthroughDraft) return {};
+    const deletedSet = new Set(s.walkthroughAnnotations.deleted_node_ids);
+    const groups = computeAppGroups(
+      s.walkthroughNodeOrder, s.walkthroughDraft.nodes,
+      s.walkthroughActions, s.walkthroughActionNodeMap, deletedSet,
+    );
+    if (fromGroupIndex < 0 || fromGroupIndex >= groups.length) return {};
+    if (toGroupIndex < 0 || toGroupIndex >= groups.length) return {};
+
+    // Extract the flat ID ranges for each group, rebuild order
+    const groupIdRanges: string[][] = groups.map((g) => g.items.map((item) => item.id));
+    const [movedRange] = groupIdRanges.splice(fromGroupIndex, 1);
+    groupIdRanges.splice(toGroupIndex, 0, movedRange);
+
+    // Reconstruct order: group IDs in new order, with deleted IDs
+    // reinserted after their original predecessor (preserve position).
+    const newActiveOrder = groupIdRanges.flat();
+    const deletedIds = s.walkthroughNodeOrder.filter((id) => deletedSet.has(id));
+
+    // Re-insert deleted IDs at their original relative positions
+    const oldOrder = s.walkthroughNodeOrder;
+    const finalOrder = [...newActiveOrder];
+    for (const delId of deletedIds) {
+      const oldIdx = oldOrder.indexOf(delId);
+      // Find the closest preceding non-deleted ID in oldOrder
+      let insertAfter = -1;
+      for (let i = oldIdx - 1; i >= 0; i--) {
+        const precedingIdx = finalOrder.indexOf(oldOrder[i]);
+        if (precedingIdx >= 0) {
+          insertAfter = precedingIdx;
+          break;
+        }
+      }
+      finalOrder.splice(insertAfter + 1, 0, delId);
+    }
+
+    return { walkthroughNodeOrder: finalOrder };
+  }),
+
   applyDraftToCanvas: async () => {
     const { walkthroughDraft, walkthroughActions, walkthroughAnnotations: ann,
             walkthroughActionNodeMap } = get();
@@ -374,6 +437,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
 
     const { nodes, edges } = applyAnnotationsToDraft(
       walkthroughDraft, ann, walkthroughActions, walkthroughActionNodeMap,
+      get().walkthroughNodeOrder,
     );
 
     // Preserve the existing workflow's name and ID instead of clobbering
@@ -401,6 +465,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       walkthroughExpandedAction: null,
       walkthroughEvents: [],
       walkthroughActionNodeMap: [],
+      walkthroughNodeOrder: [],
 
       isNewWorkflow: false,
     });
@@ -421,6 +486,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       walkthroughExpandedAction: null,
       walkthroughEvents: [],
       walkthroughActionNodeMap: [],
+      walkthroughNodeOrder: [],
 
       walkthroughError: null,
     });
