@@ -88,7 +88,7 @@ describe("computeAppGroups", () => {
     ];
     const order = ["n1", "n2", "n3"];
 
-    const groups = computeAppGroups(order, nodes, actions, map, new Set());
+    const groups = computeAppGroups(order, nodes, actions, map);
     expect(groups).toHaveLength(1);
     expect(groups[0].appName).toBe("Calculator");
     expect(groups[0].items).toHaveLength(3);
@@ -114,7 +114,7 @@ describe("computeAppGroups", () => {
     ];
     const order = ["n1", "n2", "n3", "n4"];
 
-    const groups = computeAppGroups(order, nodes, actions, map, new Set());
+    const groups = computeAppGroups(order, nodes, actions, map);
     expect(groups).toHaveLength(2);
     expect(groups[0].appName).toBe("Calculator");
     expect(groups[0].items).toHaveLength(2);
@@ -136,14 +136,14 @@ describe("computeAppGroups", () => {
     ];
     const order = ["n1", "n2", "n3"];
 
-    const groups = computeAppGroups(order, nodes, actions, map, new Set());
+    const groups = computeAppGroups(order, nodes, actions, map);
     expect(groups).toHaveLength(2);
     expect(groups[0].appName).toBe("Calculator");
     expect(groups[1].appName).toBeNull();
     expect(groups[1].items).toHaveLength(1);
   });
 
-  it("skips deleted nodes and does not break group continuity", () => {
+  it("keeps deleted nodes in groups so they can be restored", () => {
     const actions = [
       makeAction("a1", "Calculator", "FocusWindow"),
       makeAction("a2", "Calculator"),
@@ -158,9 +158,10 @@ describe("computeAppGroups", () => {
     const order = ["n1", "n2", "n3"];
     const deleted = new Set(["n2"]);
 
-    const groups = computeAppGroups(order, nodes, actions, map, deleted);
+    const groups = computeAppGroups(order, nodes, actions, map);
     expect(groups).toHaveLength(1);
-    expect(groups[0].items).toHaveLength(2); // n1 and n3, n2 skipped
+    expect(groups[0].items).toHaveLength(3); // all items including deleted n2
+    expect(groups[0].items.map((i) => i.id)).toEqual(["n1", "n2", "n3"]);
   });
 
   it("includes candidate actions in groups", () => {
@@ -177,7 +178,7 @@ describe("computeAppGroups", () => {
     // Candidate uses action ID in order
     const order = ["n1", "n2", "a3"];
 
-    const groups = computeAppGroups(order, nodes, actions, map, new Set());
+    const groups = computeAppGroups(order, nodes, actions, map);
     expect(groups).toHaveLength(1);
     expect(groups[0].items).toHaveLength(3);
     expect(groups[0].items[2].type).toBe("candidate");
@@ -189,7 +190,7 @@ describe("computeAppGroups", () => {
     const map: ActionNodeEntry[] = [{ action_id: "a1", node_id: "n1" }];
     const order = ["n1", "stale-id"];
 
-    const groups = computeAppGroups(order, nodes, actions, map, new Set());
+    const groups = computeAppGroups(order, nodes, actions, map);
     expect(groups).toHaveLength(1);
     expect(groups[0].items).toHaveLength(1);
   });
@@ -211,19 +212,19 @@ describe("isValidItemDrop", () => {
   const order = ["n1", "n2", "n3"];
 
   it("allows reordering non-anchor items within group", () => {
-    const groups = computeAppGroups(order, nodes, actions, map, new Set());
+    const groups = computeAppGroups(order, nodes, actions, map);
     // Drag n3 to position before n2 (but after anchor n1) → valid
     expect(isValidItemDrop("n3", 1, groups)).toBe(true);
   });
 
   it("rejects dropping a non-anchor item above the anchor", () => {
-    const groups = computeAppGroups(order, nodes, actions, map, new Set());
+    const groups = computeAppGroups(order, nodes, actions, map);
     // Drag n2 to position 0 (above FocusWindow n1) → invalid
     expect(isValidItemDrop("n2", 0, groups)).toBe(false);
   });
 
   it("rejects dragging the anchor item itself", () => {
-    const groups = computeAppGroups(order, nodes, actions, map, new Set());
+    const groups = computeAppGroups(order, nodes, actions, map);
     // FocusWindow anchor can't be dragged at all
     expect(isValidItemDrop("n1", 2, groups)).toBe(false);
   });

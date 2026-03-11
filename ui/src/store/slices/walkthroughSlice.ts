@@ -393,42 +393,20 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
 
   reorderGroup: (fromGroupIndex, toGroupIndex) => set((s) => {
     if (!s.walkthroughDraft) return {};
-    const deletedSet = new Set(s.walkthroughAnnotations.deleted_node_ids);
     const groups = computeAppGroups(
       s.walkthroughNodeOrder, s.walkthroughDraft.nodes,
-      s.walkthroughActions, s.walkthroughActionNodeMap, deletedSet,
+      s.walkthroughActions, s.walkthroughActionNodeMap,
     );
     if (fromGroupIndex < 0 || fromGroupIndex >= groups.length) return {};
     if (toGroupIndex < 0 || toGroupIndex >= groups.length) return {};
 
-    // Extract the flat ID ranges for each group, rebuild order
+    // Extract the flat ID ranges for each group (includes deleted items),
+    // reorder, and flatten back.
     const groupIdRanges: string[][] = groups.map((g) => g.items.map((item) => item.id));
     const [movedRange] = groupIdRanges.splice(fromGroupIndex, 1);
     groupIdRanges.splice(toGroupIndex, 0, movedRange);
 
-    // Reconstruct order: group IDs in new order, with deleted IDs
-    // reinserted after their original predecessor (preserve position).
-    const newActiveOrder = groupIdRanges.flat();
-    const deletedIds = s.walkthroughNodeOrder.filter((id) => deletedSet.has(id));
-
-    // Re-insert deleted IDs at their original relative positions
-    const oldOrder = s.walkthroughNodeOrder;
-    const finalOrder = [...newActiveOrder];
-    for (const delId of deletedIds) {
-      const oldIdx = oldOrder.indexOf(delId);
-      // Find the closest preceding non-deleted ID in oldOrder
-      let insertAfter = -1;
-      for (let i = oldIdx - 1; i >= 0; i--) {
-        const precedingIdx = finalOrder.indexOf(oldOrder[i]);
-        if (precedingIdx >= 0) {
-          insertAfter = precedingIdx;
-          break;
-        }
-      }
-      finalOrder.splice(insertAfter + 1, 0, delId);
-    }
-
-    return { walkthroughNodeOrder: finalOrder };
+    return { walkthroughNodeOrder: groupIdRanges.flat() };
   }),
 
   applyDraftToCanvas: async () => {

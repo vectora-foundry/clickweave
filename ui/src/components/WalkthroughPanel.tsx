@@ -103,7 +103,7 @@ export function WalkthroughPanel() {
   // Compute groups from the ordered list
   const groups = computeAppGroups(
     walkthroughNodeOrder, draftNodes, walkthroughActions,
-    walkthroughActionNodeMap, deletedSet,
+    walkthroughActionNodeMap,
   );
 
   // Precompute step numbers from the flat group items (only for non-deleted nodes)

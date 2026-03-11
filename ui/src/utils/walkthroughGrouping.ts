@@ -72,7 +72,6 @@ export function computeAppGroups(
   draftNodes: Node[],
   actions: WalkthroughAction[],
   actionNodeMap: ActionNodeEntry[],
-  deletedSet: Set<string>,
 ): AppGroup[] {
   const nodeMap = new Map(draftNodes.map((n) => [n.id, n]));
   const candidateActionMap = new Map(
@@ -80,10 +79,10 @@ export function computeAppGroups(
   );
   const actionByNodeId = buildActionByNodeId(actionNodeMap, actions);
 
-  // Resolve all IDs to render items, filtering deleted and stale
+  // Resolve all IDs to render items, filtering only stale entries.
+  // Deleted items are kept so the panel can render them with a Restore control.
   const resolvedItems: RenderItem[] = [];
   for (const id of orderedIds) {
-    if (deletedSet.has(id)) continue;
     const item = resolveItem(id, nodeMap, actionByNodeId, candidateActionMap);
     if (item) resolvedItems.push(item);
   }
