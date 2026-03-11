@@ -198,6 +198,130 @@ const CDP_CHECK_AND_REINJECT_JS: &str = r#"() => {
   return 'reinjected';
 }"#;
 
+/// JavaScript hover listener injected into CDP-enabled apps.
+/// Tracks which interactive element the cursor is over using a polling
+/// approach: `mousemove` updates the last-known cursor position, and a
+/// 100ms `setInterval` calls `elementFromPoint` to detect element
+/// transitions with dwell timing.
+///
+/// Uses the same `accessibleText()`, `INTERACTIVE` selector, and parent
+/// traversal logic as the click listener so hover and click results are
+/// directly comparable.  Pushes to `document.__cw_hovers` only when the
+/// resolved element changes, recording the dwell time on the previous
+/// element.
+const CDP_HOVER_LISTENER_JS: &str = r#"() => {
+  const d = document;
+  d.__cw_hovers = [];
+  d.__cw_hover_x = 0;
+  d.__cw_hover_y = 0;
+  const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
+  const INTERACTIVE = '[role="button"],[role="link"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="tab"],[role="treeitem"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="textbox"],[role="combobox"],[role="searchbox"],[role="slider"],[role="spinbutton"],a,button,select,textarea,input,[tabindex]';
+  function accessibleText(node) {
+    const a = node.ariaLabel || node.getAttribute('aria-label');
+    if (a) return a;
+    const lb = node.getAttribute('aria-labelledby');
+    if (lb) {
+      const t = lb.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
+      if (t) return t.substring(0, 200);
+    }
+    if (node.title) return node.title;
+    if (node.alt) return node.alt;
+    if (node.placeholder) return node.placeholder;
+    if ((node.tagName === 'svg' || node.tagName === 'SVG') || (node.namespaceURI === 'http://www.w3.org/2000/svg' && node.tagName === 'svg')) {
+      const st = node.querySelector('title');
+      if (st?.textContent) return st.textContent.trim().substring(0, 200);
+    }
+    let t = '';
+    for (const ch of node.childNodes) {
+      if (ch.nodeType === 3) { t += ch.textContent; continue; }
+      if (ch.nodeType === 1 && ch.getAttribute('aria-hidden') !== 'true') t += accessibleText(ch);
+    }
+    return t.trim().substring(0, 200);
+  }
+  let lastEl = null;
+  let enterTime = 0;
+  const MIN_DWELL = 300;
+  if (d.__cw_hover_mousemove) {
+    d.removeEventListener('mousemove', d.__cw_hover_mousemove, true);
+  }
+  d.__cw_hover_mousemove = (e) => {
+    d.__cw_hover_x = e.clientX;
+    d.__cw_hover_y = e.clientY;
+  };
+  d.addEventListener('mousemove', d.__cw_hover_mousemove, true);
+  if (d.__cw_hover_interval) clearInterval(d.__cw_hover_interval);
+  d.__cw_hover_interval = setInterval(() => {
+    const raw = d.elementFromPoint(d.__cw_hover_x, d.__cw_hover_y);
+    if (!raw) { lastEl = null; enterTime = 0; return; }
+    const el = raw.closest(INTERACTIVE) || raw.closest('[aria-label]') || raw;
+    if (el === lastEl) return;
+    const now = Date.now();
+    if (lastEl && enterTime && (now - enterTime) >= MIN_DWELL) {
+      let text = accessibleText(lastEl);
+      if (!text) {
+        let p = lastEl.parentElement;
+        while (p && p !== d.documentElement) {
+          const la = p.ariaLabel || p.getAttribute('aria-label');
+          if (la) { text = la; break; }
+          const lb = p.getAttribute('aria-labelledby');
+          if (lb) {
+            const r = lb.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
+            if (r) { text = r; break; }
+          }
+          if (p.title) { text = p.title; break; }
+          p = p.parentElement;
+        }
+      }
+      let parentRole = null;
+      let parentName = null;
+      {
+        let p = lastEl.parentElement;
+        while (p && p !== d.documentElement) {
+          const r = p.getAttribute('role');
+          const a = p.ariaLabel || p.getAttribute('aria-label');
+          if (r || a) {
+            parentRole = r || null;
+            parentName = a || accessibleText(p).substring(0, 200) || null;
+            break;
+          }
+          p = p.parentElement;
+        }
+      }
+      d.__cw_hovers.push({
+        ts: enterTime,
+        dwellMs: now - enterTime,
+        tagName: lastEl.tagName,
+        role: lastEl.getAttribute('role') || TAG_ROLES[lastEl.tagName] || null,
+        ariaLabel: lastEl.ariaLabel || lastEl.getAttribute('aria-label') || null,
+        textContent: text || null,
+        href: lastEl.closest('a')?.href || null,
+        parentRole: parentRole,
+        parentName: parentName,
+      });
+    }
+    lastEl = el;
+    enterTime = now;
+  }, 100);
+}"#;
+
+/// JavaScript to retrieve and clear all collected hover data from the
+/// injected hover listener.  Returns the full array and resets it.
+const CDP_RETRIEVE_HOVERS_JS: &str = r#"() => {
+  if (!Array.isArray(document.__cw_hovers)) return [];
+  const h = document.__cw_hovers;
+  document.__cw_hovers = [];
+  return h;
+}"#;
+
+/// JavaScript to stop the hover listener's polling interval and remove
+/// the mousemove handler, flushing any pending dwell that exceeds the
+/// minimum threshold.
+const CDP_STOP_HOVER_JS: &str = r#"() => {
+  const d = document;
+  if (d.__cw_hover_interval) { clearInterval(d.__cw_hover_interval); d.__cw_hover_interval = null; }
+  if (d.__cw_hover_mousemove) { d.removeEventListener('mousemove', d.__cw_hover_mousemove, true); d.__cw_hover_mousemove = null; }
+}"#;
+
 #[cfg(target_os = "macos")]
 use crate::platform::macos::{CursorRegionCapture, MacOSEventTap};
 
@@ -302,6 +426,7 @@ pub(super) async fn process_capture_events(
     session_dir: std::path::PathBuf,
     mut cancel: tokio::sync::watch::Receiver<bool>,
     cdp_apps: Vec<CdpAppConfig>,
+    hover_dwell_ms: u64,
 ) {
     // Spawn the MCP server for enrichment (screenshots + OCR).
     let mut mcp_raw = spawn_mcp(&mcp_command).await;
@@ -310,7 +435,7 @@ pub(super) async fn process_capture_events(
     // (spawn_server requires &mut).
     let cdp_state: HashMap<String, String> = if !cdp_apps.is_empty() {
         if let Some(ref mut mcp) = mcp_raw {
-            setup_cdp_apps(&cdp_apps, mcp, &app, &mut cancel).await
+            setup_cdp_apps(&cdp_apps, mcp, &app, &mut cancel, hover_dwell_ms).await
         } else {
             tracing::warn!("No MCP server available for CDP setup");
             for cdp_app in &cdp_apps {
@@ -697,6 +822,7 @@ pub(super) async fn process_capture_events(
                 match serde_json::from_str::<Vec<serde_json::Value>>(&raw_text) {
                     Ok(events) => {
                         let mut count = 0u32;
+
                         for ev in events {
                             // Skip timeout sentinel events.
                             if ev.get("timeout").and_then(|v| v.as_bool()) == Some(true) {
@@ -742,7 +868,7 @@ pub(super) async fn process_capture_events(
                             count += 1;
                         }
                         if count > 0 {
-                            tracing::info!("Persisted {count} hover events from MCP tracking");
+                            tracing::info!("Persisted {count} hover events from native tracking");
                         }
                     }
                     Err(e) => {
@@ -758,6 +884,87 @@ pub(super) async fn process_capture_events(
             }
             Err(_) => {
                 tracing::warn!("stop_hover_tracking timed out after {hover_timeout:?}");
+            }
+        }
+    }
+
+    // Retrieve CDP hover data from each CDP-enabled app. The JS hover
+    // listener has been tracking element transitions in real-time; we now
+    // stop it, flush any pending dwell, and retrieve the collected entries.
+    if let Some(ref mcp) = mcp {
+        for (app_name, server_name) in &cdp_state {
+            // Stop the hover interval + flush pending dwell.
+            let stop_args = serde_json::json!({ "function": CDP_STOP_HOVER_JS });
+            let _ = mcp
+                .call_tool_on(server_name, "evaluate_script", Some(stop_args))
+                .await;
+
+            // Retrieve all collected hover entries.
+            let retrieve_args = serde_json::json!({ "function": CDP_RETRIEVE_HOVERS_JS });
+            let result = match tokio::time::timeout(
+                CDP_SNAPSHOT_TIMEOUT,
+                mcp.call_tool_on(server_name, "evaluate_script", Some(retrieve_args)),
+            )
+            .await
+            {
+                Ok(Ok(r)) if r.is_error != Some(true) => r,
+                Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
+                    tracing::debug!("CDP hover retrieve failed for '{app_name}'");
+                    continue;
+                }
+            };
+
+            let raw: String = result.content.iter().filter_map(|c| c.as_text()).collect();
+            let text = extract_eval_result(&raw);
+            let entries: Vec<serde_json::Value> = match serde_json::from_str(text) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            let mut count = 0u32;
+            for entry in entries {
+                let label = entry["textContent"]
+                    .as_str()
+                    .or_else(|| entry["ariaLabel"].as_str())
+                    .filter(|s| !s.is_empty());
+                let Some(label) = label else { continue };
+
+                let ts = entry["ts"].as_u64().unwrap_or(0);
+                let dwell_ms = entry["dwellMs"].as_u64().unwrap_or(0);
+
+                // Emit a HoverDetected event (so retrieve_hover_candidates finds it).
+                let hover_id = Uuid::new_v4();
+                let hover_event = WalkthroughEvent {
+                    id: hover_id,
+                    timestamp: ts,
+                    kind: WalkthroughEventKind::HoverDetected {
+                        x: 0.0,
+                        y: 0.0,
+                        element_name: label.to_string(),
+                        element_role: entry["role"].as_str().map(|s| s.to_string()),
+                        dwell_ms,
+                    },
+                };
+                persist_and_emit(&app, &storage, &session_dir, &hover_event);
+
+                // Emit a paired CdpHoverResolved event with the full DOM info.
+                let cdp_event = WalkthroughEvent {
+                    id: Uuid::new_v4(),
+                    timestamp: ts,
+                    kind: WalkthroughEventKind::CdpHoverResolved {
+                        hover_event_id: hover_id,
+                        name: label.to_string(),
+                        role: entry["role"].as_str().map(|s| s.to_string()),
+                        href: entry["href"].as_str().map(|s| s.to_string()),
+                        parent_role: entry["parentRole"].as_str().map(|s| s.to_string()),
+                        parent_name: entry["parentName"].as_str().map(|s| s.to_string()),
+                    },
+                };
+                persist_and_emit(&app, &storage, &session_dir, &cdp_event);
+                count += 1;
+            }
+            if count > 0 {
+                tracing::info!("Persisted {count} CDP hover events from '{app_name}'");
             }
         }
     }
@@ -900,6 +1107,7 @@ async fn setup_cdp_apps(
     mcp: &mut McpRouter,
     app: &tauri::AppHandle,
     cancel: &mut tokio::sync::watch::Receiver<bool>,
+    hover_dwell_ms: u64,
 ) -> HashMap<String, String> {
     use clickweave_core::cdp::cdp_server_name;
 
@@ -1088,6 +1296,37 @@ async fn setup_cdp_apps(
                         false
                     }
                 };
+
+                // Inject hover listener alongside click listener.
+                if inject_ok {
+                    let hover_js = CDP_HOVER_LISTENER_JS.replace(
+                        "const MIN_DWELL = 300;",
+                        &format!("const MIN_DWELL = {hover_dwell_ms};"),
+                    );
+                    let hover_args = serde_json::json!({ "function": hover_js });
+                    match mcp
+                        .call_tool_on(&server_name, "evaluate_script", Some(hover_args))
+                        .await
+                    {
+                        Ok(r) if r.is_error != Some(true) => {
+                            tracing::info!("Injected hover listener into '{}'", cdp_app.name);
+                        }
+                        Ok(r) => {
+                            let err: String =
+                                r.content.iter().filter_map(|c| c.as_text()).collect();
+                            tracing::warn!(
+                                "CDP hover listener injection rejected for '{}': {err}",
+                                cdp_app.name
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to inject hover listener into '{}': {e}",
+                                cdp_app.name
+                            );
+                        }
+                    }
+                }
 
                 if inject_ok {
                     emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Ready);

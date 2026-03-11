@@ -221,7 +221,8 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     const planner = plannerConfig.baseUrl && plannerConfig.model
       ? toEndpoint(plannerConfig)
       : null;
-    const result = await commands.startWalkthrough(workflow.id, mcpCommand, projectPath ?? null, planner, cdpApps);
+    const { hoverDwellThreshold } = get();
+    const result = await commands.startWalkthrough(workflow.id, mcpCommand, projectPath ?? null, planner, cdpApps, hoverDwellThreshold);
     if (result.status === "error") {
       set({ walkthroughError: result.error, walkthroughCdpModalOpen: false });
       pushLog(`Walkthrough start failed: ${result.error}`);

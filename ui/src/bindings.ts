@@ -150,9 +150,9 @@ async importAsset(projectPath: string) : Promise<Result<ImportedAsset | null, st
     else return { status: "error", error: e  as any };
 }
 },
-async startWalkthrough(workflowId: string, mcpCommand: string, projectPath: string | null, planner: EndpointConfig | null, cdpApps: CdpAppConfig[]) : Promise<Result<null, string>> {
+async startWalkthrough(workflowId: string, mcpCommand: string, projectPath: string | null, planner: EndpointConfig | null, cdpApps: CdpAppConfig[], hoverDwellThreshold: number | null) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("start_walkthrough", { workflowId, mcpCommand, projectPath, planner, cdpApps }) };
+    return { status: "ok", data: await TAURI_INVOKE("start_walkthrough", { workflowId, mcpCommand, projectPath, planner, cdpApps, hoverDwellThreshold }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -273,7 +273,6 @@ binary_path: string | null; app_kind: AppKind }
 export type ChatEntry = { role: ChatRole; content: string; timestamp: number; patch_summary?: PatchSummary | null; run_context?: RunContext | null }
 export type ChatRole = "user" | "assistant"
 export type ClickParams = { target: ClickTarget | null; template_image?: string | null; x: number | null; y: number | null; button: MouseButton; click_count: number }
-export type HoverParams = { target: ClickTarget | null; template_image?: string | null; x: number | null; y: number | null; dwell_ms: number }
 export type ClickTarget = { type: "Text"; text: string } | { type: "CdpElement"; name: string; role: string | null; href: string | null; parent_role: string | null; parent_name: string | null }
 export type Condition = { left: ValueRef; operator: Operator; right: ValueRef }
 /**
@@ -312,6 +311,7 @@ export type FindImageParams = { template_image: string | null; threshold: number
 export type FindTextParams = { search_text: string; match_mode: MatchMode; scope: string | null; select_result: string | null }
 export type FocusMethod = "WindowId" | "AppName" | "Pid"
 export type FocusWindowParams = { method: FocusMethod; value: string | null; bring_to_front: boolean; app_kind?: AppKind }
+export type HoverParams = { target: ClickTarget | null; template_image?: string | null; x: number | null; y: number | null; dwell_ms: number }
 export type IfParams = { condition: Condition }
 export type ImportedAsset = { relative_path: string; absolute_path: string }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
@@ -406,7 +406,12 @@ export type WalkthroughAction = { id: string; kind: WalkthroughActionKind; app_n
 /**
  * Screenshot coordinate metadata for VLM click target resolution.
  */
-screenshot_meta?: ScreenshotMeta | null; candidate: boolean }
+screenshot_meta?: ScreenshotMeta | null; 
+/**
+ * Whether this action is a candidate (e.g. detected hover) that needs
+ * explicit user confirmation before inclusion in the draft.
+ */
+candidate?: boolean }
 export type WalkthroughActionKind = { type: "LaunchApp"; app_name: string; app_kind: AppKind } | { type: "FocusWindow"; app_name: string; window_title: string | null; app_kind: AppKind } | { type: "Click"; x: number; y: number; button: MouseButton; click_count: number } | { type: "TypeText"; text: string } | { type: "PressKey"; key: string; modifiers: string[] } | { type: "Scroll"; delta_y: number } | { type: "Hover"; x: number; y: number; dwell_ms: number }
 export type WalkthroughAnnotations = { deleted_node_ids: string[]; renamed_nodes: NodeRename[]; target_overrides: TargetOverride[]; variable_promotions: VariablePromotion[] }
 export type WalkthroughDraftResponse = { actions: WalkthroughAction[]; draft: Workflow | null; warnings: string[] }
