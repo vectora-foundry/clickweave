@@ -629,101 +629,165 @@ fn retrieve_hover_candidates(
 ) -> Vec<WalkthroughAction> {
     let mut candidates = Vec::new();
 
+    // Pre-collect AppFocused events sorted by timestamp so we can resolve
+    // both previous and next focus for any hover, regardless of file
+    // append order (hover events are written after recording stops, so
+    // they appear at the end of events.jsonl, not at their chronological
+    // position).
+    let mut focus_events: Vec<(u64, String, Option<String>)> = events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            WalkthroughEventKind::AppFocused {
+                app_name,
+                window_title,
+                ..
+            } => Some((e.timestamp, app_name.clone(), window_title.clone())),
+            _ => None,
+        })
+        .collect();
+    focus_events.sort_by_key(|(ts, _, _)| *ts);
+
     for event in events {
-        if let WalkthroughEventKind::HoverDetected {
+        let WalkthroughEventKind::HoverDetected {
             x,
             y,
             element_name,
             element_role,
             dwell_ms,
         } = &event.kind
-        {
-            // Filter by dwell threshold.
-            if *dwell_ms < hover_threshold_ms {
-                continue;
+        else {
+            continue;
+        };
+
+        // Filter by dwell threshold.
+        if *dwell_ms < hover_threshold_ms {
+            continue;
+        }
+
+        // Skip if any click near the same coordinates occurred shortly after
+        // this hover (the click subsumes the hover intent).  Scans all events
+        // because hover entries may be appended after clicks in the file.
+        let click_follows = events.iter().any(|e| {
+            matches!(
+                &e.kind,
+                WalkthroughEventKind::MouseClicked { x: cx, y: cy, .. }
+                if (cx - x).abs() < 20.0 && (cy - y).abs() < 20.0
+                    && e.timestamp > event.timestamp
+                    && e.timestamp.saturating_sub(event.timestamp) < 2000
+            )
+        });
+        if click_follows {
+            continue;
+        }
+
+        // Resolve which app this hover belongs to by finding the closest
+        // AppFocused event (previous or next) by timestamp.
+        let (hover_app, hover_window) = resolve_hover_app(event.timestamp, &focus_events);
+
+        let mut target_candidates = vec![];
+
+        // Check for CDP DOM resolution for this hover event.
+        let cdp_resolved = events.iter().find_map(|e| {
+            if let WalkthroughEventKind::CdpHoverResolved {
+                hover_event_id,
+                name,
+                role,
+                href,
+                parent_role,
+                parent_name,
+            } = &e.kind
+                && *hover_event_id == event.id
+            {
+                return Some((
+                    name.clone(),
+                    role.clone(),
+                    href.clone(),
+                    parent_role.clone(),
+                    parent_name.clone(),
+                ));
             }
+            None
+        });
 
-            // Skip if any click near the same coordinates occurred shortly after
-            // this hover (the click subsumes the hover intent).  Scans all events
-            // because hover entries may be appended after clicks in the file.
-            let click_follows = events.iter().any(|e| {
-                matches!(
-                    &e.kind,
-                    WalkthroughEventKind::MouseClicked { x: cx, y: cy, .. }
-                    if (cx - x).abs() < 20.0 && (cy - y).abs() < 20.0
-                        && e.timestamp > event.timestamp
-                        && e.timestamp.saturating_sub(event.timestamp) < 2000
-                )
-            });
-            if click_follows {
-                continue;
-            }
-
-            let mut target_candidates = vec![];
-
-            // Check for CDP DOM resolution for this hover event.
-            let cdp_resolved = events.iter().find_map(|e| {
-                if let WalkthroughEventKind::CdpHoverResolved {
-                    hover_event_id,
-                    name,
-                    role,
-                    href,
-                    parent_role,
-                    parent_name,
-                } = &e.kind
-                    && *hover_event_id == event.id
-                {
-                    return Some((
-                        name.clone(),
-                        role.clone(),
-                        href.clone(),
-                        parent_role.clone(),
-                        parent_name.clone(),
-                    ));
-                }
-                None
-            });
-
-            if let Some((name, role, href, parent_role, parent_name)) = cdp_resolved {
-                target_candidates.push(clickweave_core::walkthrough::TargetCandidate::CdpElement {
-                    name,
-                    role,
-                    href,
-                    parent_role,
-                    parent_name,
-                });
-            }
-
-            if !element_name.is_empty() {
-                target_candidates.push(
-                    clickweave_core::walkthrough::TargetCandidate::AccessibilityLabel {
-                        label: element_name.clone(),
-                        role: element_role.clone(),
-                    },
-                );
-            }
-
-            candidates.push(WalkthroughAction {
-                id: Uuid::new_v4(),
-                kind: WalkthroughActionKind::Hover {
-                    x: *x,
-                    y: *y,
-                    dwell_ms: *dwell_ms,
-                },
-                app_name: None,
-                window_title: None,
-                target_candidates,
-                artifact_paths: vec![],
-                source_event_ids: vec![event.id],
-                confidence: ActionConfidence::Medium,
-                warnings: vec![],
-                screenshot_meta: None,
-                candidate: true,
+        if let Some((name, role, href, parent_role, parent_name)) = cdp_resolved {
+            target_candidates.push(clickweave_core::walkthrough::TargetCandidate::CdpElement {
+                name,
+                role,
+                href,
+                parent_role,
+                parent_name,
             });
         }
+
+        if !element_name.is_empty() {
+            target_candidates.push(
+                clickweave_core::walkthrough::TargetCandidate::AccessibilityLabel {
+                    label: element_name.clone(),
+                    role: element_role.clone(),
+                },
+            );
+        }
+
+        candidates.push(WalkthroughAction {
+            id: Uuid::new_v4(),
+            kind: WalkthroughActionKind::Hover {
+                x: *x,
+                y: *y,
+                dwell_ms: *dwell_ms,
+            },
+            app_name: hover_app,
+            window_title: hover_window,
+            target_candidates,
+            artifact_paths: vec![],
+            source_event_ids: vec![event.id],
+            confidence: ActionConfidence::Medium,
+            warnings: vec![],
+            screenshot_meta: None,
+            candidate: true,
+        });
     }
 
     candidates
+}
+
+/// Determine which app a hover event belongs to.
+///
+/// Default: use the chronologically preceding `AppFocused` event (the app
+/// that was focused when the hover occurred).  Override with the *next*
+/// focus only when the hover falls within a short transition window — the
+/// brief period where the cursor has entered the new app's window but the
+/// PID-based focus detection hasn't fired yet.
+///
+/// Both lookups use the pre-collected, timestamp-sorted focus list rather
+/// than depending on file append order, because hover events are written
+/// to `events.jsonl` after recording stops (not at their chronological
+/// position).
+fn resolve_hover_app(
+    hover_ts: u64,
+    focus_events: &[(u64, String, Option<String>)],
+) -> (Option<String>, Option<String>) {
+    /// Maximum gap (ms) between a hover and the *next* AppFocused event for
+    /// the hover to be considered a transition hover belonging to the
+    /// incoming app.  Kept short so legitimate hovers near a focus change
+    /// aren't misattributed.
+    const TRANSITION_WINDOW_MS: u64 = 500;
+
+    let prev = focus_events.iter().rev().find(|(ts, _, _)| *ts <= hover_ts);
+    let next = focus_events.iter().find(|(ts, _, _)| *ts > hover_ts);
+
+    match (prev, next) {
+        (Some((_, papp, ptitle)), Some((nts, napp, ntitle))) => {
+            let dist_next = nts - hover_ts;
+            if dist_next <= TRANSITION_WINDOW_MS {
+                (Some(napp.clone()), ntitle.clone())
+            } else {
+                (Some(papp.clone()), ptitle.clone())
+            }
+        }
+        (Some((_, app, title)), None) => (Some(app.clone()), title.clone()),
+        (None, Some((_, app, title))) => (Some(app.clone()), title.clone()),
+        (None, None) => (None, None),
+    }
 }
 
 /// Find the chronological insertion position for a hover candidate action
@@ -761,4 +825,102 @@ fn find_chronological_insert_position(
         }
     }
     insert_after.map_or(0, |i| i + 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clickweave_core::walkthrough::{AppKind, WalkthroughEvent, WalkthroughEventKind};
+    use uuid::Uuid;
+
+    fn focus_event(ts: u64, app: &str) -> WalkthroughEvent {
+        WalkthroughEvent {
+            id: Uuid::new_v4(),
+            timestamp: ts,
+            kind: WalkthroughEventKind::AppFocused {
+                app_name: app.to_string(),
+                pid: 1,
+                window_title: Some(format!("{app} Window")),
+                app_kind: AppKind::Native,
+            },
+        }
+    }
+
+    fn hover_event(ts: u64, dwell_ms: u64) -> WalkthroughEvent {
+        WalkthroughEvent {
+            id: Uuid::new_v4(),
+            timestamp: ts,
+            kind: WalkthroughEventKind::HoverDetected {
+                x: 100.0,
+                y: 200.0,
+                element_name: "Button".to_string(),
+                element_role: Some("AXButton".to_string()),
+                dwell_ms,
+            },
+        }
+    }
+
+    #[test]
+    fn hover_within_transition_window_gets_next_app() {
+        // Hover fires within 500ms of the next focus (transition hover).
+        let events = vec![
+            focus_event(1000, "Discord"),
+            hover_event(1700, 1500), // 300ms before Signal → within window
+            focus_event(2000, "Signal"),
+        ];
+        let candidates = retrieve_hover_candidates(&events, 1000);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].app_name.as_deref(), Some("Signal"));
+        assert_eq!(candidates[0].window_title.as_deref(), Some("Signal Window"));
+    }
+
+    #[test]
+    fn hover_outside_transition_window_keeps_previous_app() {
+        // Hover fires 900ms before Signal — outside the 500ms window.
+        let events = vec![
+            focus_event(1000, "Discord"),
+            hover_event(1100, 1500), // 900ms before Signal → Discord
+            focus_event(2000, "Signal"),
+        ];
+        let candidates = retrieve_hover_candidates(&events, 1000);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].app_name.as_deref(), Some("Discord"));
+    }
+
+    #[test]
+    fn hover_with_no_next_focus_uses_previous() {
+        // No subsequent focus event — must fall back to previous.
+        let events = vec![focus_event(1000, "Discord"), hover_event(5000, 1500)];
+        let candidates = retrieve_hover_candidates(&events, 1000);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].app_name.as_deref(), Some("Discord"));
+    }
+
+    #[test]
+    fn hover_before_any_focus_uses_next_focus() {
+        // Hover precedes all AppFocused events — only next exists.
+        let events = vec![hover_event(500, 1500), focus_event(1000, "Signal")];
+        let candidates = retrieve_hover_candidates(&events, 1000);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].app_name.as_deref(), Some("Signal"));
+    }
+
+    #[test]
+    fn hover_appended_after_all_focus_events_uses_preceding_app() {
+        // Real file ordering: focus events first, then hovers appended
+        // at end with earlier timestamps.
+        let events = vec![
+            focus_event(1000, "Discord"),
+            focus_event(5000, "Signal"),
+            // Hovers at file end:
+            hover_event(4800, 1500), // 200ms before Signal → transition → Signal
+            hover_event(1200, 1500), // 3800ms before Signal → Discord
+        ];
+        let candidates = retrieve_hover_candidates(&events, 1000);
+        assert_eq!(candidates.len(), 2);
+        // ts=4800: within 500ms of Signal(5000) → transition → Signal
+        assert_eq!(candidates[0].app_name.as_deref(), Some("Signal"));
+        // ts=1200: 3800ms from Signal → stays with Discord
+        assert_eq!(candidates[1].app_name.as_deref(), Some("Discord"));
+    }
 }
