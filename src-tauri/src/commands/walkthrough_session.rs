@@ -33,7 +33,7 @@ const CDP_CLICK_LISTENER_JS: &str = r#"() => {
   const d = document;
   d.__cw_clicks = [];
   const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
-  const INTERACTIVE = '[role="button"],[role="link"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="tab"],[role="treeitem"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="textbox"],[role="combobox"],[role="searchbox"],[role="slider"],[role="spinbutton"],a,button,select,textarea,input,[tabindex]';
+  const INTERACTIVE = '[role="button"],[role="link"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="tab"],[role="treeitem"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="textbox"],[role="combobox"],[role="searchbox"],[role="slider"],[role="spinbutton"],a,button,select,textarea,input,[tabindex]:not([tabindex="-1"])';
   function accessibleText(node) {
     const a = node.ariaLabel || node.getAttribute('aria-label');
     if (a) return a;
@@ -52,7 +52,11 @@ const CDP_CLICK_LISTENER_JS: &str = r#"() => {
     let t = '';
     for (const ch of node.childNodes) {
       if (ch.nodeType === 3) { t += ch.textContent; continue; }
-      if (ch.nodeType === 1 && ch.getAttribute('aria-hidden') !== 'true') t += accessibleText(ch);
+      if (ch.nodeType === 1 && ch.getAttribute('aria-hidden') !== 'true') {
+        const sub = accessibleText(ch);
+        if (sub && t) t += ' ';
+        t += sub;
+      }
     }
     return t.trim().substring(0, 200);
   }
@@ -123,7 +127,7 @@ const CDP_CHECK_AND_REINJECT_JS: &str = r#"() => {
   if (d.__cw_listener) return 'alive';
   d.__cw_clicks = [];
   const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
-  const INTERACTIVE = '[role="button"],[role="link"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="tab"],[role="treeitem"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="textbox"],[role="combobox"],[role="searchbox"],[role="slider"],[role="spinbutton"],a,button,select,textarea,input,[tabindex]';
+  const INTERACTIVE = '[role="button"],[role="link"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="tab"],[role="treeitem"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="textbox"],[role="combobox"],[role="searchbox"],[role="slider"],[role="spinbutton"],a,button,select,textarea,input,[tabindex]:not([tabindex="-1"])';
   function accessibleText(node) {
     const a = node.ariaLabel || node.getAttribute('aria-label');
     if (a) return a;
@@ -142,7 +146,11 @@ const CDP_CHECK_AND_REINJECT_JS: &str = r#"() => {
     let t = '';
     for (const ch of node.childNodes) {
       if (ch.nodeType === 3) { t += ch.textContent; continue; }
-      if (ch.nodeType === 1 && ch.getAttribute('aria-hidden') !== 'true') t += accessibleText(ch);
+      if (ch.nodeType === 1 && ch.getAttribute('aria-hidden') !== 'true') {
+        const sub = accessibleText(ch);
+        if (sub && t) t += ' ';
+        t += sub;
+      }
     }
     return t.trim().substring(0, 200);
   }
@@ -215,7 +223,7 @@ const CDP_HOVER_LISTENER_JS: &str = r#"() => {
   d.__cw_hover_x = 0;
   d.__cw_hover_y = 0;
   const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
-  const INTERACTIVE = '[role="button"],[role="link"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="tab"],[role="treeitem"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="textbox"],[role="combobox"],[role="searchbox"],[role="slider"],[role="spinbutton"],a,button,select,textarea,input,[tabindex]';
+  const INTERACTIVE = '[role="button"],[role="link"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="tab"],[role="treeitem"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="textbox"],[role="combobox"],[role="searchbox"],[role="slider"],[role="spinbutton"],a,button,select,textarea,input,[tabindex]:not([tabindex="-1"])';
   function accessibleText(node) {
     const a = node.ariaLabel || node.getAttribute('aria-label');
     if (a) return a;
@@ -234,7 +242,11 @@ const CDP_HOVER_LISTENER_JS: &str = r#"() => {
     let t = '';
     for (const ch of node.childNodes) {
       if (ch.nodeType === 3) { t += ch.textContent; continue; }
-      if (ch.nodeType === 1 && ch.getAttribute('aria-hidden') !== 'true') t += accessibleText(ch);
+      if (ch.nodeType === 1 && ch.getAttribute('aria-hidden') !== 'true') {
+        const sub = accessibleText(ch);
+        if (sub && t) t += ' ';
+        t += sub;
+      }
     }
     return t.trim().substring(0, 200);
   }
@@ -288,6 +300,8 @@ const CDP_HOVER_LISTENER_JS: &str = r#"() => {
     d.__cw_hovers.push({
       ts: enter,
       dwellMs: now - enter,
+      x: d.__cw_hover_x,
+      y: d.__cw_hover_y,
       tagName: el.tagName,
       role: el.getAttribute('role') || TAG_ROLES[el.tagName] || null,
       ariaLabel: el.ariaLabel || el.getAttribute('aria-label') || null,
@@ -488,15 +502,11 @@ pub(super) async fn process_capture_events(
 
     // Start hover tracking for the recording session (non-fatal if unavailable).
     if let Some(ref mcp) = mcp {
-        let mut hover_args = serde_json::json!({
+        let hover_args = serde_json::json!({
             "min_dwell_ms": 100,
             "poll_interval_ms": 100,
             "max_duration_ms": 600_000,
         });
-        // Scope to focused app if known from CDP setup.
-        if let Some(first_app) = cdp_apps.first() {
-            hover_args["app_name"] = serde_json::json!(first_app.name);
-        }
         if let Err(e) = mcp
             .call_tool("start_hover_tracking", Some(hover_args))
             .await
@@ -870,6 +880,7 @@ pub(super) async fn process_capture_events(
                                     element_name,
                                     element_role,
                                     dwell_ms,
+                                    app_name: None,
                                 },
                             };
                             persist_and_emit(&app, &storage, &session_dir, &hover_event);
@@ -946,11 +957,12 @@ pub(super) async fn process_capture_events(
                     id: hover_id,
                     timestamp: ts,
                     kind: WalkthroughEventKind::HoverDetected {
-                        x: 0.0,
-                        y: 0.0,
+                        x: entry["x"].as_f64().unwrap_or(0.0),
+                        y: entry["y"].as_f64().unwrap_or(0.0),
                         element_name: label.to_string(),
                         element_role: entry["role"].as_str().map(|s| s.to_string()),
                         dwell_ms,
+                        app_name: Some(app_name.clone()),
                     },
                 };
                 persist_and_emit(&app, &storage, &session_dir, &hover_event);
