@@ -258,12 +258,12 @@ export function WalkthroughPanel() {
             className="group flex cursor-pointer items-center gap-2 px-3 py-2"
             onClick={() => setWalkthroughExpandedAction(node.id)}
           >
-            {/* Drag handle (hidden for anchors) */}
-            {isItemAnchor ? (
-              <span className="w-3" />
+            {/* Drag handle (hidden for anchors and deleted items) */}
+            {isItemAnchor || isDeleted ? (
+              <span className="w-5 shrink-0" />
             ) : (
               <span
-                className="w-3 text-[10px] text-[var(--text-muted)] opacity-0 group-hover:opacity-100 transition-opacity cursor-grab"
+                className="flex w-5 shrink-0 items-center justify-center text-base text-[var(--text-muted)] opacity-30 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing select-none"
                 draggable
                 onDragStart={(e) => {
                   e.stopPropagation();
@@ -553,10 +553,35 @@ export function WalkthroughPanel() {
                   </div>
                 )}
 
-                {/* Items */}
+                {/* Items (skip candidates — summarized below) */}
                 {group.items.map((item, itemIndex) =>
-                  renderGroupItem(item, group, groupIndex, itemIndex)
+                  item.type === "candidate" ? null : renderGroupItem(item, group, groupIndex, itemIndex)
                 )}
+
+                {/* Collapsed candidate summary */}
+                {(() => {
+                  const candidates = group.items.filter((i): i is Extract<typeof i, { type: "candidate" }> => i.type === "candidate");
+                  if (candidates.length === 0) return null;
+                  return (
+                    <div className="flex items-center gap-2 px-3 py-1.5 text-[10px] text-purple-400/60">
+                      <span className="rounded bg-purple-900/40 px-1.5 py-0.5">{candidates.length} hover candidate{candidates.length > 1 ? "s" : ""}</span>
+                      <div className="flex gap-1 ml-auto">
+                        <button
+                          onClick={() => candidates.forEach((c) => keepCandidate(c.action.id))}
+                          className="rounded bg-green-700 px-2 py-0.5 text-white hover:bg-green-600"
+                        >
+                          Keep all
+                        </button>
+                        <button
+                          onClick={() => candidates.forEach((c) => dismissCandidate(c.action.id))}
+                          className="rounded bg-[var(--bg-input)] px-2 py-0.5 text-[var(--text-muted)] hover:bg-red-500/20"
+                        >
+                          Dismiss all
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             ))}
 
