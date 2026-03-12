@@ -1,11 +1,11 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useStore } from "../store/useAppStore";
 import { useHorizontalResize } from "../hooks/useHorizontalResize";
 import type { AppKind, WalkthroughAction } from "../bindings";
 import { APP_KIND_LABELS, usesCdp } from "../utils/appKind";
 import { ImageLightbox, CrosshairOverlay, type LightboxImage } from "./ImageLightbox";
-import { computeAppGroups, isValidItemDrop, type AppGroup, type RenderItem } from "../utils/walkthroughGrouping";
+import { computeAppGroups, type AppGroup, type RenderItem } from "../utils/walkthroughGrouping";
 import {
   ACTIONABLE_AX_ROLES,
   actionIcon,
@@ -19,7 +19,6 @@ import {
   targetCandidateMethod,
 } from "../utils/walkthroughFormatting";
 
-const DND_ITEM_ID = "application/x-item-id";
 const DND_GROUP_INDEX = "application/x-group-index";
 
 export function WalkthroughPanel() {
@@ -53,14 +52,21 @@ export function WalkthroughPanel() {
   const [lightboxActionId, setLightboxActionId] = useState<string | null>(null);
   const [crosshairs, setCrosshairs] = useState<Map<string, { xPercent: number; yPercent: number }>>(new Map());
   const [expandedCandidateGroups, setExpandedCandidateGroups] = useState<Set<number>>(new Set());
-  const [isDragging, setIsDragging] = useState(false);
-  const [dragOverIndex, setDragOverIndexRaw] = useState<number | null>(null);
-  const dragOverRef = useRef<number | null>(null);
-  const setDragOverIndex = useCallback((idx: number | null) => {
-    if (dragOverRef.current === idx) return;
-    dragOverRef.current = idx;
-    setDragOverIndexRaw(idx);
-  }, []);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+
+  // Pointer-based item drag state
+  type ItemDrag = {
+    id: string;
+    groupIndex: number;
+    originalIndex: number; // index within group.items (non-candidate nodes only)
+    hoverIndex: number;    // where the card would land
+    y: number;             // pointer Y (viewport)
+    offsetY: number;       // pointer offset from card top
+    cardRect: DOMRect;     // original card bounding rect
+  };
+  const [itemDrag, setItemDrag] = useState<ItemDrag | null>(null);
+  const itemDragRef = useRef<ItemDrag | null>(null);
+  const cardRefsMap = useRef<Map<string, HTMLElement>>(new Map());
 
   const onThumbnailLoad = useCallback((action: WalkthroughAction, img: HTMLImageElement) => {
     const result = computeCrosshairPercent(action, img.naturalWidth, img.naturalHeight);
@@ -75,6 +81,64 @@ export function WalkthroughPanel() {
   }, []);
 
   const { width, handleResizeStart } = useHorizontalResize();
+
+  // Pointer move/up handlers for item drag
+  useEffect(() => {
+    if (!itemDrag) return;
+    const onPointerMove = (e: PointerEvent) => {
+      const drag = itemDragRef.current;
+      if (!drag) return;
+      const newY = e.clientY;
+      // Compute hover index by comparing pointer Y to card midpoints in the group
+      const group = groups[drag.groupIndex];
+      if (!group) return;
+      const nodeItems = group.items.filter((i) => i.type === "node");
+      // Find minimum draggable index (after all anchors)
+      let minIdx = 0;
+      for (let i = 0; i < nodeItems.length; i++) {
+        const gi = group.items.indexOf(nodeItems[i]);
+        if (group.anchorIndices.has(gi)) minIdx = i + 1;
+      }
+      let hoverIndex = drag.originalIndex;
+      for (let i = 0; i < nodeItems.length; i++) {
+        if (i === drag.originalIndex) continue;
+        const el = cardRefsMap.current.get(nodeItems[i].id);
+        if (!el) continue;
+        const rect = el.getBoundingClientRect();
+        const mid = rect.top + rect.height / 2;
+        if (i < drag.originalIndex && newY < mid) { hoverIndex = i; break; }
+        if (i > drag.originalIndex && newY > mid) { hoverIndex = i; }
+      }
+      hoverIndex = Math.max(hoverIndex, minIdx);
+      const updated = { ...drag, y: newY, hoverIndex };
+      itemDragRef.current = updated;
+      setItemDrag(updated);
+    };
+    const onPointerUp = () => {
+      const drag = itemDragRef.current;
+      if (drag && drag.hoverIndex !== drag.originalIndex) {
+        // Map group-local indices to walkthroughNodeOrder indices
+        const group = groups[drag.groupIndex];
+        const nodeItems = group.items.filter((i) => i.type === "node");
+        const fromId = nodeItems[drag.originalIndex]?.id;
+        const toId = nodeItems[drag.hoverIndex]?.id;
+        if (fromId && toId) {
+          const fromIdx = walkthroughNodeOrder.indexOf(fromId);
+          const toIdx = walkthroughNodeOrder.indexOf(toId);
+          if (fromIdx >= 0 && toIdx >= 0) reorderNode(fromIdx, toIdx);
+        }
+      }
+      itemDragRef.current = null;
+      setItemDrag(null);
+    };
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [itemDrag !== null]);
 
   // Recording/Paused/Processing states are now handled by RecordingBar overlay
   if (walkthroughStatus !== "Review") return null;
@@ -134,98 +198,14 @@ export function WalkthroughPanel() {
     };
   })();
 
-  // Helper: compute flat index for a position within groups
-  function flatIdxAt(groupIndex: number, itemIndex: number): number {
-    let idx = 0;
-    for (let gi = 0; gi < groupIndex; gi++) idx += groups[gi].items.length;
-    return idx + itemIndex;
-  }
-
-  // Helper: handle drop event for both item and group drags
-  function handleDrop(e: React.DragEvent, flatIdx: number, targetGroupIndex: number) {
-    e.preventDefault();
-    setDragOverIndex(null);
-
-    const dragItemId = e.dataTransfer.getData(DND_ITEM_ID);
-    const groupIdxStr = e.dataTransfer.getData(DND_GROUP_INDEX);
-
-    if (dragItemId) {
-      if (!isValidItemDrop(dragItemId, flatIdx, groups)) return;
-
-      const fromIdx = walkthroughNodeOrder.indexOf(dragItemId);
-      if (fromIdx >= 0) {
-        const activeIds = groups.flatMap((g) => g.items.map((i) => i.id));
-        const targetId = activeIds[flatIdx];
-        const toIdx = targetId ? walkthroughNodeOrder.indexOf(targetId) : walkthroughNodeOrder.length;
-        if (toIdx >= 0) reorderNode(fromIdx, toIdx > fromIdx ? toIdx - 1 : toIdx);
-      }
-    } else if (groupIdxStr) {
-      const fromGroupIdx = parseInt(groupIdxStr, 10);
-      if (!isNaN(fromGroupIdx) && fromGroupIdx !== targetGroupIndex) {
-        reorderGroup(fromGroupIdx, targetGroupIndex);
-      }
-    }
-  }
-
-  // Render a single item (node or candidate) within a group
+  // Render a single node item within a group
   function renderGroupItem(item: RenderItem, group: AppGroup, groupIndex: number, itemIndex: number) {
-    const flatIdx = flatIdxAt(groupIndex, itemIndex);
+    if (item.type === "candidate") return null;
     const isItemAnchor = group.anchorIndices.has(itemIndex);
 
     const borderLeftStyle = group.appName
       ? { borderLeftColor: group.color, borderLeftWidth: 3, borderLeftStyle: "solid" as const }
       : {};
-
-    // Drop zone before this item — expands during drag for easier targeting
-    const dropZone = (
-      <div
-        className={`relative transition-all ${isDragging ? "h-6" : "h-1"}`}
-        onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOverIndex(flatIdx); }}
-        onDragLeave={() => setDragOverIndex(null)}
-        onDrop={(e) => handleDrop(e, flatIdx, groupIndex)}
-      >
-        {dragOverIndex === flatIdx && (
-          <div className="absolute left-0 right-0 top-1/2 h-0.5 -translate-y-1/2 bg-[var(--accent-coral)]" />
-        )}
-      </div>
-    );
-
-    if (item.type === "candidate") {
-      const { icon, color } = actionIcon(item.action.kind);
-      const label = actionLabel(item.action);
-      return (
-        <div key={`candidate-${item.action.id}`}>
-          {dropZone}
-          <div
-            className="rounded-lg border border-dashed border-purple-500/50 opacity-60"
-            style={borderLeftStyle}
-          >
-            <div className="flex items-center gap-2 px-3 py-2">
-              <span className="w-5 text-right text-[10px] text-[var(--text-muted)]">?</span>
-              <span className={`w-4 text-center text-sm ${color}`}>{icon}</span>
-              <span className="truncate text-xs text-[var(--text-secondary)]">{label}</span>
-              <span className="ml-1 rounded bg-purple-900/50 px-1.5 py-0.5 text-[10px] text-purple-300">
-                candidate
-              </span>
-              <div className="flex gap-1 ml-auto">
-                <button
-                  onClick={() => keepCandidate(item.action.id)}
-                  className="rounded bg-green-700 px-2 py-0.5 text-[10px] text-white hover:bg-green-600"
-                >
-                  Keep
-                </button>
-                <button
-                  onClick={() => dismissCandidate(item.action.id)}
-                  className="rounded bg-[var(--bg-input)] px-2 py-0.5 text-[10px] text-[var(--text-muted)] hover:bg-red-500/20"
-                >
-                  Dismiss
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      );
-    }
 
     const { node, action } = item;
     const isDeleted = deletedSet.has(node.id);
@@ -242,47 +222,92 @@ export function WalkthroughPanel() {
 
     const variablePromo = varPromoMap.get(node.id);
 
+    // Pointer-drag displacement
+    const isBeingDragged = itemDrag?.id === node.id;
+    const nodeItems = group.items.filter((i) => i.type === "node");
+    const nodeIdx = nodeItems.findIndex((i) => i.id === node.id);
+    let transformY = 0;
+    if (itemDrag && itemDrag.groupIndex === groupIndex && !isBeingDragged && nodeIdx >= 0) {
+      const { originalIndex, hoverIndex, cardRect } = itemDrag;
+      const h = cardRect.height + 4;
+      if (hoverIndex < originalIndex && nodeIdx >= hoverIndex && nodeIdx < originalIndex) {
+        transformY = h;
+      } else if (hoverIndex > originalIndex && nodeIdx > originalIndex && nodeIdx <= hoverIndex) {
+        transformY = -h;
+      }
+    }
+    const dragStyle = itemDrag ? {
+      transform: `translateY(${transformY}px)`,
+      transition: "transform 200ms ease-out",
+      opacity: isBeingDragged ? 0 : 1,
+    } : {};
+
     return (
-      <div key={node.id} data-item-id={node.id}>
-        {dropZone}
+      <div
+        key={node.id}
+        data-item-id={node.id}
+        ref={(el) => {
+          if (el) cardRefsMap.current.set(node.id, el);
+          else cardRefsMap.current.delete(node.id);
+        }}
+      >
         <div
-          className={`rounded-lg border transition-all duration-200 ${
+          className={`rounded-lg border transition-colors ${
             isDeleted
               ? "border-[var(--border)] opacity-40"
               : isExpanded
                 ? "border-[var(--accent-coral)]/30 bg-[var(--bg-hover)]"
                 : "border-[var(--border)] hover:border-[var(--text-muted)]/30"
           }`}
-          style={borderLeftStyle}
+          style={{ ...borderLeftStyle, ...dragStyle }}
         >
-          {/* Collapsed row — entire row is draggable for non-anchor items */}
+          {/* Collapsed row */}
           <div
             className="group flex cursor-pointer items-center gap-2 px-3 py-2"
-            draggable={!isItemAnchor && !isDeleted}
             onClick={() => setWalkthroughExpandedAction(node.id)}
-            onDragStart={(e) => {
-              e.dataTransfer.setData(DND_ITEM_ID, item.id);
-              e.dataTransfer.effectAllowed = "move";
-              e.dataTransfer.dropEffect = "move";
-              setIsDragging(true);
-              const card = (e.currentTarget as HTMLElement).closest("[data-item-id]") as HTMLElement | null;
-              if (card) {
-                card.style.opacity = "0.4";
-                e.dataTransfer.setDragImage(card, card.offsetWidth / 2, card.offsetHeight / 2);
-              }
-            }}
-            onDragEnd={(e) => {
-              setIsDragging(false);
-              setDragOverIndex(null);
-              const card = (e.currentTarget as HTMLElement).closest("[data-item-id]");
-              if (card) (card as HTMLElement).style.opacity = "";
-            }}
           >
-            {/* Drag handle indicator (visual only) */}
-            {isItemAnchor || isDeleted ? (
+            {/* Drag handle */}
+            {isDeleted ? (
               <span className="w-5 shrink-0" />
+            ) : isItemAnchor ? (
+              <span
+                className="flex w-5 shrink-0 items-center justify-center text-lg text-[var(--text-muted)] opacity-40 group-hover:opacity-100 transition-opacity select-none cursor-grab active:cursor-grabbing"
+                draggable
+                onClick={(e) => e.stopPropagation()}
+                onDragStart={(e) => {
+                  e.stopPropagation();
+                  e.dataTransfer.setData(DND_GROUP_INDEX, String(groupIndex));
+                  e.dataTransfer.effectAllowed = "move";
+                  e.dataTransfer.dropEffect = "move";
+                }}
+                onDragEnd={() => setDragOverIndex(null)}
+              >
+                &#x2261;
+              </span>
             ) : (
-              <span className="flex w-5 shrink-0 items-center justify-center text-lg text-[var(--text-muted)] opacity-40 group-hover:opacity-100 transition-opacity select-none">
+              <span
+                className="flex w-5 shrink-0 items-center justify-center text-lg text-[var(--text-muted)] opacity-40 group-hover:opacity-100 transition-opacity select-none cursor-grab active:cursor-grabbing"
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  const card = (e.currentTarget as HTMLElement).closest("[data-item-id]") as HTMLElement;
+                  if (!card) return;
+                  const rect = card.getBoundingClientRect();
+                  const ni = nodeItems.findIndex((i) => i.id === node.id);
+                  if (ni < 0) return;
+                  const drag: ItemDrag = {
+                    id: node.id,
+                    groupIndex,
+                    originalIndex: ni,
+                    hoverIndex: ni,
+                    y: e.clientY,
+                    offsetY: e.clientY - rect.top,
+                    cardRect: rect,
+                  };
+                  itemDragRef.current = drag;
+                  setItemDrag(drag);
+                }}
+              >
                 &#x2261;
               </span>
             )}
@@ -541,11 +566,9 @@ export function WalkthroughPanel() {
                       e.dataTransfer.setData(DND_GROUP_INDEX, String(groupIndex));
                       e.dataTransfer.effectAllowed = "move";
                       e.dataTransfer.dropEffect = "move";
-                      setIsDragging(true);
                       (e.currentTarget as HTMLElement).style.opacity = "0.4";
                     }}
                     onDragEnd={(e) => {
-                      setIsDragging(false);
                       setDragOverIndex(null);
                       (e.currentTarget as HTMLElement).style.opacity = "";
                     }}
@@ -606,14 +629,61 @@ export function WalkthroughPanel() {
                         <div className="space-y-0.5 px-3 pb-1.5">
                           {candidates.map((c) => {
                             const { icon, color } = actionIcon(c.action.kind);
+                            const isCandidateExpanded = walkthroughExpandedAction === c.action.id;
                             return (
-                              <div key={c.id} className="flex items-center gap-2 rounded px-2 py-1 border border-dashed border-purple-500/30" style={group.appName ? { borderLeftColor: group.color, borderLeftWidth: 3, borderLeftStyle: "solid" } : {}}>
-                                <span className={`w-4 text-center text-sm ${color}`}>{icon}</span>
-                                <span className="truncate text-xs text-[var(--text-secondary)]">{actionLabel(c.action)}</span>
-                                <div className="flex gap-0.5 ml-auto shrink-0">
-                                  <button onClick={() => keepCandidate(c.action.id)} className="rounded bg-green-700 px-1.5 py-0.5 text-white hover:bg-green-600">Keep</button>
-                                  <button onClick={() => dismissCandidate(c.action.id)} className="rounded bg-[var(--bg-input)] px-1.5 py-0.5 text-[var(--text-muted)] hover:bg-red-500/20">Dismiss</button>
+                              <div key={c.id}>
+                                <div
+                                  className="flex items-center gap-2 rounded px-2 py-1 border border-dashed border-purple-500/30 cursor-pointer hover:bg-[var(--bg-hover)]"
+                                  style={group.appName ? { borderLeftColor: group.color, borderLeftWidth: 3, borderLeftStyle: "solid" } : {}}
+                                  onClick={() => setWalkthroughExpandedAction(c.action.id)}
+                                >
+                                  <span className={`w-4 text-center text-sm ${color}`}>{icon}</span>
+                                  <span className="truncate text-xs text-[var(--text-secondary)]">{actionLabel(c.action)}</span>
+                                  <div className="flex gap-0.5 ml-auto shrink-0">
+                                    <button onClick={(e) => { e.stopPropagation(); keepCandidate(c.action.id); }} className="rounded bg-green-700 px-1.5 py-0.5 text-white hover:bg-green-600">Keep</button>
+                                    <button onClick={(e) => { e.stopPropagation(); dismissCandidate(c.action.id); }} className="rounded bg-[var(--bg-input)] px-1.5 py-0.5 text-[var(--text-muted)] hover:bg-red-500/20">Dismiss</button>
+                                  </div>
                                 </div>
+                                {isCandidateExpanded && (
+                                  <div className="border-t border-purple-500/20 px-3 py-2 space-y-2">
+                                    {c.action.target_candidates.length > 0 && (
+                                      <div>
+                                        <label className="mb-1 block text-[10px] text-[var(--text-muted)]">Target</label>
+                                        <div className="space-y-1">
+                                          {c.action.target_candidates.map((candidate, ci) => (
+                                            <div key={ci} className="flex items-center gap-2 px-2 py-1 text-xs text-[var(--text-secondary)]">
+                                              <span>{targetCandidateIcon(candidate)}</span>
+                                              <span className="truncate">{targetCandidateLabel(candidate)}</span>
+                                              <span className="ml-auto shrink-0 text-[10px] text-[var(--text-muted)]">{targetCandidateMethod(candidate)}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+                                    {c.action.artifact_paths.length > 0 && (() => {
+                                      const crosshair = crosshairs.get(c.action.id);
+                                      return (
+                                        <div>
+                                          <label className="mb-1 block text-[10px] text-[var(--text-muted)]">Screenshot</label>
+                                          <div
+                                            className="relative inline-block cursor-pointer"
+                                            onClick={(e) => { e.stopPropagation(); setLightboxActionId(c.action.id); }}
+                                          >
+                                            <img
+                                              src={convertFileSrc(c.action.artifact_paths[0])}
+                                              alt="Action screenshot"
+                                              className="max-h-32 rounded border border-[var(--border)] object-contain"
+                                              onLoad={(e) => onThumbnailLoad(c.action, e.currentTarget)}
+                                            />
+                                            {crosshair && (
+                                              <CrosshairOverlay xPercent={crosshair.xPercent} yPercent={crosshair.yPercent} />
+                                            )}
+                                          </div>
+                                        </div>
+                                      );
+                                    })()}
+                                  </div>
+                                )}
                               </div>
                             );
                           })}
@@ -625,38 +695,29 @@ export function WalkthroughPanel() {
               </div>
             ))}
 
-            {/* Trailing drop zone */}
-            {(() => {
-              const totalItems = groups.reduce((sum, g) => sum + g.items.length, 0);
-              return (
-                <div
-                  className="relative h-4"
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.dataTransfer.dropEffect = "move";
-                    setDragOverIndex(totalItems);
-                  }}
-                  onDragLeave={() => setDragOverIndex(null)}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    setDragOverIndex(null);
-                    const itemId = e.dataTransfer.getData(DND_ITEM_ID);
-                    const groupIdxStr = e.dataTransfer.getData(DND_GROUP_INDEX);
-                    if (itemId) {
-                      const fromIdx = walkthroughNodeOrder.indexOf(itemId);
-                      if (fromIdx >= 0) reorderNode(fromIdx, walkthroughNodeOrder.length - 1);
-                    } else if (groupIdxStr) {
-                      const fromGroupIdx = parseInt(groupIdxStr, 10);
-                      if (!isNaN(fromGroupIdx)) reorderGroup(fromGroupIdx, groups.length);
-                    }
-                  }}
-                >
-                  {dragOverIndex === totalItems && (
-                    <div className="absolute left-0 right-0 top-0 h-0.5 bg-[var(--accent-coral)]" />
-                  )}
-                </div>
-              );
-            })()}
+            {/* Trailing drop zone for group reorder */}
+            <div
+              className="relative h-4"
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                setDragOverIndex(groups.length);
+              }}
+              onDragLeave={() => setDragOverIndex(null)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOverIndex(null);
+                const groupIdxStr = e.dataTransfer.getData(DND_GROUP_INDEX);
+                if (groupIdxStr) {
+                  const fromGroupIdx = parseInt(groupIdxStr, 10);
+                  if (!isNaN(fromGroupIdx)) reorderGroup(fromGroupIdx, groups.length);
+                }
+              }}
+            >
+              {dragOverIndex === groups.length && (
+                <div className="absolute left-0 right-0 top-0 h-0.5 bg-[var(--accent-coral)]" />
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -680,6 +741,41 @@ export function WalkthroughPanel() {
           Apply
         </button>
       </div>
+
+      {/* Floating drag card */}
+      {itemDrag && (() => {
+        const dragGroup = groups[itemDrag.groupIndex];
+        if (!dragGroup) return null;
+        const dragNodeItems = dragGroup.items.filter((i) => i.type === "node");
+        const dragItem = dragNodeItems[itemDrag.originalIndex];
+        if (!dragItem || dragItem.type !== "node") return null;
+        const { node: dragNode, action: dragAction } = dragItem;
+        const { icon: dragIcon, color: dragColor } = dragAction ? actionIcon(dragAction.kind) : nodeTypeIcon(dragNode.node_type);
+        const dragStep = stepNumbers.get(dragNode.id);
+        const dragRename = renameMap.get(dragNode.id);
+        const dragDefaultLabel = dragAction ? actionLabel(dragAction) : dragNode.name;
+        const dragLabel = dragRename?.new_name || dragDefaultLabel;
+        return (
+          <div
+            className="fixed z-50 pointer-events-none rounded-lg border border-[var(--accent-coral)]/50 bg-[var(--bg-panel)] shadow-lg shadow-black/30"
+            style={{
+              top: itemDrag.y - itemDrag.offsetY,
+              left: itemDrag.cardRect.left,
+              width: itemDrag.cardRect.width,
+              ...(dragGroup.appName
+                ? { borderLeftColor: dragGroup.color, borderLeftWidth: 3, borderLeftStyle: "solid" as const }
+                : {}),
+            }}
+          >
+            <div className="flex items-center gap-2 px-3 py-2">
+              <span className="flex w-5 shrink-0 items-center justify-center text-lg text-[var(--text-muted)]">&#x2261;</span>
+              <span className="w-5 text-right text-[10px] text-[var(--text-muted)]">{dragStep ?? "\u2014"}</span>
+              <span className={`w-4 text-center text-sm ${dragColor}`}>{dragIcon}</span>
+              <span className="flex-1 truncate text-xs text-[var(--text-secondary)]">{dragLabel}</span>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Screenshot lightbox */}
       {lightboxImage && (
