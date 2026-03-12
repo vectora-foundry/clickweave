@@ -18,6 +18,9 @@ pub const OCR_PROXIMITY_PX: f64 = 50.0;
 /// Maximum gap between scroll events to coalesce (milliseconds).
 const SCROLL_COALESCE_GAP_MS: u64 = 300;
 
+/// Maximum gap between identical key presses to coalesce (milliseconds).
+const KEY_COALESCE_GAP_MS: u64 = 500;
+
 /// macOS window control button actions detected from accessibility data.
 ///
 /// Traffic light buttons (close, minimize, zoom/full-screen) report
@@ -156,6 +159,7 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
     let mut last_app: Option<String> = None;
     let mut text_buffer: Vec<(Uuid, u64, String)> = Vec::new();
     let mut last_scroll_ts: u64 = 0;
+    let mut last_key_ts: u64 = 0;
     let mut i = 0;
 
     while i < events.len() {
@@ -364,10 +368,10 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 // Skip empty labels — these come from elements with a subrole but
                 // no display text (e.g. unlabeled buttons), and would suppress VLM
                 // fallback without providing a usable target string.
-                if let Some((label, role, _subrole)) = ax_label {
-                    if !label.is_empty() {
-                        candidates.push(TargetCandidate::AccessibilityLabel { label, role });
-                    }
+                if let Some((label, role, _subrole)) = ax_label
+                    && !label.is_empty()
+                {
+                    candidates.push(TargetCandidate::AccessibilityLabel { label, role });
                 }
 
                 // VLM label as second-best target (after actionable AX labels).
@@ -452,14 +456,41 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
 
             WalkthroughEventKind::KeyPressed { key, modifiers } => {
                 flush_text(&mut text_buffer, &mut actions, &last_app);
-                actions.push(WalkthroughAction::new(
-                    WalkthroughActionKind::PressKey {
-                        key: key.clone(),
-                        modifiers: modifiers.clone(),
-                    },
-                    last_app.clone(),
-                    vec![event.id],
-                ));
+
+                // Coalesce with previous identical PressKey if recent.
+                let coalesced = if let Some(prev) = actions.last_mut() {
+                    if let WalkthroughActionKind::PressKey {
+                        key: ref pk,
+                        modifiers: ref pm,
+                    } = prev.kind
+                    {
+                        if pk == key
+                            && pm == modifiers
+                            && event.timestamp - last_key_ts <= KEY_COALESCE_GAP_MS
+                        {
+                            prev.source_event_ids.push(event.id);
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if !coalesced {
+                    actions.push(WalkthroughAction::new(
+                        WalkthroughActionKind::PressKey {
+                            key: key.clone(),
+                            modifiers: modifiers.clone(),
+                        },
+                        last_app.clone(),
+                        vec![event.id],
+                    ));
+                }
+                last_key_ts = event.timestamp;
             }
 
             WalkthroughEventKind::Scrolled { delta_y, .. } => {
@@ -948,6 +979,14 @@ mod tests {
             WalkthroughEventKind::VlmLabelResolved {
                 label: "Submit".to_string(),
             },
+            WalkthroughEventKind::HoverDetected {
+                x: 100.0,
+                y: 200.0,
+                element_name: "Submit".to_string(),
+                element_role: Some("button".to_string()),
+                dwell_ms: 1500,
+                app_name: Some("Signal".to_string()),
+            },
             WalkthroughEventKind::Paused,
             WalkthroughEventKind::Resumed,
             WalkthroughEventKind::Stopped,
@@ -962,6 +1001,18 @@ mod tests {
             let json = serde_json::to_string(&event).expect("serialize");
             let deserialized: WalkthroughEvent = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(deserialized.id, event.id);
+        }
+    }
+
+    #[test]
+    fn test_hover_detected_backward_compat_without_app_name() {
+        let json = r#"{"type":"HoverDetected","x":100.0,"y":200.0,"element_name":"Submit","element_role":"button","dwell_ms":1500}"#;
+        let kind: WalkthroughEventKind = serde_json::from_str(json).unwrap();
+        match kind {
+            WalkthroughEventKind::HoverDetected { app_name, .. } => {
+                assert_eq!(app_name, None);
+            }
+            _ => panic!("wrong variant"),
         }
     }
 
@@ -2013,6 +2064,73 @@ mod tests {
                 WalkthroughActionKind::PressKey { key, modifiers }
                     if key == "f" && modifiers == &["command", "control"]
             ));
+        }
+
+        #[test]
+        fn test_consecutive_identical_presskey_coalesced() {
+            let events: Vec<_> = (0..6)
+                .map(|i| {
+                    make_event(
+                        1000 + i * 100,
+                        WalkthroughEventKind::KeyPressed {
+                            key: "tab".into(),
+                            modifiers: vec!["command".into()],
+                        },
+                    )
+                })
+                .collect();
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 1, "6 rapid cmd+tab should coalesce to 1");
+            assert!(matches!(
+                &actions[0].kind,
+                WalkthroughActionKind::PressKey { key, modifiers }
+                if key == "tab" && modifiers == &["command"]
+            ));
+            assert_eq!(actions[0].source_event_ids.len(), 6);
+        }
+
+        #[test]
+        fn test_different_presskey_not_coalesced() {
+            let events = vec![
+                make_event(
+                    1000,
+                    WalkthroughEventKind::KeyPressed {
+                        key: "tab".into(),
+                        modifiers: vec!["command".into()],
+                    },
+                ),
+                make_event(
+                    1100,
+                    WalkthroughEventKind::KeyPressed {
+                        key: "a".into(),
+                        modifiers: vec!["command".into()],
+                    },
+                ),
+            ];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 2, "different keys should not coalesce");
+        }
+
+        #[test]
+        fn test_presskey_coalescing_respects_time_gap() {
+            let events = vec![
+                make_event(
+                    1000,
+                    WalkthroughEventKind::KeyPressed {
+                        key: "tab".into(),
+                        modifiers: vec!["command".into()],
+                    },
+                ),
+                make_event(
+                    2000,
+                    WalkthroughEventKind::KeyPressed {
+                        key: "tab".into(),
+                        modifiers: vec!["command".into()],
+                    },
+                ),
+            ];
+            let (actions, _) = normalize_events(&events);
+            assert_eq!(actions.len(), 2, "gap >500ms should not coalesce");
         }
     }
 
