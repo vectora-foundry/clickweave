@@ -668,6 +668,14 @@ fn retrieve_hover_candidates(
             continue;
         }
 
+        // Skip window-level hovers — these capture the window title (e.g.
+        // "#general | DevCrew - Discord") rather than the specific element
+        // the user is hovering on.  Common with Electron/Chrome apps where
+        // macOS accessibility can't resolve finer-grained elements.
+        if element_role.as_deref() == Some("AXWindow") {
+            continue;
+        }
+
         // Skip if any click near the same coordinates occurred shortly after
         // this hover (the click subsumes the hover intent).  Scans all events
         // because hover entries may be appended after clicks in the file.
@@ -684,20 +692,28 @@ fn retrieve_hover_candidates(
             continue;
         }
 
-        // For CDP hovers (x=0, y=0), coordinate matching doesn't work.
-        // Instead, check if the hover's element name matches a click's CDP target
-        // within 2s after the hover — this indicates a pass-through hover.
-        if *x == 0.0 && *y == 0.0 {
-            let text_matches_click = events.iter().any(|e| {
-                if let WalkthroughEventKind::CdpClickResolved { name, .. } = &e.kind {
+        // For CDP hovers, coordinate matching doesn't work (clientX/clientY vs
+        // screen coords).  Match on name+role against CdpClickResolved instead.
+        if app_name.is_some() {
+            let matches_click = events.iter().any(|e| {
+                if let WalkthroughEventKind::CdpClickResolved {
+                    name,
+                    role: click_role,
+                    ..
+                } = &e.kind
+                {
                     e.timestamp > event.timestamp
                         && e.timestamp.saturating_sub(event.timestamp) < HOVER_CLICK_WINDOW_MS
                         && name == element_name
+                        && match (element_role, click_role) {
+                            (Some(hr), Some(cr)) => hr == cr,
+                            _ => true, // if either role is missing, name match is sufficient
+                        }
                 } else {
                     false
                 }
             });
-            if text_matches_click {
+            if matches_click {
                 continue;
             }
         }
@@ -709,12 +725,7 @@ fn retrieve_hover_candidates(
                 .rev()
                 .find(|(_, a, _)| a == explicit_app)
                 .and_then(|(_, _, t)| t.clone());
-            if title.is_some() {
-                (Some(explicit_app.clone()), title)
-            } else {
-                // Explicit app not found in focus events — fall back to timestamp resolution.
-                resolve_hover_app(event.timestamp, &focus_events)
-            }
+            (Some(explicit_app.clone()), title)
         } else {
             resolve_hover_app(event.timestamp, &focus_events)
         };

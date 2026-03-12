@@ -19,7 +19,7 @@ pub const OCR_PROXIMITY_PX: f64 = 50.0;
 const SCROLL_COALESCE_GAP_MS: u64 = 300;
 
 /// Maximum gap between identical key presses to coalesce (milliseconds).
-const KEY_COALESCE_GAP_MS: u64 = 500;
+const KEY_COALESCE_GAP_MS: u64 = 150;
 
 /// macOS window control button actions detected from accessibility data.
 ///
