@@ -109,6 +109,19 @@ export function computeAppGroups(
     }
   }
 
+  // Ensure anchors always come first within each group
+  for (const group of groups) {
+    if (group.anchorIndices.size === 0) continue;
+    const anchors: RenderItem[] = [];
+    const rest: RenderItem[] = [];
+    for (let i = 0; i < group.items.length; i++) {
+      if (group.anchorIndices.has(i)) anchors.push(group.items[i]);
+      else rest.push(group.items[i]);
+    }
+    group.items = [...anchors, ...rest];
+    group.anchorIndices = new Set(anchors.map((_, i) => i));
+  }
+
   return groups;
 }
 

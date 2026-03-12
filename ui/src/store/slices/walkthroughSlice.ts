@@ -308,9 +308,29 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
         ...s.walkthroughActionNodeMap,
         { action_id: actionId, node_id: nodeId },
       ],
-      walkthroughNodeOrder: s.walkthroughNodeOrder.map((id) =>
-        id === actionId ? nodeId : id,
-      ),
+      walkthroughNodeOrder: (() => {
+        // Replace candidate action ID with the new node ID
+        const order = s.walkthroughNodeOrder.map((id) =>
+          id === actionId ? nodeId : id,
+        );
+        // Ensure the kept node is positioned after all same-app anchors
+        const appName = action.app_name;
+        if (appName) {
+          const ANCHOR_KINDS = new Set(["FocusWindow", "LaunchApp"]);
+          const actionByNid = buildActionByNodeId(s.walkthroughActionNodeMap, updatedActions);
+          const nodeIdx = order.indexOf(nodeId);
+          let lastAnchorIdx = -1;
+          for (let i = 0; i < order.length; i++) {
+            const a = actionByNid.get(order[i]) ?? updatedActions.find((x) => x.id === order[i]);
+            if (a && a.app_name === appName && ANCHOR_KINDS.has(a.kind.type)) lastAnchorIdx = i;
+          }
+          if (nodeIdx >= 0 && lastAnchorIdx >= 0 && nodeIdx < lastAnchorIdx) {
+            order.splice(nodeIdx, 1);
+            order.splice(lastAnchorIdx, 0, nodeId);
+          }
+        }
+        return order;
+      })(),
     };
   }),
 
