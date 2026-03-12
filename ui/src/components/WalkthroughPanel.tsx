@@ -21,9 +21,14 @@ import {
 
 const DND_GROUP_INDEX = "application/x-group-index";
 
+function groupBorderStyle(group: AppGroup): React.CSSProperties {
+  return group.appName
+    ? { borderLeftColor: group.color, borderLeftWidth: 3, borderLeftStyle: "solid" }
+    : {};
+}
+
 export function WalkthroughPanel() {
   const walkthroughStatus = useStore((s) => s.walkthroughStatus);
-  const walkthroughEvents = useStore((s) => s.walkthroughEvents);
   const walkthroughError = useStore((s) => s.walkthroughError);
   const walkthroughActions = useStore((s) => s.walkthroughActions);
   const walkthroughAnnotations = useStore((s) => s.walkthroughAnnotations);
@@ -51,7 +56,6 @@ export function WalkthroughPanel() {
 
   const [lightboxActionId, setLightboxActionId] = useState<string | null>(null);
   const [crosshairs, setCrosshairs] = useState<Map<string, { xPercent: number; yPercent: number }>>(new Map());
-  const [expandedCandidateGroups, setExpandedCandidateGroups] = useState<Set<number>>(new Set());
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
   // Pointer-based item drag state
@@ -198,14 +202,83 @@ export function WalkthroughPanel() {
     };
   })();
 
+  function renderScreenshotThumbnail(action: WalkthroughAction) {
+    if (action.artifact_paths.length === 0) return null;
+    const crosshair = crosshairs.get(action.id);
+    return (
+      <div>
+        <label className="mb-1 block text-[10px] text-[var(--text-muted)]">Screenshot</label>
+        <div
+          className="relative inline-block cursor-pointer"
+          onClick={(e) => { e.stopPropagation(); setLightboxActionId(action.id); }}
+        >
+          <img
+            src={convertFileSrc(action.artifact_paths[0])}
+            alt="Action screenshot"
+            className="max-h-32 rounded border border-[var(--border)] object-contain"
+            onLoad={(e) => onThumbnailLoad(action, e.currentTarget)}
+          />
+          {crosshair && (
+            <CrosshairOverlay xPercent={crosshair.xPercent} yPercent={crosshair.yPercent} />
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Render a candidate item inline within a group
+  function renderCandidateItem(item: Extract<RenderItem, { type: "candidate" }>, group: AppGroup) {
+    const { action } = item;
+    const { icon, color } = actionIcon(action.kind);
+    const isCandidateExpanded = walkthroughExpandedAction === action.id;
+
+    return (
+      <div key={item.id}>
+        <div
+          className={`flex items-center gap-2 rounded-lg px-3 py-2 border border-dashed border-purple-500/30 cursor-pointer hover:bg-[var(--bg-hover)] ${
+            isCandidateExpanded ? "bg-[var(--bg-hover)]" : ""
+          }`}
+          style={groupBorderStyle(group)}
+          onClick={() => setWalkthroughExpandedAction(action.id)}
+        >
+          {/* Empty drag handle spacer */}
+          <span className="w-5 shrink-0" />
+          {/* Empty step number spacer */}
+          <span className="w-5" />
+          <span className={`w-4 text-center text-sm ${color}`}>{icon}</span>
+          <span className="truncate text-xs text-[var(--text-secondary)]">{actionLabel(action)}</span>
+          <div className="flex gap-0.5 ml-auto shrink-0 text-[10px]">
+            <button onClick={(e) => { e.stopPropagation(); keepCandidate(action.id); }} className="rounded bg-green-700 px-1.5 py-0.5 text-white hover:bg-green-600">Keep</button>
+            <button onClick={(e) => { e.stopPropagation(); dismissCandidate(action.id); }} className="rounded bg-[var(--bg-input)] px-1.5 py-0.5 text-[var(--text-muted)] hover:bg-red-500/20">Dismiss</button>
+          </div>
+        </div>
+        {isCandidateExpanded && (
+          <div className="border-t border-purple-500/20 px-3 py-2 space-y-2 text-[10px]">
+            {action.target_candidates.length > 0 && (
+              <div>
+                <label className="mb-1 block text-[10px] text-[var(--text-muted)]">Target</label>
+                <div className="space-y-1">
+                  {action.target_candidates.map((candidate, ci) => (
+                    <div key={ci} className="flex items-center gap-2 px-2 py-1 text-xs text-[var(--text-secondary)]">
+                      <span>{targetCandidateIcon(candidate)}</span>
+                      <span className="truncate">{targetCandidateLabel(candidate)}</span>
+                      <span className="ml-auto shrink-0 text-[10px] text-[var(--text-muted)]">{targetCandidateMethod(candidate)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {renderScreenshotThumbnail(action)}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   // Render a single node item within a group
   function renderGroupItem(item: RenderItem, group: AppGroup, groupIndex: number, itemIndex: number) {
-    if (item.type === "candidate") return null;
+    if (item.type === "candidate") return renderCandidateItem(item, group);
     const isItemAnchor = group.anchorIndices.has(itemIndex);
-
-    const borderLeftStyle = group.appName
-      ? { borderLeftColor: group.color, borderLeftWidth: 3, borderLeftStyle: "solid" as const }
-      : {};
 
     const { node, action } = item;
     const isDeleted = deletedSet.has(node.id);
@@ -259,7 +332,7 @@ export function WalkthroughPanel() {
                 ? "border-[var(--accent-coral)]/30 bg-[var(--bg-hover)]"
                 : "border-[var(--border)] hover:border-[var(--text-muted)]/30"
           }`}
-          style={{ ...borderLeftStyle, ...dragStyle }}
+          style={{ ...groupBorderStyle(group), ...dragStyle }}
         >
           {/* Collapsed row */}
           <div
@@ -471,28 +544,7 @@ export function WalkthroughPanel() {
               )}
 
               {/* Screenshot thumbnail */}
-              {action && action.artifact_paths.length > 0 && (() => {
-                const crosshair = crosshairs.get(action.id);
-                return (
-                  <div>
-                    <label className="mb-1 block text-[10px] text-[var(--text-muted)]">Screenshot</label>
-                    <div
-                      className="relative inline-block cursor-pointer"
-                      onClick={() => setLightboxActionId(action.id)}
-                    >
-                      <img
-                        src={convertFileSrc(action.artifact_paths[0])}
-                        alt="Action screenshot"
-                        className="max-h-32 rounded border border-[var(--border)] object-contain"
-                        onLoad={(e) => onThumbnailLoad(action, e.currentTarget)}
-                      />
-                      {crosshair && (
-                        <CrosshairOverlay xPercent={crosshair.xPercent} yPercent={crosshair.yPercent} />
-                      )}
-                    </div>
-                  </div>
-                );
-              })()}
+              {action && renderScreenshotThumbnail(action)}
             </div>
           )}
         </div>
@@ -586,112 +638,10 @@ export function WalkthroughPanel() {
                   </div>
                 )}
 
-                {/* Items (skip candidates — summarized below) */}
+                {/* Items (nodes and candidates inline, time-ordered) */}
                 {group.items.map((item, itemIndex) =>
-                  item.type === "candidate" ? null : renderGroupItem(item, group, groupIndex, itemIndex)
+                  renderGroupItem(item, group, groupIndex, itemIndex)
                 )}
-
-                {/* Candidate summary (expandable) */}
-                {(() => {
-                  const candidates = group.items.filter((i): i is Extract<typeof i, { type: "candidate" }> => i.type === "candidate");
-                  if (candidates.length === 0) return null;
-                  const isExpanded = expandedCandidateGroups.has(groupIndex);
-                  return (
-                    <div className="text-[10px]">
-                      <div className="flex items-center gap-2 px-3 py-1.5 text-purple-400/60">
-                        <button
-                          className="flex items-center gap-1 rounded bg-purple-900/40 px-1.5 py-0.5 hover:bg-purple-900/60 transition-colors"
-                          onClick={() => setExpandedCandidateGroups((prev) => {
-                            const next = new Set(prev);
-                            isExpanded ? next.delete(groupIndex) : next.add(groupIndex);
-                            return next;
-                          })}
-                        >
-                          <span className={`transition-transform ${isExpanded ? "rotate-90" : ""}`}>&#x25B6;</span>
-                          {candidates.length} hover candidate{candidates.length > 1 ? "s" : ""}
-                        </button>
-                        <div className="flex gap-1 ml-auto">
-                          <button
-                            onClick={() => candidates.forEach((c) => keepCandidate(c.action.id))}
-                            className="rounded bg-green-700 px-2 py-0.5 text-white hover:bg-green-600"
-                          >
-                            Keep all
-                          </button>
-                          <button
-                            onClick={() => candidates.forEach((c) => dismissCandidate(c.action.id))}
-                            className="rounded bg-[var(--bg-input)] px-2 py-0.5 text-[var(--text-muted)] hover:bg-red-500/20"
-                          >
-                            Dismiss all
-                          </button>
-                        </div>
-                      </div>
-                      {isExpanded && (
-                        <div className="space-y-0.5 px-3 pb-1.5">
-                          {candidates.map((c) => {
-                            const { icon, color } = actionIcon(c.action.kind);
-                            const isCandidateExpanded = walkthroughExpandedAction === c.action.id;
-                            return (
-                              <div key={c.id}>
-                                <div
-                                  className="flex items-center gap-2 rounded px-2 py-1 border border-dashed border-purple-500/30 cursor-pointer hover:bg-[var(--bg-hover)]"
-                                  style={group.appName ? { borderLeftColor: group.color, borderLeftWidth: 3, borderLeftStyle: "solid" } : {}}
-                                  onClick={() => setWalkthroughExpandedAction(c.action.id)}
-                                >
-                                  <span className={`w-4 text-center text-sm ${color}`}>{icon}</span>
-                                  <span className="truncate text-xs text-[var(--text-secondary)]">{actionLabel(c.action)}</span>
-                                  <div className="flex gap-0.5 ml-auto shrink-0">
-                                    <button onClick={(e) => { e.stopPropagation(); keepCandidate(c.action.id); }} className="rounded bg-green-700 px-1.5 py-0.5 text-white hover:bg-green-600">Keep</button>
-                                    <button onClick={(e) => { e.stopPropagation(); dismissCandidate(c.action.id); }} className="rounded bg-[var(--bg-input)] px-1.5 py-0.5 text-[var(--text-muted)] hover:bg-red-500/20">Dismiss</button>
-                                  </div>
-                                </div>
-                                {isCandidateExpanded && (
-                                  <div className="border-t border-purple-500/20 px-3 py-2 space-y-2">
-                                    {c.action.target_candidates.length > 0 && (
-                                      <div>
-                                        <label className="mb-1 block text-[10px] text-[var(--text-muted)]">Target</label>
-                                        <div className="space-y-1">
-                                          {c.action.target_candidates.map((candidate, ci) => (
-                                            <div key={ci} className="flex items-center gap-2 px-2 py-1 text-xs text-[var(--text-secondary)]">
-                                              <span>{targetCandidateIcon(candidate)}</span>
-                                              <span className="truncate">{targetCandidateLabel(candidate)}</span>
-                                              <span className="ml-auto shrink-0 text-[10px] text-[var(--text-muted)]">{targetCandidateMethod(candidate)}</span>
-                                            </div>
-                                          ))}
-                                        </div>
-                                      </div>
-                                    )}
-                                    {c.action.artifact_paths.length > 0 && (() => {
-                                      const crosshair = crosshairs.get(c.action.id);
-                                      return (
-                                        <div>
-                                          <label className="mb-1 block text-[10px] text-[var(--text-muted)]">Screenshot</label>
-                                          <div
-                                            className="relative inline-block cursor-pointer"
-                                            onClick={(e) => { e.stopPropagation(); setLightboxActionId(c.action.id); }}
-                                          >
-                                            <img
-                                              src={convertFileSrc(c.action.artifact_paths[0])}
-                                              alt="Action screenshot"
-                                              className="max-h-32 rounded border border-[var(--border)] object-contain"
-                                              onLoad={(e) => onThumbnailLoad(c.action, e.currentTarget)}
-                                            />
-                                            {crosshair && (
-                                              <CrosshairOverlay xPercent={crosshair.xPercent} yPercent={crosshair.yPercent} />
-                                            )}
-                                          </div>
-                                        </div>
-                                      );
-                                    })()}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
               </div>
             ))}
 
@@ -762,9 +712,7 @@ export function WalkthroughPanel() {
               top: itemDrag.y - itemDrag.offsetY,
               left: itemDrag.cardRect.left,
               width: itemDrag.cardRect.width,
-              ...(dragGroup.appName
-                ? { borderLeftColor: dragGroup.color, borderLeftWidth: 3, borderLeftStyle: "solid" as const }
-                : {}),
+              ...groupBorderStyle(dragGroup),
             }}
           >
             <div className="flex items-center gap-2 px-3 py-2">
