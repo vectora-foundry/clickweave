@@ -19,7 +19,9 @@ use crate::platform::macos::MacOSEventTap;
 // Re-export from submodules for use within the commands crate.
 pub use super::walkthrough_session::WalkthroughHandle;
 
-use super::walkthrough_enrichment::{attach_nearest_screenshots, resolve_click_targets_with_vlm};
+use super::walkthrough_enrichment::{
+    attach_nearest_screenshots, generate_hover_screenshots, resolve_click_targets_with_vlm,
+};
 use super::walkthrough_session::{
     get_recording_bar_rect, populate_app_cache, process_capture_events, spawn_mcp,
     strip_recording_bar_click,
@@ -373,6 +375,10 @@ pub async fn stop_walkthrough(
             // Attach the nearest click's screenshot to hover candidates so
             // VLM can resolve their targets too.
             attach_nearest_screenshots(&mut actions);
+
+            // Generate crosshair-marked screenshots for hover candidates
+            // so the review panel shows where each hover was on the window.
+            generate_hover_screenshots(&mut actions, dir).await;
 
             // VLM: resolve click and hover targets using vision (parallel).
             if let Some(ref planner_cfg) = planner {

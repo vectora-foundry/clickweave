@@ -568,32 +568,25 @@ pub(super) fn crop_click_region(
     Some((jpeg_bytes, b64))
 }
 
-/// Downscale the full window screenshot and draw a red crosshair at the click point.
+/// Draw a red crosshair with black outline on an RGBA image at pixel coordinates.
 ///
-/// Draws a red crosshair at `(px, py)` in image-pixel coordinates, then
-/// downscales + JPEG-encodes via the shared VLM image prep utility.
-/// Returns `None` if the image can't be decoded.
-pub(super) fn mark_click_point(png_bytes: &[u8], px: f64, py: f64) -> Option<String> {
-    let img = image::load_from_memory(png_bytes).ok()?;
-    let (img_w, img_h) = (img.width(), img.height());
+/// The crosshair is a gap-centered cross with 4 arms. Dimensions scale with
+/// image size so the crosshair stays visible at any resolution.
+fn draw_crosshair(rgba: &mut image::RgbaImage, px: f64, py: f64) {
+    let (img_w, img_h) = (rgba.width(), rgba.height());
 
-    // Scale crosshair dimensions so it remains visible after VLM downscaling.
-    // A 3152px Retina screenshot downscales ~0.4x to 1280px; a 1px line would
-    // become sub-pixel and vanish in Triangle filter + JPEG compression.
     let longest = img_w.max(img_h) as f64;
     let scale = (longest / clickweave_llm::DEFAULT_MAX_DIMENSION as f64).max(1.0);
     let half_thickness = (2.0 * scale).round() as i64;
     let arm_length = (20.0 * scale).round() as i64;
     let gap = (4.0 * scale).round() as i64;
 
-    let mut rgba = img.into_rgba8();
     let cx = (px as u32).min(img_w.saturating_sub(1)) as i64;
     let cy = (py as u32).min(img_h.saturating_sub(1)) as i64;
 
     let outline = image::Rgba([0, 0, 0, 200]);
     let fill = image::Rgba([255, 0, 0, 255]);
 
-    // Draw a filled rectangle, clamped to image bounds.
     let draw_rect =
         |img: &mut image::RgbaImage, x0: i64, y0: i64, x1: i64, y1: i64, color: image::Rgba<u8>| {
             let x_lo = x0.max(0) as u32;
@@ -607,39 +600,34 @@ pub(super) fn mark_click_point(png_bytes: &[u8], px: f64, py: f64) -> Option<Str
             }
         };
 
-    // Draw 4 arms (left, right, top, bottom) in two passes:
-    // first a black outline (1px larger all around), then red fill on top.
+    // Two passes: black outline (1px larger all around), then red fill.
     for (color, expand) in [(outline, 1i64), (fill, 0i64)] {
-        // Left arm
         draw_rect(
-            &mut rgba,
+            rgba,
             cx - arm_length - expand,
             cy - half_thickness - expand,
             cx - gap + expand,
             cy + half_thickness + expand,
             color,
         );
-        // Right arm
         draw_rect(
-            &mut rgba,
+            rgba,
             cx + gap - expand,
             cy - half_thickness - expand,
             cx + arm_length + expand,
             cy + half_thickness + expand,
             color,
         );
-        // Top arm
         draw_rect(
-            &mut rgba,
+            rgba,
             cx - half_thickness - expand,
             cy - arm_length - expand,
             cx + half_thickness + expand,
             cy - gap + expand,
             color,
         );
-        // Bottom arm
         draw_rect(
-            &mut rgba,
+            rgba,
             cx - half_thickness - expand,
             cy + gap - expand,
             cx + half_thickness + expand,
@@ -647,10 +635,103 @@ pub(super) fn mark_click_point(png_bytes: &[u8], px: f64, py: f64) -> Option<Str
             color,
         );
     }
+}
+
+/// Downscale the full window screenshot and draw a red crosshair at the click point.
+///
+/// Draws a red crosshair at `(px, py)` in image-pixel coordinates, then
+/// downscales + JPEG-encodes via the shared VLM image prep utility.
+/// Returns `None` if the image can't be decoded.
+pub(super) fn mark_click_point(png_bytes: &[u8], px: f64, py: f64) -> Option<String> {
+    let img = image::load_from_memory(png_bytes).ok()?;
+    let mut rgba = img.into_rgba8();
+
+    draw_crosshair(&mut rgba, px, py);
 
     let (b64, _mime) = clickweave_llm::prepare_dynimage_for_vlm(
         image::DynamicImage::ImageRgba8(rgba),
         clickweave_llm::DEFAULT_MAX_DIMENSION,
     );
     Some(b64)
+}
+
+/// Generate crosshair-marked screenshots for hover actions (parallel, async).
+///
+/// For each Hover action that has a borrowed screenshot (from
+/// `attach_nearest_screenshots`), loads the screenshot, draws a crosshair
+/// at the hover position, and saves the result as JPEG. Updates the
+/// action's `artifact_paths[0]` to point to the new file.
+///
+/// Image decoding, crosshair drawing, and JPEG encoding run on the blocking
+/// pool in parallel so they don't block the async runtime or serialize.
+pub(super) async fn generate_hover_screenshots(
+    actions: &mut [WalkthroughAction],
+    session_dir: &std::path::Path,
+) {
+    use clickweave_core::walkthrough::WalkthroughActionKind;
+
+    let artifacts_dir = session_dir.join("artifacts");
+
+    // Collect inputs for eligible hovers.
+    struct HoverInput {
+        action_idx: usize,
+        source_path: String,
+        hover_x: f64,
+        hover_y: f64,
+        meta: ScreenshotMeta,
+        output_path: std::path::PathBuf,
+    }
+
+    let mut inputs = Vec::new();
+    for (idx, action) in actions.iter().enumerate() {
+        let (hover_x, hover_y) = match &action.kind {
+            WalkthroughActionKind::Hover { x, y, .. } => (*x, *y),
+            _ => continue,
+        };
+        let source_path = match action.artifact_paths.first() {
+            Some(p) => p.clone(),
+            None => continue,
+        };
+        let meta = match action.screenshot_meta {
+            Some(m) => m,
+            None => continue,
+        };
+        let filename = format!("hover_{}.jpg", action.id.as_simple());
+        inputs.push(HoverInput {
+            action_idx: idx,
+            source_path,
+            hover_x,
+            hover_y,
+            meta,
+            output_path: artifacts_dir.join(filename),
+        });
+    }
+
+    if inputs.is_empty() {
+        return;
+    }
+
+    // Process all hovers in parallel on the blocking pool.
+    let mut join_set = tokio::task::JoinSet::new();
+    for input in inputs {
+        join_set.spawn_blocking(move || {
+            let img_bytes = std::fs::read(&input.source_path).ok()?;
+            let img = image::load_from_memory(&img_bytes).ok()?;
+            let (px, py) = input.meta.screen_to_pixel(input.hover_x, input.hover_y);
+            let mut rgba = img.into_rgba8();
+            draw_crosshair(&mut rgba, px, py);
+
+            let dynamic = image::DynamicImage::ImageRgba8(rgba);
+            let mut buf = std::io::Cursor::new(Vec::new());
+            dynamic.write_to(&mut buf, image::ImageFormat::Jpeg).ok()?;
+            std::fs::write(&input.output_path, buf.into_inner()).ok()?;
+            Some((input.action_idx, input.output_path))
+        });
+    }
+
+    while let Some(result) = join_set.join_next().await {
+        if let Ok(Some((idx, path))) = result {
+            actions[idx].artifact_paths[0] = path.to_string_lossy().to_string();
+        }
+    }
 }
