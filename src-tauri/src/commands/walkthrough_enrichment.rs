@@ -13,19 +13,12 @@ use super::walkthrough::VLM_CALL_TIMEOUT;
 pub(super) struct RecordedFrame {
     pub timestamp_ms: u64,
     pub path: String,
-    #[serde(default)]
-    pub app_name: Option<String>,
-    #[serde(default)]
-    pub window_id: Option<u64>,
-    #[serde(default)]
+    pub app_name: String,
+    pub window_id: u32,
     pub origin_x: f64,
-    #[serde(default)]
     pub origin_y: f64,
-    #[serde(default)]
     pub scale: f64,
-    #[serde(default)]
     pub pixel_width: u32,
-    #[serde(default)]
     pub pixel_height: u32,
 }
 
@@ -395,7 +388,23 @@ pub(super) fn attach_recording_frames(
             .map(|e| e.timestamp)
             .unwrap_or(0);
 
-        let (before, after) = find_surrounding_frames(frames, hover_start_ts);
+        // Prefer frames from the same app (recording captures per-app
+        // windows). Fall back to all frames if no app-specific match.
+        let app_frames: Vec<RecordedFrame> = if let Some(app) = &action.app_name {
+            frames
+                .iter()
+                .filter(|f| f.app_name == *app)
+                .cloned()
+                .collect()
+        } else {
+            vec![]
+        };
+        let search_frames = if app_frames.is_empty() {
+            frames
+        } else {
+            &app_frames
+        };
+        let (before, after) = find_surrounding_frames(search_frames, hover_start_ts);
 
         // Use the after frame's metadata for coordinate mapping (it shows
         // the hover state), falling back to the before frame.
@@ -838,11 +847,15 @@ mod tests {
     use uuid::Uuid;
 
     fn frame(ts: u64) -> RecordedFrame {
+        frame_for_app(ts, "TestApp")
+    }
+
+    fn frame_for_app(ts: u64, app: &str) -> RecordedFrame {
         RecordedFrame {
             timestamp_ms: ts,
             path: format!("/frames/frame_{ts}.png"),
-            app_name: None,
-            window_id: None,
+            app_name: app.to_string(),
+            window_id: 1,
             origin_x: 10.0,
             origin_y: 20.0,
             scale: 2.0,
@@ -1106,5 +1119,56 @@ mod tests {
             native_actions[0].artifact_paths[1],
             "/frames/frame_3000.png"
         );
+    }
+
+    #[test]
+    fn attach_recording_frames_prefers_same_app_frames() {
+        let hover_id = Uuid::new_v4();
+        // Hover on TestApp at ts=3000. Frames from two apps interleaved.
+        let events = vec![hover_event(hover_id, 3000)];
+        let frames = vec![
+            frame_for_app(1000, "OtherApp"),
+            frame_for_app(2000, "TestApp"),
+            frame_for_app(2500, "OtherApp"),
+            frame_for_app(3000, "TestApp"),
+            frame_for_app(3500, "OtherApp"),
+        ];
+        let mut actions = vec![hover_action(hover_id)];
+
+        attach_recording_frames(&mut actions, &frames, &events);
+
+        // Should pick TestApp frames: before=2000, after=3000 (not OtherApp's 2500/3500).
+        assert_eq!(actions[0].artifact_paths.len(), 2);
+        assert_eq!(actions[0].artifact_paths[0], "/frames/frame_2000.png");
+        assert_eq!(actions[0].artifact_paths[1], "/frames/frame_3000.png");
+    }
+
+    #[test]
+    fn attach_recording_frames_falls_back_to_all_frames_when_no_app_match() {
+        let hover_id = Uuid::new_v4();
+        // Hover has app_name=None (can happen for native hovers without focus resolution).
+        let events = vec![{
+            let mut e = hover_event(hover_id, 3000);
+            if let WalkthroughEventKind::HoverDetected { .. } = &e.kind {
+                // hover_event already has app_name: None
+            }
+            e
+        }];
+        let frames = vec![
+            frame_for_app(2000, "SomeApp"),
+            frame_for_app(4000, "SomeApp"),
+        ];
+        let mut actions = vec![{
+            let mut a = hover_action(hover_id);
+            a.app_name = None; // No app resolved
+            a
+        }];
+
+        attach_recording_frames(&mut actions, &frames, &events);
+
+        // Falls back to all frames since no app name to filter on.
+        assert_eq!(actions[0].artifact_paths.len(), 2);
+        assert_eq!(actions[0].artifact_paths[0], "/frames/frame_2000.png");
+        assert_eq!(actions[0].artifact_paths[1], "/frames/frame_4000.png");
     }
 }
