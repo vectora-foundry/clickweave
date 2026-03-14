@@ -515,6 +515,18 @@ pub(super) async fn process_capture_events(
         }
     }
 
+    // Start continuous screen recording for hover screenshots (non-fatal).
+    if let Some(ref mcp) = mcp {
+        let artifacts_dir = session_dir.join("artifacts");
+        let recording_args = serde_json::json!({
+            "output_dir": artifacts_dir.to_string_lossy(),
+        });
+        match mcp.call_tool("start_recording", Some(recording_args)).await {
+            Ok(_) => tracing::info!("Continuous recording started"),
+            Err(e) => tracing::warn!("Failed to start recording (non-fatal): {e}"),
+        }
+    }
+
     // Background tasks for click enrichment and VLM resolution.
     // Each task persists and emits its own events; the event loop
     // only needs to drain completions to detect errors.
@@ -827,6 +839,38 @@ pub(super) async fn process_capture_events(
     // Stop the cursor region polling task.
     #[cfg(target_os = "macos")]
     cursor_poll_handle.abort();
+
+    // Stop continuous recording and persist the frame list so
+    // stop_walkthrough can attach recording frames to hover actions.
+    if let Some(ref mcp) = mcp {
+        let recording_timeout = tokio::time::Duration::from_secs(10);
+        match tokio::time::timeout(recording_timeout, mcp.call_tool("stop_recording", None)).await {
+            Ok(Ok(result)) if result.is_error != Some(true) => {
+                let frames = super::walkthrough_enrichment::parse_recording_frames(&result.content);
+                tracing::info!("Recording stopped, got {} frames", frames.len());
+                let frames_path = session_dir.join("recording_frames.json");
+                match serde_json::to_string_pretty(&frames) {
+                    Ok(json) => {
+                        if let Err(e) = std::fs::write(&frames_path, json) {
+                            tracing::warn!("Failed to write recording frames: {e}");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to serialize recording frames: {e}");
+                    }
+                }
+            }
+            Ok(Ok(_)) => {
+                tracing::debug!("stop_recording returned error (may not have been active)");
+            }
+            Ok(Err(e)) => {
+                tracing::debug!("stop_recording call failed: {e}");
+            }
+            Err(_) => {
+                tracing::warn!("stop_recording timed out after {recording_timeout:?}");
+            }
+        }
+    }
 
     // Retrieve hover events from MCP and persist them as HoverDetected
     // walkthrough events so that stop_walkthrough's retrieve_hover_candidates
