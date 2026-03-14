@@ -406,9 +406,10 @@ pub(super) fn attach_recording_frames(
         };
         let (before, after) = find_surrounding_frames(search_frames, hover_start_ts);
 
-        // Use the after frame's metadata for coordinate mapping (it shows
-        // the hover state), falling back to the before frame.
-        let meta_frame = after.or(before);
+        // Use the before frame's metadata for coordinate mapping — VLM and
+        // crosshair drawing operate on artifact_paths[0] (the before frame).
+        // Fall back to the after frame if no before exists.
+        let meta_frame = before.or(after);
         if let Some(f) = meta_frame
             && f.scale > 0.0
         {
