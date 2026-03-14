@@ -397,6 +397,22 @@ pub async fn stop_walkthrough(
                 resolve_click_targets_with_vlm(&mut actions, planner_cfg).await;
             }
 
+            // Clean up raw recording frames — they're no longer needed after
+            // hover screenshots have been generated and VLM has resolved targets.
+            // The raw stream may contain unrelated app states and typed secrets.
+            if !recording_frames.is_empty() {
+                let mut cleaned = 0u32;
+                for frame in &recording_frames {
+                    if std::fs::remove_file(&frame.path).is_ok() {
+                        cleaned += 1;
+                    }
+                }
+                let _ = std::fs::remove_file(&frames_path);
+                if cleaned > 0 {
+                    tracing::info!("Cleaned up {cleaned} raw recording frames");
+                }
+            }
+
             // Save actions.
             if let Err(e) = storage.save_actions(dir, &actions) {
                 tracing::warn!("Failed to save actions: {e}");
