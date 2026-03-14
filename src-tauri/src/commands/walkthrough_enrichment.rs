@@ -377,36 +377,23 @@ pub(super) fn attach_recording_frames(
     }
 
     for action in actions.iter_mut() {
-        let dwell_ms = match &action.kind {
-            WalkthroughActionKind::Hover { dwell_ms, .. } => *dwell_ms,
-            _ => continue,
-        };
+        if !matches!(action.kind, WalkthroughActionKind::Hover { .. }) {
+            continue;
+        }
         if !action.artifact_paths.is_empty() {
             continue;
         }
 
-        // Resolve hover start time from the source event.
-        // CDP hovers: timestamp = enter time (hover start), no subtraction needed.
-        // Native hovers: timestamp = exit time (cursor left), subtract dwell_ms.
-        let source_event = action
+        // The event timestamp is when the hover started (cursor arrived at
+        // the element) for both native and CDP hovers:
+        // - Native: MCP fires a transition event with timestamp_ms = arrival time
+        // - CDP: JS listener stores ts = Date.now() at element enter
+        let hover_start_ts = action
             .source_event_ids
             .first()
-            .and_then(|id| events.iter().find(|e| e.id == *id));
-        let event_ts = source_event.map(|e| e.timestamp).unwrap_or(0);
-        let is_cdp_hover = source_event.is_some_and(|e| {
-            matches!(
-                &e.kind,
-                WalkthroughEventKind::HoverDetected {
-                    app_name: Some(_),
-                    ..
-                }
-            )
-        });
-        let hover_start_ts = if is_cdp_hover {
-            event_ts
-        } else {
-            event_ts.saturating_sub(dwell_ms)
-        };
+            .and_then(|id| events.iter().find(|e| e.id == *id))
+            .map(|e| e.timestamp)
+            .unwrap_or(0);
 
         let (before, after) = find_surrounding_frames(frames, hover_start_ts);
 
@@ -1007,10 +994,9 @@ mod tests {
     #[test]
     fn attach_recording_frames_before_after_pair() {
         let hover_id = Uuid::new_v4();
-        // Hover end ts=5000, dwell=2000 → hover start=3000.
-        // Frames: 1000, 2000, 3000, 4000.
+        // Hover ts=3000 (arrival time). Frames: 1000, 2000, 3000, 4000.
         // Before start(3000): frame(2000). After start(3000): frame(3000).
-        let events = vec![hover_event(hover_id, 5000)];
+        let events = vec![hover_event(hover_id, 3000)];
         let frames = vec![frame(1000), frame(2000), frame(3000), frame(4000)];
         let mut actions = vec![hover_action(hover_id)];
 
@@ -1067,9 +1053,8 @@ mod tests {
     #[test]
     fn attach_recording_frames_only_before_when_hover_starts_after_last_frame() {
         let hover_id = Uuid::new_v4();
-        // Hover end ts=10000, dwell=2000 → hover start=8000.
-        // All frames are before 8000.
-        let events = vec![hover_event(hover_id, 10000)];
+        // Hover ts=8000, all frames before that.
+        let events = vec![hover_event(hover_id, 8000)];
         let frames = vec![frame(1000), frame(2000)];
         let mut actions = vec![hover_action(hover_id)];
 
@@ -1082,9 +1067,8 @@ mod tests {
     #[test]
     fn attach_recording_frames_only_after_when_hover_starts_before_first_frame() {
         let hover_id = Uuid::new_v4();
-        // Hover end ts=2500, dwell=2000 → hover start=500.
-        // All frames are after 500.
-        let events = vec![hover_event(hover_id, 2500)];
+        // Hover ts=500, all frames after that.
+        let events = vec![hover_event(hover_id, 500)];
         let frames = vec![frame(1000), frame(2000)];
         let mut actions = vec![hover_action(hover_id)];
 
@@ -1095,35 +1079,32 @@ mod tests {
     }
 
     #[test]
-    fn attach_recording_frames_cdp_hover_uses_timestamp_directly() {
-        let hover_id = Uuid::new_v4();
-        // CDP hover: ts=3000 IS the hover start (enter time), dwell=2000.
-        // Should NOT subtract dwell. Frames around ts=3000.
-        // Before: frame(2000). After: frame(3000).
-        let events = vec![cdp_hover_event(hover_id, 3000)];
+    fn attach_recording_frames_native_and_cdp_both_use_timestamp_directly() {
+        // Both native and CDP hovers use the event timestamp as hover start.
+        // Native: MCP fires transition event with timestamp_ms = arrival time.
+        // CDP: JS listener stores ts = Date.now() at element enter.
+        let native_id = Uuid::new_v4();
+        let cdp_id = Uuid::new_v4();
+        let events = vec![hover_event(native_id, 3000), cdp_hover_event(cdp_id, 3000)];
         let frames = vec![frame(1000), frame(2000), frame(3000), frame(4000)];
-        let mut actions = vec![hover_action(hover_id)];
+        let mut native_actions = vec![hover_action(native_id)];
+        let mut cdp_actions = vec![hover_action(cdp_id)];
 
-        attach_recording_frames(&mut actions, &frames, &events);
+        attach_recording_frames(&mut native_actions, &frames, &events);
+        attach_recording_frames(&mut cdp_actions, &frames, &events);
 
-        assert_eq!(actions[0].artifact_paths.len(), 2);
-        assert_eq!(actions[0].artifact_paths[0], "/frames/frame_2000.png");
-        assert_eq!(actions[0].artifact_paths[1], "/frames/frame_3000.png");
-    }
-
-    #[test]
-    fn attach_recording_frames_native_hover_subtracts_dwell() {
-        let hover_id = Uuid::new_v4();
-        // Native hover: ts=5000 is exit time, dwell=2000, hover start=3000.
-        // Frames around 3000: before=frame(2000), after=frame(3000).
-        let events = vec![hover_event(hover_id, 5000)];
-        let frames = vec![frame(1000), frame(2000), frame(3000), frame(4000)];
-        let mut actions = vec![hover_action(hover_id)];
-
-        attach_recording_frames(&mut actions, &frames, &events);
-
-        assert_eq!(actions[0].artifact_paths.len(), 2);
-        assert_eq!(actions[0].artifact_paths[0], "/frames/frame_2000.png");
-        assert_eq!(actions[0].artifact_paths[1], "/frames/frame_3000.png");
+        // Both should get the same frame pair around ts=3000.
+        assert_eq!(
+            native_actions[0].artifact_paths,
+            cdp_actions[0].artifact_paths
+        );
+        assert_eq!(
+            native_actions[0].artifact_paths[0],
+            "/frames/frame_2000.png"
+        );
+        assert_eq!(
+            native_actions[0].artifact_paths[1],
+            "/frames/frame_3000.png"
+        );
     }
 }

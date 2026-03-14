@@ -520,6 +520,7 @@ pub(super) async fn process_capture_events(
         let artifacts_dir = session_dir.join("artifacts");
         let recording_args = serde_json::json!({
             "output_dir": artifacts_dir.to_string_lossy(),
+            "max_duration_ms": 600_000,
         });
         match mcp.call_tool("start_recording", Some(recording_args)).await {
             Ok(r) if r.is_error != Some(true) => {
