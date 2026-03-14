@@ -380,7 +380,11 @@ pub async fn stop_walkthrough(
                 .ok()
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_default();
-            if !recording_frames.is_empty() {
+            if recording_frames.is_empty() {
+                tracing::warn!(
+                    "No recording frames available — hover candidates will lack screenshots"
+                );
+            } else {
                 attach_recording_frames(&mut actions, &recording_frames, &events);
             }
 

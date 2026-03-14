@@ -385,15 +385,28 @@ pub(super) fn attach_recording_frames(
             continue;
         }
 
-        // The event timestamp is when the hover *ended* (cursor left).
-        // Hover start = timestamp - dwell_ms.
-        let hover_end_ts = action
+        // Resolve hover start time from the source event.
+        // CDP hovers: timestamp = enter time (hover start), no subtraction needed.
+        // Native hovers: timestamp = exit time (cursor left), subtract dwell_ms.
+        let source_event = action
             .source_event_ids
             .first()
-            .and_then(|id| events.iter().find(|e| e.id == *id))
-            .map(|e| e.timestamp)
-            .unwrap_or(0);
-        let hover_start_ts = hover_end_ts.saturating_sub(dwell_ms);
+            .and_then(|id| events.iter().find(|e| e.id == *id));
+        let event_ts = source_event.map(|e| e.timestamp).unwrap_or(0);
+        let is_cdp_hover = source_event.is_some_and(|e| {
+            matches!(
+                &e.kind,
+                WalkthroughEventKind::HoverDetected {
+                    app_name: Some(_),
+                    ..
+                }
+            )
+        });
+        let hover_start_ts = if is_cdp_hover {
+            event_ts
+        } else {
+            event_ts.saturating_sub(dwell_ms)
+        };
 
         let (before, after) = find_surrounding_frames(frames, hover_start_ts);
 
@@ -957,7 +970,7 @@ mod tests {
         }
     }
 
-    /// Hover event with timestamp = ts (hover end time).
+    /// Native hover event: timestamp = exit time (cursor left).
     /// dwell_ms = 2000, so hover start = ts - 2000.
     fn hover_event(id: Uuid, ts: u64) -> WalkthroughEvent {
         WalkthroughEvent {
@@ -970,6 +983,23 @@ mod tests {
                 element_role: Some("AXButton".to_string()),
                 dwell_ms: 2000,
                 app_name: None,
+            },
+        }
+    }
+
+    /// CDP hover event: timestamp = enter time (hover start).
+    /// dwell_ms = 2000, but no subtraction needed for start time.
+    fn cdp_hover_event(id: Uuid, ts: u64) -> WalkthroughEvent {
+        WalkthroughEvent {
+            id,
+            timestamp: ts,
+            kind: WalkthroughEventKind::HoverDetected {
+                x: 100.0,
+                y: 200.0,
+                element_name: "Submit".to_string(),
+                element_role: Some("button".to_string()),
+                dwell_ms: 2000,
+                app_name: Some("Chrome".to_string()),
             },
         }
     }
@@ -1062,5 +1092,38 @@ mod tests {
 
         assert_eq!(actions[0].artifact_paths.len(), 1);
         assert_eq!(actions[0].artifact_paths[0], "/frames/frame_1000.png");
+    }
+
+    #[test]
+    fn attach_recording_frames_cdp_hover_uses_timestamp_directly() {
+        let hover_id = Uuid::new_v4();
+        // CDP hover: ts=3000 IS the hover start (enter time), dwell=2000.
+        // Should NOT subtract dwell. Frames around ts=3000.
+        // Before: frame(2000). After: frame(3000).
+        let events = vec![cdp_hover_event(hover_id, 3000)];
+        let frames = vec![frame(1000), frame(2000), frame(3000), frame(4000)];
+        let mut actions = vec![hover_action(hover_id)];
+
+        attach_recording_frames(&mut actions, &frames, &events);
+
+        assert_eq!(actions[0].artifact_paths.len(), 2);
+        assert_eq!(actions[0].artifact_paths[0], "/frames/frame_2000.png");
+        assert_eq!(actions[0].artifact_paths[1], "/frames/frame_3000.png");
+    }
+
+    #[test]
+    fn attach_recording_frames_native_hover_subtracts_dwell() {
+        let hover_id = Uuid::new_v4();
+        // Native hover: ts=5000 is exit time, dwell=2000, hover start=3000.
+        // Frames around 3000: before=frame(2000), after=frame(3000).
+        let events = vec![hover_event(hover_id, 5000)];
+        let frames = vec![frame(1000), frame(2000), frame(3000), frame(4000)];
+        let mut actions = vec![hover_action(hover_id)];
+
+        attach_recording_frames(&mut actions, &frames, &events);
+
+        assert_eq!(actions[0].artifact_paths.len(), 2);
+        assert_eq!(actions[0].artifact_paths[0], "/frames/frame_2000.png");
+        assert_eq!(actions[0].artifact_paths[1], "/frames/frame_3000.png");
     }
 }

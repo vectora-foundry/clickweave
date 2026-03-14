@@ -522,7 +522,13 @@ pub(super) async fn process_capture_events(
             "output_dir": artifacts_dir.to_string_lossy(),
         });
         match mcp.call_tool("start_recording", Some(recording_args)).await {
-            Ok(_) => tracing::info!("Continuous recording started"),
+            Ok(r) if r.is_error != Some(true) => {
+                tracing::info!("Continuous recording started")
+            }
+            Ok(r) => {
+                let msg: String = r.content.iter().filter_map(|c| c.as_text()).collect();
+                tracing::warn!("start_recording returned error (non-fatal): {msg}");
+            }
             Err(e) => tracing::warn!("Failed to start recording (non-fatal): {e}"),
         }
     }
