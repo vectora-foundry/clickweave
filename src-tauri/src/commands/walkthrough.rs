@@ -721,7 +721,16 @@ fn retrieve_hover_candidates(
 
         // For CDP hovers, coordinate matching doesn't work (clientX/clientY vs
         // screen coords).  Match on name+role against CdpClickResolved instead.
-        if app_name.is_some() {
+        // Use CdpHoverResolved presence (not app_name) to detect CDP provenance,
+        // since native hovers can also carry app_name.
+        let is_cdp_hover = events.iter().any(|e| {
+            matches!(
+                &e.kind,
+                WalkthroughEventKind::CdpHoverResolved { hover_event_id, .. }
+                if *hover_event_id == event.id
+            )
+        });
+        if is_cdp_hover {
             let matches_click = events.iter().any(|e| {
                 if let WalkthroughEventKind::CdpClickResolved {
                     name,
