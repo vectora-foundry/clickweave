@@ -919,10 +919,7 @@ pub(super) async fn process_capture_events(
                                 .pointer("/element/role")
                                 .and_then(|v| v.as_str())
                                 .map(|s| s.to_string());
-                            let dwell_ms = ev
-                                .get("previous_dwell_ms")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
+                            let dwell_ms = ev.get("dwell_ms").and_then(|v| v.as_u64()).unwrap_or(0);
                             let timestamp_ms =
                                 ev.get("timestamp_ms").and_then(|v| v.as_u64()).unwrap_or(0);
 
