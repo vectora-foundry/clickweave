@@ -922,6 +922,10 @@ pub(super) async fn process_capture_events(
                             let dwell_ms = ev.get("dwell_ms").and_then(|v| v.as_u64()).unwrap_or(0);
                             let timestamp_ms =
                                 ev.get("timestamp_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let app_name = ev
+                                .pointer("/element/app_name")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
 
                             let hover_event = WalkthroughEvent {
                                 id: Uuid::new_v4(),
@@ -932,7 +936,7 @@ pub(super) async fn process_capture_events(
                                     element_name,
                                     element_role,
                                     dwell_ms,
-                                    app_name: None,
+                                    app_name,
                                 },
                             };
                             persist_and_emit(&app, &storage, &session_dir, &hover_event);
