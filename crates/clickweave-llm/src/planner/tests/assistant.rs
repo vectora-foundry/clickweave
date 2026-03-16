@@ -207,7 +207,7 @@ async fn test_assistant_patches_with_add_nodes_and_add_edges() {
             method: FocusMethod::AppName,
             value: Some("Calculator".to_string()),
             bring_to_front: true,
-            app_kind: clickweave_core::walkthrough::AppKind::Native,
+            app_kind: clickweave_core::AppKind::Native,
         }),
         "Focus Calculator",
     );

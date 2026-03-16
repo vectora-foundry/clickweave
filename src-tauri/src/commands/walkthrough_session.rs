@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use clickweave_core::AppKind;
 use clickweave_core::app_detection::{bundle_path_from_pid, classify_app, classify_app_by_pid};
 use clickweave_core::walkthrough::{
-    AppKind, ScreenshotKind, WalkthroughEvent, WalkthroughEventKind, WalkthroughSession,
-    WalkthroughStatus, WalkthroughStorage,
+    ScreenshotKind, WalkthroughEvent, WalkthroughEventKind, WalkthroughSession, WalkthroughStatus,
+    WalkthroughStorage,
 };
 use clickweave_mcp::McpRouter;
 use tauri::{Emitter, Manager};

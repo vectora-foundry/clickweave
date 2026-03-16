@@ -1,4 +1,5 @@
 pub mod app_detection;
+pub mod app_kind;
 pub mod cdp;
 pub mod decision_cache;
 mod node_params;
@@ -9,6 +10,7 @@ mod validation;
 pub mod walkthrough;
 mod workflow;
 
+pub use app_kind::AppKind;
 pub use node_params::*;
 pub use validation::*;
 pub use walkthrough::*;

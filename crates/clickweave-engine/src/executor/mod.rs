@@ -16,10 +16,10 @@ pub use error::*;
 #[cfg(test)]
 mod tests;
 
+use clickweave_core::AppKind;
 use clickweave_core::decision_cache::DecisionCache;
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
-use clickweave_core::walkthrough::AppKind;
 use clickweave_core::{ExecutionMode, NodeRun, NodeVerdict, Workflow};
 use clickweave_llm::{ChatBackend, LlmClient, LlmConfig, Message};
 use serde::{Deserialize, Serialize};

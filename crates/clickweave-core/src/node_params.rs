@@ -1,4 +1,4 @@
-use crate::walkthrough::AppKind;
+use crate::AppKind;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;

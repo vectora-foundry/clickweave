@@ -1,6 +1,6 @@
 use super::{ExecutorError, ExecutorResult, WorkflowExecutor};
+use clickweave_core::AppKind;
 use clickweave_core::decision_cache::cache_key;
-use clickweave_core::walkthrough::AppKind;
 use clickweave_core::{
     ClickParams, FocusMethod, FocusWindowParams, HoverParams, NodeRun, NodeType, ScreenshotMode,
     TakeScreenshotParams, WindowControlAction, tool_mapping,

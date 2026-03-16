@@ -3,9 +3,9 @@
 //! Used by both the planner (tool args → NodeType) and the executor (NodeType → tool args).
 
 use crate::{
-    ClickParams, ClickTarget, FindImageParams, FindTextParams, FocusMethod, FocusWindowParams,
-    HoverParams, ListWindowsParams, McpToolCallParams, MouseButton, NodeType, PressKeyParams,
-    ScreenshotMode, ScrollParams, TakeScreenshotParams, TypeTextParams, walkthrough::AppKind,
+    AppKind, ClickParams, ClickTarget, FindImageParams, FindTextParams, FocusMethod,
+    FocusWindowParams, HoverParams, ListWindowsParams, McpToolCallParams, MouseButton, NodeType,
+    PressKeyParams, ScreenshotMode, ScrollParams, TakeScreenshotParams, TypeTextParams,
 };
 use serde_json::Value;
 use std::fmt;

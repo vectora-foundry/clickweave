@@ -1,5 +1,5 @@
 use super::helpers::*;
-use clickweave_core::walkthrough::AppKind;
+use clickweave_core::AppKind;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------

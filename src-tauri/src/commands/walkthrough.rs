@@ -1,9 +1,10 @@
 use std::sync::Mutex;
 
+use clickweave_core::AppKind;
 use clickweave_core::app_detection::{bundle_path_from_pid, classify_app};
 use clickweave_core::storage::now_millis;
 use clickweave_core::walkthrough::{
-    ActionConfidence, AppKind, WalkthroughAction, WalkthroughActionKind, WalkthroughAnnotations,
+    ActionConfidence, WalkthroughAction, WalkthroughActionKind, WalkthroughAnnotations,
     WalkthroughEvent, WalkthroughEventKind, WalkthroughSession, WalkthroughStatus,
     WalkthroughStorage,
 };
@@ -946,7 +947,8 @@ fn find_chronological_insert_position(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clickweave_core::walkthrough::{AppKind, WalkthroughEvent, WalkthroughEventKind};
+    use clickweave_core::AppKind;
+    use clickweave_core::walkthrough::{WalkthroughEvent, WalkthroughEventKind};
     use uuid::Uuid;
 
     fn focus_event(ts: u64, app: &str) -> WalkthroughEvent {

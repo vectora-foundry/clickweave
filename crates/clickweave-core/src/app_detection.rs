@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::walkthrough::AppKind;
+use crate::AppKind;
 
 /// Bundle identifiers for Chrome-family browsers (macOS).
 const CHROME_BUNDLE_IDS: &[&str] = &[
