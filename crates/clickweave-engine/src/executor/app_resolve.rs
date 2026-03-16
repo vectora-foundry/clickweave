@@ -2,7 +2,7 @@ use super::{ExecutorError, ExecutorResult, ResolvedApp, WorkflowExecutor};
 use clickweave_core::decision_cache::{self, AppResolution};
 use clickweave_core::{ExecutionMode, FocusMethod, NodeRun, NodeType};
 use clickweave_llm::{ChatBackend, Message};
-use clickweave_mcp::McpRouter;
+use clickweave_mcp::ToolProvider;
 use serde_json::Value;
 use tracing::debug;
 use uuid::Uuid;
@@ -16,7 +16,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &self,
         node_id: Uuid,
         user_input: &str,
-        mcp: &McpRouter,
+        mcp: &(impl ToolProvider + ?Sized),
         node_run: Option<&NodeRun>,
     ) -> ExecutorResult<ResolvedApp> {
         // Check in-memory cache first (populated during this execution)
@@ -198,7 +198,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     /// Look up a PID for an app by its exact name via `list_apps`.
-    async fn lookup_app_pid(&self, app_name: &str, mcp: &McpRouter) -> ExecutorResult<i32> {
+    async fn lookup_app_pid(
+        &self,
+        app_name: &str,
+        mcp: &(impl ToolProvider + ?Sized),
+    ) -> ExecutorResult<i32> {
         let result = mcp
             .call_tool(
                 "list_apps",

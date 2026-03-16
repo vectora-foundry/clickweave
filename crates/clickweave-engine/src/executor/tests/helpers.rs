@@ -2,6 +2,7 @@ use super::super::*;
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
 use clickweave_llm::{ChatBackend, ChatResponse, Choice, Content, ContentPart, Message};
+use clickweave_mcp::{ToolCallResult, ToolContent, ToolProvider};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -86,6 +87,75 @@ impl ChatBackend for ScriptedBackend {
             }],
             usage: None,
         })
+    }
+}
+
+/// A stub ToolProvider that returns queued responses and records calls.
+///
+/// Use `push_response` to queue tool call results in FIFO order. When a tool
+/// is called, the next queued response is returned. If no responses are queued,
+/// the call panics (test misconfiguration).
+///
+/// Call history is recorded in `calls` for assertions.
+pub(super) struct StubToolProvider {
+    responses: Mutex<Vec<ToolCallResult>>,
+    calls: Mutex<Vec<(String, Option<Value>)>>,
+    openai_tools: Vec<Value>,
+}
+
+impl StubToolProvider {
+    #[allow(dead_code)]
+    pub(super) fn new() -> Self {
+        Self {
+            responses: Mutex::new(Vec::new()),
+            calls: Mutex::new(Vec::new()),
+            openai_tools: Vec::new(),
+        }
+    }
+
+    /// Queue a successful text response.
+    #[allow(dead_code)]
+    pub(super) fn push_text_response(&self, text: &str) {
+        self.responses.lock().unwrap().push(ToolCallResult {
+            content: vec![ToolContent::Text {
+                text: text.to_string(),
+            }],
+            is_error: None,
+        });
+    }
+
+    /// Queue a raw ToolCallResult.
+    #[allow(dead_code)]
+    pub(super) fn push_response(&self, result: ToolCallResult) {
+        self.responses.lock().unwrap().push(result);
+    }
+
+    /// Return all recorded calls as `(tool_name, arguments)` pairs.
+    #[allow(dead_code)]
+    pub(super) fn take_calls(&self) -> Vec<(String, Option<Value>)> {
+        std::mem::take(&mut *self.calls.lock().unwrap())
+    }
+}
+
+impl ToolProvider for StubToolProvider {
+    async fn call_tool(
+        &self,
+        name: &str,
+        arguments: Option<Value>,
+    ) -> anyhow::Result<ToolCallResult> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((name.to_string(), arguments.clone()));
+        let mut queue = self.responses.lock().unwrap();
+        if queue.is_empty() {
+            panic!("StubToolProvider: no queued response for '{}'", name);
+        }
+        Ok(queue.remove(0))
+    }
+
+    fn tools_as_openai(&self) -> Vec<Value> {
+        self.openai_tools.clone()
     }
 }
 

@@ -6,7 +6,7 @@ use clickweave_core::{
     TakeScreenshotParams, WindowControlAction, tool_mapping,
 };
 use clickweave_llm::ChatBackend;
-use clickweave_mcp::{McpRouter, ToolCallResult};
+use clickweave_mcp::{McpRouter, ToolCallResult, ToolProvider};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -537,7 +537,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         node_id: Uuid,
         original_args: &Value,
         original_result_text: &str,
-        mcp: &McpRouter,
+        mcp: &(impl ToolProvider + ?Sized),
         node_run: Option<&NodeRun>,
     ) -> Option<String> {
         let retry_args = self
@@ -593,7 +593,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &self,
         node_id: Uuid,
         target: &str,
-        mcp: &McpRouter,
+        mcp: &(impl ToolProvider + ?Sized),
         node_run: &mut Option<&mut NodeRun>,
     ) -> ExecutorResult<(f64, f64)> {
         let scoped_app = self.focused_app_name();
@@ -709,7 +709,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     async fn resolve_target_by_image(
         &self,
         template_b64: &str,
-        mcp: &McpRouter,
+        mcp: &(impl ToolProvider + ?Sized),
         node_run: &mut Option<&mut NodeRun>,
     ) -> ExecutorResult<(f64, f64)> {
         self.log("Resolving target by image template".to_string());
@@ -815,7 +815,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     async fn resolve_click_target(
         &self,
         node_id: Uuid,
-        mcp: &McpRouter,
+        mcp: &(impl ToolProvider + ?Sized),
         params: &ClickParams,
         node_run: &mut Option<&mut NodeRun>,
     ) -> ExecutorResult<NodeType> {
@@ -841,7 +841,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     async fn resolve_window_control_click(
         &self,
         action: clickweave_core::WindowControlAction,
-        mcp: &McpRouter,
+        mcp: &(impl ToolProvider + ?Sized),
         params: &ClickParams,
         node_run: &mut Option<&mut NodeRun>,
     ) -> ExecutorResult<NodeType> {
@@ -923,7 +923,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     async fn resolve_click_target_by_image(
         &self,
         _node_id: Uuid,
-        mcp: &McpRouter,
+        mcp: &(impl ToolProvider + ?Sized),
         params: &ClickParams,
         node_run: &mut Option<&mut NodeRun>,
     ) -> ExecutorResult<NodeType> {
@@ -946,7 +946,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     async fn resolve_hover_target(
         &self,
         node_id: Uuid,
-        mcp: &McpRouter,
+        mcp: &(impl ToolProvider + ?Sized),
         params: &HoverParams,
         node_run: &mut Option<&mut NodeRun>,
     ) -> ExecutorResult<NodeType> {
@@ -968,7 +968,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     async fn resolve_hover_target_by_image(
         &self,
         _node_id: Uuid,
-        mcp: &McpRouter,
+        mcp: &(impl ToolProvider + ?Sized),
         params: &HoverParams,
         node_run: &mut Option<&mut NodeRun>,
     ) -> ExecutorResult<NodeType> {
@@ -1003,7 +1003,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         expected_parent_role: Option<&str>,
         expected_parent_name: Option<&str>,
         cdp_server: &str,
-        mcp: &McpRouter,
+        mcp: &(impl ToolProvider + ?Sized),
     ) -> ExecutorResult<String> {
         // 1. Ensure a page is selected (list_pages triggers auto-selection
         //    inside chrome-devtools-mcp).
@@ -1066,7 +1066,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         expected_parent_role: Option<&str>,
         expected_parent_name: Option<&str>,
         cdp_server: &str,
-        mcp: &McpRouter,
+        mcp: &(impl ToolProvider + ?Sized),
         node_run: Option<&NodeRun>,
     ) -> ExecutorResult<String> {
         let uid = self
@@ -1113,7 +1113,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         expected_parent_role: Option<&str>,
         expected_parent_name: Option<&str>,
         cdp_server: &str,
-        mcp: &McpRouter,
+        mcp: &(impl ToolProvider + ?Sized),
         node_run: Option<&NodeRun>,
     ) -> ExecutorResult<String> {
         let uid = self

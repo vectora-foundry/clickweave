@@ -3,7 +3,7 @@ use clickweave_core::{AiStepParams, NodeRun};
 use clickweave_llm::{
     ChatBackend, Message, analyze_images, build_step_prompt, workflow_system_prompt,
 };
-use clickweave_mcp::McpRouter;
+use clickweave_mcp::ToolProvider;
 use serde_json::Value;
 use std::time::Instant;
 use tracing::debug;
@@ -13,7 +13,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &self,
         params: &AiStepParams,
         tools: &[Value],
-        mcp: &McpRouter,
+        mcp: &(impl ToolProvider + ?Sized),
         timeout_ms: Option<u64>,
         mut node_run: Option<&mut NodeRun>,
     ) -> ExecutorResult<Value> {

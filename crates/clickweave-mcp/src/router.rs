@@ -1,4 +1,4 @@
-use crate::{McpClient, Tool, ToolCallResult};
+use crate::{McpClient, Tool, ToolCallResult, ToolProvider};
 use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -230,6 +230,25 @@ impl McpRouter {
                 warn!("Failed to kill MCP server '{}': {}", name, e);
             }
         }
+    }
+}
+
+impl ToolProvider for McpRouter {
+    async fn call_tool(&self, name: &str, arguments: Option<Value>) -> Result<ToolCallResult> {
+        McpRouter::call_tool(self, name, arguments).await
+    }
+
+    async fn call_tool_on(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        arguments: Option<Value>,
+    ) -> Result<ToolCallResult> {
+        McpRouter::call_tool_on(self, server_name, tool_name, arguments).await
+    }
+
+    fn tools_as_openai(&self) -> Vec<Value> {
+        McpRouter::tools_as_openai(self)
     }
 }
 

@@ -1,7 +1,7 @@
 use super::{ExecutorCommand, ExecutorEvent, ExecutorResult, ExecutorState, WorkflowExecutor};
 use clickweave_core::{ExecutionMode, NodeRole, NodeRun, NodeType, RunStatus};
 use clickweave_llm::ChatBackend;
-use clickweave_mcp::McpRouter;
+use clickweave_mcp::{McpRouter, ToolProvider};
 use serde_json::Value;
 use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
@@ -491,7 +491,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         node_type: &NodeType,
         expected_outcome: Option<&str>,
         node_result: &Value,
-        mcp: &McpRouter,
+        mcp: &(impl ToolProvider + ?Sized),
     ) -> Option<clickweave_core::NodeVerdict> {
         if matches!(node_type, NodeType::TakeScreenshot(_)) {
             let Some(outcome) = expected_outcome else {
