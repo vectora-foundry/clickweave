@@ -19,6 +19,7 @@ import { useUndoRedoKeyboard } from "./hooks/useUndoRedoKeyboard";
 import { useWorkflowActions } from "./hooks/useWorkflowActions";
 import { useExecutorEvents } from "./hooks/useExecutorEvents";
 import { buildAppKindMap } from "./hooks/useNodeSync";
+import { isWalkthroughBusy } from "./store/slices/walkthroughSlice";
 
 function App() {
   // ── One-time loaders ─────────────────────────────────────────────
@@ -62,6 +63,7 @@ function App() {
   const maxRepairAttempts = useStore((s) => s.maxRepairAttempts);
   const hoverDwellThreshold = useStore((s) => s.hoverDwellThreshold);
   const detailTab = useStore((s) => s.detailTab);
+  const walkthroughEventCount = useStore((s) => s.walkthroughEvents.length);
 
   // ── Action selectors ─────────────────────────────────────────────
   const setWorkflow = useStore((s) => s.setWorkflow);
@@ -147,7 +149,10 @@ function App() {
       <div className="flex flex-1 flex-col overflow-hidden">
         <VerdictBar />
 
-        <div className="flex flex-1 overflow-hidden">
+        <div className="relative flex flex-1 overflow-hidden">
+          {isWalkthroughBusy(walkthroughStatus) && (
+            <div className="absolute inset-0 z-10" />
+          )}
           {isNewWorkflow && workflow.nodes.length === 0 ? (
             <IntentEmptyState
               onGenerate={(intent) => {
@@ -206,6 +211,7 @@ function App() {
                   }
                   onAssistant={toggleAssistant}
                   onSetExecutionMode={setExecutionMode}
+                  walkthroughEventCount={walkthroughEventCount}
                   onOpenWalkthroughPanel={() => setWalkthroughPanelOpen(true)}
                   onRecord={() => useStore.getState().openCdpModal()}
                 />
