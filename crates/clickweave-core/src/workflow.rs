@@ -427,16 +427,7 @@ impl NodeType {
 ///
 /// Examples: `"Find Text"` → `"find_text"`, `"Click (Login Button)"` → `"click__login_button_"`
 pub fn sanitize_node_name(name: &str) -> String {
-    name.to_lowercase()
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+    crate::sanitize::sanitize_for_node_name(name)
 }
 
 #[cfg(test)]

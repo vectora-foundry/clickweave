@@ -1,4 +1,5 @@
 mod assistant;
+pub mod error;
 mod executor;
 mod planner;
 mod project;

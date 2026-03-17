@@ -1,14 +1,12 @@
-import type { NodeType } from "../../../../bindings";
 import { FieldGroup, SelectField, TextField } from "../../fields";
 import { type NodeEditorProps, optionalString } from "./types";
+import { useNodeTypeUpdater } from "./useNodeTypeUpdater";
 
 export function FindTextEditor({ nodeType, onUpdate }: NodeEditorProps) {
   const nt = nodeType;
   if (nt.type !== "FindText") return null;
 
-  const updateType = (patch: Record<string, unknown>) => {
-    onUpdate({ node_type: { ...nt, ...patch } as NodeType });
-  };
+  const updateType = useNodeTypeUpdater(nt, onUpdate);
 
   return (
     <FieldGroup title="Find Text">

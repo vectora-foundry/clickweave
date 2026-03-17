@@ -2,7 +2,7 @@ use super::{ExecutorError, ExecutorResult, ResolvedApp, WorkflowExecutor};
 use clickweave_core::decision_cache::{self, AppResolution};
 use clickweave_core::{ExecutionMode, FocusMethod, NodeRun, NodeType};
 use clickweave_llm::{ChatBackend, Message};
-use clickweave_mcp::McpRouter;
+use clickweave_mcp::ToolProvider;
 use serde_json::Value;
 use tracing::debug;
 use uuid::Uuid;
@@ -16,17 +16,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &self,
         node_id: Uuid,
         user_input: &str,
-        mcp: &McpRouter,
+        mcp: &(impl ToolProvider + ?Sized),
         node_run: Option<&NodeRun>,
     ) -> ExecutorResult<ResolvedApp> {
         // Check in-memory cache first (populated during this execution)
-        if let Some(cached) = self
-            .app_cache
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(user_input)
-            .cloned()
-        {
+        if let Some(cached) = self.read_app_cache().get(user_input).cloned() {
             debug!(user_input, resolved_name = %cached.name, "app_cache hit");
             self.log(format!(
                 "App resolved (cached): \"{}\" -> {} (pid {})",
@@ -39,13 +33,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Clone the cached value out before any .await to avoid holding the
         // RwLockReadGuard across an await point (which breaks Send).
         let ck = decision_cache::cache_key(node_id, user_input, None);
-        let cached_app = self
-            .decision_cache
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .app_resolution
-            .get(&ck)
-            .cloned();
+        let cached_app = self.read_decision_cache().app_resolution.get(&ck).cloned();
         if let Some(cached) = cached_app {
             debug!(user_input, resolved_name = %cached.resolved_name, "decision_cache app hit");
             // We have the app name but need a fresh PID — look it up
@@ -59,9 +47,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         "App resolved (decision cache): \"{}\" -> {} (pid {})",
                         user_input, resolved.name, resolved.pid
                     ));
-                    self.app_cache
-                        .write()
-                        .unwrap_or_else(|e| e.into_inner())
+                    self.write_app_cache()
                         .insert(user_input.to_string(), resolved.clone());
                     return Ok(resolved);
                 }
@@ -136,7 +122,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             )
         })?;
 
-        let json_text = extract_json_object(strip_code_block(raw_text)).ok_or_else(|| {
+        let json_text = parse_llm_json_response(raw_text).ok_or_else(|| {
             ExecutorError::AppResolution(format!(
                 "No JSON object found in LLM response (raw: {})",
                 raw_text
@@ -194,31 +180,29 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             user_input, resolved.name, resolved.pid
         ));
 
-        self.app_cache
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
+        self.write_app_cache()
             .insert(user_input.to_string(), resolved.clone());
 
         // Record in decision cache for replay in Run mode (name only, not PID)
         if self.execution_mode == ExecutionMode::Test {
-            self.decision_cache
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
-                .app_resolution
-                .insert(
-                    ck,
-                    AppResolution {
-                        user_input: user_input.to_string(),
-                        resolved_name: resolved.name.clone(),
-                    },
-                );
+            self.write_decision_cache().app_resolution.insert(
+                ck,
+                AppResolution {
+                    user_input: user_input.to_string(),
+                    resolved_name: resolved.name.clone(),
+                },
+            );
         }
 
         Ok(resolved)
     }
 
     /// Look up a PID for an app by its exact name via `list_apps`.
-    async fn lookup_app_pid(&self, app_name: &str, mcp: &McpRouter) -> ExecutorResult<i32> {
+    async fn lookup_app_pid(
+        &self,
+        app_name: &str,
+        mcp: &(impl ToolProvider + ?Sized),
+    ) -> ExecutorResult<i32> {
         let result = mcp
             .call_tool(
                 "list_apps",
@@ -243,13 +227,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
     /// Remove a cached app resolution so the next attempt re-resolves via LLM.
     pub(crate) fn evict_app_cache(&self, user_input: &str) {
-        if self
-            .app_cache
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(user_input)
-            .is_some()
-        {
+        if self.write_app_cache().remove(user_input).is_some() {
             debug!(user_input, "evicted app_cache entry");
             self.log(format!("App cache evicted for \"{}\"", user_input));
         }
@@ -287,7 +265,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         if matches!(node_type, NodeType::FocusWindow(_)) {
-            *self.focused_app.write().unwrap_or_else(|e| e.into_inner()) = None;
+            *self.write_focused_app() = None;
         }
     }
 }
@@ -325,6 +303,11 @@ pub(crate) fn extract_json_object(text: &str) -> Option<&str> {
         }
     }
     None
+}
+
+/// Strip markdown code fences and extract the first JSON object from an LLM response.
+pub(crate) fn parse_llm_json_response(raw: &str) -> Option<&str> {
+    extract_json_object(strip_code_block(raw))
 }
 
 /// Strip optional markdown code fences (```` ```json ... ``` ```` or ```` ``` ... ``` ````)

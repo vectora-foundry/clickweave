@@ -1,14 +1,12 @@
-import type { NodeType } from "../../../../bindings";
 import { FieldGroup, TextAreaField, TextField } from "../../fields";
 import type { NodeEditorProps } from "./types";
+import { useNodeTypeUpdater } from "./useNodeTypeUpdater";
 
 export function McpToolCallEditor({ nodeType, onUpdate }: NodeEditorProps) {
   const nt = nodeType;
   if (nt.type !== "McpToolCall") return null;
 
-  const updateType = (patch: Record<string, unknown>) => {
-    onUpdate({ node_type: { ...nt, ...patch } as NodeType });
-  };
+  const updateType = useNodeTypeUpdater(nt, onUpdate);
 
   return (
     <FieldGroup title="MCP Tool Call">

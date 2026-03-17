@@ -14,7 +14,7 @@ fn test_patcher_prompt_includes_node_arguments() {
             method: FocusMethod::AppName,
             value: Some("Signal".into()),
             bring_to_front: true,
-            app_kind: clickweave_core::walkthrough::AppKind::Native,
+            app_kind: clickweave_core::AppKind::Native,
         }),
         Position { x: 0.0, y: 0.0 },
     );
@@ -282,7 +282,7 @@ async fn test_patch_adds_loop() {
             method: FocusMethod::AppName,
             value: Some("Calculator".into()),
             bring_to_front: true,
-            app_kind: clickweave_core::walkthrough::AppKind::Native,
+            app_kind: clickweave_core::AppKind::Native,
         }),
         "Focus Calculator",
     );
@@ -337,7 +337,7 @@ fn test_mixed_add_and_add_nodes_warns_and_skips_flat() {
             method: FocusMethod::AppName,
             value: Some("Calculator".to_string()),
             bring_to_front: true,
-            app_kind: clickweave_core::walkthrough::AppKind::Native,
+            app_kind: clickweave_core::AppKind::Native,
         }),
         "Focus Calculator",
     );

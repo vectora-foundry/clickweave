@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { commands } from "../bindings";
 import type { CdpAppConfig, DetectedCdpApp } from "../bindings";
+import { errorMessage } from "../utils/commandError";
 
 /** CDP setup progress event (emitted via Tauri events, not in auto-generated bindings). */
 export type CdpSetupProgress = {
@@ -49,7 +50,7 @@ export function CdpAppSelectModal({
         setApps(result.data);
         setPhase("selection");
       } else {
-        setError(result.error);
+        setError(errorMessage(result.error));
         setPhase("selection");
       }
     });
@@ -82,7 +83,7 @@ export function CdpAppSelectModal({
       setAddedPaths((prev) => new Map(prev).set(app.name, path as string));
       setSelected((prev) => new Set(prev).add(app.name));
     } else {
-      setError(result.error);
+      setError(errorMessage(result.error));
     }
   };
 

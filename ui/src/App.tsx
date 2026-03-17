@@ -1,4 +1,5 @@
 import { useStore } from "./store/useAppStore";
+import { useShallow } from "zustand/react/shallow";
 import { Header } from "./components/Header";
 import { NodePalette } from "./components/NodePalette";
 import { LogsDrawer } from "./components/LogsDrawer";
@@ -28,41 +29,71 @@ function App() {
     useStore.getState().loadNodeTypes();
   }, []);
 
-  // ── State selectors ──────────────────────────────────────────────
-  const workflow = useStore((s) => s.workflow);
-  const projectPath = useStore((s) => s.projectPath);
-  const nodeTypes = useStore((s) => s.nodeTypes);
-  const selectedNode = useStore((s) => s.selectedNode);
-  const activeNode = useStore((s) => s.activeNode);
-  const executorState = useStore((s) => s.executorState);
-  const lastRunStatus = useStore((s) => s.lastRunStatus);
-  const executionMode = useStore((s) => s.executionMode);
-  const supervisionPause = useStore((s) => s.supervisionPause);
-  const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
-  const logsDrawerOpen = useStore((s) => s.logsDrawerOpen);
-  const nodeSearch = useStore((s) => s.nodeSearch);
-  const showSettings = useStore((s) => s.showSettings);
-  const isNewWorkflow = useStore((s) => s.isNewWorkflow);
-  const walkthroughStatus = useStore((s) => s.walkthroughStatus);
-  const walkthroughPanelOpen = useStore((s) => s.walkthroughPanelOpen);
-  const assistantOpen = useStore((s) => s.assistantOpen);
-  const assistantLoading = useStore((s) => s.assistantLoading);
-  const assistantRetrying = useStore((s) => s.assistantRetrying);
-  const assistantError = useStore((s) => s.assistantError);
-  const conversation = useStore((s) => s.conversation);
-  const pendingPatch = useStore((s) => s.pendingPatch);
-  const pendingPatchWarnings = useStore((s) => s.pendingPatchWarnings);
-  const logs = useStore((s) => s.logs);
-  const plannerConfig = useStore((s) => s.plannerConfig);
-  const agentConfig = useStore((s) => s.agentConfig);
-  const vlmConfig = useStore((s) => s.vlmConfig);
-  const vlmEnabled = useStore((s) => s.vlmEnabled);
-  const mcpCommand = useStore((s) => s.mcpCommand);
-  const cdpModalOpen = useStore((s) => s.walkthroughCdpModalOpen);
-  const cdpProgress = useStore((s) => s.walkthroughCdpProgress);
-  const maxRepairAttempts = useStore((s) => s.maxRepairAttempts);
-  const hoverDwellThreshold = useStore((s) => s.hoverDwellThreshold);
-  const detailTab = useStore((s) => s.detailTab);
+  // ── State selectors (grouped with useShallow) ───────────────────
+  const { workflow, projectPath, nodeTypes, isNewWorkflow } = useStore(
+    useShallow((s) => ({
+      workflow: s.workflow,
+      projectPath: s.projectPath,
+      nodeTypes: s.nodeTypes,
+      isNewWorkflow: s.isNewWorkflow,
+    })),
+  );
+
+  const { executorState, lastRunStatus, executionMode, supervisionPause, activeNode } = useStore(
+    useShallow((s) => ({
+      executorState: s.executorState,
+      lastRunStatus: s.lastRunStatus,
+      executionMode: s.executionMode,
+      supervisionPause: s.supervisionPause,
+      activeNode: s.activeNode,
+    })),
+  );
+
+  const { selectedNode, sidebarCollapsed, logsDrawerOpen, nodeSearch, showSettings, detailTab, logs } = useStore(
+    useShallow((s) => ({
+      selectedNode: s.selectedNode,
+      sidebarCollapsed: s.sidebarCollapsed,
+      logsDrawerOpen: s.logsDrawerOpen,
+      nodeSearch: s.nodeSearch,
+      showSettings: s.showSettings,
+      detailTab: s.detailTab,
+      logs: s.logs,
+    })),
+  );
+
+  const { assistantOpen, assistantLoading, assistantRetrying, assistantError, conversation, pendingPatch, pendingPatchWarnings } = useStore(
+    useShallow((s) => ({
+      assistantOpen: s.assistantOpen,
+      assistantLoading: s.assistantLoading,
+      assistantRetrying: s.assistantRetrying,
+      assistantError: s.assistantError,
+      conversation: s.conversation,
+      pendingPatch: s.pendingPatch,
+      pendingPatchWarnings: s.pendingPatchWarnings,
+    })),
+  );
+
+  const { plannerConfig, agentConfig, vlmConfig, vlmEnabled, mcpCommand, maxRepairAttempts, hoverDwellThreshold } = useStore(
+    useShallow((s) => ({
+      plannerConfig: s.plannerConfig,
+      agentConfig: s.agentConfig,
+      vlmConfig: s.vlmConfig,
+      vlmEnabled: s.vlmEnabled,
+      mcpCommand: s.mcpCommand,
+      maxRepairAttempts: s.maxRepairAttempts,
+      hoverDwellThreshold: s.hoverDwellThreshold,
+    })),
+  );
+
+  const { walkthroughStatus, walkthroughPanelOpen, cdpModalOpen, cdpProgress } = useStore(
+    useShallow((s) => ({
+      walkthroughStatus: s.walkthroughStatus,
+      walkthroughPanelOpen: s.walkthroughPanelOpen,
+      cdpModalOpen: s.walkthroughCdpModalOpen,
+      cdpProgress: s.walkthroughCdpProgress,
+    })),
+  );
+
   const walkthroughEventCount = useStore((s) => s.walkthroughEvents.length);
 
   // ── Action selectors ─────────────────────────────────────────────

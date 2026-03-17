@@ -1,6 +1,7 @@
 use super::conversation::{ChatRole, ConversationSession};
 use super::parse::extract_json;
 use super::prompt::assistant_system_prompt;
+use super::repair::chat_with_repair_and_validate;
 use super::summarize::summarize_overflow;
 use super::{PatchResult, PatcherOutput, PlannerGraphOutput, PlannerOutput};
 use crate::{ChatBackend, LlmClient, LlmConfig, Message};
@@ -120,75 +121,93 @@ pub async fn assistant_chat_with_backend(
     messages.push(Message::user(user_message));
 
     // 4. Call the LLM with validation retry loop
-    let mut attempt = 0;
-    loop {
-        let response = backend.chat(messages.clone(), None).await?;
-
-        let content = response
-            .choices
-            .first()
-            .and_then(|c| c.message.content_text())
-            .unwrap_or("")
-            .to_string();
-
-        let (message, patch, warnings) = parse_assistant_response(
-            &content,
-            workflow,
-            mcp_tools,
-            allow_ai_transforms,
-            allow_agent_steps,
-        );
-
-        // Validate the patch and retry if attempts remain (0 = skip validation entirely)
-        if let Some(ref p) = patch
-            && max_repair_attempts > 0
-        {
-            let candidate = merge_patch_into_workflow(workflow, p);
-            if let Err(validation_err) = validate_workflow(&candidate) {
-                if attempt + 1 < max_repair_attempts {
-                    attempt += 1;
-                    info!(
-                        attempt,
-                        max = max_repair_attempts,
-                        error = %validation_err,
-                        "Patch failed validation, retrying"
-                    );
-                    if let Some(cb) = &on_repair_attempt {
-                        cb(attempt, max_repair_attempts);
-                    }
-                    messages.push(Message::assistant(&content));
-                    messages.push(Message::user(format!(
-                        "Your previous output produced a patch that fails validation: {}\n\n\
-                         Reminder: EndLoop must have exactly 1 outgoing edge that points BACK to its paired Loop node \
-                         (regular edge, no output label). The last body step flows into EndLoop, and EndLoop flows back to Loop. \
-                         EndLoop never has a forward edge to post-loop nodes — Loop's LoopDone edge handles the exit path.\n\n\
-                         Please fix the JSON output so the resulting workflow is valid.",
-                        validation_err
-                    )));
-                    continue;
-                }
-                warn!(
-                    error = %validation_err,
-                    "Patch failed validation after {} attempts, returning as-is",
-                    max_repair_attempts
-                );
+    //
+    // When max_repair_attempts == 0 we skip validation entirely (1 LLM call, no-op validate).
+    // Otherwise max_repair_attempts is the total number of LLM calls allowed.
+    let wf = workflow.clone();
+    let validate_patch = {
+        let wf = wf.clone();
+        move |result: &(String, Option<PatchResult>, Vec<String>)| -> Result<()> {
+            if let Some(ref p) = result.1 {
+                let candidate = merge_patch_into_workflow(&wf, p);
+                validate_workflow(&candidate)?;
             }
+            Ok(())
         }
+    };
 
-        info!(
-            has_patch = patch.is_some(),
-            warnings = warnings.len(),
-            repair_attempts = attempt,
-            "Assistant response processed"
-        );
+    let effective_max = if max_repair_attempts == 0 {
+        1
+    } else {
+        max_repair_attempts
+    };
+    let noop_validate = |_: &(String, Option<PatchResult>, Vec<String>)| -> Result<()> { Ok(()) };
 
-        return Ok(AssistantResult {
-            message,
-            patch,
-            new_summary,
-            warnings,
-        });
-    }
+    // Build closures for parse and on_repair
+    let process = {
+        let wf = wf.clone();
+        let mcp_tools = mcp_tools.to_vec();
+        move |content: &str| -> Result<(String, Option<PatchResult>, Vec<String>)> {
+            let (message, patch, warnings) = parse_assistant_response(
+                content,
+                &wf,
+                &mcp_tools,
+                allow_ai_transforms,
+                allow_agent_steps,
+            );
+            Ok((message, patch, warnings))
+        }
+    };
+
+    let on_repair_fn = |attempt: usize, max: usize| {
+        if let Some(cb) = &on_repair_attempt {
+            cb(attempt, max);
+        }
+    };
+
+    static REPAIR_HINT: &str = "\
+        Reminder: EndLoop must have exactly 1 outgoing edge that points BACK to its paired Loop node \
+        (regular edge, no output label). The last body step flows into EndLoop, and EndLoop flows back to Loop. \
+        EndLoop never has a forward edge to post-loop nodes — Loop's LoopDone edge handles the exit path.";
+
+    let (message, patch, warnings) = if max_repair_attempts == 0 {
+        chat_with_repair_and_validate(
+            backend,
+            "Assistant",
+            messages,
+            effective_max,
+            process,
+            noop_validate,
+            on_repair_fn,
+            None,
+        )
+        .await?
+    } else {
+        chat_with_repair_and_validate(
+            backend,
+            "Assistant",
+            messages,
+            effective_max,
+            process,
+            validate_patch,
+            on_repair_fn,
+            Some(REPAIR_HINT),
+        )
+        .await?
+    };
+
+    info!(
+        has_patch = patch.is_some(),
+        warnings = warnings.len(),
+        "Assistant response processed"
+    );
+
+    Ok(AssistantResult {
+        message,
+        patch,
+        new_summary,
+        warnings,
+    })
 }
 
 /// Try to parse the LLM response as a patch, plan, or conversational text.

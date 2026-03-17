@@ -1,15 +1,17 @@
 use std::sync::Mutex;
 
+use clickweave_core::AppKind;
 use clickweave_core::app_detection::{bundle_path_from_pid, classify_app};
 use clickweave_core::storage::now_millis;
 use clickweave_core::walkthrough::{
-    ActionConfidence, AppKind, WalkthroughAction, WalkthroughActionKind, WalkthroughAnnotations,
+    ActionConfidence, WalkthroughAction, WalkthroughActionKind, WalkthroughAnnotations,
     WalkthroughEvent, WalkthroughEventKind, WalkthroughSession, WalkthroughStatus,
     WalkthroughStorage,
 };
 use tauri::{Emitter, Manager};
 use uuid::Uuid;
 
+use super::error::CommandError;
 use super::types::{AppDataDir, WalkthroughDraftPayload, WalkthroughStatePayload, parse_uuid};
 use crate::platform::CaptureCommand;
 
@@ -73,10 +75,10 @@ pub enum CdpSetupStatus {
 
 #[tauri::command]
 #[specta::specta]
-pub async fn detect_cdp_apps(mcp_command: String) -> Result<Vec<DetectedCdpApp>, String> {
+pub async fn detect_cdp_apps(mcp_command: String) -> Result<Vec<DetectedCdpApp>, CommandError> {
     let mcp = spawn_mcp(&mcp_command)
         .await
-        .ok_or("Failed to spawn MCP server")?;
+        .ok_or(CommandError::mcp("Failed to spawn MCP server"))?;
 
     let mut cache = std::collections::HashMap::new();
     populate_app_cache(&mcp, &mut cache).await;
@@ -100,10 +102,13 @@ pub async fn detect_cdp_apps(mcp_command: String) -> Result<Vec<DetectedCdpApp>,
 
 #[tauri::command]
 #[specta::specta]
-pub async fn validate_app_path(path: String) -> Result<DetectedCdpApp, String> {
+pub async fn validate_app_path(path: String) -> Result<DetectedCdpApp, CommandError> {
     let kind = classify_app(None, Some(std::path::Path::new(&path)));
     if !kind.uses_cdp() {
-        return Err(format!("Not an Electron or Chrome app: {}", path));
+        return Err(CommandError::validation(format!(
+            "Not an Electron or Chrome app: {}",
+            path
+        )));
     }
 
     let name = std::path::Path::new(&path)
@@ -133,7 +138,7 @@ pub async fn start_walkthrough(
     planner: Option<super::types::EndpointConfig>,
     cdp_apps: Vec<CdpAppConfig>,
     hover_dwell_threshold: Option<u64>,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     let wf_id = parse_uuid(&workflow_id, "workflow")?;
 
     // Set up session and storage under the lock, then release it before
@@ -143,7 +148,7 @@ pub async fn start_walkthrough(
         let mut guard = handle.lock().unwrap();
 
         if guard.session.is_some() {
-            return Err("A walkthrough session is already active".to_string());
+            return Err(CommandError::already_running());
         }
 
         let session = WalkthroughSession::new(wf_id);
@@ -161,11 +166,11 @@ pub async fn start_walkthrough(
 
         let session_dir = storage
             .create_session_dir(&session)
-            .map_err(|e| format!("Failed to create session dir: {e}"))?;
+            .map_err(|e| CommandError::io(format!("Failed to create session dir: {e}")))?;
 
         storage
             .save_session(&session_dir, &session)
-            .map_err(|e| format!("Failed to save initial session: {e}"))?;
+            .map_err(|e| CommandError::io(format!("Failed to save initial session: {e}")))?;
 
         let processing_storage = storage.clone();
         guard.session = Some(session);
@@ -203,7 +208,9 @@ pub async fn start_walkthrough(
             Ok(pair) => pair,
             Err(e) => {
                 clear_session(&app);
-                return Err(format!("Failed to start event tap: {e}"));
+                return Err(CommandError::internal(format!(
+                    "Failed to start event tap: {e}"
+                )));
             }
         };
 
@@ -233,7 +240,9 @@ pub async fn start_walkthrough(
     #[cfg(not(target_os = "macos"))]
     {
         clear_session(&app);
-        return Err("Walkthrough capture is only supported on macOS".to_string());
+        return Err(CommandError::internal(
+            "Walkthrough capture is only supported on macOS",
+        ));
     }
 
     emit_state(&app, WalkthroughStatus::Recording);
@@ -243,7 +252,7 @@ pub async fn start_walkthrough(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn pause_walkthrough(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn pause_walkthrough(app: tauri::AppHandle) -> Result<(), CommandError> {
     let handle = app.state::<Mutex<WalkthroughHandle>>();
     let mut guard = handle.lock().unwrap();
 
@@ -273,7 +282,7 @@ pub async fn pause_walkthrough(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 #[specta::specta]
-pub async fn resume_walkthrough(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn resume_walkthrough(app: tauri::AppHandle) -> Result<(), CommandError> {
     let handle = app.state::<Mutex<WalkthroughHandle>>();
     let mut guard = handle.lock().unwrap();
 
@@ -307,7 +316,7 @@ pub async fn stop_walkthrough(
     app: tauri::AppHandle,
     planner: Option<super::types::EndpointConfig>,
     hover_dwell_threshold: Option<u64>,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     let (task, storage, session_dir, workflow_id, session_id) = {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
         let mut guard = handle.lock().unwrap();
@@ -354,7 +363,7 @@ pub async fn stop_walkthrough(
             // Read events from disk.
             let mut events = storage
                 .read_events(dir)
-                .map_err(|e| format!("Failed to read events: {e}"))?;
+                .map_err(|e| CommandError::io(format!("Failed to read events: {e}")))?;
 
             // Strip the stop-button click captured just before the tap shut down.
             if let Some(bar_rect) = get_recording_bar_rect(&app) {
@@ -500,7 +509,7 @@ pub struct WalkthroughDraftResponse {
 #[specta::specta]
 pub async fn get_walkthrough_draft(
     app: tauri::AppHandle,
-) -> Result<WalkthroughDraftResponse, String> {
+) -> Result<WalkthroughDraftResponse, CommandError> {
     let handle = app.state::<Mutex<WalkthroughHandle>>();
 
     // Extract needed data under lock, then drop it before doing file I/O.
@@ -516,10 +525,11 @@ pub async fn get_walkthrough_draft(
     let draft = match draft_path {
         Some(path) => match std::fs::read_to_string(&path) {
             Ok(data) => Some(
-                serde_json::from_str(&data).map_err(|e| format!("Failed to parse draft: {e}"))?,
+                serde_json::from_str(&data)
+                    .map_err(|e| CommandError::validation(format!("Failed to parse draft: {e}")))?,
             ),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(format!("Failed to read draft: {e}")),
+            Err(e) => return Err(CommandError::io(format!("Failed to read draft: {e}"))),
         },
         None => None,
     };
@@ -533,13 +543,13 @@ pub async fn get_walkthrough_draft(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn cancel_walkthrough(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn cancel_walkthrough(app: tauri::AppHandle) -> Result<(), CommandError> {
     let (task, session_dir) = {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
         let mut guard = handle.lock().unwrap();
 
         if guard.session.is_none() {
-            return Err("No walkthrough session is active".to_string());
+            return Err(CommandError::validation("No walkthrough session is active"));
         }
 
         let task = guard.stop_capture();
@@ -575,7 +585,7 @@ pub async fn cancel_walkthrough(app: tauri::AppHandle) -> Result<(), String> {
 pub async fn apply_walkthrough_annotations(
     app: tauri::AppHandle,
     annotations: WalkthroughAnnotations,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     let handle = app.state::<Mutex<WalkthroughHandle>>();
     let mut guard = handle.lock().unwrap();
 
@@ -606,7 +616,7 @@ pub async fn seed_walkthrough_cache(
     workflow_name: String,
     project_path: Option<String>,
     app_entries: Vec<super::types::AppResolutionSeedEntry>,
-) -> Result<(), String> {
+) -> Result<(), CommandError> {
     use clickweave_core::decision_cache::{AppResolution, DecisionCache, cache_key};
 
     let wf_id = parse_uuid(&workflow_id, "workflow")?;
@@ -635,7 +645,7 @@ pub async fn seed_walkthrough_cache(
 
     cache
         .save(&cache_path)
-        .map_err(|e| format!("Failed to save cache: {e}"))?;
+        .map_err(|e| CommandError::io(format!("Failed to save cache: {e}")))?;
 
     tracing::info!(
         "Seeded decision cache with {} app resolution entries at {:?}",
@@ -946,7 +956,8 @@ fn find_chronological_insert_position(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clickweave_core::walkthrough::{AppKind, WalkthroughEvent, WalkthroughEventKind};
+    use clickweave_core::AppKind;
+    use clickweave_core::walkthrough::{WalkthroughEvent, WalkthroughEventKind};
     use uuid::Uuid;
 
     fn focus_event(ts: u64, app: &str) -> WalkthroughEvent {

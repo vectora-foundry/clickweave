@@ -16,10 +16,10 @@ pub use error::*;
 #[cfg(test)]
 mod tests;
 
+use clickweave_core::AppKind;
 use clickweave_core::decision_cache::DecisionCache;
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
-use clickweave_core::walkthrough::AppKind;
 use clickweave_core::{ExecutionMode, NodeRun, NodeVerdict, Workflow};
 use clickweave_llm::{ChatBackend, LlmClient, LlmConfig, Message};
 use serde::{Deserialize, Serialize};
@@ -189,10 +189,103 @@ impl WorkflowExecutor {
 }
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
-    pub(crate) fn focused_app_name(&self) -> Option<String> {
-        self.focused_app
+    // ── RwLock helpers ───────────────────────────────────────────────────
+    // Centralize the `.unwrap_or_else(|e| e.into_inner())` poison-recovery
+    // pattern so call sites stay concise.
+
+    pub(crate) fn read_app_cache(
+        &self,
+    ) -> std::sync::RwLockReadGuard<'_, HashMap<String, ResolvedApp>> {
+        self.app_cache.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn write_app_cache(
+        &self,
+    ) -> std::sync::RwLockWriteGuard<'_, HashMap<String, ResolvedApp>> {
+        self.app_cache.write().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn read_focused_app(
+        &self,
+    ) -> std::sync::RwLockReadGuard<'_, Option<(String, AppKind)>> {
+        self.focused_app.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn write_focused_app(
+        &self,
+    ) -> std::sync::RwLockWriteGuard<'_, Option<(String, AppKind)>> {
+        self.focused_app.write().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn read_element_cache(
+        &self,
+    ) -> std::sync::RwLockReadGuard<'_, HashMap<(String, Option<String>), String>> {
+        self.element_cache.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn write_element_cache(
+        &self,
+    ) -> std::sync::RwLockWriteGuard<'_, HashMap<(String, Option<String>), String>> {
+        self.element_cache
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn read_decision_cache(&self) -> std::sync::RwLockReadGuard<'_, DecisionCache> {
+        self.decision_cache
             .read()
             .unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn write_decision_cache(&self) -> std::sync::RwLockWriteGuard<'_, DecisionCache> {
+        self.decision_cache
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[allow(dead_code)] // Kept for API symmetry with write_supervision_history
+    pub(crate) fn read_supervision_history(&self) -> std::sync::RwLockReadGuard<'_, Vec<Message>> {
+        self.supervision_history
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn write_supervision_history(
+        &self,
+    ) -> std::sync::RwLockWriteGuard<'_, Vec<Message>> {
+        self.supervision_history
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn read_tried_click_indices(&self) -> std::sync::RwLockReadGuard<'_, Vec<usize>> {
+        self.tried_click_indices
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn write_tried_click_indices(&self) -> std::sync::RwLockWriteGuard<'_, Vec<usize>> {
+        self.tried_click_indices
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn read_tried_cdp_uids(&self) -> std::sync::RwLockReadGuard<'_, Vec<String>> {
+        self.tried_cdp_uids
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn write_tried_cdp_uids(&self) -> std::sync::RwLockWriteGuard<'_, Vec<String>> {
+        self.tried_cdp_uids
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    // ── Convenience accessors ────────────────────────────────────────────
+
+    pub(crate) fn focused_app_name(&self) -> Option<String> {
+        self.read_focused_app()
             .as_ref()
             .map(|(name, _)| name.clone())
     }
@@ -204,9 +297,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     pub(crate) fn focused_app_kind(&self) -> AppKind {
-        self.focused_app
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
+        self.read_focused_app()
             .as_ref()
             .map(|(_, kind)| *kind)
             .unwrap_or(AppKind::Native)

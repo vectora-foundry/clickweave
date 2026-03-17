@@ -1,16 +1,17 @@
+use super::error::CommandError;
 use super::types::*;
 use clickweave_core::{NodeRun, TraceEvent};
 use tracing::warn;
 
 #[tauri::command]
 #[specta::specta]
-pub fn list_runs(app: tauri::AppHandle, query: RunsQuery) -> Result<Vec<NodeRun>, String> {
+pub fn list_runs(app: tauri::AppHandle, query: RunsQuery) -> Result<Vec<NodeRun>, CommandError> {
     let workflow_id = parse_uuid(&query.workflow_id, "workflow")?;
 
     let storage = resolve_storage(&app, &query.project_path, &query.workflow_name, workflow_id);
     storage
         .load_runs_for_node(&query.node_name)
-        .map_err(|e| format!("Failed to load runs: {}", e))
+        .map_err(|e| CommandError::io(format!("Failed to load runs: {}", e)))
 }
 
 #[tauri::command]
@@ -18,14 +19,14 @@ pub fn list_runs(app: tauri::AppHandle, query: RunsQuery) -> Result<Vec<NodeRun>
 pub fn load_run_events(
     app: tauri::AppHandle,
     query: RunEventsQuery,
-) -> Result<Vec<TraceEvent>, String> {
+) -> Result<Vec<TraceEvent>, CommandError> {
     let workflow_id = parse_uuid(&query.workflow_id, "workflow")?;
     let run_id = parse_uuid(&query.run_id, "run")?;
 
     let storage = resolve_storage(&app, &query.project_path, &query.workflow_name, workflow_id);
     let run_dir = storage
         .find_run_dir(&query.node_name, run_id, query.execution_dir.as_deref())
-        .map_err(|e| format!("Failed to find run directory: {}", e))?;
+        .map_err(|e| CommandError::io(format!("Failed to find run directory: {}", e)))?;
     let events_path = run_dir.join("events.jsonl");
 
     if !events_path.exists() {
@@ -33,7 +34,7 @@ pub fn load_run_events(
     }
 
     let content = std::fs::read_to_string(&events_path)
-        .map_err(|e| format!("Failed to read events.jsonl: {}", e))?;
+        .map_err(|e| CommandError::io(format!("Failed to read events.jsonl: {}", e)))?;
 
     let mut events = Vec::new();
     let mut malformed = 0;
@@ -62,8 +63,9 @@ pub fn load_run_events(
 
 #[tauri::command]
 #[specta::specta]
-pub fn read_artifact_base64(path: String) -> Result<String, String> {
+pub fn read_artifact_base64(path: String) -> Result<String, CommandError> {
     use base64::Engine;
-    let data = std::fs::read(&path).map_err(|e| format!("Failed to read artifact: {}", e))?;
+    let data = std::fs::read(&path)
+        .map_err(|e| CommandError::io(format!("Failed to read artifact: {}", e)))?;
     Ok(base64::engine::general_purpose::STANDARD.encode(&data))
 }

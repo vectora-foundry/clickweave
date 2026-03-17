@@ -1,3 +1,4 @@
+use super::error::CommandError;
 use super::planner::fetch_mcp_tool_schemas;
 use super::types::*;
 use clickweave_llm::planner::conversation::{ConversationSession, RunContext};
@@ -27,7 +28,7 @@ fn format_run_context(ctx: &RunContext) -> String {
 pub async fn assistant_chat(
     app: tauri::AppHandle,
     request: AssistantChatRequest,
-) -> Result<AssistantChatResponse, String> {
+) -> Result<AssistantChatResponse, CommandError> {
     // Clear any stale handle
     {
         let handle = app.state::<Mutex<AssistantHandle>>();
@@ -62,7 +63,7 @@ pub async fn assistant_chat(
             Some(&on_repair),
         )
         .await
-        .map_err(|e| format!("Assistant chat failed: {}", e))?;
+        .map_err(|e| CommandError::llm(format!("Assistant chat failed: {}", e)))?;
 
         let patch = result.patch.map(|p| WorkflowPatch {
             added_nodes: p.added_nodes,
@@ -96,8 +97,11 @@ pub async fn assistant_chat(
 
     let result = match join_handle.await {
         Ok(inner) => inner,
-        Err(e) if e.is_cancelled() => Err("cancelled".to_string()),
-        Err(e) => Err(format!("Assistant chat panicked: {}", e)),
+        Err(e) if e.is_cancelled() => Err(CommandError::cancelled()),
+        Err(e) => Err(CommandError::internal(format!(
+            "Assistant chat panicked: {}",
+            e
+        ))),
     };
 
     // Clear the handle after completion
@@ -111,7 +115,7 @@ pub async fn assistant_chat(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn cancel_assistant_chat(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn cancel_assistant_chat(app: tauri::AppHandle) -> Result<(), CommandError> {
     let handle = app.state::<Mutex<AssistantHandle>>();
     if let Some(h) = handle.lock().unwrap().abort.take() {
         h.abort();

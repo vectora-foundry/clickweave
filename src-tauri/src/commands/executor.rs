@@ -1,3 +1,4 @@
+use super::error::CommandError;
 use super::types::*;
 use clickweave_core::validate_workflow;
 use clickweave_engine::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExecutor};
@@ -36,15 +37,16 @@ impl ExecutorHandle {
 
 #[tauri::command]
 #[specta::specta]
-pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<(), String> {
+pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<(), CommandError> {
     {
         let handle = app.state::<Mutex<ExecutorHandle>>();
         if handle.lock().unwrap().cmd_tx.is_some() {
-            return Err("Workflow is already running".to_string());
+            return Err(CommandError::already_running());
         }
     }
 
-    validate_workflow(&request.workflow).map_err(|e| format!("Validation failed: {}", e))?;
+    validate_workflow(&request.workflow)
+        .map_err(|e| CommandError::validation(format!("Validation failed: {}", e)))?;
 
     let agent_config = request.agent.into_llm_config(None);
     let vlm_config = request
@@ -199,24 +201,27 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
 
 #[tauri::command]
 #[specta::specta]
-pub async fn stop_workflow(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn stop_workflow(app: tauri::AppHandle) -> Result<(), CommandError> {
     let handle = app.state::<Mutex<ExecutorHandle>>();
     let mut guard = handle.lock().unwrap();
     if !guard.force_stop() {
-        return Err("No workflow is running".to_string());
+        return Err(CommandError::validation("No workflow is running"));
     }
     Ok(())
 }
 
 #[tauri::command]
 #[specta::specta]
-pub async fn supervision_respond(app: tauri::AppHandle, action: String) -> Result<(), String> {
+pub async fn supervision_respond(
+    app: tauri::AppHandle,
+    action: String,
+) -> Result<(), CommandError> {
     let handle = app.state::<Mutex<ExecutorHandle>>();
     let guard = handle.lock().unwrap();
     let tx = guard
         .cmd_tx
         .as_ref()
-        .ok_or("No workflow is running")?
+        .ok_or(CommandError::validation("No workflow is running"))?
         .clone();
     drop(guard);
 
@@ -224,8 +229,13 @@ pub async fn supervision_respond(app: tauri::AppHandle, action: String) -> Resul
         "retry" => ExecutorCommand::Resume,
         "skip" => ExecutorCommand::Skip,
         "abort" => ExecutorCommand::Abort,
-        _ => return Err(format!("Unknown supervision action: {}", action)),
+        _ => {
+            return Err(CommandError::validation(format!(
+                "Unknown supervision action: {}",
+                action
+            )));
+        }
     };
     tx.try_send(command)
-        .map_err(|e| format!("Failed to send command: {}", e))
+        .map_err(|e| CommandError::internal(format!("Failed to send command: {}", e)))
 }

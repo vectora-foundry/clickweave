@@ -2,6 +2,7 @@ import type { StateCreator } from "zustand";
 import type { ExecutionMode, RunRequest } from "../../bindings";
 import { commands } from "../../bindings";
 import { validateSingleGraph } from "../../utils/graphValidation";
+import { errorMessage } from "../../utils/commandError";
 import { toEndpoint } from "../settings";
 import type { StoreState } from "./types";
 
@@ -45,7 +46,7 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
     set({ supervisionPause: null });
     const result = await commands.supervisionRespond(action);
     if (result.status === "error") {
-      pushLog(`Supervision response failed: ${result.error}`);
+      pushLog(`Supervision response failed: ${errorMessage(result.error)}`);
     }
   },
 
@@ -71,7 +72,7 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
     };
     const result = await commands.runWorkflow(request);
     if (result.status === "error") {
-      pushLog(`Run failed: ${result.error}`);
+      pushLog(`Run failed: ${errorMessage(result.error)}`);
     }
   },
 
@@ -79,7 +80,7 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
     const { pushLog } = get();
     const result = await commands.stopWorkflow();
     if (result.status === "error") {
-      pushLog(`Stop failed: ${result.error}`);
+      pushLog(`Stop failed: ${errorMessage(result.error)}`);
     }
   },
 });

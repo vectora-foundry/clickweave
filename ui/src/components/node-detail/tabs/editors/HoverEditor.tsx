@@ -1,14 +1,12 @@
-import type { NodeType } from "../../../../bindings";
 import { FieldGroup, NumberField, TextField } from "../../fields";
 import { APP_KIND_LABELS, type NodeEditorProps, usesCdp } from "./types";
+import { useNodeTypeUpdater } from "./useNodeTypeUpdater";
 
 export function HoverEditor({ nodeType, onUpdate, appKind }: NodeEditorProps) {
   const nt = nodeType;
   if (nt.type !== "Hover") return null;
 
-  const updateType = (patch: Record<string, unknown>) => {
-    onUpdate({ node_type: { ...nt, ...patch } as NodeType });
-  };
+  const updateType = useNodeTypeUpdater(nt, onUpdate);
 
   const isCdp = appKind && usesCdp(appKind);
 

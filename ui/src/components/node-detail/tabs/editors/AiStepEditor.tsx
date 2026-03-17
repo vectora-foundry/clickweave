@@ -1,4 +1,3 @@
-import type { NodeType } from "../../../../bindings";
 import {
   FieldGroup,
   ImagePathField,
@@ -7,14 +6,13 @@ import {
   TextField,
 } from "../../fields";
 import { type NodeEditorProps, optionalString } from "./types";
+import { useNodeTypeUpdater } from "./useNodeTypeUpdater";
 
 export function AiStepEditor({ nodeType, onUpdate, projectPath }: NodeEditorProps) {
   const nt = nodeType;
   if (nt.type !== "AiStep") return null;
 
-  const updateType = (patch: Record<string, unknown>) => {
-    onUpdate({ node_type: { ...nt, ...patch } as NodeType });
-  };
+  const updateType = useNodeTypeUpdater(nt, onUpdate);
 
   return (
     <FieldGroup title="AI Step">

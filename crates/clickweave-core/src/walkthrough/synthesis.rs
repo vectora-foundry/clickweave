@@ -1,145 +1,23 @@
 use uuid::Uuid;
 
-use crate::{MouseButton, WindowControlAction};
+use crate::MouseButton;
 
+use super::event_coalescing::{
+    KEY_COALESCE_GAP_MS, SCROLL_COALESCE_GAP_MS, TEXT_IDLE_GAP_MS, flush_text,
+};
+use super::event_interpretation::{WindowControl, shortcut_display_name};
+use super::target_resolution::{
+    CdpElementData, ClickEnrichment, build_target_candidates, score_confidence,
+};
 use super::types::{
-    ActionConfidence, OcrAnnotation, ScreenshotKind, ScreenshotMeta, TargetCandidate,
-    WalkthroughAction, WalkthroughActionKind, WalkthroughEvent, WalkthroughEventKind,
+    ActionConfidence, ScreenshotKind, ScreenshotMeta, TargetCandidate, WalkthroughAction,
+    WalkthroughActionKind, WalkthroughEvent, WalkthroughEventKind,
 };
 
+// Re-export OCR_PROXIMITY_PX so external callers (if any) still find it here.
+pub use super::target_resolution::OCR_PROXIMITY_PX;
+
 // --- Event normalization ---
-
-/// Idle gap threshold for text coalescing (milliseconds).
-const TEXT_IDLE_GAP_MS: u64 = 2000;
-
-/// Maximum distance (pixels) for matching OCR text to a click point.
-pub const OCR_PROXIMITY_PX: f64 = 50.0;
-
-/// Maximum gap between scroll events to coalesce (milliseconds).
-const SCROLL_COALESCE_GAP_MS: u64 = 300;
-
-/// Maximum gap between identical key presses to coalesce (milliseconds).
-const KEY_COALESCE_GAP_MS: u64 = 150;
-
-/// macOS window control button actions detected from accessibility data.
-///
-/// Traffic light buttons (close, minimize, zoom/full-screen) report
-/// `role: AXButton` with an AXDescription label like "close button".
-/// This enum is the single source of truth for the mapping between
-/// accessibility labels, keyboard shortcuts, and display names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WindowControl {
-    Close,
-    Minimize,
-    Maximize,
-    Zoom,
-}
-
-impl WindowControl {
-    /// Detect from accessibility label, role, and subrole.
-    ///
-    /// Subrole (`AXCloseButton`, `AXMinimizeButton`, `AXZoomButton`,
-    /// `AXFullScreenButton`) is the most reliable signal — set by the
-    /// macOS window server for all apps including Electron. Falls back
-    /// to label matching for older MCP versions that don't return subrole.
-    fn from_accessibility(label: &str, role: Option<&str>, subrole: Option<&str>) -> Option<Self> {
-        // Subrole is definitive — works even for Electron apps with no label.
-        if let Some(sr) = subrole {
-            return match sr {
-                "AXCloseButton" => Some(Self::Close),
-                "AXMinimizeButton" => Some(Self::Minimize),
-                "AXZoomButton" => Some(Self::Zoom),
-                "AXFullScreenButton" => Some(Self::Maximize),
-                _ => None,
-            };
-        }
-
-        // Fallback: label matching (native apps with AXDescription).
-        if role != Some("AXButton") {
-            return None;
-        }
-        if label.eq_ignore_ascii_case("close button") {
-            Some(Self::Close)
-        } else if label.eq_ignore_ascii_case("minimize button") {
-            Some(Self::Minimize)
-        } else if label.eq_ignore_ascii_case("full screen button") {
-            Some(Self::Maximize)
-        } else if label.eq_ignore_ascii_case("zoom button") {
-            Some(Self::Zoom)
-        } else {
-            None
-        }
-    }
-
-    /// Reverse-detect from a PressKey's key + modifiers.
-    /// Note: Close is NOT here — Cmd+W closes a tab, not the window.
-    /// Close is only detected via accessibility (subrole/label).
-    fn from_shortcut(key: &str, modifiers: &[String]) -> Option<Self> {
-        // Sort modifiers so matching is order-independent — the order from
-        // flags_to_modifiers() depends on flag-check order, not user intent.
-        let mut sorted: Vec<&str> = modifiers.iter().map(|s| s.as_str()).collect();
-        sorted.sort_unstable();
-        match (key, sorted.as_slice()) {
-            ("m", ["command"]) => Some(Self::Minimize),
-            ("f", ["command", "control"]) => Some(Self::Maximize),
-            _ => None,
-        }
-    }
-
-    /// Keyboard shortcut key. Returns `None` for Close (Cmd+W closes tabs, not windows).
-    fn shortcut(self) -> Option<(&'static str, Vec<String>)> {
-        match self {
-            Self::Minimize => Some(("m", vec!["command".into()])),
-            Self::Maximize => Some(("f", vec!["command".into(), "control".into()])),
-            Self::Close | Self::Zoom => None,
-        }
-    }
-
-    fn display_name(self) -> &'static str {
-        self.to_action().display_name()
-    }
-
-    /// Convert to the public `WindowControlAction` for use in target candidates
-    /// and click targets.
-    fn to_action(self) -> WindowControlAction {
-        match self {
-            Self::Close => WindowControlAction::Close,
-            Self::Minimize => WindowControlAction::Minimize,
-            Self::Maximize => WindowControlAction::Maximize,
-            Self::Zoom => WindowControlAction::Zoom,
-        }
-    }
-}
-
-/// Human-readable names for well-known keyboard shortcuts that aren't
-/// window control buttons (those are handled by `WindowControl::from_shortcut`).
-fn shortcut_display_name(key: &str, modifiers: &[String]) -> Option<String> {
-    let mut sorted: Vec<&str> = modifiers.iter().map(|s| s.as_str()).collect();
-    sorted.sort_unstable();
-    match (key, sorted.as_slice()) {
-        ("w", ["command"]) => Some("Close tab".to_string()),
-        _ => None,
-    }
-}
-
-/// Flush accumulated text buffer into a single TypeText action.
-fn flush_text(
-    buf: &mut Vec<(Uuid, u64, String)>,
-    actions: &mut Vec<WalkthroughAction>,
-    current_app: &Option<String>,
-) {
-    if buf.is_empty() {
-        return;
-    }
-    let text: String = buf.iter().map(|(_, _, t)| t.as_str()).collect();
-    let source_ids: Vec<Uuid> = buf.iter().map(|(id, _, _)| *id).collect();
-    actions.push(WalkthroughAction::new(
-        WalkthroughActionKind::TypeText { text },
-        current_app.clone(),
-        source_ids,
-    ));
-    buf.clear();
-}
 
 /// Normalize raw walkthrough events into semantic actions.
 ///
@@ -245,18 +123,11 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 // that follow this click before the next action event.
                 let mut screenshot_path: Option<String> = None;
                 let mut screenshot_meta: Option<ScreenshotMeta> = None;
-                let mut ocr_annotations: Option<&Vec<OcrAnnotation>> = None;
+                let mut ocr_annotations = None;
                 let mut ax_label: Option<(String, Option<String>, Option<String>)> = None;
                 let mut vlm_label: Option<String> = None;
                 let mut crop_candidate: Option<(String, String)> = None;
-                #[allow(clippy::type_complexity)]
-                let mut cdp_resolved: Option<(
-                    String,
-                    Option<String>,
-                    Option<String>,
-                    Option<String>,
-                    Option<String>,
-                )> = None;
+                let mut cdp_resolved: Option<CdpElementData> = None;
                 let mut peek = i;
                 while peek < events.len() {
                     match &events[peek].kind {
@@ -293,13 +164,13 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                             parent_name,
                             ..
                         } => {
-                            cdp_resolved = Some((
-                                name.clone(),
-                                role.clone(),
-                                href.clone(),
-                                parent_role.clone(),
-                                parent_name.clone(),
-                            ));
+                            cdp_resolved = Some(CdpElementData {
+                                name: name.clone(),
+                                role: role.clone(),
+                                href: href.clone(),
+                                parent_role: parent_role.clone(),
+                                parent_name: parent_name.clone(),
+                            });
                         }
                         // Stop at the next action event.
                         _ => break,
@@ -350,82 +221,21 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                     continue;
                 }
 
-                // Build target candidates: CDP > accessibility label > OCR text > coordinates.
-                let mut candidates = Vec::new();
+                // Build target candidates and score confidence via extracted functions.
+                let ax_for_candidates = ax_label.map(|(label, role, _subrole)| (label, role));
 
-                // CDP element from click listener is the highest-priority target.
-                if let Some((name, role, href, parent_role, parent_name)) = cdp_resolved {
-                    candidates.push(TargetCandidate::CdpElement {
-                        name,
-                        role,
-                        href,
-                        parent_role,
-                        parent_name,
-                    });
-                }
-
-                // Accessibility label is the most reliable target.
-                // Skip empty labels — these come from elements with a subrole but
-                // no display text (e.g. unlabeled buttons), and would suppress VLM
-                // fallback without providing a usable target string.
-                if let Some((label, role, _subrole)) = ax_label
-                    && !label.is_empty()
-                {
-                    candidates.push(TargetCandidate::AccessibilityLabel { label, role });
-                }
-
-                // VLM label as second-best target (after actionable AX labels).
-                if let Some(label) = vlm_label {
-                    candidates.push(TargetCandidate::VlmLabel { label });
-                }
-
-                // OCR text as fallback.
-                if let Some(annotations) = ocr_annotations {
-                    let mut nearest: Option<(&OcrAnnotation, f64)> = None;
-                    for ann in annotations {
-                        let dist = ((ann.x - x).powi(2) + (ann.y - y).powi(2)).sqrt();
-                        if dist <= OCR_PROXIMITY_PX
-                            && (nearest.is_none() || dist < nearest.unwrap().1)
-                        {
-                            nearest = Some((ann, dist));
-                        }
-                    }
-                    if let Some((ann, _)) = nearest {
-                        candidates.push(TargetCandidate::OcrText {
-                            text: ann.text.clone(),
-                        });
-                    }
-                }
-                // Image crop as fallback (before coordinates).
-                if let Some((crop_path, crop_b64)) = crop_candidate {
-                    candidates.push(TargetCandidate::ImageCrop {
-                        path: crop_path,
-                        image_b64: crop_b64,
-                    });
-                }
-                // Always add coordinates as fallback.
-                candidates.push(TargetCandidate::Coordinates { x: *x, y: *y });
-
-                let has_image_crop = candidates
-                    .iter()
-                    .any(|c| matches!(c, TargetCandidate::ImageCrop { .. }));
-                let confidence = if candidates
-                    .iter()
-                    .any(|c| matches!(c, TargetCandidate::CdpElement { .. }))
-                    || candidates.iter().any(|c| c.is_actionable_ax_label())
-                {
-                    ActionConfidence::High
-                } else if candidates.iter().any(|c| {
-                    matches!(
-                        c,
-                        TargetCandidate::VlmLabel { .. } | TargetCandidate::OcrText { .. }
-                    )
-                }) || has_image_crop
-                {
-                    ActionConfidence::Medium
-                } else {
-                    ActionConfidence::Low
+                let enrichment = ClickEnrichment {
+                    ax_label: ax_for_candidates,
+                    vlm_label,
+                    ocr_annotations: ocr_annotations.as_ref().map(|a| *a),
+                    crop_candidate,
+                    cdp_resolved,
+                    click_x: *x,
+                    click_y: *y,
                 };
+
+                let candidates = build_target_candidates(&enrichment);
+                let confidence = score_confidence(&candidates);
 
                 let mut click_warnings = Vec::new();
                 if confidence == ActionConfidence::Low {
@@ -888,7 +698,7 @@ pub fn synthesize_draft(
 mod tests {
     use super::super::types::*;
     use super::*;
-    use crate::MouseButton;
+    use crate::{MouseButton, WindowControlAction};
 
     #[test]
     fn test_walkthrough_status_default_is_idle() {
@@ -1277,15 +1087,8 @@ mod tests {
     }
 
     mod normalize_tests {
+        use super::super::super::test_helpers::make_event;
         use super::*;
-
-        fn make_event(timestamp: u64, kind: WalkthroughEventKind) -> WalkthroughEvent {
-            WalkthroughEvent {
-                id: Uuid::new_v4(),
-                timestamp,
-                kind,
-            }
-        }
 
         #[test]
         fn test_first_app_focus_becomes_launch_app() {
@@ -1381,314 +1184,6 @@ mod tests {
         }
 
         #[test]
-        fn test_contiguous_text_coalesced() {
-            let events = vec![
-                make_event(
-                    1000,
-                    WalkthroughEventKind::TextCommitted { text: "h".into() },
-                ),
-                make_event(
-                    1050,
-                    WalkthroughEventKind::TextCommitted { text: "e".into() },
-                ),
-                make_event(
-                    1100,
-                    WalkthroughEventKind::TextCommitted { text: "l".into() },
-                ),
-                make_event(
-                    1150,
-                    WalkthroughEventKind::TextCommitted { text: "l".into() },
-                ),
-                make_event(
-                    1200,
-                    WalkthroughEventKind::TextCommitted { text: "o".into() },
-                ),
-            ];
-            let (actions, _) = normalize_events(&events);
-            assert_eq!(actions.len(), 1);
-            assert!(matches!(
-                &actions[0].kind,
-                WalkthroughActionKind::TypeText { text } if text == "hello"
-            ));
-        }
-
-        #[test]
-        fn test_text_broken_by_click() {
-            let events = vec![
-                make_event(
-                    1000,
-                    WalkthroughEventKind::TextCommitted { text: "ab".into() },
-                ),
-                make_event(
-                    2000,
-                    WalkthroughEventKind::MouseClicked {
-                        x: 100.0,
-                        y: 200.0,
-                        button: MouseButton::Left,
-                        click_count: 1,
-                        modifiers: vec![],
-                    },
-                ),
-                make_event(
-                    3000,
-                    WalkthroughEventKind::TextCommitted { text: "cd".into() },
-                ),
-            ];
-            let (actions, _) = normalize_events(&events);
-            assert_eq!(actions.len(), 3); // TypeText, Click, TypeText
-        }
-
-        #[test]
-        fn test_text_broken_by_idle_gap() {
-            let events = vec![
-                make_event(
-                    1000,
-                    WalkthroughEventKind::TextCommitted { text: "ab".into() },
-                ),
-                make_event(
-                    4000,
-                    WalkthroughEventKind::TextCommitted { text: "cd".into() },
-                ), // >2s gap
-            ];
-            let (actions, _) = normalize_events(&events);
-            assert_eq!(actions.len(), 2);
-        }
-
-        #[test]
-        fn test_click_with_nearby_ocr_gets_medium_confidence() {
-            let events = vec![
-                make_event(
-                    1000,
-                    WalkthroughEventKind::MouseClicked {
-                        x: 100.0,
-                        y: 200.0,
-                        button: MouseButton::Left,
-                        click_count: 1,
-                        modifiers: vec![],
-                    },
-                ),
-                make_event(
-                    1100,
-                    WalkthroughEventKind::OcrCaptured {
-                        annotations: vec![
-                            OcrAnnotation {
-                                text: "Submit".into(),
-                                x: 102.0,
-                                y: 198.0,
-                            },
-                            OcrAnnotation {
-                                text: "Cancel".into(),
-                                x: 300.0,
-                                y: 198.0,
-                            },
-                        ],
-                        click_x: 100.0,
-                        click_y: 200.0,
-                    },
-                ),
-            ];
-            let (actions, _) = normalize_events(&events);
-            assert_eq!(actions.len(), 1);
-            assert!(matches!(
-                &actions[0].kind,
-                WalkthroughActionKind::Click { .. }
-            ));
-            assert!(
-                actions[0]
-                    .target_candidates
-                    .iter()
-                    .any(|c| matches!(c, TargetCandidate::OcrText { text } if text == "Submit"))
-            );
-            assert_eq!(actions[0].confidence, ActionConfidence::Medium);
-        }
-
-        #[test]
-        fn test_click_without_ocr_gets_low_confidence() {
-            let events = vec![make_event(
-                1000,
-                WalkthroughEventKind::MouseClicked {
-                    x: 100.0,
-                    y: 200.0,
-                    button: MouseButton::Left,
-                    click_count: 1,
-                    modifiers: vec![],
-                },
-            )];
-            let (actions, _) = normalize_events(&events);
-            assert_eq!(actions.len(), 1);
-            assert_eq!(actions[0].confidence, ActionConfidence::Low);
-            assert!(
-                actions[0]
-                    .target_candidates
-                    .iter()
-                    .any(|c| matches!(c, TargetCandidate::Coordinates { .. }))
-            );
-        }
-
-        #[test]
-        fn test_click_with_vlm_label_gets_medium_confidence() {
-            let events = vec![
-                make_event(
-                    1000,
-                    WalkthroughEventKind::MouseClicked {
-                        x: 100.0,
-                        y: 200.0,
-                        button: MouseButton::Left,
-                        click_count: 1,
-                        modifiers: vec![],
-                    },
-                ),
-                make_event(
-                    1000,
-                    WalkthroughEventKind::VlmLabelResolved {
-                        label: "Send".to_string(),
-                    },
-                ),
-            ];
-            let (actions, _) = normalize_events(&events);
-            assert_eq!(actions.len(), 1);
-            assert!(
-                actions[0]
-                    .target_candidates
-                    .iter()
-                    .any(|c| matches!(c, TargetCandidate::VlmLabel { label } if label == "Send"))
-            );
-            // VLM label alone should be at least Medium confidence
-            assert!(actions[0].confidence != ActionConfidence::Low);
-        }
-
-        #[test]
-        fn test_click_with_ax_label_and_vlm_label_keeps_ax_first() {
-            let events = vec![
-                make_event(
-                    1000,
-                    WalkthroughEventKind::MouseClicked {
-                        x: 100.0,
-                        y: 200.0,
-                        button: MouseButton::Left,
-                        click_count: 1,
-                        modifiers: vec![],
-                    },
-                ),
-                make_event(
-                    1000,
-                    WalkthroughEventKind::AccessibilityElementCaptured {
-                        label: "Submit".to_string(),
-                        role: Some("AXButton".to_string()),
-                        subrole: None,
-                    },
-                ),
-                make_event(
-                    1000,
-                    WalkthroughEventKind::VlmLabelResolved {
-                        label: "Submit Button".to_string(),
-                    },
-                ),
-            ];
-            let (actions, _) = normalize_events(&events);
-            assert_eq!(actions.len(), 1);
-            // AX label should be first candidate
-            assert!(matches!(
-                &actions[0].target_candidates[0],
-                TargetCandidate::AccessibilityLabel { label, .. } if label == "Submit"
-            ));
-            // VLM label should be second
-            assert!(matches!(
-                &actions[0].target_candidates[1],
-                TargetCandidate::VlmLabel { label } if label == "Submit Button"
-            ));
-            // Actionable AX label means High confidence
-            assert_eq!(actions[0].confidence, ActionConfidence::High);
-        }
-
-        #[test]
-        fn test_empty_ax_label_not_added_as_candidate() {
-            let events = vec![
-                make_event(
-                    1000,
-                    WalkthroughEventKind::MouseClicked {
-                        x: 100.0,
-                        y: 200.0,
-                        button: MouseButton::Left,
-                        click_count: 1,
-                        modifiers: vec![],
-                    },
-                ),
-                make_event(
-                    1000,
-                    WalkthroughEventKind::AccessibilityElementCaptured {
-                        label: String::new(),
-                        role: Some("AXButton".to_string()),
-                        subrole: Some("AXSortButton".to_string()),
-                    },
-                ),
-            ];
-            let (actions, _) = normalize_events(&events);
-            assert_eq!(actions.len(), 1);
-            // Empty label should NOT become an AccessibilityLabel candidate
-            assert!(
-                !actions[0]
-                    .target_candidates
-                    .iter()
-                    .any(|c| matches!(c, TargetCandidate::AccessibilityLabel { .. })),
-                "empty AX label should not be a candidate"
-            );
-        }
-
-        #[test]
-        fn test_cdp_click_resolved_creates_cdp_element_candidate() {
-            let click_id = Uuid::new_v4();
-            let events = vec![
-                WalkthroughEvent {
-                    id: click_id,
-                    timestamp: 1000,
-                    kind: WalkthroughEventKind::MouseClicked {
-                        x: 45.0,
-                        y: 473.0,
-                        button: MouseButton::Left,
-                        click_count: 1,
-                        modifiers: vec![],
-                    },
-                },
-                WalkthroughEvent {
-                    id: Uuid::new_v4(),
-                    timestamp: 1000,
-                    kind: WalkthroughEventKind::CdpClickResolved {
-                        name: "Direct Messages".to_string(),
-                        role: Some("treeitem".to_string()),
-                        href: None,
-                        parent_role: None,
-                        parent_name: None,
-                        click_event_id: click_id,
-                    },
-                },
-                // AX label is the window title — non-actionable.
-                make_event(
-                    1000,
-                    WalkthroughEventKind::AccessibilityElementCaptured {
-                        label: "MyApp - Main Window".to_string(),
-                        role: Some("AXWindow".to_string()),
-                        subrole: None,
-                    },
-                ),
-            ];
-            let (actions, _) = normalize_events(&events);
-            assert_eq!(actions.len(), 1);
-            // CDP element should be the first candidate (highest priority).
-            assert!(
-                matches!(
-                    &actions[0].target_candidates[0],
-                    TargetCandidate::CdpElement { name, role, .. }
-                        if name == "Direct Messages" && role.as_deref() == Some("treeitem")
-                ),
-                "Expected CdpElement as first candidate, got: {:?}",
-                &actions[0].target_candidates
-            );
-            // CDP element presence means High confidence.
-            assert_eq!(actions[0].confidence, ActionConfidence::High);
-        }
-
-        #[test]
         fn test_key_pressed_becomes_press_key() {
             let events = vec![make_event(
                 1000,
@@ -1720,42 +1215,6 @@ mod tests {
             assert!(matches!(
                 &actions[0].kind,
                 WalkthroughActionKind::Scroll { delta_y } if *delta_y == -5.0
-            ));
-        }
-
-        #[test]
-        fn test_rapid_scrolls_coalesced() {
-            let events = vec![
-                make_event(
-                    1000,
-                    WalkthroughEventKind::Scrolled {
-                        delta_y: -2.0,
-                        x: Some(100.0),
-                        y: Some(200.0),
-                    },
-                ),
-                make_event(
-                    1050,
-                    WalkthroughEventKind::Scrolled {
-                        delta_y: -3.0,
-                        x: Some(100.0),
-                        y: Some(200.0),
-                    },
-                ),
-                make_event(
-                    1100,
-                    WalkthroughEventKind::Scrolled {
-                        delta_y: -1.0,
-                        x: Some(100.0),
-                        y: Some(200.0),
-                    },
-                ),
-            ];
-            let (actions, _) = normalize_events(&events);
-            assert_eq!(actions.len(), 1);
-            assert!(matches!(
-                &actions[0].kind,
-                WalkthroughActionKind::Scroll { delta_y } if *delta_y == -6.0
             ));
         }
 
@@ -1804,91 +1263,6 @@ mod tests {
                 }
                 _ => panic!("expected LaunchApp"),
             }
-        }
-
-        // --- Window control detection ---
-
-        #[test]
-        fn test_window_control_from_subrole() {
-            assert_eq!(
-                WindowControl::from_accessibility("", None, Some("AXCloseButton")),
-                Some(WindowControl::Close)
-            );
-            assert_eq!(
-                WindowControl::from_accessibility("", None, Some("AXMinimizeButton")),
-                Some(WindowControl::Minimize)
-            );
-            assert_eq!(
-                WindowControl::from_accessibility("", None, Some("AXZoomButton")),
-                Some(WindowControl::Zoom)
-            );
-            assert_eq!(
-                WindowControl::from_accessibility("", None, Some("AXFullScreenButton")),
-                Some(WindowControl::Maximize)
-            );
-        }
-
-        #[test]
-        fn test_window_control_from_label_fallback() {
-            // No subrole — falls back to label matching.
-            assert_eq!(
-                WindowControl::from_accessibility("close button", Some("AXButton"), None),
-                Some(WindowControl::Close)
-            );
-            assert_eq!(
-                WindowControl::from_accessibility("minimize button", Some("AXButton"), None),
-                Some(WindowControl::Minimize)
-            );
-            assert_eq!(
-                WindowControl::from_accessibility("full screen button", Some("AXButton"), None),
-                Some(WindowControl::Maximize)
-            );
-            assert_eq!(
-                WindowControl::from_accessibility("zoom button", Some("AXButton"), None),
-                Some(WindowControl::Zoom)
-            );
-        }
-
-        #[test]
-        fn test_window_control_wrong_role_returns_none() {
-            assert!(
-                WindowControl::from_accessibility("close button", Some("AXGroup"), None).is_none()
-            );
-            assert!(WindowControl::from_accessibility("close button", None, None).is_none());
-        }
-
-        #[test]
-        fn test_window_control_unrelated_button_returns_none() {
-            assert!(WindowControl::from_accessibility("Submit", Some("AXButton"), None).is_none());
-        }
-
-        #[test]
-        fn test_window_control_unrelated_subrole_returns_none() {
-            assert!(
-                WindowControl::from_accessibility("", Some("AXButton"), Some("AXSortButton"))
-                    .is_none()
-            );
-        }
-
-        #[test]
-        fn test_window_control_shortcut_roundtrip() {
-            // Close has no shortcut — only Minimize and Maximize round-trip.
-            assert!(WindowControl::Close.shortcut().is_none());
-            for wc in [WindowControl::Minimize, WindowControl::Maximize] {
-                let (key, modifiers) = wc.shortcut().unwrap();
-                let recovered = WindowControl::from_shortcut(key, &modifiers);
-                assert_eq!(recovered, Some(wc), "roundtrip failed for {wc:?}");
-            }
-        }
-
-        #[test]
-        fn test_window_control_shortcut_order_independent() {
-            // control+command (reversed) should still match Maximize.
-            let modifiers = vec!["control".to_string(), "command".to_string()];
-            assert_eq!(
-                WindowControl::from_shortcut("f", &modifiers),
-                Some(WindowControl::Maximize)
-            );
         }
 
         #[test]
@@ -2064,73 +1438,6 @@ mod tests {
                 WalkthroughActionKind::PressKey { key, modifiers }
                     if key == "f" && modifiers == &["command", "control"]
             ));
-        }
-
-        #[test]
-        fn test_consecutive_identical_presskey_coalesced() {
-            let events: Vec<_> = (0..6)
-                .map(|i| {
-                    make_event(
-                        1000 + i * 100,
-                        WalkthroughEventKind::KeyPressed {
-                            key: "tab".into(),
-                            modifiers: vec!["command".into()],
-                        },
-                    )
-                })
-                .collect();
-            let (actions, _) = normalize_events(&events);
-            assert_eq!(actions.len(), 1, "6 rapid cmd+tab should coalesce to 1");
-            assert!(matches!(
-                &actions[0].kind,
-                WalkthroughActionKind::PressKey { key, modifiers }
-                if key == "tab" && modifiers == &["command"]
-            ));
-            assert_eq!(actions[0].source_event_ids.len(), 6);
-        }
-
-        #[test]
-        fn test_different_presskey_not_coalesced() {
-            let events = vec![
-                make_event(
-                    1000,
-                    WalkthroughEventKind::KeyPressed {
-                        key: "tab".into(),
-                        modifiers: vec!["command".into()],
-                    },
-                ),
-                make_event(
-                    1100,
-                    WalkthroughEventKind::KeyPressed {
-                        key: "a".into(),
-                        modifiers: vec!["command".into()],
-                    },
-                ),
-            ];
-            let (actions, _) = normalize_events(&events);
-            assert_eq!(actions.len(), 2, "different keys should not coalesce");
-        }
-
-        #[test]
-        fn test_presskey_coalescing_respects_time_gap() {
-            let events = vec![
-                make_event(
-                    1000,
-                    WalkthroughEventKind::KeyPressed {
-                        key: "tab".into(),
-                        modifiers: vec!["command".into()],
-                    },
-                ),
-                make_event(
-                    2000,
-                    WalkthroughEventKind::KeyPressed {
-                        key: "tab".into(),
-                        modifiers: vec!["command".into()],
-                    },
-                ),
-            ];
-            let (actions, _) = normalize_events(&events);
-            assert_eq!(actions.len(), 2, "gap >500ms should not coalesce");
         }
     }
 

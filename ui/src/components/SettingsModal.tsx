@@ -1,4 +1,5 @@
 import type { EndpointConfig } from "../store/useAppStore";
+import { Modal } from "./Modal";
 
 interface SettingsModalProps {
   open: boolean;
@@ -100,11 +101,8 @@ export function SettingsModal({
   onMaxRepairAttemptsChange,
   onHoverDwellThresholdChange,
 }: SettingsModalProps) {
-  if (!open) return null;
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-[480px] max-h-[90vh] overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] shadow-xl">
+    <Modal open={open} onClose={onClose} className="w-[480px] max-h-[90vh] overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] shadow-xl">
         <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
           <h2 className="text-sm font-semibold text-[var(--text-primary)]">
             Settings
@@ -255,7 +253,6 @@ export function SettingsModal({
             Done
           </button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

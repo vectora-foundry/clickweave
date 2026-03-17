@@ -1,13 +1,14 @@
+use super::error::CommandError;
 use super::types::*;
 use clickweave_mcp::{McpRouter, default_server_configs};
 
 pub(crate) async fn fetch_mcp_tool_schemas(
     mcp_command: &str,
-) -> Result<Vec<serde_json::Value>, String> {
+) -> Result<Vec<serde_json::Value>, CommandError> {
     let configs = default_server_configs(mcp_command);
     let mut router = McpRouter::spawn(&configs)
         .await
-        .map_err(|e| format!("Failed to spawn MCP servers: {}", e))?;
+        .map_err(|e| CommandError::mcp(format!("Failed to spawn MCP servers: {}", e)))?;
     let tools = router.tools_as_openai();
     router.kill_all();
     Ok(tools)
@@ -15,7 +16,7 @@ pub(crate) async fn fetch_mcp_tool_schemas(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn plan_workflow(request: PlanRequest) -> Result<PlanResponse, String> {
+pub async fn plan_workflow(request: PlanRequest) -> Result<PlanResponse, CommandError> {
     let tools = fetch_mcp_tool_schemas(&request.mcp_command).await?;
     let planner_config = request.planner.into_llm_config(None);
 
@@ -27,7 +28,7 @@ pub async fn plan_workflow(request: PlanRequest) -> Result<PlanResponse, String>
         request.allow_agent_steps,
     )
     .await
-    .map_err(|e| format!("Planning failed: {}", e))?;
+    .map_err(|e| CommandError::llm(format!("Planning failed: {}", e)))?;
 
     Ok(PlanResponse {
         workflow: result.workflow,
@@ -37,7 +38,7 @@ pub async fn plan_workflow(request: PlanRequest) -> Result<PlanResponse, String>
 
 #[tauri::command]
 #[specta::specta]
-pub async fn patch_workflow(request: PatchRequest) -> Result<WorkflowPatch, String> {
+pub async fn patch_workflow(request: PatchRequest) -> Result<WorkflowPatch, CommandError> {
     let tools = fetch_mcp_tool_schemas(&request.mcp_command).await?;
     let planner_config = request.planner.into_llm_config(None);
 
@@ -50,7 +51,7 @@ pub async fn patch_workflow(request: PatchRequest) -> Result<WorkflowPatch, Stri
         request.allow_agent_steps,
     )
     .await
-    .map_err(|e| format!("Patching failed: {}", e))?;
+    .map_err(|e| CommandError::llm(format!("Patching failed: {}", e)))?;
 
     Ok(WorkflowPatch {
         added_nodes: result.added_nodes,

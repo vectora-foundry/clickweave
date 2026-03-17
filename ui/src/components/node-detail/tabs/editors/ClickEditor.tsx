@@ -1,15 +1,13 @@
 import { useMemo } from "react";
-import type { NodeType } from "../../../../bindings";
 import { FieldGroup, NumberField, SelectField, TextField } from "../../fields";
 import { APP_KIND_LABELS, type NodeEditorProps, optionalString, usesCdp } from "./types";
+import { useNodeTypeUpdater } from "./useNodeTypeUpdater";
 
 export function ClickEditor({ nodeType, onUpdate, projectPath, appKind }: NodeEditorProps) {
   const nt = nodeType;
   if (nt.type !== "Click") return null;
 
-  const updateType = (patch: Record<string, unknown>) => {
-    onUpdate({ node_type: { ...nt, ...patch } as NodeType });
-  };
+  const updateType = useNodeTypeUpdater(nt, onUpdate);
 
   const hasImage = !!nt.template_image;
   const isCdp = appKind && usesCdp(appKind);

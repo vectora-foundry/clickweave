@@ -8,7 +8,7 @@ export const commands = {
 async ping() : Promise<string> {
     return await TAURI_INVOKE("ping");
 },
-async pickWorkflowFile() : Promise<Result<string | null, string>> {
+async pickWorkflowFile() : Promise<Result<string | null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("pick_workflow_file") };
 } catch (e) {
@@ -16,7 +16,7 @@ async pickWorkflowFile() : Promise<Result<string | null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async pickSaveFile() : Promise<Result<string | null, string>> {
+async pickSaveFile() : Promise<Result<string | null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("pick_save_file") };
 } catch (e) {
@@ -24,7 +24,7 @@ async pickSaveFile() : Promise<Result<string | null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async openProject(path: string) : Promise<Result<ProjectData, string>> {
+async openProject(path: string) : Promise<Result<ProjectData, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("open_project", { path }) };
 } catch (e) {
@@ -32,7 +32,7 @@ async openProject(path: string) : Promise<Result<ProjectData, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async saveProject(path: string, workflow: Workflow) : Promise<Result<null, string>> {
+async saveProject(path: string, workflow: Workflow) : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("save_project", { path, workflow }) };
 } catch (e) {
@@ -46,7 +46,7 @@ async validate(workflow: Workflow) : Promise<ValidationResult> {
 async nodeTypeDefaults() : Promise<NodeTypeInfo[]> {
     return await TAURI_INVOKE("node_type_defaults");
 },
-async planWorkflow(request: PlanRequest) : Promise<Result<PlanResponse, string>> {
+async planWorkflow(request: PlanRequest) : Promise<Result<PlanResponse, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("plan_workflow", { request }) };
 } catch (e) {
@@ -54,7 +54,7 @@ async planWorkflow(request: PlanRequest) : Promise<Result<PlanResponse, string>>
     else return { status: "error", error: e  as any };
 }
 },
-async patchWorkflow(request: PatchRequest) : Promise<Result<WorkflowPatch, string>> {
+async patchWorkflow(request: PatchRequest) : Promise<Result<WorkflowPatch, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("patch_workflow", { request }) };
 } catch (e) {
@@ -62,7 +62,7 @@ async patchWorkflow(request: PatchRequest) : Promise<Result<WorkflowPatch, strin
     else return { status: "error", error: e  as any };
 }
 },
-async assistantChat(request: AssistantChatRequest) : Promise<Result<AssistantChatResponse, string>> {
+async assistantChat(request: AssistantChatRequest) : Promise<Result<AssistantChatResponse, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("assistant_chat", { request }) };
 } catch (e) {
@@ -70,7 +70,7 @@ async assistantChat(request: AssistantChatRequest) : Promise<Result<AssistantCha
     else return { status: "error", error: e  as any };
 }
 },
-async cancelAssistantChat() : Promise<Result<null, string>> {
+async cancelAssistantChat() : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("cancel_assistant_chat") };
 } catch (e) {
@@ -78,7 +78,7 @@ async cancelAssistantChat() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async saveConversation(path: string, conversation: ConversationSession) : Promise<Result<null, string>> {
+async saveConversation(path: string, conversation: ConversationSession) : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("save_conversation", { path, conversation }) };
 } catch (e) {
@@ -86,7 +86,7 @@ async saveConversation(path: string, conversation: ConversationSession) : Promis
     else return { status: "error", error: e  as any };
 }
 },
-async loadConversation(path: string) : Promise<Result<ConversationSession | null, string>> {
+async loadConversation(path: string) : Promise<Result<ConversationSession | null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("load_conversation", { path }) };
 } catch (e) {
@@ -94,7 +94,7 @@ async loadConversation(path: string) : Promise<Result<ConversationSession | null
     else return { status: "error", error: e  as any };
 }
 },
-async runWorkflow(request: RunRequest) : Promise<Result<null, string>> {
+async runWorkflow(request: RunRequest) : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("run_workflow", { request }) };
 } catch (e) {
@@ -102,7 +102,7 @@ async runWorkflow(request: RunRequest) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async stopWorkflow() : Promise<Result<null, string>> {
+async stopWorkflow() : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("stop_workflow") };
 } catch (e) {
@@ -110,7 +110,7 @@ async stopWorkflow() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async supervisionRespond(action: string) : Promise<Result<null, string>> {
+async supervisionRespond(action: string) : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("supervision_respond", { action }) };
 } catch (e) {
@@ -118,7 +118,7 @@ async supervisionRespond(action: string) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async listRuns(query: RunsQuery) : Promise<Result<NodeRun[], string>> {
+async listRuns(query: RunsQuery) : Promise<Result<NodeRun[], CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("list_runs", { query }) };
 } catch (e) {
@@ -126,7 +126,7 @@ async listRuns(query: RunsQuery) : Promise<Result<NodeRun[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async loadRunEvents(query: RunEventsQuery) : Promise<Result<TraceEvent[], string>> {
+async loadRunEvents(query: RunEventsQuery) : Promise<Result<TraceEvent[], CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("load_run_events", { query }) };
 } catch (e) {
@@ -134,7 +134,7 @@ async loadRunEvents(query: RunEventsQuery) : Promise<Result<TraceEvent[], string
     else return { status: "error", error: e  as any };
 }
 },
-async readArtifactBase64(path: string) : Promise<Result<string, string>> {
+async readArtifactBase64(path: string) : Promise<Result<string, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("read_artifact_base64", { path }) };
 } catch (e) {
@@ -142,7 +142,7 @@ async readArtifactBase64(path: string) : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async importAsset(projectPath: string) : Promise<Result<ImportedAsset | null, string>> {
+async importAsset(projectPath: string) : Promise<Result<ImportedAsset | null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("import_asset", { projectPath }) };
 } catch (e) {
@@ -150,7 +150,7 @@ async importAsset(projectPath: string) : Promise<Result<ImportedAsset | null, st
     else return { status: "error", error: e  as any };
 }
 },
-async startWalkthrough(workflowId: string, mcpCommand: string, projectPath: string | null, planner: EndpointConfig | null, cdpApps: CdpAppConfig[], hoverDwellThreshold: number | null) : Promise<Result<null, string>> {
+async startWalkthrough(workflowId: string, mcpCommand: string, projectPath: string | null, planner: EndpointConfig | null, cdpApps: CdpAppConfig[], hoverDwellThreshold: number | null) : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("start_walkthrough", { workflowId, mcpCommand, projectPath, planner, cdpApps, hoverDwellThreshold }) };
 } catch (e) {
@@ -158,7 +158,7 @@ async startWalkthrough(workflowId: string, mcpCommand: string, projectPath: stri
     else return { status: "error", error: e  as any };
 }
 },
-async pauseWalkthrough() : Promise<Result<null, string>> {
+async pauseWalkthrough() : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("pause_walkthrough") };
 } catch (e) {
@@ -166,7 +166,7 @@ async pauseWalkthrough() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async resumeWalkthrough() : Promise<Result<null, string>> {
+async resumeWalkthrough() : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("resume_walkthrough") };
 } catch (e) {
@@ -174,7 +174,7 @@ async resumeWalkthrough() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async stopWalkthrough(planner: EndpointConfig | null, hoverDwellThreshold: number | null) : Promise<Result<null, string>> {
+async stopWalkthrough(planner: EndpointConfig | null, hoverDwellThreshold: number | null) : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("stop_walkthrough", { planner, hoverDwellThreshold }) };
 } catch (e) {
@@ -182,7 +182,7 @@ async stopWalkthrough(planner: EndpointConfig | null, hoverDwellThreshold: numbe
     else return { status: "error", error: e  as any };
 }
 },
-async cancelWalkthrough() : Promise<Result<null, string>> {
+async cancelWalkthrough() : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("cancel_walkthrough") };
 } catch (e) {
@@ -190,7 +190,7 @@ async cancelWalkthrough() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async getWalkthroughDraft() : Promise<Result<WalkthroughDraftResponse, string>> {
+async getWalkthroughDraft() : Promise<Result<WalkthroughDraftResponse, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_walkthrough_draft") };
 } catch (e) {
@@ -198,7 +198,7 @@ async getWalkthroughDraft() : Promise<Result<WalkthroughDraftResponse, string>> 
     else return { status: "error", error: e  as any };
 }
 },
-async applyWalkthroughAnnotations(annotations: WalkthroughAnnotations) : Promise<Result<null, string>> {
+async applyWalkthroughAnnotations(annotations: WalkthroughAnnotations) : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("apply_walkthrough_annotations", { annotations }) };
 } catch (e) {
@@ -206,7 +206,7 @@ async applyWalkthroughAnnotations(annotations: WalkthroughAnnotations) : Promise
     else return { status: "error", error: e  as any };
 }
 },
-async seedWalkthroughCache(workflowId: string, workflowName: string, projectPath: string | null, appEntries: AppResolutionSeedEntry[]) : Promise<Result<null, string>> {
+async seedWalkthroughCache(workflowId: string, workflowName: string, projectPath: string | null, appEntries: AppResolutionSeedEntry[]) : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("seed_walkthrough_cache", { workflowId, workflowName, projectPath, appEntries }) };
 } catch (e) {
@@ -214,7 +214,7 @@ async seedWalkthroughCache(workflowId: string, workflowName: string, projectPath
     else return { status: "error", error: e  as any };
 }
 },
-async detectCdpApps(mcpCommand: string) : Promise<Result<DetectedCdpApp[], string>> {
+async detectCdpApps(mcpCommand: string) : Promise<Result<DetectedCdpApp[], CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("detect_cdp_apps", { mcpCommand }) };
 } catch (e) {
@@ -222,7 +222,7 @@ async detectCdpApps(mcpCommand: string) : Promise<Result<DetectedCdpApp[], strin
     else return { status: "error", error: e  as any };
 }
 },
-async validateAppPath(path: string) : Promise<Result<DetectedCdpApp, string>> {
+async validateAppPath(path: string) : Promise<Result<DetectedCdpApp, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("validate_app_path", { path }) };
 } catch (e) {
@@ -243,6 +243,11 @@ async validateAppPath(path: string) : Promise<Result<DetectedCdpApp, string>> {
 /** user-defined types **/
 
 export type ActionConfidence = "High" | "Medium" | "Low"
+/**
+ * Structured error type for Tauri IPC commands.
+ */
+export type CommandError = { kind: ErrorKind; message: string }
+export type ErrorKind = "Validation" | "Io" | "Llm" | "Mcp" | "AlreadyRunning" | "Cancelled" | "Internal"
 export type AiStepParams = { prompt: string; button_text: string | null; template_image: string | null; max_tool_calls: number | null; allowed_tools: string[] | null; timeout_ms?: number | null }
 export type AppDebugKitParams = { operation_name: string; parameters: JsonValue }
 /**

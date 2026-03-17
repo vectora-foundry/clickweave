@@ -1,14 +1,12 @@
-import type { NodeType } from "../../../../bindings";
 import { FieldGroup, NumberField } from "../../fields";
 import type { NodeEditorProps } from "./types";
+import { useNodeTypeUpdater } from "./useNodeTypeUpdater";
 
 export function ScrollEditor({ nodeType, onUpdate }: NodeEditorProps) {
   const nt = nodeType;
   if (nt.type !== "Scroll") return null;
 
-  const updateType = (patch: Record<string, unknown>) => {
-    onUpdate({ node_type: { ...nt, ...patch } as NodeType });
-  };
+  const updateType = useNodeTypeUpdater(nt, onUpdate);
 
   return (
     <FieldGroup title="Scroll">

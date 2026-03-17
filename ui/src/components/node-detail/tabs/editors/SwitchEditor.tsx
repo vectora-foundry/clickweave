@@ -1,15 +1,14 @@
-import type { NodeType, Operator, SwitchCase } from "../../../../bindings";
+import type { Operator, SwitchCase } from "../../../../bindings";
 import { FieldGroup, TextField } from "../../fields";
 import { ConditionEditor } from "./ConditionEditor";
 import type { NodeEditorProps } from "./types";
+import { useNodeTypeUpdater } from "./useNodeTypeUpdater";
 
 export function SwitchEditor({ nodeType, onUpdate }: NodeEditorProps) {
   const nt = nodeType;
   if (nt.type !== "Switch") return null;
 
-  const updateType = (patch: Record<string, unknown>) => {
-    onUpdate({ node_type: { ...nt, ...patch } as NodeType });
-  };
+  const updateType = useNodeTypeUpdater(nt, onUpdate);
 
   return (
     <FieldGroup title="Switch Cases">

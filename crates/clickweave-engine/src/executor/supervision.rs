@@ -1,7 +1,7 @@
 use super::{LoopExitReason, PendingLoopExit, WorkflowExecutor};
 use clickweave_core::NodeType;
 use clickweave_llm::{ChatBackend, Message};
-use clickweave_mcp::{McpRouter, ToolContent};
+use clickweave_mcp::{ToolContent, ToolProvider};
 use serde_json::Value;
 use tracing::debug;
 
@@ -30,7 +30,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &self,
         node_name: &str,
         node_type: &NodeType,
-        mcp: &McpRouter,
+        mcp: &(impl ToolProvider + ?Sized),
     ) -> VerificationResult {
         // Skip verification for read-only nodes (find_text, find_image,
         // take_screenshot, list_windows). These produce their own definitive
@@ -86,7 +86,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(crate) async fn verify_loop_exit(
         &self,
         loop_exit: &PendingLoopExit,
-        mcp: &McpRouter,
+        mcp: &(impl ToolProvider + ?Sized),
     ) -> VerificationResult {
         debug!(
             loop_name = loop_exit.loop_name.as_str(),
@@ -216,10 +216,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .unwrap_or(&self.agent);
 
         let messages = {
-            let mut history = self
-                .supervision_history
-                .write()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut history = self.write_supervision_history();
 
             if history.is_empty() {
                 history.push(Message::system(SUPERVISION_SYSTEM_PROMPT));
@@ -238,10 +235,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     .unwrap_or("");
 
                 {
-                    let mut history = self
-                        .supervision_history
-                        .write()
-                        .unwrap_or_else(|e| e.into_inner());
+                    let mut history = self.write_supervision_history();
                     history.push(Message::assistant(raw));
                 }
 
@@ -250,10 +244,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             Err(e) => {
                 self.log(format!("Supervision: verification failed: {}", e));
                 {
-                    let mut history = self
-                        .supervision_history
-                        .write()
-                        .unwrap_or_else(|e| e.into_inner());
+                    let mut history = self.write_supervision_history();
                     history.push(Message::assistant(format!(
                         "{{\"passed\": true, \"reasoning\": \"verification error: {}\"}}",
                         e
@@ -278,7 +269,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Waits briefly for UI animations to settle, then tries an app-scoped
     /// window screenshot up to 3 times with 500ms delays (the window may not
     /// be ready right after `launch_app`).
-    async fn capture_verification_screenshot(&self, mcp: &McpRouter) -> Option<String> {
+    async fn capture_verification_screenshot(
+        &self,
+        mcp: &(impl ToolProvider + ?Sized),
+    ) -> Option<String> {
         // Let UI animations/transitions settle before capturing.
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -304,7 +298,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Call `take_screenshot` and extract the base64-encoded image from the result.
     pub(crate) async fn extract_screenshot_image(
         &self,
-        mcp: &McpRouter,
+        mcp: &(impl ToolProvider + ?Sized),
         args: Value,
     ) -> Option<String> {
         let result = mcp.call_tool("take_screenshot", Some(args)).await.ok()?;
@@ -323,7 +317,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// (used by find_image for server-side coordinate conversion).
     pub(crate) async fn take_screenshot_with_id(
         &self,
-        mcp: &McpRouter,
+        mcp: &(impl ToolProvider + ?Sized),
         args: Value,
     ) -> Option<(String, Option<String>)> {
         let result = mcp.call_tool("take_screenshot", Some(args)).await.ok()?;
@@ -353,8 +347,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
 /// Parse the LLM's JSON verification response. Returns (passed, reasoning).
 fn parse_verification_response(raw: &str) -> (bool, String) {
-    let text = super::app_resolve::strip_code_block(raw);
-    let json_text = super::app_resolve::extract_json_object(text);
+    let json_text = super::app_resolve::parse_llm_json_response(raw);
 
     if let Some(json_str) = json_text
         && let Ok(parsed) = serde_json::from_str::<Value>(json_str)

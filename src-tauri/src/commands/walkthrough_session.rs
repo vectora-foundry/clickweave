@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use clickweave_core::AppKind;
 use clickweave_core::app_detection::{bundle_path_from_pid, classify_app, classify_app_by_pid};
 use clickweave_core::walkthrough::{
-    AppKind, ScreenshotKind, WalkthroughEvent, WalkthroughEventKind, WalkthroughSession,
-    WalkthroughStatus, WalkthroughStorage,
+    ScreenshotKind, WalkthroughEvent, WalkthroughEventKind, WalkthroughSession, WalkthroughStatus,
+    WalkthroughStorage,
 };
 use clickweave_mcp::McpRouter;
 use tauri::{Emitter, Manager};
@@ -402,16 +403,18 @@ impl WalkthroughHandle {
     pub(super) fn ensure_status(
         &self,
         expected: &[WalkthroughStatus],
-    ) -> Result<&WalkthroughSession, String> {
+    ) -> Result<&WalkthroughSession, super::error::CommandError> {
         let session = self
             .session
             .as_ref()
-            .ok_or("No walkthrough session is active")?;
+            .ok_or(super::error::CommandError::validation(
+                "No walkthrough session is active",
+            ))?;
         if !expected.contains(&session.status) {
-            return Err(format!(
+            return Err(super::error::CommandError::validation(format!(
                 "Walkthrough is in {:?} state, expected one of {:?}",
                 session.status, expected
-            ));
+            )));
         }
         Ok(session)
     }

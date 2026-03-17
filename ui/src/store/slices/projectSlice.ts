@@ -2,6 +2,7 @@ import type { StateCreator } from "zustand";
 import type { Workflow } from "../../bindings";
 import { commands } from "../../bindings";
 import { makeDefaultWorkflow, makeEmptyConversation } from "../state";
+import { errorMessage } from "../../utils/commandError";
 import type { StoreState } from "./types";
 
 export interface ProjectSlice {
@@ -30,7 +31,7 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
     const filePath = result.data;
     const projectResult = await commands.openProject(filePath);
     if (projectResult.status !== "ok") {
-      pushLog(`Failed to open: ${projectResult.error}`);
+      pushLog(`Failed to open: ${errorMessage(projectResult.error)}`);
       return;
     }
     set({
@@ -67,7 +68,7 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
     }
     const saveResult = await commands.saveProject(savePath, workflow);
     if (saveResult.status !== "ok") {
-      pushLog(`Failed to save: ${saveResult.error}`);
+      pushLog(`Failed to save: ${errorMessage(saveResult.error)}`);
       return;
     }
 

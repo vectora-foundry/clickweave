@@ -1,14 +1,12 @@
-import type { NodeType } from "../../../../bindings";
 import { FieldGroup, ImagePathField, NumberField } from "../../fields";
 import { type NodeEditorProps, optionalString } from "./types";
+import { useNodeTypeUpdater } from "./useNodeTypeUpdater";
 
 export function FindImageEditor({ nodeType, onUpdate, projectPath }: NodeEditorProps) {
   const nt = nodeType;
   if (nt.type !== "FindImage") return null;
 
-  const updateType = (patch: Record<string, unknown>) => {
-    onUpdate({ node_type: { ...nt, ...patch } as NodeType });
-  };
+  const updateType = useNodeTypeUpdater(nt, onUpdate);
 
   return (
     <FieldGroup title="Find Image">

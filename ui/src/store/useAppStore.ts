@@ -8,6 +8,8 @@ import { createSettingsSlice } from "./slices/settingsSlice";
 import { createUiSlice } from "./slices/uiSlice";
 import { createVerdictSlice } from "./slices/verdictSlice";
 import { createWalkthroughSlice } from "./slices/walkthroughSlice";
+import { createWalkthroughRecordingSlice } from "./slices/walkthroughRecordingSlice";
+import { createWalkthroughReviewSlice } from "./slices/walkthroughReviewSlice";
 import type { StoreState } from "./slices/types";
 
 export type { DetailTab, EndpointConfig } from "./state";
@@ -24,4 +26,6 @@ export const useStore = create<StoreState>()((...a) => ({
   ...createUiSlice(...a),
   ...createVerdictSlice(...a),
   ...createWalkthroughSlice(...a),
+  ...createWalkthroughRecordingSlice(...a),
+  ...createWalkthroughReviewSlice(...a),
 }));

@@ -1,0 +1,344 @@
+use super::super::{ExecutorError, ExecutorResult, WorkflowExecutor};
+use super::truncate_for_error;
+use clickweave_core::decision_cache::cache_key;
+use clickweave_core::{ClickParams, NodeRun, NodeType};
+use clickweave_llm::ChatBackend;
+use clickweave_mcp::ToolProvider;
+use serde_json::Value;
+use uuid::Uuid;
+
+impl<C: ChatBackend> WorkflowExecutor<C> {
+    pub(in crate::executor) async fn resolve_click_target(
+        &self,
+        node_id: Uuid,
+        mcp: &(impl ToolProvider + ?Sized),
+        params: &ClickParams,
+        node_run: &mut Option<&mut NodeRun>,
+    ) -> ExecutorResult<NodeType> {
+        let target = params.target.as_ref().map(|t| t.text()).ok_or_else(|| {
+            ExecutorError::ClickTarget("resolve_click_target called with no target".to_string())
+        })?;
+        let (x, y) = self
+            .resolve_target_by_text(node_id, target, mcp, node_run)
+            .await?;
+        Ok(NodeType::Click(ClickParams {
+            target: params.target.clone(),
+            x: Some(x),
+            y: Some(y),
+            button: params.button,
+            click_count: params.click_count,
+            ..Default::default()
+        }))
+    }
+
+    pub(in crate::executor) async fn resolve_click_target_by_image(
+        &self,
+        _node_id: Uuid,
+        mcp: &(impl ToolProvider + ?Sized),
+        params: &ClickParams,
+        node_run: &mut Option<&mut NodeRun>,
+    ) -> ExecutorResult<NodeType> {
+        let b64 = params.template_image.as_deref().ok_or_else(|| {
+            ExecutorError::ClickTarget(
+                "resolve_click_target_by_image called without template_image".to_string(),
+            )
+        })?;
+        let (x, y) = self.resolve_target_by_image(b64, mcp, node_run).await?;
+        Ok(NodeType::Click(ClickParams {
+            target: params.target.clone(),
+            x: Some(x),
+            y: Some(y),
+            button: params.button,
+            click_count: params.click_count,
+            ..Default::default()
+        }))
+    }
+
+    /// Resolve a text target to screen coordinates via find_text + disambiguation.
+    ///
+    /// Shared by click and hover target resolution. Returns `(x, y)` coordinates.
+    pub(in crate::executor) async fn resolve_target_by_text(
+        &self,
+        node_id: Uuid,
+        target: &str,
+        mcp: &(impl ToolProvider + ?Sized),
+        node_run: &mut Option<&mut NodeRun>,
+    ) -> ExecutorResult<(f64, f64)> {
+        let scoped_app = self.focused_app_name();
+
+        // Use cached element resolution if available (e.g. x -> Multiply) to
+        // avoid matching display text that happens to contain the symbol.
+        let element_key = (target.to_string(), scoped_app.clone());
+        let search_text = self
+            .read_element_cache()
+            .get(&element_key)
+            .cloned()
+            .unwrap_or_else(|| target.to_string());
+
+        let mut find_args = serde_json::json!({"text": search_text});
+        if let Some(ref app_name) = scoped_app {
+            find_args["app_name"] = serde_json::Value::String(app_name.clone());
+        }
+
+        match &scoped_app {
+            Some(app) => self.log(format!("Resolving target: '{}' in '{}'", target, app)),
+            None => self.log(format!("Resolving target: '{}' (screen-wide)", target)),
+        }
+
+        let find_result = mcp
+            .call_tool("find_text", Some(find_args.clone()))
+            .await
+            .map_err(|e| {
+                ExecutorError::ClickTarget(format!("find_text for '{}' failed: {}", target, e))
+            })?;
+
+        Self::check_tool_error(&find_result, "find_text")?;
+
+        let result_text = Self::extract_result_text(&find_result);
+        let mut matches: Vec<Value> = serde_json::from_str(&result_text).unwrap_or_default();
+
+        // Fallback: if no matches but available_elements present, ask LLM to resolve
+        if matches.is_empty()
+            && let Some(retry_text) = self
+                .try_resolve_find_text(node_id, &find_args, &result_text, mcp, node_run.as_deref())
+                .await
+        {
+            matches = serde_json::from_str(&retry_text).unwrap_or_default();
+        }
+
+        let best = if matches.is_empty() {
+            return Err(ExecutorError::ClickTarget(format!(
+                "Could not find text '{}' on screen (find_text returned: {})",
+                target,
+                truncate_for_error(&result_text, 120),
+            )));
+        } else if matches.len() == 1 {
+            &matches[0]
+        } else {
+            // Check decision cache first
+            let ck = cache_key(node_id, target, scoped_app.as_deref());
+            let cached_idx = self
+                .read_decision_cache()
+                .click_disambiguation
+                .get(&ck)
+                .and_then(|cached| {
+                    matches.iter().position(|m| {
+                        m["text"].as_str() == Some(cached.chosen_text.as_str())
+                            && m["role"].as_str() == Some(cached.chosen_role.as_str())
+                    })
+                });
+
+            let idx = if let Some(idx) = cached_idx {
+                self.log(format!("Using cached disambiguation for '{}'", target));
+                idx
+            } else {
+                self.disambiguate_click_matches(
+                    node_id,
+                    target,
+                    &matches,
+                    scoped_app.as_deref(),
+                    node_run.as_deref(),
+                )
+                .await?
+            };
+            &matches[idx]
+        };
+
+        let x = best["x"].as_f64().ok_or_else(|| {
+            ExecutorError::ClickTarget(format!(
+                "find_text match for '{}' missing 'x' coordinate",
+                target
+            ))
+        })?;
+        let y = best["y"].as_f64().ok_or_else(|| {
+            ExecutorError::ClickTarget(format!(
+                "find_text match for '{}' missing 'y' coordinate",
+                target
+            ))
+        })?;
+
+        self.log(format!("Resolved target '{}' -> ({}, {})", target, x, y));
+
+        self.record_event(
+            node_run.as_deref(),
+            "target_resolved",
+            serde_json::json!({
+                "target": target,
+                "x": x,
+                "y": y,
+                "app_name": scoped_app,
+            }),
+        );
+
+        Ok((x, y))
+    }
+
+    /// Resolve a target by image template matching. Returns `(x, y)` coordinates.
+    pub(in crate::executor) async fn resolve_target_by_image(
+        &self,
+        template_b64: &str,
+        mcp: &(impl ToolProvider + ?Sized),
+        node_run: &mut Option<&mut NodeRun>,
+    ) -> ExecutorResult<(f64, f64)> {
+        self.log("Resolving target by image template".to_string());
+
+        let app_name = self.focused_app_name();
+        let screenshot_args = match &app_name {
+            Some(name) => serde_json::json!({ "app_name": name }),
+            None => serde_json::json!({}),
+        };
+        let (screenshot_b64, screenshot_id) = self
+            .take_screenshot_with_id(mcp, screenshot_args)
+            .await
+            .ok_or(ExecutorError::ClickTarget(
+                "Failed to take screenshot for image template matching".to_string(),
+            ))?;
+
+        let mut find_args = serde_json::json!({
+            "template_image_base64": template_b64,
+            "threshold": 0.75,
+            "max_results": 1,
+        });
+        // Prefer screenshot_id (avoids re-sending the full image and provides
+        // metadata for screen coordinate conversion). Fall back to base64.
+        if let Some(id) = &screenshot_id {
+            find_args["screenshot_id"] = serde_json::Value::String(id.clone());
+        } else {
+            find_args["screenshot_image_base64"] = serde_json::Value::String(screenshot_b64);
+        }
+
+        self.record_event(
+            node_run.as_deref(),
+            "tool_call",
+            serde_json::json!({"name": "find_image", "args": {
+                "threshold": 0.75,
+                "max_results": 1,
+                "has_template": true,
+            }}),
+        );
+
+        let result = mcp
+            .call_tool("find_image", Some(find_args))
+            .await
+            .map_err(|e| ExecutorError::ClickTarget(format!("find_image failed: {}", e)))?;
+        Self::check_tool_error(&result, "find_image")?;
+
+        let result_text = Self::extract_result_text(&result);
+
+        self.record_event(
+            node_run.as_deref(),
+            "tool_result",
+            serde_json::json!({
+                "name": "find_image",
+                "text": Self::truncate_for_trace(&result_text, 8192),
+                "text_len": result_text.len(),
+            }),
+        );
+
+        let parsed: Value = serde_json::from_str(&result_text).map_err(|e| {
+            ExecutorError::ClickTarget(format!("Failed to parse find_image result: {}", e))
+        })?;
+
+        let matches = parsed["matches"].as_array().ok_or_else(|| {
+            ExecutorError::ClickTarget("find_image returned no matches array".to_string())
+        })?;
+        let best = matches
+            .first()
+            .ok_or_else(|| ExecutorError::ClickTarget("find_image found no matches".to_string()))?;
+
+        let x = best["screen_x"]
+            .as_f64()
+            .or_else(|| best["center"]["x"].as_f64())
+            .ok_or(ExecutorError::ClickTarget(
+                "Missing x in find_image match".to_string(),
+            ))?;
+        let y = best["screen_y"]
+            .as_f64()
+            .or_else(|| best["center"]["y"].as_f64())
+            .ok_or(ExecutorError::ClickTarget(
+                "Missing y in find_image match".to_string(),
+            ))?;
+
+        self.log(format!(
+            "Resolved image target -> ({}, {}), score={}",
+            x,
+            y,
+            best["score"].as_f64().unwrap_or(0.0)
+        ));
+
+        self.record_event(
+            node_run.as_deref(),
+            "target_resolved",
+            serde_json::json!({
+                "method": "find_image",
+                "x": x,
+                "y": y,
+                "score": best["score"],
+            }),
+        );
+
+        Ok((x, y))
+    }
+
+    /// Try to resolve a failed find_text query by asking the LLM to match
+    /// against available accessibility element names, then retry.
+    /// Returns the retry result text on success, or None if resolution wasn't
+    /// possible or the retry also failed.
+    ///
+    /// Preserves the original call arguments (e.g. `app_name`, `match_mode`)
+    /// and only replaces the `text` field with the resolved name.
+    pub(in crate::executor) async fn try_resolve_find_text(
+        &self,
+        node_id: Uuid,
+        original_args: &Value,
+        original_result_text: &str,
+        mcp: &(impl ToolProvider + ?Sized),
+        node_run: Option<&NodeRun>,
+    ) -> Option<String> {
+        let retry_args = self
+            .prepare_find_text_retry(node_id, original_args, original_result_text, node_run)
+            .await?;
+        let retry_result = mcp.call_tool("find_text", Some(retry_args)).await.ok()?;
+        if retry_result.is_error == Some(true) {
+            return None;
+        }
+        Some(Self::extract_result_text(&retry_result))
+    }
+
+    /// Parse available_elements from a failed find_text response, resolve the
+    /// element name via LLM, and build retry arguments.
+    ///
+    /// Returns `Some(retry_args)` with the resolved name swapped in, or `None`
+    /// if resolution wasn't possible. This is the pure-logic core of the
+    /// find_text fallback path, separated from the MCP I/O for testability.
+    pub(crate) async fn prepare_find_text_retry(
+        &self,
+        node_id: Uuid,
+        original_args: &Value,
+        original_result_text: &str,
+        node_run: Option<&NodeRun>,
+    ) -> Option<Value> {
+        let target = original_args.get("text")?.as_str()?;
+        let available =
+            super::super::element_resolve::parse_available_elements(original_result_text)?;
+        // Prefer explicit app_name from call args; fall back to focused_app.
+        let scoped_app = original_args
+            .get("app_name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| self.focused_app_name());
+        let resolved_name = self
+            .resolve_element_name(node_id, target, &available, scoped_app.as_deref(), node_run)
+            .await
+            .ok()?;
+
+        self.log(format!(
+            "Retrying find_text with resolved name '{}' for '{}'",
+            resolved_name, target
+        ));
+
+        let mut retry_args = original_args.clone();
+        retry_args["text"] = Value::String(resolved_name);
+        Some(retry_args)
+    }
+}

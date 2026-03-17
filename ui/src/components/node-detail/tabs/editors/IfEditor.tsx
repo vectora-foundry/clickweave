@@ -1,15 +1,13 @@
-import type { NodeType } from "../../../../bindings";
 import { FieldGroup } from "../../fields";
 import { ConditionEditor } from "./ConditionEditor";
 import type { NodeEditorProps } from "./types";
+import { useNodeTypeUpdater } from "./useNodeTypeUpdater";
 
 export function IfEditor({ nodeType, onUpdate }: NodeEditorProps) {
   const nt = nodeType;
   if (nt.type !== "If") return null;
 
-  const updateType = (patch: Record<string, unknown>) => {
-    onUpdate({ node_type: { ...nt, ...patch } as NodeType });
-  };
+  const updateType = useNodeTypeUpdater(nt, onUpdate);
 
   return (
     <FieldGroup title="If Condition">

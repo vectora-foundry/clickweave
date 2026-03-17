@@ -4,6 +4,7 @@ import { commands } from "../../bindings";
 import { makeEmptyConversation } from "../state";
 import { toEndpoint } from "../settings";
 import { edgeOutputToHandle } from "../../utils/edgeHandles";
+import { errorMessage, isCancelledError } from "../../utils/commandError";
 import { isWalkthroughActive } from "./walkthroughSlice";
 import type { StoreState } from "./types";
 
@@ -140,9 +141,10 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
 
         pushLog(`Assistant: ${data.patch ? "generated changes" : "responded"}`);
       } else {
-        if (result.error !== "cancelled") {
-          set({ assistantError: result.error });
-          pushLog(`Assistant error: ${result.error}`);
+        if (!isCancelledError(result.error)) {
+          const msg = errorMessage(result.error);
+          set({ assistantError: msg });
+          pushLog(`Assistant error: ${msg}`);
         }
       }
     } catch (e) {

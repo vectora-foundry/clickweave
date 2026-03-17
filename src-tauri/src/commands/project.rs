@@ -1,3 +1,4 @@
+use super::error::CommandError;
 use super::types::*;
 use clickweave_core::{NodeType, Workflow, validate_workflow};
 use clickweave_llm::planner::conversation::ConversationSession;
@@ -13,7 +14,7 @@ pub fn ping() -> String {
 
 #[tauri::command]
 #[specta::specta]
-pub async fn pick_workflow_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
+pub async fn pick_workflow_file(app: tauri::AppHandle) -> Result<Option<String>, CommandError> {
     let file = app
         .dialog()
         .file()
@@ -24,7 +25,7 @@ pub async fn pick_workflow_file(app: tauri::AppHandle) -> Result<Option<String>,
 
 #[tauri::command]
 #[specta::specta]
-pub async fn pick_save_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
+pub async fn pick_save_file(app: tauri::AppHandle) -> Result<Option<String>, CommandError> {
     let file = app
         .dialog()
         .file()
@@ -36,36 +37,37 @@ pub async fn pick_save_file(app: tauri::AppHandle) -> Result<Option<String>, Str
 
 #[tauri::command]
 #[specta::specta]
-pub fn open_project(path: String) -> Result<ProjectData, String> {
+pub fn open_project(path: String) -> Result<ProjectData, CommandError> {
     let file_path = PathBuf::from(&path);
 
     if !file_path.exists() {
-        return Err(format!("File not found: {}", path));
+        return Err(CommandError::io(format!("File not found: {}", path)));
     }
 
-    let content =
-        std::fs::read_to_string(&file_path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let content = std::fs::read_to_string(&file_path)
+        .map_err(|e| CommandError::io(format!("Failed to read file: {}", e)))?;
 
-    let workflow: Workflow =
-        serde_json::from_str(&content).map_err(|e| format!("Failed to parse workflow: {}", e))?;
+    let workflow: Workflow = serde_json::from_str(&content)
+        .map_err(|e| CommandError::validation(format!("Failed to parse workflow: {}", e)))?;
 
     Ok(ProjectData { path, workflow })
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn save_project(path: String, workflow: Workflow) -> Result<(), String> {
+pub fn save_project(path: String, workflow: Workflow) -> Result<(), CommandError> {
     let file_path = PathBuf::from(path);
 
     if let Some(parent) = file_path.parent() {
         std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create directory: {}", e))?;
+            .map_err(|e| CommandError::io(format!("Failed to create directory: {}", e)))?;
     }
 
     let content = serde_json::to_string_pretty(&workflow)
-        .map_err(|e| format!("Failed to serialize workflow: {}", e))?;
+        .map_err(|e| CommandError::internal(format!("Failed to serialize workflow: {}", e)))?;
 
-    std::fs::write(&file_path, content).map_err(|e| format!("Failed to write file: {}", e))?;
+    std::fs::write(&file_path, content)
+        .map_err(|e| CommandError::io(format!("Failed to write file: {}", e)))?;
 
     Ok(())
 }
@@ -104,7 +106,7 @@ pub fn node_type_defaults() -> Vec<NodeTypeInfo> {
 pub async fn import_asset(
     app: tauri::AppHandle,
     project_path: String,
-) -> Result<Option<ImportedAsset>, String> {
+) -> Result<Option<ImportedAsset>, CommandError> {
     let file = app
         .dialog()
         .file()
@@ -121,13 +123,17 @@ pub async fn import_asset(
 
     let assets_dir = project_dir(&project_path).join("assets");
     std::fs::create_dir_all(&assets_dir)
-        .map_err(|e| format!("Failed to create assets directory: {}", e))?;
+        .map_err(|e| CommandError::io(format!("Failed to create assets directory: {}", e)))?;
 
     let dest = assets_dir.join(&filename);
-    std::fs::copy(&source, &dest).map_err(|e| format!("Failed to copy asset: {}", e))?;
+    std::fs::copy(&source, &dest)
+        .map_err(|e| CommandError::io(format!("Failed to copy asset: {}", e)))?;
 
     let relative_path = format!("assets/{}", filename);
-    let absolute_path = dest.to_str().ok_or("Invalid path")?.to_string();
+    let absolute_path = dest
+        .to_str()
+        .ok_or(CommandError::internal("Invalid path"))?
+        .to_string();
 
     Ok(Some(ImportedAsset {
         relative_path,
@@ -137,22 +143,25 @@ pub async fn import_asset(
 
 #[tauri::command]
 #[specta::specta]
-pub fn save_conversation(path: String, conversation: ConversationSession) -> Result<(), String> {
+pub fn save_conversation(
+    path: String,
+    conversation: ConversationSession,
+) -> Result<(), CommandError> {
     let dir = project_dir(&path);
     let conv_path = dir.join("conversation.json");
 
     let content = serde_json::to_string_pretty(&conversation)
-        .map_err(|e| format!("Failed to serialize conversation: {}", e))?;
+        .map_err(|e| CommandError::internal(format!("Failed to serialize conversation: {}", e)))?;
 
     std::fs::write(&conv_path, content)
-        .map_err(|e| format!("Failed to write conversation: {}", e))?;
+        .map_err(|e| CommandError::io(format!("Failed to write conversation: {}", e)))?;
 
     Ok(())
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn load_conversation(path: String) -> Result<Option<ConversationSession>, String> {
+pub fn load_conversation(path: String) -> Result<Option<ConversationSession>, CommandError> {
     let dir = project_dir(&path);
     let conv_path = dir.join("conversation.json");
 
@@ -161,10 +170,10 @@ pub fn load_conversation(path: String) -> Result<Option<ConversationSession>, St
     }
 
     let content = std::fs::read_to_string(&conv_path)
-        .map_err(|e| format!("Failed to read conversation: {}", e))?;
+        .map_err(|e| CommandError::io(format!("Failed to read conversation: {}", e)))?;
 
     let conversation: ConversationSession = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse conversation: {}", e))?;
+        .map_err(|e| CommandError::validation(format!("Failed to parse conversation: {}", e)))?;
 
     Ok(Some(conversation))
 }

@@ -56,13 +56,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let cache_key = (target.to_string(), app_name.map(|s| s.to_string()));
 
         // Check in-memory cache first (populated during this execution)
-        if let Some(cached) = self
-            .element_cache
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&cache_key)
-            .cloned()
-        {
+        if let Some(cached) = self.read_element_cache().get(&cache_key).cloned() {
             debug!(target = target, resolved_name = %cached, "element_cache hit");
             self.log(format!(
                 "Element resolved (cached): \"{}\" -> \"{}\"",
@@ -74,9 +68,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Check persistent decision cache (replays Test-mode decisions in Run mode)
         let ck = decision_cache::cache_key(node_id, target, app_name);
         if let Some(cached) = self
-            .decision_cache
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .read_decision_cache()
             .element_resolution
             .get(&ck)
             .cloned()
@@ -90,9 +82,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     "Element resolved (decision cache): \"{}\" -> \"{}\"",
                     target, cached.resolved_name
                 ));
-                self.element_cache
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner())
+                self.write_element_cache()
                     .insert(cache_key, cached.resolved_name.clone());
                 return Ok(cached.resolved_name);
             }
@@ -148,14 +138,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             )
         })?;
 
-        let json_text =
-            super::app_resolve::extract_json_object(super::app_resolve::strip_code_block(raw_text))
-                .ok_or_else(|| {
-                    ExecutorError::ElementResolution(format!(
-                        "No JSON object found in LLM response (raw: {})",
-                        raw_text
-                    ))
-                })?;
+        let json_text = super::app_resolve::parse_llm_json_response(raw_text).ok_or_else(|| {
+            ExecutorError::ElementResolution(format!(
+                "No JSON object found in LLM response (raw: {})",
+                raw_text
+            ))
+        })?;
 
         let parsed: Value = serde_json::from_str(json_text).map_err(|e| {
             ExecutorError::ElementResolution(format!(
@@ -191,25 +179,19 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         self.log(format!("Element resolved: \"{}\" -> \"{}\"", target, name));
 
-        self.element_cache
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
+        self.write_element_cache()
             .insert(cache_key, name.to_string());
 
         // Record in decision cache for replay in Run mode
         if self.execution_mode == ExecutionMode::Test {
             let ck = decision_cache::cache_key(node_id, target, app_name);
-            self.decision_cache
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
-                .element_resolution
-                .insert(
-                    ck,
-                    ElementResolution {
-                        target: target.to_string(),
-                        resolved_name: name.to_string(),
-                    },
-                );
+            self.write_decision_cache().element_resolution.insert(
+                ck,
+                ElementResolution {
+                    target: target.to_string(),
+                    resolved_name: name.to_string(),
+                },
+            );
         }
 
         Ok(name.to_string())
@@ -258,10 +240,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         ));
 
         let tried_context = {
-            let tried = self
-                .tried_click_indices
-                .read()
-                .unwrap_or_else(|e| e.into_inner());
+            let tried = self.read_tried_click_indices();
             Self::format_tried_context(&tried, "indices")
         };
 
@@ -304,14 +283,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             )
         })?;
 
-        let json_text =
-            super::app_resolve::extract_json_object(super::app_resolve::strip_code_block(raw_text))
-                .ok_or_else(|| {
-                    ExecutorError::ElementResolution(format!(
-                        "No JSON object found in LLM response (raw: {})",
-                        raw_text
-                    ))
-                })?;
+        let json_text = super::app_resolve::parse_llm_json_response(raw_text).ok_or_else(|| {
+            ExecutorError::ElementResolution(format!(
+                "No JSON object found in LLM response (raw: {})",
+                raw_text
+            ))
+        })?;
 
         let parsed: Value = serde_json::from_str(json_text).map_err(|e| {
             ExecutorError::ElementResolution(format!(
@@ -335,10 +312,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             )));
         }
 
-        self.tried_click_indices
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(index);
+        self.write_tried_click_indices().push(index);
 
         let chosen = &matches[index];
         let chosen_text = chosen["text"].as_str().unwrap_or("?");
@@ -364,19 +338,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Record decision in cache for replay in Run mode
         if self.execution_mode == ExecutionMode::Test {
             let ck = decision_cache::cache_key(node_id, target, app_name);
-            self.decision_cache
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
-                .click_disambiguation
-                .insert(
-                    ck,
-                    ClickDisambiguation {
-                        target: target.to_string(),
-                        app_name: app_name.map(|s| s.to_string()),
-                        chosen_text: chosen_text.to_string(),
-                        chosen_role: chosen_role.to_string(),
-                    },
-                );
+            self.write_decision_cache().click_disambiguation.insert(
+                ck,
+                ClickDisambiguation {
+                    target: target.to_string(),
+                    app_name: app_name.map(|s| s.to_string()),
+                    chosen_text: chosen_text.to_string(),
+                    chosen_role: chosen_role.to_string(),
+                },
+            );
         }
 
         Ok(index)
@@ -385,13 +355,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Remove a cached element resolution so the next attempt re-resolves via LLM.
     pub(crate) fn evict_element_cache(&self, target: &str, app_name: Option<&str>) {
         let cache_key = (target.to_string(), app_name.map(|s| s.to_string()));
-        if self
-            .element_cache
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&cache_key)
-            .is_some()
-        {
+        if self.write_element_cache().remove(&cache_key).is_some() {
             debug!(target = target, app_name = ?app_name, "evicted element_cache entry");
             self.log(format!("Element cache evicted for \"{}\"", target));
         }

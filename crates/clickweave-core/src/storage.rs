@@ -52,24 +52,7 @@ pub fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 /// Lowercases, replaces non-alphanumeric chars with `-`, collapses consecutive
 /// dashes, and trims leading/trailing dashes.
 pub fn sanitize_name(name: &str) -> String {
-    let mut result = String::with_capacity(name.len());
-    for ch in name.chars() {
-        if ch.is_ascii_alphanumeric() {
-            result.push(ch.to_ascii_lowercase());
-        } else {
-            result.push('-');
-        }
-    }
-    // Collapse consecutive dashes
-    let collapsed: String = result
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    if collapsed.is_empty() {
-        return "unnamed".to_string();
-    }
-    collapsed
+    crate::sanitize::sanitize_for_path(name)
 }
 
 /// Formats an execution directory name as `YYYY-MM-DD_HH-MM-SS_<short_uuid>`.
@@ -403,18 +386,6 @@ mod tests {
 
     fn cleanup(dir: &Path) {
         let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn test_sanitize_name() {
-        assert_eq!(sanitize_name("Open Calculator"), "open-calculator");
-        assert_eq!(sanitize_name("Click #5"), "click-5");
-        assert_eq!(sanitize_name("  My---Workflow  "), "my-workflow");
-        assert_eq!(sanitize_name("UPPER case"), "upper-case");
-        assert_eq!(sanitize_name("a/b\\c"), "a-b-c");
-        assert_eq!(sanitize_name(""), "unnamed");
-        assert_eq!(sanitize_name("---"), "unnamed");
-        assert_eq!(sanitize_name("   "), "unnamed");
     }
 
     #[test]

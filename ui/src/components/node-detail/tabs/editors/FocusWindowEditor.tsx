@@ -1,14 +1,13 @@
-import type { AppKind, NodeType } from "../../../../bindings";
+import type { AppKind } from "../../../../bindings";
 import { CheckboxField, FieldGroup, SelectField, TextField } from "../../fields";
 import { APP_KIND_LABELS, type NodeEditorProps, optionalString, usesCdp } from "./types";
+import { useNodeTypeUpdater } from "./useNodeTypeUpdater";
 
 export function FocusWindowEditor({ nodeType, onUpdate }: NodeEditorProps) {
   const nt = nodeType;
   if (nt.type !== "FocusWindow") return null;
 
-  const updateType = (patch: Record<string, unknown>) => {
-    onUpdate({ node_type: { ...nt, ...patch } as NodeType });
-  };
+  const updateType = useNodeTypeUpdater(nt, onUpdate);
 
   const appKind = nt.app_kind ?? "Native";
 

@@ -33,8 +33,9 @@ pub fn project_dir(path: &str) -> PathBuf {
     }
 }
 
-pub fn parse_uuid(s: &str, label: &str) -> Result<uuid::Uuid, String> {
-    s.parse().map_err(|_| format!("Invalid {} ID", label))
+pub fn parse_uuid(s: &str, label: &str) -> Result<uuid::Uuid, super::error::CommandError> {
+    s.parse()
+        .map_err(|_| super::error::CommandError::validation(format!("Invalid {} ID", label)))
 }
 
 #[derive(Debug, Serialize, Deserialize, Type)]

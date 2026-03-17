@@ -1,6 +1,7 @@
 import { useStore } from "../store/useAppStore";
 import { countChecks } from "../store/slices/verdictSlice";
 import type { NodeVerdict, CheckResult, VerdictStatus } from "../store/slices/verdictSlice";
+import { Modal } from "./Modal";
 
 const statusConfig: Record<Exclude<VerdictStatus, "none">, { heading: string; icon: string; iconCls: string; borderCls: string }> = {
   passed: { heading: "Test Passed", icon: "\u2713", iconCls: "bg-green-500/20 text-green-400", borderCls: "border-green-700/50" },
@@ -27,8 +28,6 @@ export function VerdictModal() {
   const open = useStore((s) => s.verdictModalOpen);
   const close = useStore((s) => s.closeVerdictModal);
 
-  if (!open) return null;
-
   const hasVerdicts = verdicts.length > 0;
   const config = status !== "none"
     ? statusConfig[status]
@@ -36,8 +35,7 @@ export function VerdictModal() {
   const { total, passed } = countChecks(verdicts);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={close}>
-      <div className={`w-[520px] max-h-[80vh] flex flex-col rounded-lg border ${config.borderCls} bg-[var(--bg-panel)] shadow-2xl`} onClick={(e) => e.stopPropagation()}>
+    <Modal open={open} onClose={close} className={`w-[520px] max-h-[80vh] flex flex-col rounded-lg border ${config.borderCls} bg-[var(--bg-panel)] shadow-2xl`}>
         <div className="flex items-center gap-3 px-5 pt-5 pb-3">
           <span className={`flex h-7 w-7 items-center justify-center rounded-full text-sm font-bold ${config.iconCls}`}>
             {config.icon}
@@ -66,8 +64,7 @@ export function VerdictModal() {
             Close
           </button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
