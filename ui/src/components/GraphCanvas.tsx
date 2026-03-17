@@ -10,8 +10,10 @@ import {
 import "@xyflow/react/dist/style.css";
 import type { Workflow, Edge } from "../bindings";
 import { useLoopGrouping } from "../hooks/useLoopGrouping";
+import { useAppGrouping } from "../hooks/useAppGrouping";
 import { useNodeSync } from "../hooks/useNodeSync";
 import { useEdgeSync } from "../hooks/useEdgeSync";
+import { AppGroupNode } from "./AppGroupNode";
 import { LoopGroupNode } from "./LoopGroupNode";
 import { WorkflowNode } from "./WorkflowNode";
 
@@ -41,17 +43,23 @@ export function GraphCanvas({
   onBeforeNodeDrag,
 }: GraphCanvasProps) {
   const nodeTypes: NodeTypes = useMemo(
-    () => ({ workflow: WorkflowNode, loopGroup: LoopGroupNode }),
+    () => ({ workflow: WorkflowNode, loopGroup: LoopGroupNode, appGroup: AppGroupNode }),
     [],
   );
 
   const loopState = useLoopGrouping(workflow);
+  const appState = useAppGrouping(workflow);
 
   const { rfNodes, handleNodesChange, handleNodeDragStart, deletedNodeIdsRef } = useNodeSync({
     workflow,
     selectedNode,
     activeNode,
     ...loopState,
+    collapsedApps: appState.collapsedApps,
+    appGroups: appState.appGroups,
+    nodeToAppGroup: appState.nodeToAppGroup,
+    appGroupMeta: appState.appGroupMeta,
+    toggleAppCollapse: appState.toggleAppCollapse,
     onSelectNode,
     onNodePositionsChange,
     onDeleteNodes,
@@ -62,7 +70,7 @@ export function GraphCanvas({
     workflow,
     hiddenNodeIds: loopState.hiddenNodeIds,
     collapsedLoops: loopState.collapsedLoops,
-    collapsedAppEdgeRewrites: new Map(),
+    collapsedAppEdgeRewrites: appState.collapsedAppEdgeRewrites,
     deletedNodeIdsRef,
     onEdgesChange,
     onRemoveExtraEdges,
