@@ -268,6 +268,7 @@ export function useNodeSync({
                 color: meta.color,
                 icon: "AG",
                 bodyCount: memberIds.length,
+                hideSourceHandle: true,
                 onToggleCollapse: () => toggleAppCollapse(groupId),
               },
             });
@@ -456,9 +457,26 @@ export function useNodeSync({
 
   const handleNodesChange: OnNodesChange = useCallback(
     (changes) => {
-      const removeIds: string[] = [];
+      let removeIds: string[] = [];
       for (const change of changes) {
         if (change.type === "remove") removeIds.push(change.id);
+      }
+      // Expand collapsed app group anchor deletions to include all members
+      if (removeIds.length > 0) {
+        const expanded: string[] = [];
+        for (const id of removeIds) {
+          const groupId = nodeToAppGroup.get(id);
+          const meta = groupId ? appGroupMeta.get(groupId) : undefined;
+          if (meta?.anchorId === id && collapsedApps.has(groupId!)) {
+            const members = appGroups.get(groupId!) ?? [];
+            for (const m of members) {
+              if (!expanded.includes(m)) expanded.push(m);
+            }
+          } else {
+            expanded.push(id);
+          }
+        }
+        removeIds = expanded;
       }
       if (removeIds.length > 0) {
         // TIMING CONTRACT: deletedNodeIdsRef is set here and consumed by useEdgeSync's
@@ -541,7 +559,7 @@ export function useNodeSync({
         return updatedNodes;
       });
     },
-    [onNodePositionsChange, onSelectNode, onDeleteNodes],
+    [onNodePositionsChange, onSelectNode, onDeleteNodes, collapsedApps, appGroups, nodeToAppGroup, appGroupMeta],
   );
 
   const handleNodeDragStart = useCallback(() => {

@@ -125,6 +125,7 @@ function SourceHandles({ data }: { data: WorkflowNodeData }) {
       position={Position.Right}
       className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
       style={{ borderColor: "var(--accent-coral)" }}
+      isConnectable={!data.hideSourceHandle}
     />
   );
 }
@@ -148,7 +149,7 @@ export const WorkflowNode = memo(function WorkflowNode({
     subtitle,
   } = d;
   const isVerification = role === "Verification";
-  const isCollapsedLoop = nodeType === "Loop";
+  const isCollapsedGroup = bodyCount != null;
   const isControlFlow = CONTROL_FLOW_TYPES.has(nodeType);
   const needsTallNode = nodeType === "If";
   const needsExtraTallNode = nodeType === "Switch" && d.switchCases.length > 1;
@@ -207,12 +208,12 @@ export const WorkflowNode = memo(function WorkflowNode({
             </span>
           )}
         </div>
-        {isCollapsedLoop && bodyCount != null && (
+        {isCollapsedGroup && bodyCount != null && (
           <span className="text-[10px] text-[var(--text-muted)] transition-opacity duration-150">
             {bodyCount} {bodyCount === 1 ? "step" : "steps"}
           </span>
         )}
-        {isCollapsedLoop && onToggleCollapse && (
+        {isCollapsedGroup && onToggleCollapse && (
           <button
             onClick={(e) => {
               e.stopPropagation();

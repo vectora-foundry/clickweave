@@ -127,6 +127,22 @@ export function useEdgeSync({
           reverseRewrite.set(anchorId, anchors);
         }
 
+        // Track which display edge keys were explicitly removed by the user.
+        // Any removed edge that involves a collapsed group member (source or target
+        // is in the rewrite map) is a summary edge whose underlying originals should
+        // also be removed, not preserved as hidden.
+        const removedDisplayKeys = new Set<string>();
+        for (const removal of removals) {
+          const rfEdge = rfEdgeState.find((e) => e.id === removal.id);
+          if (rfEdge) {
+            const involvesGroup = collapsedAppEdgeRewrites.has(rfEdge.source)
+              || collapsedAppEdgeRewrites.has(rfEdge.target);
+            if (involvesGroup) {
+              removedDisplayKeys.add(rfEdge.id);
+            }
+          }
+        }
+
         const updated = applyEdgeChanges(removals, rfEdgeState);
         const visibleEdges: Edge[] = updated.map((rfe) => {
           const handle = rfe.sourceHandle ?? undefined;
@@ -147,15 +163,33 @@ export function useEdgeSync({
               });
             }
           }
-          return { from: rfe.source, to: rfe.target, output: original?.output ?? null };
+          // Use original edge endpoints (not rewritten display endpoints) to preserve topology
+          return original
+            ? { from: original.from, to: original.to, output: original.output }
+            : { from: rfe.source, to: rfe.target, output: null };
         });
+        // Build set of original edge keys that were recovered into visibleEdges
+        const recoveredKeys = new Set(
+          visibleEdges.map((e) => `${e.from}-${e.to}-${edgeOutputToHandle(e.output) ?? "default"}`),
+        );
         const hiddenEdges = workflow.edges.filter((e) => {
           if (hiddenNodeIds.has(e.from) || hiddenNodeIds.has(e.to)) return true;
           if (e.output?.type === "LoopBody" && collapsedLoops.has(e.from)) return true;
+          // Internal edges within a collapsed group
           if (collapsedAppEdgeRewrites.has(e.from) && collapsedAppEdgeRewrites.has(e.to)) {
             const anchorFrom = collapsedAppEdgeRewrites.get(e.from);
             const anchorTo = collapsedAppEdgeRewrites.get(e.to);
             if (anchorFrom === anchorTo) return true;
+          }
+          // Edges whose display summary was explicitly deleted by the user — exclude them
+          if (collapsedAppEdgeRewrites.has(e.from) || collapsedAppEdgeRewrites.has(e.to)) {
+            const rewrittenFrom = collapsedAppEdgeRewrites.get(e.from) ?? e.from;
+            const rewrittenTo = collapsedAppEdgeRewrites.get(e.to) ?? e.to;
+            const displayId = `${rewrittenFrom}-${rewrittenTo}-${edgeOutputToHandle(e.output) ?? "default"}`;
+            if (removedDisplayKeys.has(displayId)) return false; // user deleted this — don't preserve
+            // Edges deduped away during rewriting (not explicitly deleted)
+            const key = `${e.from}-${e.to}-${edgeOutputToHandle(e.output) ?? "default"}`;
+            if (!recoveredKeys.has(key)) return true;
           }
           return false;
         });

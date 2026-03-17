@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { type NodeProps } from "@xyflow/react";
 
 interface AppGroupData {
   appName: string;
@@ -31,13 +31,6 @@ export const AppGroupNode = memo(function AppGroupNode({
         boxShadow: selected ? `0 0 12px rgba(${rgb}, 0.2)` : "none",
       }}
     >
-      <Handle
-        type="target"
-        position={Position.Left}
-        className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-        style={{ borderColor: color }}
-      />
-
       {isActive && (
         <span
           className="absolute -right-1 -top-1 h-3 w-3 animate-pulse rounded-full"
@@ -72,12 +65,6 @@ export const AppGroupNode = memo(function AppGroupNode({
         </button>
       </div>
 
-      <Handle
-        type="source"
-        position={Position.Right}
-        className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-        style={{ borderColor: color }}
-      />
     </div>
   );
 });

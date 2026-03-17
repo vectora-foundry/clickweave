@@ -8,8 +8,14 @@ export interface DagGraph {
   inDegree: Map<string, number>;
 }
 
-/** Build a cycle-safe DAG from a workflow, skipping EndLoop back-edges and LoopDone edges. */
-export function buildDag(workflow: Workflow): DagGraph {
+/**
+ * Build a cycle-safe DAG from a workflow, skipping EndLoop back-edges.
+ * When skipLoopDone is true, also skip LoopDone edges (needed for app group
+ * computation where LoopDone back-edges can create cycles in test workflows).
+ * buildAppKindMap needs LoopDone edges to propagate context past loops.
+ */
+export function buildDag(workflow: Workflow, opts?: { skipLoopDone?: boolean }): DagGraph {
+  const skipLoopDone = opts?.skipLoopDone ?? false;
   const nodeById = new Map(workflow.nodes.map((n) => [n.id, n]));
 
   const endLoopNodeIds = new Set(
@@ -21,7 +27,7 @@ export function buildDag(workflow: Workflow): DagGraph {
   for (const n of workflow.nodes) inDegree.set(n.id, 0);
   for (const e of workflow.edges) {
     if (endLoopNodeIds.has(e.from)) continue;
-    if (e.output?.type === "LoopDone") continue;
+    if (skipLoopDone && e.output?.type === "LoopDone") continue;
     const list = outgoing.get(e.from) ?? [];
     list.push(e.to);
     outgoing.set(e.from, list);
@@ -32,7 +38,7 @@ export function buildDag(workflow: Workflow): DagGraph {
 }
 
 export function buildAppNameMap(workflow: Workflow, dag?: DagGraph): Map<string, string | null> {
-  const { nodeById, outgoing, inDegree: inDegreeOriginal } = dag ?? buildDag(workflow);
+  const { nodeById, outgoing, inDegree: inDegreeOriginal } = dag ?? buildDag(workflow, { skipLoopDone: true });
   // Clone inDegree since we mutate it during the walk
   const inDegree = new Map(inDegreeOriginal);
 
@@ -75,7 +81,7 @@ export function computeAppMembers(
   appNameMap: Map<string, string | null>,
   dag?: DagGraph,
 ): Map<string, string[]> {
-  const { nodeById, outgoing, inDegree: inDegreeOriginal } = dag ?? buildDag(workflow);
+  const { nodeById, outgoing, inDegree: inDegreeOriginal } = dag ?? buildDag(workflow, { skipLoopDone: true });
   const inDegree = new Map(inDegreeOriginal);
 
   const queue: string[] = [];
