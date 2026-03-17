@@ -7,6 +7,7 @@ import {
 import type { AppKind, Workflow } from "../bindings";
 import { usesCdp } from "../utils/appKind";
 import { nodeMetadata, defaultNodeMetadata } from "../constants/nodeMetadata";
+import { buildDag, type DagGraph } from "../utils/appGroupComputation";
 import type { AppGroupMeta } from "./useAppGrouping";
 
 // Layout constants for loop group positioning
@@ -43,29 +44,11 @@ function clickSubtitle(nt: Workflow["nodes"][number]["node_type"]): string | und
 }
 
 /** Forward-propagate app_kind from FocusWindow nodes to all downstream nodes. */
-export function buildAppKindMap(workflow: Workflow): Map<string, AppKind> {
+export function buildAppKindMap(workflow: Workflow, dag?: DagGraph): Map<string, AppKind> {
+  const { nodeById, outgoing, inDegree: inDegreeOriginal } = dag ?? buildDag(workflow);
+  const inDegree = new Map(inDegreeOriginal);
+
   const result = new Map<string, AppKind>();
-  const nodeById = new Map(workflow.nodes.map((n) => [n.id, n]));
-
-  // Collect EndLoop node IDs so we can exclude their back-edges (EndLoop→Loop)
-  const endLoopNodeIds = new Set(
-    workflow.nodes.filter((n) => n.node_type.type === "EndLoop").map((n) => n.id),
-  );
-
-  // Build outgoing adjacency and in-degree for topological walk.
-  // Exclude EndLoop back-edges to avoid cycles breaking the algorithm.
-  const outgoing = new Map<string, string[]>();
-  const inDegree = new Map<string, number>();
-  for (const node of workflow.nodes) inDegree.set(node.id, 0);
-  for (const edge of workflow.edges) {
-    if (endLoopNodeIds.has(edge.from)) continue;
-    const list = outgoing.get(edge.from) ?? [];
-    list.push(edge.to);
-    outgoing.set(edge.from, list);
-    inDegree.set(edge.to, (inDegree.get(edge.to) ?? 0) + 1);
-  }
-
-  // Kahn's algorithm: process nodes in topological order
   const queue: string[] = [];
   for (const [id, deg] of inDegree) {
     if (deg === 0) queue.push(id);
@@ -76,7 +59,6 @@ export function buildAppKindMap(workflow: Workflow): Map<string, AppKind> {
     const id = queue[head++];
     const node = nodeById.get(id);
 
-    // FocusWindow nodes set the app_kind for their downstream chain
     if (node?.node_type.type === "FocusWindow") {
       const kind = (node.node_type as { app_kind?: AppKind }).app_kind ?? "Native";
       result.set(id, kind);
@@ -84,7 +66,6 @@ export function buildAppKindMap(workflow: Workflow): Map<string, AppKind> {
 
     const kind = result.get(id);
     for (const target of outgoing.get(id) ?? []) {
-      // Propagate — a downstream FocusWindow will override in its own iteration
       if (kind && !result.has(target)) {
         result.set(target, kind);
       }

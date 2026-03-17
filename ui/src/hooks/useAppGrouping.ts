@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Workflow } from "../bindings";
-import { buildAppNameMap, computeAppMembers } from "../utils/appGroupComputation";
+import { APP_GROUP_ID_PREFIX, buildAppNameMap, buildDag, computeAppMembers } from "../utils/appGroupComputation";
 import { GROUP_COLORS, hashAppName } from "../utils/walkthroughGrouping";
 
 export interface AppGroupMeta {
@@ -12,11 +12,14 @@ export interface AppGroupMeta {
 export function useAppGrouping(workflow: Workflow) {
   const [collapsedApps, setCollapsedApps] = useState<Set<string>>(new Set());
 
-  const appNameMap = useMemo(() => buildAppNameMap(workflow), [workflow.nodes, workflow.edges]);
+  // Build DAG once, share between buildAppNameMap and computeAppMembers
+  const dag = useMemo(() => buildDag(workflow), [workflow.nodes, workflow.edges]);
+
+  const appNameMap = useMemo(() => buildAppNameMap(workflow, dag), [workflow, dag]);
 
   const appGroups = useMemo(
-    () => computeAppMembers(workflow, appNameMap),
-    [workflow, appNameMap],
+    () => computeAppMembers(workflow, appNameMap, dag),
+    [workflow, appNameMap, dag],
   );
 
   const nodeToAppGroup = useMemo(() => {
@@ -33,7 +36,7 @@ export function useAppGrouping(workflow: Workflow) {
     const meta = new Map<string, AppGroupMeta>();
     for (const [groupId, memberIds] of appGroups) {
       if (memberIds.length === 0) continue;
-      const anchorId = groupId.replace("appgroup-", "");
+      const anchorId = groupId.slice(APP_GROUP_ID_PREFIX.length);
       const appName = appNameMap.get(anchorId);
       if (appName == null) continue;
       meta.set(groupId, {
@@ -59,8 +62,17 @@ export function useAppGrouping(workflow: Workflow) {
   useEffect(() => {
     const currentGroupIds = new Set(appGroups.keys());
     const newGroups: string[] = [];
+    let hasStale = false;
     for (const groupId of currentGroupIds) {
       if (!knownGroupsRef.current.has(groupId)) newGroups.push(groupId);
+    }
+    for (const id of knownGroupsRef.current) {
+      if (!currentGroupIds.has(id)) hasStale = true;
+    }
+    // Skip state update when nothing changed
+    if (newGroups.length === 0 && !hasStale) {
+      knownGroupsRef.current = currentGroupIds;
+      return;
     }
     setCollapsedApps((prev) => {
       const next = new Set(prev);
@@ -72,18 +84,6 @@ export function useAppGrouping(workflow: Workflow) {
     });
     knownGroupsRef.current = currentGroupIds;
   }, [appGroups]);
-
-  const hiddenNodeIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const [groupId, memberIds] of appGroups) {
-      if (collapsedApps.has(groupId)) {
-        for (const nodeId of memberIds) {
-          ids.add(nodeId);
-        }
-      }
-    }
-    return ids;
-  }, [appGroups, collapsedApps]);
 
   const collapsedAppEdgeRewrites = useMemo(() => {
     const map = new Map<string, string>();
@@ -104,7 +104,6 @@ export function useAppGrouping(workflow: Workflow) {
     nodeToAppGroup,
     appGroupMeta,
     toggleAppCollapse,
-    hiddenNodeIds,
     collapsedAppEdgeRewrites,
   };
 }

@@ -16,18 +16,19 @@ export const AppGroupNode = memo(function AppGroupNode({
 }: NodeProps) {
   const d = data as unknown as AppGroupData;
   const { appName, color, memberCount, isActive, onToggleCollapse } = d;
+  const rgb = hexToRgb(color);
 
   return (
     <div
       className="relative rounded-[10px] transition-all duration-150"
       style={{
-        border: `1px solid rgba(${hexToRgb(color)}, 0.3)`,
-        backgroundColor: `rgba(${hexToRgb(color)}, 0.06)`,
+        border: `1px solid rgba(${rgb}, 0.3)`,
+        backgroundColor: `rgba(${rgb}, 0.06)`,
         width: "100%",
         height: "100%",
         minWidth: 300,
         minHeight: 150,
-        boxShadow: selected ? `0 0 12px rgba(${hexToRgb(color)}, 0.2)` : "none",
+        boxShadow: selected ? `0 0 12px rgba(${rgb}, 0.2)` : "none",
       }}
     >
       <Handle
@@ -47,7 +48,7 @@ export const AppGroupNode = memo(function AppGroupNode({
       {/* Header bar */}
       <div
         className="flex items-center gap-2 px-3 py-1.5"
-        style={{ borderBottom: `1px solid rgba(${hexToRgb(color)}, 0.15)` }}
+        style={{ borderBottom: `1px solid rgba(${rgb}, 0.15)` }}
       >
         <div
           className="h-4 w-1 rounded-sm"

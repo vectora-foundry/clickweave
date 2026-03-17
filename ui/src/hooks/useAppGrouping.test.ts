@@ -75,7 +75,7 @@ describe("useAppGrouping", () => {
     expect(result.current.collapsedApps.has("appgroup-fw1")).toBe(true);
   });
 
-  it("hiddenNodeIds contains members of collapsed groups", () => {
+  it("collapsed groups produce edge rewrites for all members", () => {
     const wf = makeWorkflow(
       [
         node("fw1", "FocusWindow", { method: "AppName", value: "Discord", bring_to_front: true }),
@@ -85,12 +85,13 @@ describe("useAppGrouping", () => {
       [edge("fw1", "c1"), edge("c1", "t1")],
     );
     const { result } = renderHook(() => useAppGrouping(wf));
-    expect(result.current.hiddenNodeIds.has("fw1")).toBe(true);
-    expect(result.current.hiddenNodeIds.has("c1")).toBe(true);
-    expect(result.current.hiddenNodeIds.has("t1")).toBe(true);
+    const rewrites = result.current.collapsedAppEdgeRewrites;
+    expect(rewrites.has("fw1")).toBe(true);
+    expect(rewrites.has("c1")).toBe(true);
+    expect(rewrites.has("t1")).toBe(true);
   });
 
-  it("expanded groups have no hidden members", () => {
+  it("expanded groups have no edge rewrites", () => {
     const wf = makeWorkflow(
       [
         node("fw1", "FocusWindow", { method: "AppName", value: "Discord", bring_to_front: true }),
@@ -100,7 +101,7 @@ describe("useAppGrouping", () => {
     );
     const { result } = renderHook(() => useAppGrouping(wf));
     act(() => result.current.toggleAppCollapse("appgroup-fw1"));
-    expect(result.current.hiddenNodeIds.size).toBe(0);
+    expect(result.current.collapsedAppEdgeRewrites.size).toBe(0);
   });
 
   it("collapsedAppEdgeRewrites maps members to anchor ID", () => {

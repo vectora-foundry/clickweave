@@ -1,7 +1,15 @@
 import type { Workflow } from "../bindings";
 
-export function buildAppNameMap(workflow: Workflow): Map<string, string | null> {
-  const result = new Map<string, string | null>();
+export const APP_GROUP_ID_PREFIX = "appgroup-";
+
+export interface DagGraph {
+  nodeById: Map<string, Workflow["nodes"][number]>;
+  outgoing: Map<string, string[]>;
+  inDegree: Map<string, number>;
+}
+
+/** Build a cycle-safe DAG from a workflow, skipping EndLoop back-edges and LoopDone edges. */
+export function buildDag(workflow: Workflow): DagGraph {
   const nodeById = new Map(workflow.nodes.map((n) => [n.id, n]));
 
   const endLoopNodeIds = new Set(
@@ -12,8 +20,6 @@ export function buildAppNameMap(workflow: Workflow): Map<string, string | null> 
   const inDegree = new Map<string, number>();
   for (const n of workflow.nodes) inDegree.set(n.id, 0);
   for (const e of workflow.edges) {
-    // Skip EndLoop back-edges (EndLoop→Loop) and LoopDone edges (Loop→exit)
-    // to avoid cycles that would prevent topological sort from completing.
     if (endLoopNodeIds.has(e.from)) continue;
     if (e.output?.type === "LoopDone") continue;
     const list = outgoing.get(e.from) ?? [];
@@ -22,6 +28,15 @@ export function buildAppNameMap(workflow: Workflow): Map<string, string | null> 
     inDegree.set(e.to, (inDegree.get(e.to) ?? 0) + 1);
   }
 
+  return { nodeById, outgoing, inDegree };
+}
+
+export function buildAppNameMap(workflow: Workflow, dag?: DagGraph): Map<string, string | null> {
+  const { nodeById, outgoing, inDegree: inDegreeOriginal } = dag ?? buildDag(workflow);
+  // Clone inDegree since we mutate it during the walk
+  const inDegree = new Map(inDegreeOriginal);
+
+  const result = new Map<string, string | null>();
   const queue: string[] = [];
   for (const [id, deg] of inDegree) {
     if (deg === 0) queue.push(id);
@@ -58,24 +73,10 @@ export function buildAppNameMap(workflow: Workflow): Map<string, string | null> 
 export function computeAppMembers(
   workflow: Workflow,
   appNameMap: Map<string, string | null>,
+  dag?: DagGraph,
 ): Map<string, string[]> {
-  const endLoopNodeIds = new Set(
-    workflow.nodes.filter((n) => n.node_type.type === "EndLoop").map((n) => n.id),
-  );
-
-  const outgoing = new Map<string, string[]>();
-  const inDegree = new Map<string, number>();
-  for (const n of workflow.nodes) inDegree.set(n.id, 0);
-  for (const e of workflow.edges) {
-    // Skip EndLoop back-edges (EndLoop→Loop) and LoopDone edges (Loop→exit)
-    // to avoid cycles that would prevent topological sort from completing.
-    if (endLoopNodeIds.has(e.from)) continue;
-    if (e.output?.type === "LoopDone") continue;
-    const list = outgoing.get(e.from) ?? [];
-    list.push(e.to);
-    outgoing.set(e.from, list);
-    inDegree.set(e.to, (inDegree.get(e.to) ?? 0) + 1);
-  }
+  const { nodeById, outgoing, inDegree: inDegreeOriginal } = dag ?? buildDag(workflow);
+  const inDegree = new Map(inDegreeOriginal);
 
   const queue: string[] = [];
   for (const [id, deg] of inDegree) {
@@ -90,20 +91,20 @@ export function computeAppMembers(
     const id = queue[head++];
     const appName = appNameMap.get(id);
     const hasAppName = appNameMap.has(id) && appName != null;
-    const nodeObj = workflow.nodes.find((n) => n.id === id);
+    const nodeObj = nodeById.get(id);
 
     if (hasAppName) {
       if (
         nodeObj?.node_type.type === "FocusWindow" &&
         (nodeObj.node_type as { method: string }).method === "AppName"
       ) {
-        const groupId = `appgroup-${id}`;
+        const groupId = `${APP_GROUP_ID_PREFIX}${id}`;
         groups.set(groupId, [id]);
         nodeGroupAnchor.set(id, id);
       } else {
         const upstreamAnchor = nodeGroupAnchor.get(id);
         if (upstreamAnchor) {
-          const groupId = `appgroup-${upstreamAnchor}`;
+          const groupId = `${APP_GROUP_ID_PREFIX}${upstreamAnchor}`;
           groups.get(groupId)?.push(id);
         }
       }
