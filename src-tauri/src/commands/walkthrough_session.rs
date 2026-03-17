@@ -971,6 +971,8 @@ pub(super) async fn process_capture_events(
     // stop it, flush any pending dwell, and retrieve the collected entries.
     if let Some(ref mcp) = mcp {
         for (app_name, server_name) in &cdp_state {
+            ensure_cdp_page_selected(mcp, server_name).await;
+
             // Stop the hover interval + flush pending dwell.
             let stop_args = serde_json::json!({ "function": CDP_STOP_HOVER_JS });
             let _ = mcp
@@ -1428,6 +1430,28 @@ async fn setup_cdp_apps(
     state
 }
 
+/// Poke `list_pages` to trigger chrome-devtools-mcp's auto-selection side effect.
+///
+/// In multi-tab browser sessions the MCP server may have a stale page selection.
+/// Calling `list_pages` ensures the active page is selected before subsequent
+/// `evaluate_script` or `take_snapshot` calls.
+async fn ensure_cdp_page_selected(mcp: &McpRouter, server_name: &str) {
+    match tokio::time::timeout(
+        CDP_SNAPSHOT_TIMEOUT,
+        mcp.call_tool_on(server_name, "list_pages", Some(serde_json::json!({}))),
+    )
+    .await
+    {
+        Ok(Err(e)) => {
+            tracing::debug!("CDP list_pages refresh failed for '{server_name}': {e}");
+        }
+        Err(_) => {
+            tracing::debug!("CDP list_pages refresh timed out for '{server_name}'");
+        }
+        Ok(Ok(_)) => {}
+    }
+}
+
 /// Poll `list_pages` on a CDP server until it returns at least one page.
 async fn poll_cdp_ready(
     mcp: &McpRouter,
@@ -1529,6 +1553,8 @@ async fn cdp_retrieve_click(
     click_event_id: Uuid,
     click_timestamp: u64,
 ) {
+    ensure_cdp_page_selected(mcp, server_name).await;
+
     // Poll the click queue with retries.  The macOS event tap fires before the
     // click is delivered to the app, so the JS click event may not have pushed
     // to the queue yet on the first attempt.
