@@ -9,6 +9,7 @@ const makeWorkflow = (name: string): Workflow => ({
   name,
   nodes: [],
   edges: [],
+  groups: [],
 });
 
 describe("createHistoryEntry", () => {
@@ -77,6 +78,7 @@ const makeWorkflowWithNodes = (name: string, nodeIds: string[]): Workflow => ({
   name,
   nodes: nodeIds.map(makeNode),
   edges: [],
+  groups: [],
 });
 
 describe("preserveSelection", () => {

@@ -1,6 +1,25 @@
 import { useCallback } from "react";
 import type { Edge, EdgeOutput, Node, NodeType, Workflow } from "../bindings";
 import { edgeOutputsEqual, handleToEdgeOutput } from "../utils/edgeHandles";
+import { topologicalSortMembers } from "../utils/groupValidation";
+
+/** Cascade auto-dissolve: remove groups with <2 members, then clean up
+ *  orphaned subgroups and re-check parent groups. */
+export function autoDissolveGroups(groups: Workflow["groups"]): Workflow["groups"] {
+  let result = [...(groups ?? [])];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const before = result.length;
+    result = result.filter((g) => g.node_ids.length >= 2);
+    if (result.length !== before) changed = true;
+    const survivingIds = new Set(result.map((g) => g.id));
+    const after = result.length;
+    result = result.filter((g) => !g.parent_group_id || survivingIds.has(g.parent_group_id));
+    if (result.length !== after) changed = true;
+  }
+  return result;
+}
 
 export function useWorkflowMutations(
   setWorkflow: React.Dispatch<React.SetStateAction<Workflow>>,
@@ -37,11 +56,18 @@ export function useWorkflowMutations(
     (ids: string[]) => {
       pushHistory(ids.length === 1 ? "Delete Node" : "Delete Nodes");
       const idSet = new Set(ids);
-      setWorkflow((prev) => ({
-        ...prev,
-        nodes: prev.nodes.filter((n) => !idSet.has(n.id)),
-        edges: prev.edges.filter((e) => !idSet.has(e.from) && !idSet.has(e.to)),
-      }));
+      setWorkflow((prev) => {
+        const updatedGroups = (prev.groups ?? []).map((g) => ({
+          ...g,
+          node_ids: g.node_ids.filter((id) => !idSet.has(id)),
+        }));
+        return {
+          ...prev,
+          nodes: prev.nodes.filter((n) => !idSet.has(n.id)),
+          edges: prev.edges.filter((e) => !idSet.has(e.from) && !idSet.has(e.to)),
+          groups: autoDissolveGroups(updatedGroups),
+        };
+      });
       setSelectedNode((prev) => (prev !== null && idSet.has(prev) ? null : prev));
     },
     [setWorkflow, setSelectedNode, pushHistory],
@@ -122,10 +148,123 @@ export function useWorkflowMutations(
     [setWorkflow, pushHistory],
   );
 
+  const createGroup = useCallback(
+    (name: string, color: string, nodeIds: string[], parentGroupId: string | null = null) => {
+      pushHistory("Create Group");
+      const id = crypto.randomUUID();
+      setWorkflow((prev) => ({
+        ...prev,
+        groups: [...(prev.groups ?? []), { id, name, color, node_ids: nodeIds, parent_group_id: parentGroupId }],
+      }));
+      return id;
+    },
+    [setWorkflow, pushHistory],
+  );
+
+  const removeGroup = useCallback(
+    (groupId: string) => {
+      pushHistory("Ungroup");
+      setWorkflow((prev) => ({
+        ...prev,
+        groups: (prev.groups ?? []).filter((g) => g.id !== groupId && g.parent_group_id !== groupId),
+      }));
+    },
+    [setWorkflow, pushHistory],
+  );
+
+  const deleteGroupWithContents = useCallback(
+    (groupId: string) => {
+      pushHistory("Delete Group");
+      setWorkflow((prev) => {
+        const group = (prev.groups ?? []).find((g) => g.id === groupId);
+        if (!group) return prev;
+        const allNodeIds = new Set(group.node_ids);
+        for (const sub of prev.groups ?? []) {
+          if (sub.parent_group_id === groupId) {
+            for (const id of sub.node_ids) allNodeIds.add(id);
+          }
+        }
+        return {
+          ...prev,
+          nodes: prev.nodes.filter((n) => !allNodeIds.has(n.id)),
+          edges: prev.edges.filter((e) => !allNodeIds.has(e.from) && !allNodeIds.has(e.to)),
+          groups: autoDissolveGroups(
+            (prev.groups ?? [])
+              .filter((g) => g.id !== groupId && g.parent_group_id !== groupId)
+              .map((g) => ({
+                ...g,
+                node_ids: g.node_ids.filter((id) => !allNodeIds.has(id)),
+              }))
+          ),
+        };
+      });
+      setSelectedNode(null);
+    },
+    [setWorkflow, setSelectedNode, pushHistory],
+  );
+
+  const renameGroup = useCallback(
+    (groupId: string, name: string) => {
+      pushHistory("Rename Group");
+      setWorkflow((prev) => ({
+        ...prev,
+        groups: (prev.groups ?? []).map((g) => (g.id === groupId ? { ...g, name } : g)),
+      }));
+    },
+    [setWorkflow, pushHistory],
+  );
+
+  const recolorGroup = useCallback(
+    (groupId: string, color: string) => {
+      pushHistory("Recolor Group");
+      setWorkflow((prev) => ({
+        ...prev,
+        groups: (prev.groups ?? []).map((g) => (g.id === groupId ? { ...g, color } : g)),
+      }));
+    },
+    [setWorkflow, pushHistory],
+  );
+
+  const addNodesToGroup = useCallback(
+    (groupId: string, nodeIds: string[]) => {
+      pushHistory("Add to Group");
+      setWorkflow((prev) => ({
+        ...prev,
+        groups: (prev.groups ?? []).map((g) => {
+          if (g.id !== groupId) return g;
+          const allIds = [...g.node_ids, ...nodeIds];
+          return { ...g, node_ids: topologicalSortMembers(allIds, prev) };
+        }),
+      }));
+    },
+    [setWorkflow, pushHistory],
+  );
+
+  const removeNodesFromGroup = useCallback(
+    (groupId: string, nodeIds: string[]) => {
+      pushHistory("Remove from Group");
+      const removeSet = new Set(nodeIds);
+      setWorkflow((prev) => {
+        const updated = (prev.groups ?? []).map((g) =>
+          g.id === groupId
+            ? { ...g, node_ids: g.node_ids.filter((id) => !removeSet.has(id)) }
+            : g,
+        );
+        return { ...prev, groups: autoDissolveGroups(updated) };
+      });
+    },
+    [setWorkflow, pushHistory],
+  );
+
   const removeNode = useCallback(
     (id: string) => removeNodes([id]),
     [removeNodes],
   );
 
-  return { addNode, removeNode, removeNodes, removeEdgesOnly, updateNodePositions, updateNode, addEdge, removeEdge };
+  return {
+    addNode, removeNode, removeNodes, removeEdgesOnly,
+    updateNodePositions, updateNode, addEdge, removeEdge,
+    createGroup, removeGroup, deleteGroupWithContents,
+    renameGroup, recolorGroup, addNodesToGroup, removeNodesFromGroup,
+  };
 }

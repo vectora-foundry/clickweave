@@ -347,6 +347,7 @@ fn merge_patch_into_workflow(workflow: &Workflow, patch: &PatchResult) -> Workfl
         name: workflow.name.clone(),
         nodes,
         edges,
+        groups: workflow.groups.clone(),
     }
 }
 

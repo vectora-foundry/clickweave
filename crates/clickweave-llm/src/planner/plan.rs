@@ -184,6 +184,7 @@ fn parse_and_build_workflow(
         name: truncate_intent(intent),
         nodes,
         edges,
+        groups: vec![],
     };
 
     // Validate

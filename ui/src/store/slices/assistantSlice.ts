@@ -6,6 +6,7 @@ import { toEndpoint } from "../settings";
 import { edgeOutputToHandle } from "../../utils/edgeHandles";
 import { errorMessage, isCancelledError } from "../../utils/commandError";
 import { isWalkthroughActive } from "./walkthroughSlice";
+import { autoDissolveGroups } from "../useWorkflowMutations";
 import type { StoreState } from "./types";
 
 export interface AssistantSlice {
@@ -192,7 +193,14 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
       ...workflow.edges.filter((e) => !removedEdgeKeys.has(edgeKey(e))),
       ...pendingPatch.added_edges,
     ];
-    const patched: Workflow = { ...workflow, nodes, edges };
+    const removedIdSet = new Set(pendingPatch.removed_node_ids);
+    const cleanedGroups = autoDissolveGroups(
+      (workflow.groups ?? []).map((g) => ({
+        ...g,
+        node_ids: g.node_ids.filter((id: string) => !removedIdSet.has(id)),
+      })),
+    );
+    const patched: Workflow = { ...workflow, nodes, edges, groups: cleanedGroups };
     try {
       const validation = await commands.validate(patched);
       if (!validation.valid) {

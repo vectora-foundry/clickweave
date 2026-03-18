@@ -26,6 +26,7 @@ interface UseEdgeSyncParams {
   hiddenNodeIds: Set<string>;
   collapsedLoops: Set<string>;
   collapsedAppEdgeRewrites: Map<string, string>;
+  collapsedUserGroupEdgeRewrites: Map<string, string>;
   deletedNodeIdsRef: React.MutableRefObject<Set<string> | null>;
   onEdgesChange: (edges: Edge[]) => void;
   onRemoveExtraEdges: (edges: Edge[]) => void;
@@ -37,22 +38,32 @@ export function useEdgeSync({
   hiddenNodeIds,
   collapsedLoops,
   collapsedAppEdgeRewrites,
+  collapsedUserGroupEdgeRewrites,
   deletedNodeIdsRef,
   onEdgesChange,
   onRemoveExtraEdges,
   onConnect,
 }: UseEdgeSyncParams) {
+  // Stable combined rewrite map: app group rewrites first, then user group rewrites
+  // (user group takes visual precedence as outermost container).
+  const combinedRewrites = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [k, v] of collapsedAppEdgeRewrites) map.set(k, v);
+    for (const [k, v] of collapsedUserGroupEdgeRewrites) map.set(k, v);
+    return map;
+  }, [collapsedAppEdgeRewrites, collapsedUserGroupEdgeRewrites]);
+
   const rfEdges: RFEdge[] = useMemo(() => {
-    // Step 1: Rewrite edges for collapsed app groups
+    // Step 1: Rewrite edges for collapsed app groups and user groups
     const rewritten: { from: string; to: string; output: EdgeOutput | null }[] = [];
     const seen = new Set<string>();
 
     for (const e of workflow.edges) {
-      const from = collapsedAppEdgeRewrites.get(e.from) ?? e.from;
-      const to = collapsedAppEdgeRewrites.get(e.to) ?? e.to;
+      const from = combinedRewrites.get(e.from) ?? e.from;
+      const to = combinedRewrites.get(e.to) ?? e.to;
 
       // Internal edge (both endpoints in same collapsed group) — skip
-      if (from === to && collapsedAppEdgeRewrites.has(e.from)) continue;
+      if (from === to && combinedRewrites.has(e.from)) continue;
 
       // Deduplicate rewritten edges
       const key = `${from}-${to}-${edgeOutputToHandle(e.output) ?? "default"}`;
@@ -78,7 +89,7 @@ export function useEdgeSync({
         labelStyle: { fill: "var(--text-muted)", fontSize: 10 },
         labelBgStyle: { fill: "var(--bg-panel)", opacity: 0.8 },
       }));
-  }, [workflow.edges, hiddenNodeIds, collapsedLoops, collapsedAppEdgeRewrites]);
+  }, [workflow.edges, hiddenNodeIds, collapsedLoops, combinedRewrites]);
 
   // Internal RF edge state — preserves selection state across renders
   const [rfEdgeState, setRfEdgeState] = useState<RFEdge[]>([]);
@@ -119,9 +130,9 @@ export function useEdgeSync({
 
       // Normal path — propagate removals to the workflow store
       if (removals.length > 0) {
-        // Build reverse rewrite map for collapsed app groups
+        // Build reverse rewrite map for collapsed groups (app + user)
         const reverseRewrite = new Map<string, Set<string>>();
-        for (const [memberId, anchorId] of collapsedAppEdgeRewrites) {
+        for (const [memberId, anchorId] of combinedRewrites) {
           const anchors = reverseRewrite.get(anchorId) ?? new Set();
           anchors.add(memberId);
           reverseRewrite.set(anchorId, anchors);
@@ -135,8 +146,8 @@ export function useEdgeSync({
         for (const removal of removals) {
           const rfEdge = rfEdgeState.find((e) => e.id === removal.id);
           if (rfEdge) {
-            const involvesGroup = collapsedAppEdgeRewrites.has(rfEdge.source)
-              || collapsedAppEdgeRewrites.has(rfEdge.target);
+            const involvesGroup = combinedRewrites.has(rfEdge.source)
+              || combinedRewrites.has(rfEdge.target);
             if (involvesGroup) {
               removedDisplayKeys.add(rfEdge.id);
             }
@@ -176,15 +187,15 @@ export function useEdgeSync({
           if (hiddenNodeIds.has(e.from) || hiddenNodeIds.has(e.to)) return true;
           if (e.output?.type === "LoopBody" && collapsedLoops.has(e.from)) return true;
           // Internal edges within a collapsed group
-          if (collapsedAppEdgeRewrites.has(e.from) && collapsedAppEdgeRewrites.has(e.to)) {
-            const anchorFrom = collapsedAppEdgeRewrites.get(e.from);
-            const anchorTo = collapsedAppEdgeRewrites.get(e.to);
+          if (combinedRewrites.has(e.from) && combinedRewrites.has(e.to)) {
+            const anchorFrom = combinedRewrites.get(e.from);
+            const anchorTo = combinedRewrites.get(e.to);
             if (anchorFrom === anchorTo) return true;
           }
           // Edges whose display summary was explicitly deleted by the user — exclude them
-          if (collapsedAppEdgeRewrites.has(e.from) || collapsedAppEdgeRewrites.has(e.to)) {
-            const rewrittenFrom = collapsedAppEdgeRewrites.get(e.from) ?? e.from;
-            const rewrittenTo = collapsedAppEdgeRewrites.get(e.to) ?? e.to;
+          if (combinedRewrites.has(e.from) || combinedRewrites.has(e.to)) {
+            const rewrittenFrom = combinedRewrites.get(e.from) ?? e.from;
+            const rewrittenTo = combinedRewrites.get(e.to) ?? e.to;
             const displayId = `${rewrittenFrom}-${rewrittenTo}-${edgeOutputToHandle(e.output) ?? "default"}`;
             if (removedDisplayKeys.has(displayId)) return false; // user deleted this — don't preserve
             // Edges deduped away during rewriting (not explicitly deleted)
@@ -197,7 +208,7 @@ export function useEdgeSync({
       }
       setRfEdgeState((prev) => applyEdgeChanges(changes, prev));
     },
-    [workflow.edges, onEdgesChange, onRemoveExtraEdges, hiddenNodeIds, collapsedLoops, collapsedAppEdgeRewrites, rfEdgeState],
+    [workflow.edges, onEdgesChange, onRemoveExtraEdges, hiddenNodeIds, collapsedLoops, combinedRewrites, rfEdgeState],
   );
 
   const handleConnect: OnConnect = useCallback(

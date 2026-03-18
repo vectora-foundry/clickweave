@@ -121,6 +121,7 @@ pub(super) fn single_node_workflow(node_type: NodeType, name: &str) -> (uuid::Uu
         name: "Test".to_string(),
         nodes: vec![node],
         edges: vec![],
+        groups: vec![],
     };
     (id, workflow)
 }

@@ -20,6 +20,6 @@ export function edge(from: string, to: string, output?: Edge["output"]): Edge {
   return { from, to, output: output ?? null };
 }
 
-export function makeWorkflow(nodes: Node[], edges: Edge[]): Workflow {
-  return { id: "test-id", name: "test", nodes, edges };
+export function makeWorkflow(nodes: Node[], edges: Edge[], groups?: Workflow["groups"]): Workflow {
+  return { id: "test-id", name: "test", nodes, edges, groups: groups ?? [] };
 }

@@ -10,12 +10,14 @@ function renderEdgeSync(params: {
   hiddenNodeIds?: Set<string>;
   collapsedLoops?: Set<string>;
   collapsedAppEdgeRewrites?: Map<string, string>;
+  collapsedUserGroupEdgeRewrites?: Map<string, string>;
 }) {
   const {
     workflow,
     hiddenNodeIds = new Set(),
     collapsedLoops = new Set(),
     collapsedAppEdgeRewrites = new Map(),
+    collapsedUserGroupEdgeRewrites = new Map(),
   } = params;
   return renderHook(() => {
     const deletedNodeIdsRef = useRef<Set<string> | null>(null);
@@ -24,6 +26,7 @@ function renderEdgeSync(params: {
       hiddenNodeIds,
       collapsedLoops,
       collapsedAppEdgeRewrites,
+      collapsedUserGroupEdgeRewrites,
       deletedNodeIdsRef,
       onEdgesChange: vi.fn(),
       onRemoveExtraEdges: vi.fn(),

@@ -264,6 +264,7 @@ describe("applyAnnotationsToDraft with nodeOrder", () => {
       name: "test",
       nodes: [makeNode("n1"), makeNode("n2"), makeNode("n3")],
       edges: [],
+      groups: [],
     };
     const annotations = {
       deleted_node_ids: [],
@@ -288,6 +289,7 @@ describe("applyAnnotationsToDraft with nodeOrder", () => {
       name: "test",
       nodes: [makeNode("n1"), makeNode("n2")],
       edges: [],
+      groups: [],
     };
     const annotations = {
       deleted_node_ids: [],

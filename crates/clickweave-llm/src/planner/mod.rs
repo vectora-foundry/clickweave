@@ -873,6 +873,7 @@ pub(crate) fn build_workflow_from_graph(
         name: parse::truncate_intent(intent),
         nodes,
         edges,
+        groups: vec![],
     };
 
     clickweave_core::validate_workflow(&workflow)

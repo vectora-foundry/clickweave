@@ -15,6 +15,8 @@ pub struct Workflow {
     pub name: String,
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
+    #[serde(default)]
+    pub groups: Vec<NodeGroup>,
 }
 
 impl Default for Workflow {
@@ -24,6 +26,7 @@ impl Default for Workflow {
             name: "New Workflow".to_string(),
             nodes: vec![],
             edges: vec![],
+            groups: vec![],
         }
     }
 }
@@ -77,6 +80,16 @@ pub struct Edge {
     pub to: Uuid,
     /// Which output port this edge connects from. None for regular single-output edges.
     pub output: Option<EdgeOutput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct NodeGroup {
+    pub id: Uuid,
+    pub name: String,
+    pub color: String,
+    pub node_ids: Vec<Uuid>,
+    pub parent_group_id: Option<Uuid>,
 }
 
 impl Node {
@@ -700,6 +713,38 @@ mod tests {
     #[test]
     fn test_sanitize_node_name_empty() {
         assert_eq!(sanitize_node_name(""), "");
+    }
+
+    #[test]
+    fn test_workflow_without_groups_deserializes() {
+        let json = r#"{"id":"00000000-0000-0000-0000-000000000001","name":"Old Workflow","nodes":[],"edges":[]}"#;
+        let wf: Workflow = serde_json::from_str(json).expect("should deserialize without groups");
+        assert!(wf.groups.is_empty());
+    }
+
+    #[test]
+    fn test_node_group_serialization_roundtrip() {
+        let mut wf = Workflow::new("Grouped Workflow");
+        let a = wf.add_node(
+            NodeType::Click(ClickParams::default()),
+            Position { x: 0.0, y: 0.0 },
+        );
+        let b = wf.add_node(
+            NodeType::TypeText(TypeTextParams::default()),
+            Position { x: 100.0, y: 0.0 },
+        );
+        wf.groups.push(NodeGroup {
+            id: Uuid::new_v4(),
+            name: "Login Flow".to_string(),
+            color: "#6366f1".to_string(),
+            node_ids: vec![a, b],
+            parent_group_id: None,
+        });
+        let json = serde_json::to_string_pretty(&wf).expect("serialize");
+        let deserialized: Workflow = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deserialized.groups.len(), 1);
+        assert_eq!(deserialized.groups[0].name, "Login Flow");
+        assert_eq!(deserialized.groups[0].node_ids.len(), 2);
     }
 
     #[test]

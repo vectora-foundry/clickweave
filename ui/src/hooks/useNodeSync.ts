@@ -9,6 +9,7 @@ import { usesCdp } from "../utils/appKind";
 import { nodeMetadata, defaultNodeMetadata } from "../constants/nodeMetadata";
 import { buildDag, type DagGraph, isAppAnchorNode } from "../utils/appGroupComputation";
 import type { AppGroupMeta } from "./useAppGrouping";
+import type { UserGroupMeta } from "./useUserGrouping";
 
 // Layout constants for loop group positioning
 const LOOP_HEADER_HEIGHT = 40;
@@ -22,9 +23,14 @@ const MIN_GROUP_HEIGHT = 150;
 const APP_GROUP_HEADER_HEIGHT = 36;
 const APP_GROUP_PADDING = 20;
 
+// User group layout constants
+const USER_GROUP_HEADER_HEIGHT = 36;
+const USER_GROUP_PADDING = 20;
+
 /** Return layout constants for a group node type. */
 function groupConstants(parentType: string): { headerHeight: number; padding: number } {
   if (parentType === "appGroup") return { headerHeight: APP_GROUP_HEADER_HEIGHT, padding: APP_GROUP_PADDING };
+  if (parentType === "userGroup") return { headerHeight: USER_GROUP_HEADER_HEIGHT, padding: USER_GROUP_PADDING };
   return { headerHeight: LOOP_HEADER_HEIGHT, padding: LOOP_PADDING };
 }
 
@@ -152,6 +158,11 @@ interface UseNodeSyncParams {
   nodeToAppGroup: Map<string, string>;
   appGroupMeta: Map<string, AppGroupMeta>;
   toggleAppCollapse: (groupId: string) => void;
+  // User grouping params
+  collapsedUserGroups: Set<string>;
+  nodeToUserGroup: Map<string, string>;
+  userGroupMeta: Map<string, UserGroupMeta>;
+  toggleUserGroupCollapse: (groupId: string) => void;
   onSelectNode: (id: string | null) => void;
   onNodePositionsChange: (updates: Map<string, { x: number; y: number }>) => void;
   onDeleteNodes: (ids: string[]) => void;
@@ -173,6 +184,10 @@ export function useNodeSync({
   nodeToAppGroup,
   appGroupMeta,
   toggleAppCollapse,
+  collapsedUserGroups,
+  nodeToUserGroup,
+  userGroupMeta,
+  toggleUserGroupCollapse,
   onSelectNode,
   onNodePositionsChange,
   onDeleteNodes,
@@ -258,6 +273,14 @@ export function useNodeSync({
           const meta = appGroupMeta.get(groupId);
           if (!meta) continue;
           const memberIds = appGroups.get(groupId) ?? [];
+          // Visible members: exclude nodes that render inside loops (loop takes precedence),
+          // and exclude Loop/EndLoop nodes themselves (they render as their own group type)
+          const visibleMemberIds = memberIds.filter((id) => {
+            if (nodeToLoops.has(id)) return false;
+            const wfNode = wfNodeMap.get(id);
+            if (wfNode?.node_type.type === "Loop" || wfNode?.node_type.type === "EndLoop") return false;
+            return true;
+          });
 
           if (collapsedApps.has(groupId)) {
             // Collapsed — render as workflow pill using anchor's real ID
@@ -272,7 +295,7 @@ export function useNodeSync({
                 label: meta.appName,
                 color: meta.color,
                 icon: "AG",
-                bodyCount: memberIds.length,
+                bodyCount: visibleMemberIds.length,
                 hideSourceHandle: true,
                 onToggleCollapse: () => toggleAppCollapse(groupId),
               },
@@ -293,7 +316,7 @@ export function useNodeSync({
               data: {
                 appName: meta.appName,
                 color: meta.color,
-                memberCount: memberIds.length,
+                memberCount: visibleMemberIds.length,
                 isActive: node.id === activeNode,
                 onToggleCollapse: () => toggleAppCollapse(groupId),
               },
@@ -420,6 +443,201 @@ export function useNodeSync({
         };
       }
 
+      // ── Second pass: user group rendering ──────────────────────────
+      // Runs after auto-groups (loops, app groups) are resolved.
+      // Reassigns rendered nodes into user group containers or collapses them into pills.
+      const nodeIndexById = new Map<string, number>();
+      for (let i = 0; i < nodes.length; i++) nodeIndexById.set(nodes[i].id, i);
+
+      // Pre-build reverse map: anchor node ID → app group ID
+      const anchorToAppGroup = new Map<string, string>();
+      for (const [agId, agMeta] of appGroupMeta) {
+        anchorToAppGroup.set(agMeta.anchorId, agId);
+      }
+
+      for (const group of workflow.groups) {
+        const meta = userGroupMeta.get(group.id);
+        if (!meta) continue;
+        if (group.node_ids.length === 0) continue;
+
+        // Skip collapsed groups whose parent user group is also collapsed
+        if (meta.parentGroupId && collapsedUserGroups.has(meta.parentGroupId)) continue;
+
+        const anchorId = meta.anchorId;
+        const anchorIdx = nodeIndexById.get(anchorId);
+
+        if (collapsedUserGroups.has(group.id)) {
+          // ── Collapsed: convert anchor to pill, hide all other members ──
+          if (anchorIdx !== undefined) {
+            const anchorNode = nodes[anchorIdx];
+            nodes[anchorIdx] = {
+              ...anchorNode,
+              type: "workflow",
+              data: {
+                ...anchorNode.data,
+                label: meta.name,
+                color: meta.color,
+                icon: "\uD83D\uDCC1",
+                bodyCount: meta.flatMemberCount,
+                isUserGroupPill: true,
+                userGroupId: group.id,
+                onToggleCollapse: () => toggleUserGroupCollapse(group.id),
+              },
+            };
+            // Preserve the anchor's existing parentId (e.g., if inside an auto-group)
+          }
+
+          // Hide all non-anchor members
+          for (const nodeId of group.node_ids) {
+            if (nodeId === anchorId) continue;
+            const idx = nodeIndexById.get(nodeId);
+            if (idx !== undefined) {
+              nodes[idx] = { ...nodes[idx], hidden: true };
+            }
+            // Also hide synthetic app group containers whose anchor is a member
+            const agId = anchorToAppGroup.get(nodeId);
+            if (agId) {
+              const agIdx = nodeIndexById.get(agId);
+              if (agIdx !== undefined) nodes[agIdx] = { ...nodes[agIdx], hidden: true };
+            }
+          }
+        } else {
+          // ── Expanded: create synthetic container, reparent members ──
+          const anchorNode = anchorIdx !== undefined ? nodes[anchorIdx] : undefined;
+          const existingGroupNode = prevMap.get(group.id);
+          const containerPosition = existingGroupNode?.position
+            ?? anchorNode?.position
+            ?? { x: 0, y: 0 };
+
+          // Determine if the user group should be inside an auto-group.
+          // Only check actual auto-group IDs (appGroups keys), NOT user group parents
+          // which may have been set by a previous iteration of this second pass.
+          const anchorAutoParent = anchorNode?.parentId;
+          const isAutoGroupParent = anchorAutoParent ? appGroups.has(anchorAutoParent) : false;
+
+          let containerParentId: string | undefined;
+          if (anchorAutoParent && isAutoGroupParent) {
+            const autoGroupMembers = appGroups.get(anchorAutoParent) ?? [];
+            const userGroupNodeSet = new Set(group.node_ids);
+            const autoGroupFullyWrapped = autoGroupMembers.every((m) => userGroupNodeSet.has(m));
+            if (autoGroupFullyWrapped) {
+              // User group wraps the auto-group — user group is the outer container
+              const autoGroupNode = nodes.find((n) => n.id === anchorAutoParent);
+              containerParentId = autoGroupNode?.parentId;
+            } else {
+              // User group is inside the auto-group
+              containerParentId = anchorAutoParent;
+            }
+          } else if (anchorAutoParent && !isAutoGroupParent) {
+            // Parent is a user group (set by earlier iteration) — subgroup stays inside parent
+            containerParentId = anchorAutoParent;
+          }
+
+          const containerIdx = nodes.length;
+          nodes.push({
+            id: group.id,
+            type: "userGroup",
+            position: containerPosition,
+            parentId: containerParentId,
+            extent: containerParentId ? "parent" as const : undefined,
+            draggable: true,
+            selected: false,
+            data: {
+              name: meta.name,
+              color: meta.color,
+              memberCount: meta.flatMemberCount,
+              onToggleCollapse: () => toggleUserGroupCollapse(group.id),
+            },
+          });
+          nodeIndexById.set(group.id, containerIdx);
+
+          // Reparent all member nodes to the user group container
+          const userGroupChildren: RFNode[] = [];
+          for (const nodeId of group.node_ids) {
+            const idx = nodeIndexById.get(nodeId);
+            if (idx === undefined) continue;
+            const memberNode = nodes[idx];
+            if (memberNode.hidden) continue;
+
+            let relativePosition: { x: number; y: number };
+            if (memberNode.parentId === group.id) {
+              // Already parented to this group in a previous render — keep position
+              relativePosition = memberNode.position;
+            } else if (anchorNode) {
+              // Compute relative position from the anchor
+              const memberAbsX = memberNode.position.x;
+              const memberAbsY = memberNode.position.y;
+              const anchorAbsX = anchorNode.position.x;
+              const anchorAbsY = anchorNode.position.y;
+              relativePosition = {
+                x: memberAbsX - anchorAbsX + USER_GROUP_PADDING,
+                y: memberAbsY - anchorAbsY + USER_GROUP_HEADER_HEIGHT + USER_GROUP_PADDING,
+              };
+            } else {
+              relativePosition = { x: USER_GROUP_PADDING, y: USER_GROUP_HEADER_HEIGHT + USER_GROUP_PADDING };
+            }
+
+            nodes[idx] = {
+              ...memberNode,
+              parentId: group.id,
+              extent: "parent" as const,
+              position: relativePosition,
+              style: { ...memberNode.style, transition: "opacity 150ms ease 50ms" },
+            };
+            userGroupChildren.push(nodes[idx]);
+
+            // Also reparent any synthetic auto-group container whose anchor is this member
+            const agId = anchorToAppGroup.get(nodeId);
+            if (agId && !collapsedApps.has(agId)) {
+              const agIdx = nodeIndexById.get(agId);
+              if (agIdx !== undefined) {
+                const agNode = nodes[agIdx];
+
+                let agRelPos: { x: number; y: number };
+                if (agNode.parentId === group.id) {
+                  agRelPos = agNode.position;
+                } else if (anchorNode) {
+                  agRelPos = {
+                    x: agNode.position.x - anchorNode.position.x + USER_GROUP_PADDING,
+                    y: agNode.position.y - anchorNode.position.y + USER_GROUP_HEADER_HEIGHT + USER_GROUP_PADDING,
+                  };
+                } else {
+                  agRelPos = { x: USER_GROUP_PADDING, y: USER_GROUP_HEADER_HEIGHT + USER_GROUP_PADDING };
+                }
+
+                nodes[agIdx] = {
+                  ...agNode,
+                  parentId: group.id,
+                  extent: "parent" as const,
+                  position: agRelPos,
+                };
+                userGroupChildren.push(nodes[agIdx]);
+              }
+            }
+          }
+
+          // Size the user group container to fit its children
+          let maxX = 0;
+          let maxY = 0;
+          for (const child of userGroupChildren) {
+            const measured = prevMap.get(child.id)?.measured;
+            const childW = measured?.width ?? (child.style?.width as number | undefined) ?? APPROX_NODE_WIDTH;
+            const childH = measured?.height ?? (child.style?.height as number | undefined) ?? APPROX_NODE_HEIGHT;
+            maxX = Math.max(maxX, child.position.x + childW);
+            maxY = Math.max(maxY, child.position.y + childH);
+          }
+
+          nodes[containerIdx] = {
+            ...nodes[containerIdx],
+            style: {
+              ...nodes[containerIdx].style,
+              width: Math.max(MIN_GROUP_WIDTH, maxX + USER_GROUP_PADDING),
+              height: Math.max(MIN_GROUP_HEIGHT, maxY + USER_GROUP_PADDING),
+            },
+          };
+        }
+      }
+
       // React Flow requires parent nodes before children in the array
       nodes.sort((a, b) => {
         const aHasParent = a.parentId ? 1 : 0;
@@ -432,6 +650,7 @@ export function useNodeSync({
   }, [
     workflow.nodes,
     workflow.edges,
+    workflow.groups,
     activeNode,
     onDeleteNodes,
     collapsedLoops,
@@ -445,6 +664,10 @@ export function useNodeSync({
     nodeToAppGroup,
     appGroupMeta,
     toggleAppCollapse,
+    collapsedUserGroups,
+    nodeToUserGroup,
+    userGroupMeta,
+    toggleUserGroupCollapse,
   ]);
 
   // Sync external selectedNode changes into RF selection state
@@ -471,16 +694,47 @@ export function useNodeSync({
       // Expand collapsed app group anchor deletions to include all members
       if (removeIds.length > 0) {
         const expanded: string[] = [];
+        const expandedSet = new Set<string>();
+        const addUnique = (m: string) => { if (!expandedSet.has(m)) { expandedSet.add(m); expanded.push(m); } };
         for (const id of removeIds) {
+          // User group container deletion → expand to all member nodes
+          const ugMeta = userGroupMeta.get(id);
+          if (ugMeta) {
+            const group = workflow.groups.find((g) => g.id === id);
+            if (group) {
+              for (const m of group.node_ids) addUnique(m);
+            }
+            continue;
+          }
+
           const groupId = nodeToAppGroup.get(id);
           const meta = groupId ? appGroupMeta.get(groupId) : undefined;
           if (meta?.anchorId === id && collapsedApps.has(groupId!)) {
             const members = appGroups.get(groupId!) ?? [];
-            for (const m of members) {
-              if (!expanded.includes(m)) expanded.push(m);
+            for (const m of members) addUnique(m);
+          } else {
+            addUnique(id);
+          }
+        }
+        removeIds = expanded;
+      }
+      // Expand collapsed user group pill deletions to include all members
+      if (removeIds.length > 0) {
+        const expanded: string[] = [];
+        const expandedSet = new Set<string>();
+        const addUnique = (m: string) => { if (!expandedSet.has(m)) { expandedSet.add(m); expanded.push(m); } };
+        for (const id of removeIds) {
+          const ugId = nodeToUserGroup.get(id);
+          const ugMeta = ugId ? userGroupMeta.get(ugId) : undefined;
+          if (ugMeta?.anchorId === id && collapsedUserGroups.has(ugId!)) {
+            const group = workflow.groups.find((g) => g.id === ugId);
+            if (group) {
+              for (const m of group.node_ids) addUnique(m);
+            } else {
+              addUnique(id);
             }
           } else {
-            expanded.push(id);
+            addUnique(id);
           }
         }
         removeIds = expanded;
@@ -505,7 +759,7 @@ export function useNodeSync({
         for (const n of updatedNodes) {
           if (n.parentId && n.parentId !== prevParents.get(n.id)) {
             // Check if this node actually belongs to this group
-            if (nodeToAppGroup.get(n.id) !== n.parentId && !nodeToLoops.get(n.id)?.includes(n.parentId)) {
+            if (nodeToAppGroup.get(n.id) !== n.parentId && !nodeToLoops.get(n.id)?.includes(n.parentId) && nodeToUserGroup.get(n.id) !== n.parentId) {
               n.parentId = prevParents.get(n.id);
               n.extent = prevParents.get(n.id) ? "parent" as const : undefined;
             }
@@ -515,6 +769,7 @@ export function useNodeSync({
         const nodeMap = new Map(updatedNodes.map((n) => [n.id, n]));
         const posUpdates = new Map<string, { x: number; y: number }>();
         const affectedGroups = new Set<string>();
+        let selectId: string | null = null;
         for (const change of changes) {
           if (change.type === "position" && change.position) {
             const rfNode = nodeMap.get(change.id);
@@ -529,8 +784,8 @@ export function useNodeSync({
                 });
               }
             } else {
-              // If dragging a synthetic app group parent, map position to anchor node
-              const meta = appGroupMeta.get(change.id);
+              // If dragging a synthetic group parent, map position to its anchor node
+              const meta = appGroupMeta.get(change.id) ?? (userGroupMeta.get(change.id) ? { anchorId: userGroupMeta.get(change.id)!.anchorId } : undefined);
               if (meta) {
                 posUpdates.set(meta.anchorId, change.position);
               } else {
@@ -548,14 +803,23 @@ export function useNodeSync({
               }
             }
           } else if (change.type === "select" && change.selected) {
-            selectionFromCanvasRef.current = true;
-            onSelectNode(change.id);
+            selectId = change.id;
           } else if (change.type === "dimensions") {
             const rfNode = nodeMap.get(change.id);
             if (rfNode?.parentId) affectedGroups.add(rfNode.parentId);
           }
         }
-        if (posUpdates.size > 0) onNodePositionsChange(posUpdates);
+        // Defer store updates to after the state updater returns to avoid
+        // "Cannot update App while rendering GraphCanvas" (setState-during-render).
+        if (posUpdates.size > 0 || selectId) {
+          queueMicrotask(() => {
+            if (posUpdates.size > 0) onNodePositionsChange(posUpdates);
+            if (selectId) {
+              selectionFromCanvasRef.current = true;
+              onSelectNode(selectId);
+            }
+          });
+        }
 
         // Resize loop groups when child dimensions or positions change
         if (affectedGroups.size > 0) {
@@ -586,7 +850,7 @@ export function useNodeSync({
         return updatedNodes;
       });
     },
-    [onNodePositionsChange, onSelectNode, onDeleteNodes, collapsedApps, appGroups, nodeToAppGroup, appGroupMeta, nodeToLoops],
+    [onNodePositionsChange, onSelectNode, onDeleteNodes, collapsedApps, appGroups, nodeToAppGroup, appGroupMeta, nodeToLoops, nodeToUserGroup, userGroupMeta, collapsedUserGroups, workflow.groups],
   );
 
   const handleNodeDragStart = useCallback(() => {

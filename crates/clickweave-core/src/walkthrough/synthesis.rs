@@ -391,6 +391,7 @@ pub fn synthesize_draft(
         name: workflow_name.to_string(),
         nodes: Vec::new(),
         edges: Vec::new(),
+        groups: Vec::new(),
     };
 
     let mut node_index = 0usize;

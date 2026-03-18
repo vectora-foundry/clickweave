@@ -347,6 +347,7 @@ export type MatchMode = "Contains" | "Exact"
 export type McpToolCallParams = { tool_name: string; arguments: JsonValue }
 export type MouseButton = "Left" | "Right" | "Center"
 export type Node = { id: string; node_type: NodeType; position: Position; name: string; enabled: boolean; timeout_ms: number | null; settle_ms: number | null; retries: number; supervision_retries?: number; trace_level: TraceLevel; role?: NodeRole; expected_outcome: string | null }
+export type NodeGroup = { id: string; name: string; color: string; node_ids: string[]; parent_group_id: string | null }
 export type NodeRename = { node_id: string; new_name: string }
 export type NodeResult = { node_name: string; status: string; error?: string | null }
 export type NodeRole = "Default" | "Verification"
@@ -445,7 +446,7 @@ export type WindowControlAction = "Close" | "Minimize" | "Maximize" |
  * macOS subrole (`AXZoomButton` vs `AXFullScreenButton`).
  */
 "Zoom"
-export type Workflow = { id: string; name: string; nodes: Node[]; edges: Edge[] }
+export type Workflow = { id: string; name: string; nodes: Node[]; edges: Edge[]; groups?: NodeGroup[] }
 export type WorkflowPatch = { added_nodes: Node[]; removed_node_ids: string[]; updated_nodes: Node[]; added_edges: Edge[]; removed_edges: Edge[]; warnings: string[] }
 
 /** tauri-specta globals **/
