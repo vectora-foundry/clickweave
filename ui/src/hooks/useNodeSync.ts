@@ -273,6 +273,14 @@ export function useNodeSync({
           const meta = appGroupMeta.get(groupId);
           if (!meta) continue;
           const memberIds = appGroups.get(groupId) ?? [];
+          // Visible members: exclude nodes that render inside loops (loop takes precedence),
+          // and exclude Loop/EndLoop nodes themselves (they render as their own group type)
+          const visibleMemberIds = memberIds.filter((id) => {
+            if (nodeToLoops.has(id)) return false;
+            const wfNode = wfNodeMap.get(id);
+            if (wfNode?.node_type.type === "Loop" || wfNode?.node_type.type === "EndLoop") return false;
+            return true;
+          });
 
           if (collapsedApps.has(groupId)) {
             // Collapsed — render as workflow pill using anchor's real ID
@@ -287,7 +295,7 @@ export function useNodeSync({
                 label: meta.appName,
                 color: meta.color,
                 icon: "AG",
-                bodyCount: memberIds.length,
+                bodyCount: visibleMemberIds.length,
                 hideSourceHandle: true,
                 onToggleCollapse: () => toggleAppCollapse(groupId),
               },
@@ -308,7 +316,7 @@ export function useNodeSync({
               data: {
                 appName: meta.appName,
                 color: meta.color,
-                memberCount: memberIds.length,
+                memberCount: visibleMemberIds.length,
                 isActive: node.id === activeNode,
                 onToggleCollapse: () => toggleAppCollapse(groupId),
               },
