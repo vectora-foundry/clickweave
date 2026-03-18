@@ -769,6 +769,7 @@ export function useNodeSync({
         const nodeMap = new Map(updatedNodes.map((n) => [n.id, n]));
         const posUpdates = new Map<string, { x: number; y: number }>();
         const affectedGroups = new Set<string>();
+        let selectId: string | null = null;
         for (const change of changes) {
           if (change.type === "position" && change.position) {
             const rfNode = nodeMap.get(change.id);
@@ -802,14 +803,23 @@ export function useNodeSync({
               }
             }
           } else if (change.type === "select" && change.selected) {
-            selectionFromCanvasRef.current = true;
-            onSelectNode(change.id);
+            selectId = change.id;
           } else if (change.type === "dimensions") {
             const rfNode = nodeMap.get(change.id);
             if (rfNode?.parentId) affectedGroups.add(rfNode.parentId);
           }
         }
-        if (posUpdates.size > 0) onNodePositionsChange(posUpdates);
+        // Defer store updates to after the state updater returns to avoid
+        // "Cannot update App while rendering GraphCanvas" (setState-during-render).
+        if (posUpdates.size > 0 || selectId) {
+          queueMicrotask(() => {
+            if (posUpdates.size > 0) onNodePositionsChange(posUpdates);
+            if (selectId) {
+              selectionFromCanvasRef.current = true;
+              onSelectNode(selectId);
+            }
+          });
+        }
 
         // Resize loop groups when child dimensions or positions change
         if (affectedGroups.size > 0) {
