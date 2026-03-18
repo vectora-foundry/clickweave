@@ -97,11 +97,26 @@ export function GraphCanvas({
     return ids;
   }, [loopState.hiddenNodeIds, userGroupState.hiddenUserGroupNodeIds]);
 
+  // Filter app group edge rewrites to exclude nodes that render independently
+  // (Loop/EndLoop nodes and loop body members — they have their own rendering path)
+  const filteredAppEdgeRewrites = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [nodeId, anchorId] of appState.collapsedAppEdgeRewrites) {
+      // Skip loop body members, loop nodes, and endloop nodes
+      if (loopState.nodeToLoops.has(nodeId)) continue;
+      if (loopState.endLoopIds.has(nodeId)) continue;
+      const wfNode = workflow.nodes.find((n) => n.id === nodeId);
+      if (wfNode?.node_type.type === "Loop") continue;
+      map.set(nodeId, anchorId);
+    }
+    return map;
+  }, [appState.collapsedAppEdgeRewrites, loopState.nodeToLoops, loopState.endLoopIds, workflow.nodes]);
+
   const { rfEdges, handleEdgesChange, handleConnect } = useEdgeSync({
     workflow,
     hiddenNodeIds: mergedHiddenNodeIds,
     collapsedLoops: loopState.collapsedLoops,
-    collapsedAppEdgeRewrites: appState.collapsedAppEdgeRewrites,
+    collapsedAppEdgeRewrites: filteredAppEdgeRewrites,
     collapsedUserGroupEdgeRewrites: userGroupState.userGroupEdgeRewrites,
     deletedNodeIdsRef,
     onEdgesChange,
