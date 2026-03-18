@@ -132,8 +132,11 @@ function App() {
   const redo = useStore((s) => s.redo);
 
   // ── Workflow mutations ───────────────────────────────────────────
-  const { addNode, removeNodes, removeEdgesOnly, updateNodePositions, updateNode, addEdge } =
-    useWorkflowActions();
+  const {
+    addNode, removeNodes, removeEdgesOnly, updateNodePositions, updateNode, addEdge,
+    createGroup, removeGroup, deleteGroupWithContents,
+    renameGroup, recolorGroup, addNodesToGroup, removeNodesFromGroup,
+  } = useWorkflowActions();
 
   // ── Derived state ────────────────────────────────────────────────
   const selectedNodeData = useMemo(
@@ -224,6 +227,13 @@ function App() {
                   onDeleteNodes={removeNodes}
                   onRemoveExtraEdges={removeEdgesOnly}
                   onBeforeNodeDrag={() => pushHistory("Move Nodes")}
+                  onCreateGroup={createGroup}
+                  onRemoveGroup={removeGroup}
+                  onDeleteGroupWithContents={deleteGroupWithContents}
+                  onRenameGroup={renameGroup}
+                  onRecolorGroup={recolorGroup}
+                  onAddNodesToGroup={addNodesToGroup}
+                  onRemoveNodesFromGroup={removeNodesFromGroup}
                 />
 
                 <FloatingToolbar
