@@ -261,7 +261,32 @@ export function GraphCanvas({
         (n) => n.selected && !n.hidden,
       );
       if (selectedNodes.length >= 2) {
-        const selectedIds = selectedNodes.map((n: RFNode) => n.id);
+        const rawSelectedIds = selectedNodes.map((n: RFNode) => n.id);
+
+        // Expand collapsed auto-group pills to full member lists
+        const expandedIds: string[] = [];
+        for (const id of rawSelectedIds) {
+          // Check if this is a collapsed app group anchor
+          const appGroupId = appState.nodeToAppGroup.get(id);
+          if (appGroupId && appState.collapsedApps.has(appGroupId)) {
+            const members = appState.appGroups.get(appGroupId) ?? [];
+            for (const m of members) {
+              if (!expandedIds.includes(m)) expandedIds.push(m);
+            }
+            continue;
+          }
+          // Check if this is a collapsed loop
+          if (loopState.collapsedLoops.has(id)) {
+            const members = loopState.loopMembers.get(id) ?? [];
+            expandedIds.push(id); // include the loop node itself
+            for (const m of members) {
+              if (!expandedIds.includes(m)) expandedIds.push(m);
+            }
+            continue;
+          }
+          expandedIds.push(id);
+        }
+
         // Build loopMembers map in format expected by validateGroupCreation
         const loopMembersMap = loopState.loopMembers;
         // Build appGroups map
@@ -269,7 +294,7 @@ export function GraphCanvas({
         const existingGroups = workflow.groups ?? [];
 
         const result = validateGroupCreation(
-          selectedIds,
+          expandedIds,
           workflow,
           existingGroups,
           loopMembersMap,
@@ -277,7 +302,7 @@ export function GraphCanvas({
         );
 
         if (result.valid) {
-          const sorted = topologicalSortMembers(selectedIds, workflow);
+          const sorted = topologicalSortMembers(expandedIds, workflow);
           items.push({
             label: "Create Group",
             action: () => {
@@ -301,7 +326,10 @@ export function GraphCanvas({
     [
       workflow,
       loopState.loopMembers,
+      loopState.collapsedLoops,
       appState.appGroups,
+      appState.collapsedApps,
+      appState.nodeToAppGroup,
       userGroupState.userGroupMeta,
       userGroupState.nodeToUserGroup,
       userGroupState.toggleUserGroupCollapse,

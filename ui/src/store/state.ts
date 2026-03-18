@@ -27,5 +27,6 @@ export function makeDefaultWorkflow(): Workflow {
     name: "New Workflow",
     nodes: [],
     edges: [],
+    groups: [],
   };
 }

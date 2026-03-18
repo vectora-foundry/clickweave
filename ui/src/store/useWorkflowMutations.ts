@@ -188,7 +188,14 @@ export function useWorkflowMutations(
           ...prev,
           nodes: prev.nodes.filter((n) => !allNodeIds.has(n.id)),
           edges: prev.edges.filter((e) => !allNodeIds.has(e.from) && !allNodeIds.has(e.to)),
-          groups: (prev.groups ?? []).filter((g) => g.id !== groupId && g.parent_group_id !== groupId),
+          groups: autoDissolveGroups(
+            (prev.groups ?? [])
+              .filter((g) => g.id !== groupId && g.parent_group_id !== groupId)
+              .map((g) => ({
+                ...g,
+                node_ids: g.node_ids.filter((id) => !allNodeIds.has(id)),
+              }))
+          ),
         };
       });
       setSelectedNode(null);

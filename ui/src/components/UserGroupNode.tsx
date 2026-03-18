@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { type NodeProps } from "@xyflow/react";
 import { hexToRgb } from "../utils/color";
 
 interface UserGroupData {
@@ -29,10 +29,6 @@ export const UserGroupNode = memo(function UserGroupNode({ data, selected }: Nod
         boxShadow: selected ? `0 0 12px rgba(${rgb}, 0.2)` : "none",
       }}
     >
-      <Handle type="target" position={Position.Left}
-        className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-        style={{ borderColor: color }} />
-
       {isActive && (
         <span className="absolute -right-1 -top-1 h-3 w-3 animate-pulse rounded-full"
           style={{ backgroundColor: color }} />
@@ -51,10 +47,6 @@ export const UserGroupNode = memo(function UserGroupNode({ data, selected }: Nod
           &#x25BC;
         </button>
       </div>
-
-      <Handle type="source" position={Position.Right}
-        className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-        style={{ borderColor: color }} />
     </div>
   );
 });

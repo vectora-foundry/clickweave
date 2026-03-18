@@ -143,7 +143,6 @@ export function validateGroupCreation(
 
   // Check partial overlap with existing user groups.
   const userGroupEntries: [string, string[]][] = existingGroups
-    .filter((g) => g.parent_group_id === null)
     .map((g) => [g.id, g.node_ids]);
   for (const [groupId, memberIds] of userGroupEntries) {
     const memberSet = new Set(memberIds);

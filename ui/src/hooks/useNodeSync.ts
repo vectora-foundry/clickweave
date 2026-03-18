@@ -504,13 +504,30 @@ export function useNodeSync({
           // Determine if the user group should be inside an auto-group
           const anchorAutoParent = anchorNode?.parentId;
 
+          // Check if the anchor's auto-group is fully wrapped by this user group
+          let containerParentId: string | undefined;
+          if (anchorAutoParent) {
+            const autoGroupMembers = appGroups.get(anchorAutoParent) ?? [];
+            const userGroupNodeSet = new Set(group.node_ids);
+            const autoGroupFullyWrapped = autoGroupMembers.every((m) => userGroupNodeSet.has(m));
+            if (autoGroupFullyWrapped) {
+              // User group wraps the auto-group — user group is the outer container
+              // Inherit the auto-group's own parent (if any), not the auto-group itself
+              const autoGroupNode = nodes.find((n) => n.id === anchorAutoParent);
+              containerParentId = autoGroupNode?.parentId;
+            } else {
+              // User group is inside the auto-group
+              containerParentId = anchorAutoParent;
+            }
+          }
+
           const containerIdx = nodes.length;
           nodes.push({
             id: group.id,
             type: "userGroup",
             position: containerPosition,
-            parentId: anchorAutoParent,
-            extent: anchorAutoParent ? "parent" as const : undefined,
+            parentId: containerParentId,
+            extent: containerParentId ? "parent" as const : undefined,
             draggable: true,
             selected: false,
             data: {
