@@ -11,10 +11,12 @@ import "@xyflow/react/dist/style.css";
 import type { Workflow, Edge } from "../bindings";
 import { useLoopGrouping } from "../hooks/useLoopGrouping";
 import { useAppGrouping } from "../hooks/useAppGrouping";
+import { useUserGrouping } from "../hooks/useUserGrouping";
 import { useNodeSync } from "../hooks/useNodeSync";
 import { useEdgeSync } from "../hooks/useEdgeSync";
 import { AppGroupNode } from "./AppGroupNode";
 import { LoopGroupNode } from "./LoopGroupNode";
+import { UserGroupNode } from "./UserGroupNode";
 import { WorkflowNode } from "./WorkflowNode";
 
 interface GraphCanvasProps {
@@ -43,12 +45,13 @@ export function GraphCanvas({
   onBeforeNodeDrag,
 }: GraphCanvasProps) {
   const nodeTypes: NodeTypes = useMemo(
-    () => ({ workflow: WorkflowNode, loopGroup: LoopGroupNode, appGroup: AppGroupNode }),
+    () => ({ workflow: WorkflowNode, loopGroup: LoopGroupNode, appGroup: AppGroupNode, userGroup: UserGroupNode }),
     [],
   );
 
   const loopState = useLoopGrouping(workflow);
   const appState = useAppGrouping(workflow);
+  const userGroupState = useUserGrouping(workflow);
 
   const { rfNodes, handleNodesChange, handleNodeDragStart, deletedNodeIdsRef } = useNodeSync({
     workflow,
@@ -60,17 +63,28 @@ export function GraphCanvas({
     nodeToAppGroup: appState.nodeToAppGroup,
     appGroupMeta: appState.appGroupMeta,
     toggleAppCollapse: appState.toggleAppCollapse,
+    collapsedUserGroups: userGroupState.collapsedUserGroups,
+    nodeToUserGroup: userGroupState.nodeToUserGroup,
+    userGroupMeta: userGroupState.userGroupMeta,
+    toggleUserGroupCollapse: userGroupState.toggleUserGroupCollapse,
     onSelectNode,
     onNodePositionsChange,
     onDeleteNodes,
     onBeforeNodeDrag,
   });
 
+  const mergedHiddenNodeIds = useMemo(() => {
+    const ids = new Set(loopState.hiddenNodeIds);
+    for (const id of userGroupState.hiddenUserGroupNodeIds) ids.add(id);
+    return ids;
+  }, [loopState.hiddenNodeIds, userGroupState.hiddenUserGroupNodeIds]);
+
   const { rfEdges, handleEdgesChange, handleConnect } = useEdgeSync({
     workflow,
-    hiddenNodeIds: loopState.hiddenNodeIds,
+    hiddenNodeIds: mergedHiddenNodeIds,
     collapsedLoops: loopState.collapsedLoops,
     collapsedAppEdgeRewrites: appState.collapsedAppEdgeRewrites,
+    collapsedUserGroupEdgeRewrites: userGroupState.userGroupEdgeRewrites,
     deletedNodeIdsRef,
     onEdgesChange,
     onRemoveExtraEdges,
