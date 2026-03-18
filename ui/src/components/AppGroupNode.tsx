@@ -1,5 +1,6 @@
 import { memo } from "react";
 import { type NodeProps } from "@xyflow/react";
+import { hexToRgb } from "../utils/color";
 
 interface AppGroupData {
   appName: string;
@@ -22,7 +23,7 @@ export const AppGroupNode = memo(function AppGroupNode({
     <div
       className="relative rounded-[10px] transition-all duration-150"
       style={{
-        border: `1px solid rgba(${rgb}, 0.3)`,
+        border: `2px dotted rgba(${rgb}, 0.4)`,
         backgroundColor: `rgba(${rgb}, 0.06)`,
         width: "100%",
         height: "100%",
@@ -68,11 +69,3 @@ export const AppGroupNode = memo(function AppGroupNode({
     </div>
   );
 });
-
-/** Convert hex color like "#6366f1" to "99, 102, 241" for rgba(). */
-function hexToRgb(hex: string): string {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return `${r}, ${g}, ${b}`;
-}
