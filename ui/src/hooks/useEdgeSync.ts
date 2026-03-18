@@ -77,7 +77,12 @@ export function useEdgeSync({
     return rewritten
       .filter((e) => {
         if (hiddenNodeIds.has(e.from) || hiddenNodeIds.has(e.to)) return false;
-        if (e.output?.type === "LoopBody" && collapsedLoops.has(e.from)) return false;
+        // LoopBody edges are always hidden: collapsed loops hide body members,
+        // expanded loops use the container to communicate containment.
+        if (e.output?.type === "LoopBody") return false;
+        // LoopDone edges are hidden when expanded (container shows it);
+        // when collapsed, the done edge exits the pill normally.
+        if (e.output?.type === "LoopDone" && !collapsedLoops.has(e.from)) return false;
         return true;
       })
       .map((e) => ({
@@ -185,7 +190,8 @@ export function useEdgeSync({
         );
         const hiddenEdges = workflow.edges.filter((e) => {
           if (hiddenNodeIds.has(e.from) || hiddenNodeIds.has(e.to)) return true;
-          if (e.output?.type === "LoopBody" && collapsedLoops.has(e.from)) return true;
+          if (e.output?.type === "LoopBody") return true;
+          if (e.output?.type === "LoopDone" && !collapsedLoops.has(e.from)) return true;
           // Internal edges within a collapsed group
           if (combinedRewrites.has(e.from) && combinedRewrites.has(e.to)) {
             const anchorFrom = combinedRewrites.get(e.from);

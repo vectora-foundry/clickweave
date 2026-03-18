@@ -27,6 +27,11 @@ const APP_GROUP_PADDING = 20;
 const USER_GROUP_HEADER_HEIGHT = 36;
 const USER_GROUP_PADDING = 20;
 
+/** Tag a node's data with `isInsideGroup: true` for vertical handle layout. */
+function withGroupFlag(node: RFNode): RFNode {
+  return { ...node, data: { ...node.data, isInsideGroup: true } };
+}
+
 /** Return layout constants for a group node type. */
 function groupConstants(parentType: string): { headerHeight: number; padding: number } {
   if (parentType === "appGroup") return { headerHeight: APP_GROUP_HEADER_HEIGHT, padding: APP_GROUP_PADDING };
@@ -335,13 +340,13 @@ export function useNodeSync({
             const relativePosition = existing?.parentId === groupId
               ? existing.position
               : { x: APP_GROUP_PADDING, y: APP_GROUP_HEADER_HEIGHT + APP_GROUP_PADDING };
-            const childNode: typeof anchorBase = {
+            const childNode = withGroupFlag({
               ...anchorBase,
               parentId: groupId,
               extent: "parent" as const,
               position: relativePosition,
               style: { ...anchorBase.style, transition: "opacity 150ms ease 50ms" },
-            };
+            });
             nodes.push(childNode);
             expandedGroupChildren.get(groupId)?.push(childNode);
           }
@@ -370,13 +375,13 @@ export function useNodeSync({
               };
             }
 
-            const childNode: typeof base = {
+            const childNode = withGroupFlag({
               ...base,
               parentId: appGroup,
               extent: "parent" as const,
               position: relativePosition,
               style: { ...base.style, transition: "opacity 150ms ease 50ms" },
-            };
+            });
             nodes.push(childNode);
             expandedGroupChildren.get(appGroup)?.push(childNode);
           }
@@ -405,7 +410,7 @@ export function useNodeSync({
               };
             }
 
-            const childNode: RFNode = {
+            const childNode = withGroupFlag({
               ...base,
               parentId,
               extent: "parent" as const,
@@ -414,7 +419,7 @@ export function useNodeSync({
                 ...base.style,
                 transition: "opacity 150ms ease 50ms",
               },
-            };
+            });
             nodes.push(childNode);
             expandedGroupChildren.get(parentId)?.push(childNode);
           }
@@ -610,13 +615,13 @@ export function useNodeSync({
               relativePosition = { x: USER_GROUP_PADDING, y: USER_GROUP_HEADER_HEIGHT + USER_GROUP_PADDING };
             }
 
-            nodes[idx] = {
+            nodes[idx] = withGroupFlag({
               ...memberNode,
               parentId: group.id,
               extent: "parent" as const,
               position: relativePosition,
               style: { ...memberNode.style, transition: "opacity 150ms ease 50ms" },
-            };
+            });
             userGroupChildren.push(nodes[idx]);
 
             // Also reparent any synthetic auto-group container whose anchor is this member

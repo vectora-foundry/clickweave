@@ -17,104 +17,79 @@ interface WorkflowNodeData {
   onToggleCollapse?: () => void;
   subtitle?: string;
   isRenaming?: boolean;
+  isInsideGroup?: boolean;
+  hideSourceHandle?: boolean;
   onRenameConfirm?: (newName: string) => void;
   onRenameCancel?: () => void;
   [key: string]: unknown;
 }
 
 const CONTROL_FLOW_TYPES = new Set(["If", "Switch", "Loop", "EndLoop"]);
+const HANDLE_CLS = "!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]";
+
+/** Compute handle position and label style for vertical (inside group) vs horizontal layout. */
+function handleLayout(vertical: boolean, pct: number) {
+  return {
+    position: vertical ? Position.Bottom : Position.Right,
+    style: vertical ? { left: `${pct}%` } : { top: `${pct}%` },
+    labelStyle: vertical
+      ? { bottom: -14, left: `${pct - 2}%` } as const
+      : { top: `${pct - 4}%` } as const,
+    labelClass: vertical ? "absolute text-[8px] text-[var(--text-muted)]"
+      : "absolute right-5 text-[8px] text-[var(--text-muted)]",
+  };
+}
 
 function SourceHandles({ data }: { data: WorkflowNodeData }) {
   const { nodeType, switchCases } = data;
+  const vertical = !!data.isInsideGroup;
+  const pos = vertical ? Position.Bottom : Position.Right;
 
   if (nodeType === "If") {
+    const t = handleLayout(vertical, vertical ? 35 : 30);
+    const f = handleLayout(vertical, vertical ? 65 : 70);
     return (
       <>
-        <Handle
-          type="source"
-          position={Position.Right}
-          id="IfTrue"
-          className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-          style={{ borderColor: "#10b981", top: "30%" }}
-        />
-        <span
-          className="absolute right-5 text-[8px] text-[var(--text-muted)]"
-          style={{ top: "26%" }}
-        >
-          T
-        </span>
-        <Handle
-          type="source"
-          position={Position.Right}
-          id="IfFalse"
-          className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-          style={{ borderColor: "#ef4444", top: "70%" }}
-        />
-        <span
-          className="absolute right-5 text-[8px] text-[var(--text-muted)]"
-          style={{ top: "66%" }}
-        >
-          F
-        </span>
+        <Handle type="source" position={t.position} id="IfTrue"
+          className={HANDLE_CLS} style={{ borderColor: "#10b981", ...t.style }} />
+        <span className={t.labelClass} style={t.labelStyle}>T</span>
+        <Handle type="source" position={f.position} id="IfFalse"
+          className={HANDLE_CLS} style={{ borderColor: "#ef4444", ...f.style }} />
+        <span className={f.labelClass} style={f.labelStyle}>F</span>
       </>
     );
   }
 
-  // Collapsed loops render here; expanded loops use LoopGroupNode
   if (nodeType === "Loop") {
     return (
-      <Handle
-        type="source"
-        position={Position.Right}
-        id="LoopDone"
-        className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-        style={{ borderColor: "#f59e0b" }}
-      />
+      <Handle type="source" position={pos} id="LoopDone"
+        className={HANDLE_CLS} style={{ borderColor: "#f59e0b" }} />
     );
   }
 
   if (nodeType === "Switch") {
-    const totalHandles = switchCases.length + 1; // cases + default
+    const totalHandles = switchCases.length + 1;
     return (
       <>
         {switchCases.map((caseName, i) => {
           const pct = ((i + 1) / (totalHandles + 1)) * 100;
+          const h = handleLayout(vertical, pct);
           return (
             <span key={caseName}>
-              <Handle
-                type="source"
-                position={Position.Right}
-                id={`SwitchCase:${caseName}`}
-                className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-                style={{ borderColor: "#10b981", top: `${pct}%` }}
-              />
-              <span
-                className="absolute right-5 text-[8px] text-[var(--text-muted)] whitespace-nowrap"
-                style={{ top: `${pct - 4}%` }}
-              >
-                {caseName}
-              </span>
+              <Handle type="source" position={h.position} id={`SwitchCase:${caseName}`}
+                className={HANDLE_CLS} style={{ borderColor: "#10b981", ...h.style }} />
+              <span className={`${h.labelClass} whitespace-nowrap`} style={h.labelStyle}>{caseName}</span>
             </span>
           );
         })}
-        {/* Default handle */}
         {(() => {
           const pct = (totalHandles / (totalHandles + 1)) * 100;
+          const h = handleLayout(vertical, pct);
           return (
             <span>
-              <Handle
-                type="source"
-                position={Position.Right}
-                id="SwitchDefault"
-                className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-                style={{ borderColor: "#666", top: `${pct}%` }}
-              />
-              <span
-                className="absolute right-5 text-[8px] text-[var(--text-muted)]"
-                style={{ top: `${pct - 4}%` }}
-              >
-                default
-              </span>
+              <Handle type="source" position={h.position} id="SwitchDefault"
+                className={HANDLE_CLS} style={{ borderColor: "#666", ...h.style }} />
+              <span className={h.labelClass} style={h.labelStyle}>default</span>
             </span>
           );
         })()}
@@ -122,15 +97,10 @@ function SourceHandles({ data }: { data: WorkflowNodeData }) {
     );
   }
 
-  // EndLoop and regular nodes: single source handle
   return (
-    <Handle
-      type="source"
-      position={Position.Right}
-      className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-      style={{ borderColor: "var(--accent-coral)" }}
-      isConnectable={!data.hideSourceHandle}
-    />
+    <Handle type="source" position={pos}
+      className={HANDLE_CLS} style={{ borderColor: "var(--accent-coral)" }}
+      isConnectable={!data.hideSourceHandle} />
   );
 }
 
@@ -173,8 +143,8 @@ export const WorkflowNode = memo(function WorkflowNode({
     >
       <Handle
         type="target"
-        position={Position.Left}
-        className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
+        position={d.isInsideGroup ? Position.Top : Position.Left}
+        className={HANDLE_CLS}
         style={{ borderColor: "var(--accent-green)" }}
       />
 
