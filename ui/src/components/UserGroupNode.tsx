@@ -1,19 +1,23 @@
 import { memo } from "react";
 import { type NodeProps } from "@xyflow/react";
 import { hexToRgb } from "../utils/color";
+import { InlineRenameInput } from "./InlineRenameInput";
 
 interface UserGroupData {
   name: string;
   color: string;
   memberCount: number;
   isActive: boolean;
+  isRenaming?: boolean;
+  onRenameConfirm?: (newName: string) => void;
+  onRenameCancel?: () => void;
   onToggleCollapse: () => void;
   [key: string]: unknown;
 }
 
 export const UserGroupNode = memo(function UserGroupNode({ data, selected }: NodeProps) {
   const d = data as unknown as UserGroupData;
-  const { name, color, memberCount, isActive, onToggleCollapse } = d;
+  const { name, color, memberCount, isActive, isRenaming, onRenameConfirm, onRenameCancel, onToggleCollapse } = d;
   const rgb = hexToRgb(color);
 
   return (
@@ -37,7 +41,11 @@ export const UserGroupNode = memo(function UserGroupNode({ data, selected }: Nod
       <div className="flex items-center gap-2 px-3 py-1.5"
         style={{ borderBottom: `1px solid rgba(${rgb}, 0.15)` }}>
         <span className="text-xs">📁</span>
-        <span className="text-xs font-medium text-[var(--text-primary)]">{name}</span>
+        {isRenaming && onRenameConfirm && onRenameCancel ? (
+          <InlineRenameInput label={name} onConfirm={onRenameConfirm} onCancel={onRenameCancel} />
+        ) : (
+          <span className="text-xs font-medium text-[var(--text-primary)]">{name}</span>
+        )}
         <span className="ml-auto text-[10px] text-[var(--text-muted)]">
           {memberCount} step{memberCount !== 1 ? "s" : ""}
         </span>

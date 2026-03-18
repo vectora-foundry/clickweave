@@ -1,22 +1,35 @@
 import { useCallback } from "react";
-import type { Edge, EdgeOutput, Node, NodeType, Workflow } from "../bindings";
+import type { Edge, EdgeOutput, Node, NodeGroup, NodeType, Workflow } from "../bindings";
 import { edgeOutputsEqual, handleToEdgeOutput } from "../utils/edgeHandles";
 import { topologicalSortMembers } from "../utils/groupValidation";
 
-/** Cascade auto-dissolve: remove groups with <2 members, then clean up
- *  orphaned subgroups and re-check parent groups. */
-export function autoDissolveGroups(groups: Workflow["groups"]): Workflow["groups"] {
+/** Count effective members: direct nodes (not in any child subgroup) + child subgroups.
+ *  A parent with only subgroup members but ≥2 subgroups stays alive. */
+function effectiveMemberCount(group: NodeGroup, allGroups: NodeGroup[]): number {
+  const childSubgroups = allGroups.filter((sg) => sg.parent_group_id === group.id);
+  const childNodeIds = new Set(childSubgroups.flatMap((sg) => sg.node_ids));
+  const directMembers = group.node_ids.filter((id: string) => !childNodeIds.has(id));
+  return directMembers.length + childSubgroups.length;
+}
+
+/** Cascade auto-dissolve: remove groups with <2 effective members, then promote
+ *  orphaned subgroups to top-level and re-check. */
+export function autoDissolveGroups(groups: Workflow["groups"]): NodeGroup[] {
   let result = [...(groups ?? [])];
   let changed = true;
   while (changed) {
     changed = false;
     const before = result.length;
-    result = result.filter((g) => g.node_ids.length >= 2);
+    result = result.filter((g) => effectiveMemberCount(g, result) >= 2);
     if (result.length !== before) changed = true;
+    // Promote orphaned subgroups to top-level instead of removing them
     const survivingIds = new Set(result.map((g) => g.id));
-    const after = result.length;
-    result = result.filter((g) => !g.parent_group_id || survivingIds.has(g.parent_group_id));
-    if (result.length !== after) changed = true;
+    for (let i = 0; i < result.length; i++) {
+      if (result[i].parent_group_id && !survivingIds.has(result[i].parent_group_id!)) {
+        result[i] = { ...result[i], parent_group_id: null };
+        changed = true;
+      }
+    }
   }
   return result;
 }

@@ -163,6 +163,9 @@ interface UseNodeSyncParams {
   nodeToUserGroup: Map<string, string>;
   userGroupMeta: Map<string, UserGroupMeta>;
   toggleUserGroupCollapse: (groupId: string) => void;
+  renamingGroupId: string | null;
+  onRenameConfirm: (groupId: string, newName: string) => void;
+  onRenameCancel: () => void;
   onSelectNode: (id: string | null) => void;
   onNodePositionsChange: (updates: Map<string, { x: number; y: number }>) => void;
   onDeleteNodes: (ids: string[]) => void;
@@ -188,6 +191,9 @@ export function useNodeSync({
   nodeToUserGroup,
   userGroupMeta,
   toggleUserGroupCollapse,
+  renamingGroupId,
+  onRenameConfirm,
+  onRenameCancel,
   onSelectNode,
   onNodePositionsChange,
   onDeleteNodes,
@@ -481,6 +487,9 @@ export function useNodeSync({
                 bodyCount: meta.flatMemberCount,
                 isUserGroupPill: true,
                 userGroupId: group.id,
+                isRenaming: renamingGroupId === group.id,
+                onRenameConfirm: (newName: string) => onRenameConfirm(group.id, newName),
+                onRenameCancel,
                 onToggleCollapse: () => toggleUserGroupCollapse(group.id),
               },
             };
@@ -505,9 +514,23 @@ export function useNodeSync({
           // ── Expanded: create synthetic container, reparent members ──
           const anchorNode = anchorIdx !== undefined ? nodes[anchorIdx] : undefined;
           const existingGroupNode = prevMap.get(group.id);
+
+          // Compute anchor's absolute position: if anchor is inside an auto-group
+          // (has parentId), its position is relative — add the parent's position.
+          let anchorAbsPosition = anchorNode?.position ?? { x: 0, y: 0 };
+          if (anchorNode?.parentId && !existingGroupNode) {
+            const parentIdx = nodeIndexById.get(anchorNode.parentId);
+            const parentNode = parentIdx !== undefined ? nodes[parentIdx] : undefined;
+            if (parentNode) {
+              anchorAbsPosition = {
+                x: anchorAbsPosition.x + parentNode.position.x,
+                y: anchorAbsPosition.y + parentNode.position.y,
+              };
+            }
+          }
+
           const containerPosition = existingGroupNode?.position
-            ?? anchorNode?.position
-            ?? { x: 0, y: 0 };
+            ?? anchorAbsPosition;
 
           // Determine if the user group should be inside an auto-group.
           // Only check actual auto-group IDs (appGroups keys), NOT user group parents
@@ -522,7 +545,8 @@ export function useNodeSync({
             const autoGroupFullyWrapped = autoGroupMembers.every((m) => userGroupNodeSet.has(m));
             if (autoGroupFullyWrapped) {
               // User group wraps the auto-group — user group is the outer container
-              const autoGroupNode = nodes.find((n) => n.id === anchorAutoParent);
+              const autoGroupIdx = nodeIndexById.get(anchorAutoParent!);
+              const autoGroupNode = autoGroupIdx !== undefined ? nodes[autoGroupIdx] : undefined;
               containerParentId = autoGroupNode?.parentId;
             } else {
               // User group is inside the auto-group
@@ -546,6 +570,9 @@ export function useNodeSync({
               name: meta.name,
               color: meta.color,
               memberCount: meta.flatMemberCount,
+              isRenaming: renamingGroupId === group.id,
+              onRenameConfirm: (newName: string) => onRenameConfirm(group.id, newName),
+              onRenameCancel,
               onToggleCollapse: () => toggleUserGroupCollapse(group.id),
             },
           });
@@ -596,13 +623,11 @@ export function useNodeSync({
                 let agRelPos: { x: number; y: number };
                 if (agNode.parentId === group.id) {
                   agRelPos = agNode.position;
-                } else if (anchorNode) {
-                  agRelPos = {
-                    x: agNode.position.x - anchorNode.position.x + USER_GROUP_PADDING,
-                    y: agNode.position.y - anchorNode.position.y + USER_GROUP_HEADER_HEIGHT + USER_GROUP_PADDING,
-                  };
                 } else {
-                  agRelPos = { x: USER_GROUP_PADDING, y: USER_GROUP_HEADER_HEIGHT + USER_GROUP_PADDING };
+                  agRelPos = {
+                    x: agNode.position.x - anchorAbsPosition.x + USER_GROUP_PADDING,
+                    y: agNode.position.y - anchorAbsPosition.y + USER_GROUP_HEADER_HEIGHT + USER_GROUP_PADDING,
+                  };
                 }
 
                 nodes[agIdx] = {
@@ -668,6 +693,9 @@ export function useNodeSync({
     nodeToUserGroup,
     userGroupMeta,
     toggleUserGroupCollapse,
+    renamingGroupId,
+    onRenameConfirm,
+    onRenameCancel,
   ]);
 
   // Sync external selectedNode changes into RF selection state

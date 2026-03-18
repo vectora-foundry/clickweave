@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { NodeRole } from "../bindings";
+import { InlineRenameInput } from "./InlineRenameInput";
 
 interface WorkflowNodeData {
   label: string;
@@ -15,6 +16,9 @@ interface WorkflowNodeData {
   bodyCount?: number;
   onToggleCollapse?: () => void;
   subtitle?: string;
+  isRenaming?: boolean;
+  onRenameConfirm?: (newName: string) => void;
+  onRenameCancel?: () => void;
   [key: string]: unknown;
 }
 
@@ -147,6 +151,9 @@ export const WorkflowNode = memo(function WorkflowNode({
     bodyCount,
     onToggleCollapse,
     subtitle,
+    isRenaming,
+    onRenameConfirm,
+    onRenameCancel,
   } = d;
   const isVerification = role === "Verification";
   const isCollapsedGroup = bodyCount != null;
@@ -199,9 +206,13 @@ export const WorkflowNode = memo(function WorkflowNode({
           {icon}
         </div>
         <div className="flex flex-col min-w-0 max-w-[180px]">
-          <span className="text-xs font-medium text-[var(--text-primary)] truncate">
-            {label}
-          </span>
+          {isRenaming && onRenameConfirm && onRenameCancel ? (
+            <InlineRenameInput label={label} onConfirm={onRenameConfirm} onCancel={onRenameCancel} />
+          ) : (
+            <span className="text-xs font-medium text-[var(--text-primary)] truncate">
+              {label}
+            </span>
+          )}
           {subtitle && (
             <span className="text-[10px] text-[var(--text-muted)] truncate max-w-full">
               {subtitle}

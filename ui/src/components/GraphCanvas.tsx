@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -21,7 +21,8 @@ import { UserGroupNode } from "./UserGroupNode";
 import { WorkflowNode } from "./WorkflowNode";
 import { GroupContextMenu, type GroupContextMenuItem } from "./GroupContextMenu";
 import { CreateGroupPopover } from "./CreateGroupPopover";
-import { validateGroupCreation, topologicalSortMembers } from "../utils/groupValidation";
+import { validateGroupCreation, topologicalSortMembers, expandCollapsedSelection } from "../utils/groupValidation";
+import { isTextInput } from "../hooks/useUndoRedoKeyboard";
 
 interface GraphCanvasProps {
   workflow: Workflow;
@@ -71,6 +72,21 @@ export function GraphCanvas({
   const appState = useAppGrouping(workflow);
   const userGroupState = useUserGrouping(workflow);
 
+  // Inline rename state — declared before useNodeSync so it can be passed in
+  const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null);
+
+  const handleRenameConfirm = useCallback(
+    (groupId: string, newName: string) => {
+      if (newName.trim()) onRenameGroup(groupId, newName.trim());
+      setRenamingGroupId(null);
+    },
+    [onRenameGroup],
+  );
+
+  const handleRenameCancel = useCallback(() => {
+    setRenamingGroupId(null);
+  }, []);
+
   const { rfNodes, handleNodesChange, handleNodeDragStart, deletedNodeIdsRef } = useNodeSync({
     workflow,
     selectedNode,
@@ -85,11 +101,18 @@ export function GraphCanvas({
     nodeToUserGroup: userGroupState.nodeToUserGroup,
     userGroupMeta: userGroupState.userGroupMeta,
     toggleUserGroupCollapse: userGroupState.toggleUserGroupCollapse,
+    renamingGroupId,
+    onRenameConfirm: handleRenameConfirm,
+    onRenameCancel: handleRenameCancel,
     onSelectNode,
     onNodePositionsChange,
     onDeleteNodes,
     onBeforeNodeDrag,
   });
+
+  // Ref for rfNodes so callbacks/effects can read current value without re-subscribing
+  const rfNodesRef = useRef(rfNodes);
+  rfNodesRef.current = rfNodes;
 
   const mergedHiddenNodeIds = useMemo(() => {
     const ids = new Set(loopState.hiddenNodeIds);
@@ -175,17 +198,14 @@ export function GraphCanvas({
           if (meta) {
             items.push({
               label: "Rename",
-              action: () => {
-                const newName = window.prompt("Rename group:", meta.name);
-                if (newName && newName.trim()) onRenameGroup(groupId, newName.trim());
-              },
+              action: () => setRenamingGroupId(groupId),
             });
             items.push({
               label: "Change Color",
-              action: () => {
-                // TODO: inline color picker — stub for now
+              colorPicker: {
+                currentColor: meta.color,
+                onPickColor: (color: string) => onRecolorGroup(groupId, color),
               },
-              disabled: true,
             });
             items.push({
               label: "Ungroup",
@@ -212,10 +232,7 @@ export function GraphCanvas({
             });
             items.push({
               label: "Rename",
-              action: () => {
-                const newName = window.prompt("Rename group:", meta.name);
-                if (newName && newName.trim()) onRenameGroup(groupId, newName.trim());
-              },
+              action: () => setRenamingGroupId(groupId),
             });
             items.push({
               label: "Ungroup",
@@ -278,48 +295,24 @@ export function GraphCanvas({
       }
 
       // Case 5: Multi-selection (2+ nodes) — check for "Create Group" option
-      const selectedNodes = rfNodes.filter(
+      const selectedNodes = rfNodesRef.current.filter(
         (n) => n.selected && !n.hidden,
       );
       if (selectedNodes.length >= 2) {
         const rawSelectedIds = selectedNodes.map((n: RFNode) => n.id);
-
-        // Expand collapsed auto-group pills to full member lists
-        const expandedIds: string[] = [];
-        for (const id of rawSelectedIds) {
-          // Check if this is a collapsed app group anchor
-          const appGroupId = appState.nodeToAppGroup.get(id);
-          if (appGroupId && appState.collapsedApps.has(appGroupId)) {
-            const members = appState.appGroups.get(appGroupId) ?? [];
-            for (const m of members) {
-              if (!expandedIds.includes(m)) expandedIds.push(m);
-            }
-            continue;
-          }
-          // Check if this is a collapsed loop
-          if (loopState.collapsedLoops.has(id)) {
-            const members = loopState.loopMembers.get(id) ?? [];
-            expandedIds.push(id); // include the loop node itself
-            for (const m of members) {
-              if (!expandedIds.includes(m)) expandedIds.push(m);
-            }
-            continue;
-          }
-          expandedIds.push(id);
-        }
-
-        // Build loopMembers map in format expected by validateGroupCreation
-        const loopMembersMap = loopState.loopMembers;
-        // Build appGroups map
-        const appGroupsMap = appState.appGroups;
+        const expandedIds = expandCollapsedSelection(
+          rawSelectedIds,
+          appState.collapsedApps, appState.nodeToAppGroup, appState.appGroups,
+          loopState.collapsedLoops, loopState.loopMembers,
+        );
         const existingGroups = workflow.groups ?? [];
 
         const result = validateGroupCreation(
           expandedIds,
           workflow,
           existingGroups,
-          loopMembersMap,
-          appGroupsMap,
+          loopState.loopMembers,
+          appState.appGroups,
         );
 
         if (result.valid) {
@@ -359,7 +352,6 @@ export function GraphCanvas({
       onDeleteGroupWithContents,
       onRemoveNodesFromGroup,
       onAddNodesToGroup,
-      rfNodes,
     ],
   );
 
@@ -373,8 +365,55 @@ export function GraphCanvas({
     [createGroupPopover, onCreateGroup],
   );
 
+  // ── Cmd+G keyboard shortcut for quick group creation ──────────
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (isTextInput(document.activeElement)) return;
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "g") return;
+
+      e.preventDefault();
+
+      const currentNodes = rfNodesRef.current;
+      const selectedNodes = currentNodes.filter((n) => n.selected && !n.hidden);
+      if (selectedNodes.length < 2) return;
+
+      const rawSelectedIds = selectedNodes.map((n) => n.id);
+      const expandedIds = expandCollapsedSelection(
+        rawSelectedIds,
+        appState.collapsedApps, appState.nodeToAppGroup, appState.appGroups,
+        loopState.collapsedLoops, loopState.loopMembers,
+      );
+
+      const existingGroups = workflow.groups ?? [];
+      const result = validateGroupCreation(
+        expandedIds, workflow, existingGroups,
+        loopState.loopMembers, appState.appGroups,
+      );
+      if (!result.valid) return;
+
+      const sorted = topologicalSortMembers(expandedIds, workflow);
+
+      const rect = wrapperRef.current?.getBoundingClientRect();
+      const pos = rect
+        ? { x: rect.width / 2 - 120, y: rect.height / 2 - 80 }
+        : { x: 200, y: 200 };
+
+      setContextMenu(null);
+      setCreateGroupPopover({
+        position: pos,
+        nodeIds: sorted,
+        parentGroupId: result.parentGroupId ?? null,
+      });
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [workflow, loopState, appState]);
+
   return (
-    <div className="relative h-full w-full" data-graph-canvas-wrapper>
+    <div ref={wrapperRef} className="relative h-full w-full" data-graph-canvas-wrapper>
       <ReactFlow
         nodes={rfNodes}
         edges={rfEdges}

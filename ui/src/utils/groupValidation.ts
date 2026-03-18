@@ -215,3 +215,36 @@ export function topologicalSortMembers(nodeIds: string[], workflow: Workflow): s
 
   return sorted;
 }
+
+/**
+ * Expand collapsed auto-group pills in a selection to their full member lists.
+ * Collapsed app groups and collapsed loops are expanded; regular nodes pass through.
+ */
+export function expandCollapsedSelection(
+  rawSelectedIds: string[],
+  collapsedApps: Set<string>,
+  nodeToAppGroup: Map<string, string>,
+  appGroups: Map<string, string[]>,
+  collapsedLoops: Set<string>,
+  loopMembers: Map<string, string[]>,
+): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  const add = (id: string) => { if (!seen.has(id)) { seen.add(id); result.push(id); } };
+
+  for (const id of rawSelectedIds) {
+    const appGroupId = nodeToAppGroup.get(id);
+    if (appGroupId && collapsedApps.has(appGroupId)) {
+      for (const m of appGroups.get(appGroupId) ?? []) add(m);
+      continue;
+    }
+    if (collapsedLoops.has(id)) {
+      add(id);
+      for (const m of loopMembers.get(id) ?? []) add(m);
+      continue;
+    }
+    add(id);
+  }
+
+  return result;
+}
