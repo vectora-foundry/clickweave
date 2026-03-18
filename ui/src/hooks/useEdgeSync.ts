@@ -59,6 +59,11 @@ export function useEdgeSync({
     const seen = new Set<string>();
 
     for (const e of workflow.edges) {
+      // Filter loop control edges before rewriting — use original source ID
+      // (not the rewritten group anchor) to check collapsedLoops correctly.
+      if (e.output?.type === "LoopBody") continue;
+      if (e.output?.type === "LoopDone" && !collapsedLoops.has(e.from)) continue;
+
       const from = combinedRewrites.get(e.from) ?? e.from;
       const to = combinedRewrites.get(e.to) ?? e.to;
 
@@ -73,16 +78,10 @@ export function useEdgeSync({
       rewritten.push({ from, to, output: e.output });
     }
 
-    // Step 2: Apply existing hidden-node and collapsed-loop filters
+    // Step 2: Apply remaining hidden-node filter
     return rewritten
       .filter((e) => {
         if (hiddenNodeIds.has(e.from) || hiddenNodeIds.has(e.to)) return false;
-        // LoopBody edges are always hidden: collapsed loops hide body members,
-        // expanded loops use the container to communicate containment.
-        if (e.output?.type === "LoopBody") return false;
-        // LoopDone edges are hidden when expanded (container shows it);
-        // when collapsed, the done edge exits the pill normally.
-        if (e.output?.type === "LoopDone" && !collapsedLoops.has(e.from)) return false;
         return true;
       })
       .map((e) => ({
