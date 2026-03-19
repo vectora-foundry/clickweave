@@ -66,33 +66,14 @@ export const LoopGroupNode = memo(function LoopGroupNode({
         </button>
       </div>
 
-      {/* Source handles on the group boundary */}
-      <Handle
-        type="source"
-        position={Position.Right}
-        id="LoopBody"
-        className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-        style={{ borderColor: "#10b981", top: "30%" }}
-      />
+      {/* LoopDone exit handle — body handle removed since containment communicates it */}
       <Handle
         type="source"
         position={Position.Right}
         id="LoopDone"
         className="!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]"
-        style={{ borderColor: "#f59e0b", top: "70%" }}
+        style={{ borderColor: "#f59e0b" }}
       />
-      <span
-        className="absolute right-5 text-[8px] text-[var(--text-muted)]"
-        style={{ top: "27%" }}
-      >
-        body
-      </span>
-      <span
-        className="absolute right-5 text-[8px] text-[var(--text-muted)]"
-        style={{ top: "67%" }}
-      >
-        done
-      </span>
     </div>
   );
 });

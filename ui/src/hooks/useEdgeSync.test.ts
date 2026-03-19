@@ -8,14 +8,12 @@ import { node, edge, makeWorkflow } from "./test-helpers";
 function renderEdgeSync(params: {
   workflow: Workflow;
   hiddenNodeIds?: Set<string>;
-  collapsedLoops?: Set<string>;
   collapsedAppEdgeRewrites?: Map<string, string>;
   collapsedUserGroupEdgeRewrites?: Map<string, string>;
 }) {
   const {
     workflow,
     hiddenNodeIds = new Set(),
-    collapsedLoops = new Set(),
     collapsedAppEdgeRewrites = new Map(),
     collapsedUserGroupEdgeRewrites = new Map(),
   } = params;
@@ -24,7 +22,6 @@ function renderEdgeSync(params: {
     return useEdgeSync({
       workflow,
       hiddenNodeIds,
-      collapsedLoops,
       collapsedAppEdgeRewrites,
       collapsedUserGroupEdgeRewrites,
       deletedNodeIdsRef,
@@ -48,7 +45,7 @@ describe("useEdgeSync", () => {
     expect(result.current.rfEdges).toHaveLength(0);
   });
 
-  it("filters LoopBody edges when loop is collapsed", () => {
+  it("always filters LoopBody edges, keeps LoopDone", () => {
     const wf = makeWorkflow(
       [
         node("loop1", "Loop", { exit_condition: { type: "Always" }, max_iterations: 3 }),
@@ -60,10 +57,7 @@ describe("useEdgeSync", () => {
         edge("loop1", "done", { type: "LoopDone" }),
       ],
     );
-    const { result } = renderEdgeSync({
-      workflow: wf,
-      collapsedLoops: new Set(["loop1"]),
-    });
+    const { result } = renderEdgeSync({ workflow: wf });
     // LoopBody edge filtered, LoopDone edge kept
     expect(result.current.rfEdges).toHaveLength(1);
     expect(result.current.rfEdges[0].label).toBe("done");

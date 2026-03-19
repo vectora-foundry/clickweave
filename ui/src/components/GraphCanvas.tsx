@@ -138,7 +138,6 @@ export function GraphCanvas({
   const { rfEdges, handleEdgesChange, handleConnect } = useEdgeSync({
     workflow,
     hiddenNodeIds: mergedHiddenNodeIds,
-    collapsedLoops: loopState.collapsedLoops,
     collapsedAppEdgeRewrites: filteredAppEdgeRewrites,
     collapsedUserGroupEdgeRewrites: userGroupState.userGroupEdgeRewrites,
     deletedNodeIdsRef,
@@ -435,7 +434,7 @@ export function GraphCanvas({
         snapToGrid
         snapGrid={[20, 20]}
         defaultEdgeOptions={{
-          type: "default",
+          type: "smoothstep",
           selectable: true,
           markerEnd: { type: MarkerType.ArrowClosed, color: "#666" },
           style: { stroke: "#555", strokeWidth: 2 },
