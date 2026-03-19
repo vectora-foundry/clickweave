@@ -1,7 +1,11 @@
 /target
 node_modules
 .DS_Store
-/.claude
+.claude/memory/
+.claude/settings.local.json
+.claude/plans/
+.claude/code-reviews/
+.claude/handoff/
 /data
 .mcp.json
 .worktrees
