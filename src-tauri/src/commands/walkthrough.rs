@@ -18,6 +18,9 @@ use crate::platform::CaptureCommand;
 #[cfg(target_os = "macos")]
 use crate::platform::macos::MacOSEventTap;
 
+#[cfg(target_os = "windows")]
+use crate::platform::windows::WindowsEventHook;
+
 // Re-export from submodules for use within the commands crate.
 pub use super::walkthrough_session::WalkthroughHandle;
 
@@ -237,11 +240,46 @@ pub async fn start_walkthrough(
         guard.processing_task = Some(processing_task);
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        let (event_hook, event_rx) = match WindowsEventHook::start() {
+            Ok(pair) => pair,
+            Err(e) => {
+                clear_session(&app);
+                return Err(CommandError::internal(format!(
+                    "Failed to start event hook: {e}"
+                )));
+            }
+        };
+
+        let emit_handle = app.clone();
+        let hover_dwell_ms = hover_dwell_threshold.unwrap_or(2000);
+        let processing_task = tauri::async_runtime::spawn(async move {
+            process_capture_events(
+                emit_handle,
+                event_rx,
+                mcp_command,
+                planner,
+                processing_storage,
+                session_dir,
+                cancel,
+                cdp_apps,
+                hover_dwell_ms,
+            )
+            .await;
+        });
+
+        let handle = app.state::<Mutex<WalkthroughHandle>>();
+        let mut guard = handle.lock().unwrap();
+        guard.event_hook = Some(event_hook);
+        guard.processing_task = Some(processing_task);
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         clear_session(&app);
         return Err(CommandError::internal(
-            "Walkthrough capture is only supported on macOS",
+            "Walkthrough capture is only supported on macOS and Windows",
         ));
     }
 
@@ -262,6 +300,11 @@ pub async fn pause_walkthrough(app: tauri::AppHandle) -> Result<(), CommandError
     #[cfg(target_os = "macos")]
     if let Some(tap) = &guard.event_tap {
         tap.send_command(CaptureCommand::Pause);
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Some(hook) = &guard.event_hook {
+        hook.send_command(CaptureCommand::Pause);
     }
 
     // Persist a Paused event.
@@ -292,6 +335,11 @@ pub async fn resume_walkthrough(app: tauri::AppHandle) -> Result<(), CommandErro
     #[cfg(target_os = "macos")]
     if let Some(tap) = &guard.event_tap {
         tap.send_command(CaptureCommand::Resume);
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Some(hook) = &guard.event_hook {
+        hook.send_command(CaptureCommand::Resume);
     }
 
     // Persist a Resumed event.

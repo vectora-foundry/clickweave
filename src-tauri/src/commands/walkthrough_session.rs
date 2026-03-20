@@ -352,7 +352,13 @@ const CDP_STOP_HOVER_JS: &str = r#"() => {
 #[cfg(target_os = "macos")]
 use crate::platform::macos::{CursorRegionCapture, MacOSEventTap};
 
+#[cfg(target_os = "windows")]
+use crate::platform::windows::{CursorRegionCapture, WindowsEventHook};
+
 #[cfg(target_os = "macos")]
+use std::sync::RwLock;
+
+#[cfg(target_os = "windows")]
 use std::sync::RwLock;
 
 /// Shared buffer holding the most recent cursor region capture (64×64pt around
@@ -362,6 +368,9 @@ use std::sync::RwLock;
 /// Inner `Arc` avoids cloning the pixel data when reading on click — only an
 /// `Arc` pointer bump instead of a 64 KB memcpy.
 #[cfg(target_os = "macos")]
+type ScreenshotBuffer = Arc<RwLock<Option<Arc<CursorRegionCapture>>>>;
+
+#[cfg(target_os = "windows")]
 type ScreenshotBuffer = Arc<RwLock<Option<Arc<CursorRegionCapture>>>>;
 
 /// Cached info about a running app, populated from MCP's `list_apps` response.
@@ -378,6 +387,8 @@ pub struct WalkthroughHandle {
     pub(super) mcp_command: Option<String>,
     #[cfg(target_os = "macos")]
     pub(super) event_tap: Option<MacOSEventTap>,
+    #[cfg(target_os = "windows")]
+    pub(super) event_hook: Option<WindowsEventHook>,
     pub(super) processing_task: Option<tauri::async_runtime::JoinHandle<()>>,
     /// Cancellation signal for the processing loop.
     pub(super) cancel_tx: tokio::sync::watch::Sender<bool>,
@@ -393,6 +404,8 @@ impl Default for WalkthroughHandle {
             mcp_command: None,
             #[cfg(target_os = "macos")]
             event_tap: None,
+            #[cfg(target_os = "windows")]
+            event_hook: None,
             processing_task: None,
             cancel_tx,
         }
@@ -433,6 +446,13 @@ impl WalkthroughHandle {
             // Drop the tap handle — this joins the thread and closes the sender.
             drop(tap);
         }
+
+        #[cfg(target_os = "windows")]
+        if let Some(hook) = self.event_hook.take() {
+            hook.send_command(CaptureCommand::Stop);
+            drop(hook);
+        }
+
         self.processing_task.take()
     }
 }
@@ -575,6 +595,29 @@ pub(super) async fn process_capture_events(
                 let _ = tokio::task::spawn_blocking(move || {
                     let (cx, cy) = crate::platform::macos::get_cursor_position();
                     if let Some(shot) = crate::platform::macos::capture_cursor_region(cx, cy)
+                        && let Ok(mut guard) = buf2.write()
+                    {
+                        *guard = Some(Arc::new(shot));
+                    }
+                })
+                .await;
+            }
+        })
+    };
+
+    #[cfg(target_os = "windows")]
+    let screenshot_buffer: ScreenshotBuffer = Arc::new(RwLock::new(None));
+
+    #[cfg(target_os = "windows")]
+    let cursor_poll_handle = {
+        let buf = screenshot_buffer.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                let buf2 = buf.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let (cx, cy) = crate::platform::windows::get_cursor_position();
+                    if let Some(shot) = crate::platform::windows::capture_cursor_region(cx, cy)
                         && let Ok(mut guard) = buf2.write()
                     {
                         *guard = Some(Arc::new(shot));
@@ -749,6 +792,9 @@ pub(super) async fn process_capture_events(
                     #[cfg(target_os = "macos")]
                     let task_prehover = screenshot_buffer.read().ok().and_then(|g| g.clone());
 
+                    #[cfg(target_os = "windows")]
+                    let task_prehover = screenshot_buffer.read().ok().and_then(|g| g.clone());
+
                     bg_tasks.spawn(async move {
                         enrich_click_background(
                             task_mcp,
@@ -764,6 +810,8 @@ pub(super) async fn process_capture_events(
                             task_kind_cache,
                             task_pid,
                             #[cfg(target_os = "macos")]
+                            task_prehover,
+                            #[cfg(target_os = "windows")]
                             task_prehover,
                         )
                         .await;
@@ -852,6 +900,9 @@ pub(super) async fn process_capture_events(
 
     // Stop the cursor region polling task.
     #[cfg(target_os = "macos")]
+    cursor_poll_handle.abort();
+
+    #[cfg(target_os = "windows")]
     cursor_poll_handle.abort();
 
     // Stop continuous recording and persist the frame list so
@@ -1795,6 +1846,7 @@ async fn enrich_click_background(
     app_kind_cache: Arc<Mutex<HashMap<i32, AppKind>>>,
     target_pid: i32,
     #[cfg(target_os = "macos")] prehover_screenshot: Option<Arc<CursorRegionCapture>>,
+    #[cfg(target_os = "windows")] prehover_screenshot: Option<Arc<CursorRegionCapture>>,
 ) {
     use base64::Engine;
     use clickweave_core::walkthrough::ScreenshotMeta;
@@ -1906,6 +1958,32 @@ async fn enrich_click_background(
 
         // Try the cursor region capture first (pre-hover, already cropped).
         #[cfg(target_os = "macos")]
+        if let Some(shot) = prehover_screenshot {
+            tracing::debug!("Using cursor region capture for click crop");
+            let artifacts_for_capture = artifacts_dir.clone();
+            let crop_result = tokio::task::spawn_blocking(move || {
+                let img =
+                    image::RgbaImage::from_raw(shot.width, shot.height, shot.rgba_bytes.clone())?;
+                let dynamic = image::DynamicImage::ImageRgba8(img);
+                let mut jpeg_buf = std::io::Cursor::new(Vec::new());
+                dynamic
+                    .write_to(&mut jpeg_buf, image::ImageFormat::Jpeg)
+                    .ok()?;
+                let jpeg_bytes = jpeg_buf.into_inner();
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg_bytes);
+                let filename = format!("crop_{timestamp}.jpg");
+                let path = artifacts_for_capture.join(&filename);
+                let _ = std::fs::write(&path, &jpeg_bytes);
+                Some((b64, path))
+            })
+            .await;
+            if let Ok(Some((crop_b64, crop_path))) = crop_result {
+                emit_crop(crop_b64, crop_path);
+                return;
+            }
+        }
+
+        #[cfg(target_os = "windows")]
         if let Some(shot) = prehover_screenshot {
             tracing::debug!("Using cursor region capture for click crop");
             let artifacts_for_capture = artifacts_dir.clone();

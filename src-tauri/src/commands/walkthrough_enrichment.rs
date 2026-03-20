@@ -47,7 +47,9 @@ const VLM_LABEL_MAX_LEN: usize = 80;
 /// platforms it's defined inline.
 #[cfg(target_os = "macos")]
 use crate::platform::macos::CURSOR_REGION_HALF_PT as CROP_HALF_SIZE_PTS;
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+use crate::platform::windows::CURSOR_REGION_HALF_PT as CROP_HALF_SIZE_PTS;
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const CROP_HALF_SIZE_PTS: f64 = 32.0;
 
 /// Enrich a click event with accessibility data and a screenshot with OCR.
