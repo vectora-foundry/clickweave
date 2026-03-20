@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 use tracing::info;
 
-use super::{CaptureCommand, CaptureEvent, CaptureEventKind, MouseButton};
+use super::{CaptureCommand, CaptureEvent, CaptureEventKind, CursorRegionCapture, MouseButton, CURSOR_REGION_HALF_PT};
 
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, POINT, WPARAM};
@@ -20,24 +20,6 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-/// Half-size of the cursor region capture in screen points.
-/// 32pt → 64pt total region around the cursor.
-#[allow(dead_code)]
-pub const CURSOR_REGION_HALF_PT: f64 = 32.0;
-
-/// A small screen region captured around the cursor position.
-///
-/// Stores raw RGBA pixels. The captured region IS the click crop template —
-/// no secondary crop step is needed.
-#[allow(dead_code)]
-#[derive(Clone)]
-pub struct CursorRegionCapture {
-    /// Raw RGBA pixel data (4 bytes per pixel, row-major, top-down).
-    pub rgba_bytes: Vec<u8>,
-    pub width: u32,
-    pub height: u32,
-}
-
 // ---------------------------------------------------------------------------
 // Virtual key → name mapping
 // ---------------------------------------------------------------------------
@@ -47,7 +29,6 @@ pub struct CursorRegionCapture {
 ///
 /// Names mirror the macOS `keycode_to_name()` mapping so that recorded
 /// walkthrough events are platform-agnostic at the consumer level.
-#[allow(dead_code)]
 pub fn vk_to_name(vk: u16) -> String {
     match vk {
         // Special keys.
@@ -129,7 +110,6 @@ pub fn vk_to_name(vk: u16) -> String {
 ///
 /// Two clicks are considered consecutive when they target the same mouse button,
 /// occur within 500 ms of each other, and land within 4 px of each other.
-#[allow(dead_code)]
 pub struct ClickTracker {
     last_button: u32,
     last_x: i32,
@@ -187,7 +167,6 @@ impl ClickTracker {
 /// pixels suitable for use with image encoders and the MCP screenshot path.
 ///
 /// `bgra` must contain exactly `width * height * 4` bytes.
-#[allow(dead_code)]
 pub fn bgra_bottom_up_to_rgba(bgra: &[u8], width: u32, height: u32) -> Vec<u8> {
     let row_bytes = (width * 4) as usize;
     let mut rgba = Vec::with_capacity(bgra.len());
@@ -237,7 +216,6 @@ thread_local! {
 ///
 /// Hooks run on a dedicated `std::thread` with its own Win32 message pump.
 /// Events are sent through a tokio mpsc channel to the async processing loop.
-#[allow(dead_code)]
 #[cfg(target_os = "windows")]
 pub struct WindowsEventHook {
     thread: Option<std::thread::JoinHandle<()>>,
@@ -419,6 +397,8 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
                     let x = hook_struct.pt.x as f64;
                     let y = hook_struct.pt.y as f64;
                     let timestamp = clickweave_core::storage::now_millis();
+                    let modifiers = get_modifiers();
+                    let target_pid = get_foreground_pid();
 
                     HOOK_STATE.with(|cell| {
                         let mut state = cell.borrow_mut();
@@ -429,8 +409,6 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
                                 hook_struct.pt.y,
                                 hook_struct.time as u64,
                             );
-                            let modifiers = get_modifiers();
-                            let target_pid = get_foreground_pid();
                             let event = CaptureEvent {
                                 kind: CaptureEventKind::MouseClick {
                                     x,
@@ -506,35 +484,27 @@ unsafe extern "system" fn keyboard_hook_proc(
                 return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
             }
 
-            let paused = HOOK_STATE.with(|cell| {
-                cell.borrow()
-                    .as_ref()
-                    .map_or(true, |s| s.paused.load(Ordering::SeqCst))
-            });
-            if paused {
-                // SAFETY: standard hook chain forwarding.
-                return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
-            }
-
-            // Auto-repeat filter: skip if key is already held.
-            let already_held = HOOK_STATE.with(|cell| {
-                cell.borrow()
-                    .as_ref()
-                    .map_or(false, |s| s.held_keys.contains(&vk))
-            });
-            if already_held {
-                // SAFETY: standard hook chain forwarding.
-                return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
-            }
-
-            // Mark key as held.
-            HOOK_STATE.with(|cell| {
+            // Check paused, auto-repeat, and mark key as held in one borrow.
+            let should_send = HOOK_STATE.with(|cell| {
                 let mut state = cell.borrow_mut();
-                if let Some(s) = state.as_mut() {
-                    s.held_keys.insert(vk);
+                let Some(s) = state.as_mut() else {
+                    return false;
+                };
+                if s.paused.load(Ordering::SeqCst) {
+                    return false;
                 }
+                // Auto-repeat filter: skip if key is already held.
+                if !s.held_keys.insert(vk) {
+                    return false;
+                }
+                true
             });
+            if !should_send {
+                // SAFETY: standard hook chain forwarding.
+                return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
+            }
 
+            // Compute event fields outside any borrow.
             let key_name = vk_to_name(vk);
             let characters = get_unicode_char(vk as u32, hook_struct.scanCode);
             let modifiers = get_modifiers();

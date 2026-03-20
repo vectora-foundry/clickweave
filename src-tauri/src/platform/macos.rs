@@ -428,21 +428,7 @@ unsafe extern "C" {
 use core_graphics::display::{CGDisplay, CGPoint, CGRect, CGSize};
 use core_graphics::window::{kCGNullWindowID, kCGWindowListOptionOnScreenOnly};
 
-/// Half-size of the cursor region capture in screen points.
-/// 32pt → 64pt total → 128px on Retina.
-pub const CURSOR_REGION_HALF_PT: f64 = 32.0;
-
-/// A small screen region captured around the cursor position.
-///
-/// Stores raw RGBA pixels. The captured region IS the click crop template —
-/// no secondary crop step is needed.
-#[derive(Clone)]
-pub struct CursorRegionCapture {
-    /// Raw RGBA pixel data (4 bytes per pixel, row-major).
-    pub rgba_bytes: Vec<u8>,
-    pub width: u32,
-    pub height: u32,
-}
+use super::{CursorRegionCapture, CURSOR_REGION_HALF_PT};
 
 /// Get the current cursor position in screen coordinates (points).
 pub fn get_cursor_position() -> (f64, f64) {

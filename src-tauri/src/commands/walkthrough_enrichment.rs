@@ -45,12 +45,7 @@ const VLM_LABEL_MAX_LEN: usize = 80;
 /// Half-size of the click crop in screen points (32pt radius → 64pt square →
 /// 128px on Retina). On macOS this re-exports the platform constant; on other
 /// platforms it's defined inline.
-#[cfg(target_os = "macos")]
-use crate::platform::macos::CURSOR_REGION_HALF_PT as CROP_HALF_SIZE_PTS;
-#[cfg(target_os = "windows")]
-use crate::platform::windows::CURSOR_REGION_HALF_PT as CROP_HALF_SIZE_PTS;
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-const CROP_HALF_SIZE_PTS: f64 = 32.0;
+use crate::platform::CURSOR_REGION_HALF_PT as CROP_HALF_SIZE_PTS;
 
 /// Enrich a click event with accessibility data and a screenshot with OCR.
 ///
