@@ -1,0 +1,21 @@
+# Normalize all text files to LF in the repo, native line endings on checkout.
+* text=auto eol=lf
+
+# Ensure these are always LF, even on Windows checkouts.
+*.rs text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# Binary files — no conversion.
+*.ico binary
+*.png binary
+*.jpg binary
+*.woff2 binary
