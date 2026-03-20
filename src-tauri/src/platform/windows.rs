@@ -1,18 +1,20 @@
-#[allow(unused_imports)]
 use std::cell::RefCell;
-#[allow(unused_imports)]
 use std::collections::HashSet;
-#[allow(unused_imports)]
 use std::sync::Arc;
-#[allow(unused_imports)]
 use std::sync::atomic::{AtomicBool, Ordering};
-#[allow(unused_imports)]
 use tokio::sync::mpsc;
-#[allow(unused_imports)]
-use tracing::{error, info};
+use tracing::info;
 
-#[allow(unused_imports)]
 use super::{CaptureCommand, CaptureEvent, CaptureEventKind, MouseButton};
+
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 /// Half-size of the cursor region capture in screen points.
 /// 32pt → 64pt total region around the cursor.
@@ -201,6 +203,430 @@ pub fn bgra_bottom_up_to_rgba(bgra: &[u8], width: u32, height: u32) -> Vec<u8> {
     }
 
     rgba
+}
+
+// ---------------------------------------------------------------------------
+// Windows event hook — low-level mouse and keyboard hooks
+// ---------------------------------------------------------------------------
+
+/// Per-thread state shared between the hook thread functions and the thread
+/// lifecycle management code. Stored in a thread-local to avoid needing a
+/// global pointer while remaining accessible from `extern "system"` callbacks
+/// (which cannot capture closures).
+#[cfg(target_os = "windows")]
+struct HookThreadState {
+    tx: mpsc::UnboundedSender<CaptureEvent>,
+    paused: Arc<AtomicBool>,
+    stopped: Arc<AtomicBool>,
+    mouse_hook: HHOOK,
+    keyboard_hook: HHOOK,
+    click_tracker: ClickTracker,
+    held_keys: HashSet<u16>,
+}
+
+#[cfg(target_os = "windows")]
+thread_local! {
+    static HOOK_STATE: RefCell<Option<HookThreadState>> = const { RefCell::new(None) };
+}
+
+/// Handle for a running Windows low-level input hook pair (mouse + keyboard).
+///
+/// Hooks run on a dedicated `std::thread` with its own Win32 message pump.
+/// Events are sent through a tokio mpsc channel to the async processing loop.
+#[allow(dead_code)]
+#[cfg(target_os = "windows")]
+pub struct WindowsEventHook {
+    thread: Option<std::thread::JoinHandle<()>>,
+    thread_id: u32,
+    paused: Arc<AtomicBool>,
+    stopped: Arc<AtomicBool>,
+}
+
+#[cfg(target_os = "windows")]
+impl WindowsEventHook {
+    /// Start mouse and keyboard hooks on a background thread.
+    ///
+    /// Returns the hook handle and a receiver for captured events.
+    pub fn start() -> Result<(Self, mpsc::UnboundedReceiver<CaptureEvent>), String> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let paused = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::new(AtomicBool::new(false));
+
+        let paused_clone = paused.clone();
+        let stopped_clone = stopped.clone();
+
+        // One-shot channel: hook thread reports its thread ID or an error.
+        let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<u32, String>>();
+
+        let thread = std::thread::Builder::new()
+            .name("walkthrough-event-hook".into())
+            .spawn(move || {
+                run_event_hooks(tx, paused_clone, stopped_clone, init_tx);
+            })
+            .map_err(|e| format!("Failed to spawn event hook thread: {e}"))?;
+
+        let thread_id = init_rx
+            .recv()
+            .map_err(|_| "Event hook thread exited before reporting init status".to_string())??;
+
+        Ok((
+            Self {
+                thread: Some(thread),
+                thread_id,
+                paused,
+                stopped,
+            },
+            rx,
+        ))
+    }
+
+    /// Send a control command to the hook thread.
+    pub fn send_command(&self, cmd: CaptureCommand) {
+        match cmd {
+            CaptureCommand::Pause => self.paused.store(true, Ordering::SeqCst),
+            CaptureCommand::Resume => self.paused.store(false, Ordering::SeqCst),
+            CaptureCommand::Stop => {
+                self.stopped.store(true, Ordering::SeqCst);
+                // Wake the message pump so it can exit.
+                unsafe {
+                    PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for WindowsEventHook {
+    fn drop(&mut self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        unsafe {
+            PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0);
+        }
+        if let Some(handle) = self.thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Thread function: installs hooks, runs message pump, cleans up on exit.
+#[cfg(target_os = "windows")]
+fn run_event_hooks(
+    tx: mpsc::UnboundedSender<CaptureEvent>,
+    paused: Arc<AtomicBool>,
+    stopped: Arc<AtomicBool>,
+    init_tx: std::sync::mpsc::Sender<Result<u32, String>>,
+) {
+    let thread_id = unsafe { GetCurrentThreadId() };
+
+    // Install low-level mouse hook.
+    let mouse_hook = unsafe {
+        SetWindowsHookExW(
+            WH_MOUSE_LL,
+            Some(mouse_hook_proc),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if mouse_hook.is_null() {
+        let _ = init_tx.send(Err("Failed to install WH_MOUSE_LL hook".to_string()));
+        return;
+    }
+
+    // Install low-level keyboard hook.
+    let keyboard_hook = unsafe {
+        SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            Some(keyboard_hook_proc),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if keyboard_hook.is_null() {
+        unsafe { UnhookWindowsHookEx(mouse_hook) };
+        let _ = init_tx.send(Err("Failed to install WH_KEYBOARD_LL hook".to_string()));
+        return;
+    }
+
+    // Store per-thread state so hook callbacks can access it.
+    HOOK_STATE.with(|cell| {
+        *cell.borrow_mut() = Some(HookThreadState {
+            tx,
+            paused,
+            stopped,
+            mouse_hook,
+            keyboard_hook,
+            click_tracker: ClickTracker::new(),
+            held_keys: HashSet::new(),
+        });
+    });
+
+    // Signal successful initialization with our thread ID.
+    let _ = init_tx.send(Ok(thread_id));
+
+    info!("Windows event hooks installed (thread {})", thread_id);
+
+    // Message pump — GetMessageW returns 0 when WM_QUIT is received.
+    let mut msg: MSG = unsafe { std::mem::zeroed() };
+    loop {
+        let ret = unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) };
+        if ret == 0 || ret == -1 {
+            break;
+        }
+    }
+
+    // Cleanup: remove hooks and clear thread-local state.
+    unsafe {
+        UnhookWindowsHookEx(mouse_hook);
+        UnhookWindowsHookEx(keyboard_hook);
+    }
+    HOOK_STATE.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+
+    info!("Windows event hooks removed (thread {})", thread_id);
+}
+
+/// Low-level mouse hook callback.
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code >= 0 {
+        // SAFETY: lparam points to a MSLLHOOKSTRUCT when code >= 0 for low-level mouse hooks.
+        let hook_struct = unsafe { &*(lparam as *const MSLLHOOKSTRUCT) };
+
+        let should_process = HOOK_STATE.with(|cell| {
+            let state = cell.borrow();
+            if let Some(s) = state.as_ref() {
+                !s.paused.load(Ordering::SeqCst) && !s.stopped.load(Ordering::SeqCst)
+            } else {
+                false
+            }
+        });
+
+        if should_process {
+            let msg = wparam as u32;
+            match msg {
+                WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => {
+                    let button = match msg {
+                        WM_LBUTTONDOWN => MouseButton::Left,
+                        WM_RBUTTONDOWN => MouseButton::Right,
+                        _ => MouseButton::Center,
+                    };
+                    let x = hook_struct.pt.x as f64;
+                    let y = hook_struct.pt.y as f64;
+                    let timestamp = clickweave_core::storage::now_millis();
+
+                    HOOK_STATE.with(|cell| {
+                        let mut state = cell.borrow_mut();
+                        if let Some(s) = state.as_mut() {
+                            let click_count = s.click_tracker.register_click(
+                                msg,
+                                hook_struct.pt.x,
+                                hook_struct.pt.y,
+                                hook_struct.time as u64,
+                            );
+                            let modifiers = get_modifiers();
+                            let target_pid = get_foreground_pid();
+                            let event = CaptureEvent {
+                                kind: CaptureEventKind::MouseClick {
+                                    x,
+                                    y,
+                                    button,
+                                    click_count,
+                                    modifiers,
+                                },
+                                target_pid,
+                                timestamp,
+                            };
+                            let _ = s.tx.send(event);
+                        }
+                    });
+                }
+                WM_MOUSEWHEEL => {
+                    // High word of mouseData is the signed wheel delta.
+                    let raw_delta = (hook_struct.mouseData >> 16) as i16;
+                    let delta_y = -(raw_delta as f64) / WHEEL_DELTA as f64;
+                    if delta_y.abs() >= 0.5 {
+                        let x = hook_struct.pt.x as f64;
+                        let y = hook_struct.pt.y as f64;
+                        let timestamp = clickweave_core::storage::now_millis();
+                        let target_pid = get_foreground_pid();
+                        HOOK_STATE.with(|cell| {
+                            let state = cell.borrow();
+                            if let Some(s) = state.as_ref() {
+                                let event = CaptureEvent {
+                                    kind: CaptureEventKind::ScrollWheel { delta_y, x, y },
+                                    target_pid,
+                                    timestamp,
+                                };
+                                let _ = s.tx.send(event);
+                            }
+                        });
+                    }
+                }
+                // WM_XBUTTONDOWN and WM_MOUSEHWHEEL are intentionally ignored.
+                _ => {}
+            }
+        }
+    }
+
+    // SAFETY: standard hook chain forwarding.
+    unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
+}
+
+/// Low-level keyboard hook callback.
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn keyboard_hook_proc(
+    code: i32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if code >= 0 {
+        // SAFETY: lparam points to a KBDLLHOOKSTRUCT when code >= 0 for low-level keyboard hooks.
+        let hook_struct = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
+        let vk = hook_struct.vkCode as u16;
+        let msg = wparam as u32;
+
+        // Maintain held_keys for auto-repeat detection.
+        if msg == WM_KEYUP || msg == WM_SYSKEYUP {
+            HOOK_STATE.with(|cell| {
+                let mut state = cell.borrow_mut();
+                if let Some(s) = state.as_mut() {
+                    s.held_keys.remove(&vk);
+                }
+            });
+        } else if msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN {
+            // Skip injected events.
+            if hook_struct.flags & LLKHF_INJECTED != 0 {
+                // SAFETY: standard hook chain forwarding.
+                return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
+            }
+
+            let paused = HOOK_STATE.with(|cell| {
+                cell.borrow()
+                    .as_ref()
+                    .map_or(true, |s| s.paused.load(Ordering::SeqCst))
+            });
+            if paused {
+                // SAFETY: standard hook chain forwarding.
+                return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
+            }
+
+            // Auto-repeat filter: skip if key is already held.
+            let already_held = HOOK_STATE.with(|cell| {
+                cell.borrow()
+                    .as_ref()
+                    .map_or(false, |s| s.held_keys.contains(&vk))
+            });
+            if already_held {
+                // SAFETY: standard hook chain forwarding.
+                return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) };
+            }
+
+            // Mark key as held.
+            HOOK_STATE.with(|cell| {
+                let mut state = cell.borrow_mut();
+                if let Some(s) = state.as_mut() {
+                    s.held_keys.insert(vk);
+                }
+            });
+
+            let key_name = vk_to_name(vk);
+            let characters = get_unicode_char(vk as u32, hook_struct.scanCode);
+            let modifiers = get_modifiers();
+            let target_pid = get_foreground_pid();
+            let timestamp = clickweave_core::storage::now_millis();
+
+            HOOK_STATE.with(|cell| {
+                let state = cell.borrow();
+                if let Some(s) = state.as_ref() {
+                    let event = CaptureEvent {
+                        kind: CaptureEventKind::KeyDown {
+                            key_name,
+                            characters,
+                            modifiers,
+                        },
+                        target_pid,
+                        timestamp,
+                    };
+                    let _ = s.tx.send(event);
+                }
+            });
+        }
+    }
+
+    // SAFETY: standard hook chain forwarding.
+    unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
+}
+
+/// Returns the list of currently held modifier key names.
+#[cfg(target_os = "windows")]
+fn get_modifiers() -> Vec<String> {
+    let mut mods = Vec::new();
+    unsafe {
+        if GetAsyncKeyState(VK_SHIFT as i32) as u16 & 0x8000 != 0 {
+            mods.push("shift".to_string());
+        }
+        if GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000 != 0 {
+            mods.push("control".to_string());
+        }
+        if GetAsyncKeyState(VK_MENU as i32) as u16 & 0x8000 != 0 {
+            mods.push("alt".to_string());
+        }
+        if GetAsyncKeyState(VK_LWIN as i32) as u16 & 0x8000 != 0
+            || GetAsyncKeyState(VK_RWIN as i32) as u16 & 0x8000 != 0
+        {
+            mods.push("command".to_string());
+        }
+    }
+    mods
+}
+
+/// Returns the PID of the process owning the current foreground window.
+#[cfg(target_os = "windows")]
+fn get_foreground_pid() -> i32 {
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            return 0;
+        }
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        pid as i32
+    }
+}
+
+/// Returns the Unicode character(s) produced by the given virtual key and
+/// scan code, using the current keyboard state.
+#[cfg(target_os = "windows")]
+fn get_unicode_char(vk: u32, scan_code: u32) -> Option<String> {
+    let mut keyboard_state = [0u8; 256];
+    let mut buf = [0u16; 8];
+
+    let result = unsafe {
+        GetKeyboardState(keyboard_state.as_mut_ptr());
+        ToUnicode(
+            vk,
+            scan_code,
+            keyboard_state.as_ptr(),
+            buf.as_mut_ptr(),
+            buf.len() as i32,
+            0,
+        )
+    };
+
+    if result <= 0 {
+        return None;
+    }
+
+    String::from_utf16(&buf[..result as usize]).ok().and_then(|s| {
+        // Filter out control characters (e.g., from arrow keys, function keys).
+        if s.chars().all(|c| c.is_control()) {
+            None
+        } else {
+            Some(s)
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
