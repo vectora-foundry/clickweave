@@ -1,6 +1,7 @@
 /target
 node_modules
 .DS_Store
+src-tauri/logs/
 .claude/memory/
 .claude/settings.local.json
 .claude/plans/
