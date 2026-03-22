@@ -34,18 +34,6 @@ impl<'a> CdpExpected<'a> {
     }
 }
 
-/// Pick a random port in the ephemeral range (49152-65535).
-fn rand_ephemeral_port() -> u16 {
-    use std::time::SystemTime;
-    let seed = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    let raw = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-    let range = 65535 - 49152;
-    49152 + (raw % range) as u16
-}
-
 impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Resolve a text target to a CDP element UID via snapshot + find + disambiguate.
     ///
@@ -299,7 +287,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let port = if self.execution_mode == ExecutionMode::Test {
             // Test mode: pick a random port, relaunch the app, connect.
-            let port = rand_ephemeral_port();
+            let port = clickweave_core::cdp::rand_ephemeral_port();
             self.log(format!(
                 "Restarting '{}' with DevTools enabled (port {})...",
                 app_name, port

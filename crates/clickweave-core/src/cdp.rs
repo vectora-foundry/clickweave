@@ -1,3 +1,15 @@
+/// Pick a random port in the ephemeral range (49152-65535).
+pub fn rand_ephemeral_port() -> u16 {
+    use std::time::SystemTime;
+    let seed = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    let raw = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+    let range = 65535 - 49152;
+    49152 + (raw % range) as u16
+}
+
 /// A match found in a CDP snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotMatch {
