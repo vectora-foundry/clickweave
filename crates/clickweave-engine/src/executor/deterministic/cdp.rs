@@ -390,11 +390,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Try to connect CDP to an app, returning true on success.
     /// Disconnects on failure to avoid leaving a stale connection.
     async fn try_cdp_connect(&self, app_name: &str, port: u16, mcp: &(impl Mcp + ?Sized)) -> bool {
-        if mcp
+        let ok = match mcp
             .call_tool("cdp_connect", Some(serde_json::json!({"port": port})))
             .await
-            .is_err()
         {
+            Ok(r) if r.is_error != Some(true) => true,
+            _ => false,
+        };
+        if !ok {
             return false;
         }
         if self.poll_cdp_ready(app_name, mcp, 5).await.is_ok() {
