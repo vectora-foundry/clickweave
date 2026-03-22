@@ -278,7 +278,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             // Lazy CDP spawn for Electron/Chrome apps.
             if app_kind.uses_cdp() {
-                self.ensure_cdp_server(node_id, &app.name, mcp, node_run.as_deref())
+                self.ensure_cdp_connected(node_id, &app.name, mcp, node_run.as_deref())
                     .await?;
                 // Re-resolve PID -- it may have changed if the app was relaunched.
                 app = self
@@ -389,7 +389,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             // Lazy CDP spawn for Electron/Chrome apps (same as FocusWindow path).
             if launch_app_kind.uses_cdp() {
-                self.ensure_cdp_server(node_id, name, mcp, node_run.as_deref())
+                self.ensure_cdp_connected(node_id, name, mcp, node_run.as_deref())
                     .await?;
             }
         }

@@ -1,9 +1,3 @@
-/// Build the CDP server name for a given app.
-/// Each Electron/Chrome app gets its own named server: `"cdp:<app_name>"`.
-pub fn cdp_server_name(app_name: &str) -> String {
-    format!("cdp:{app_name}")
-}
-
 /// A match found in a CDP snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotMatch {
@@ -223,8 +217,8 @@ fn extract_url(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cdp_server_name, extract_label, extract_url, find_elements_in_snapshot, narrow_by_parent,
-        narrow_matches, parse_line_uid,
+        extract_label, extract_url, find_elements_in_snapshot, narrow_by_parent, narrow_matches,
+        parse_line_uid,
     };
 
     // Real chrome-devtools-mcp format (unquoted UIDs).
@@ -244,12 +238,6 @@ uid=1_0 RootWebArea "#avail | DevCrew" url="https://discord.com/"
 [uid="e1"] button "Submit"
 [uid="e2"] link "Friends"
 "##;
-
-    #[test]
-    fn server_name_format() {
-        assert_eq!(cdp_server_name("Discord"), "cdp:Discord");
-        assert_eq!(cdp_server_name("Google Chrome"), "cdp:Google Chrome");
-    }
 
     #[test]
     fn parse_uid_unquoted() {

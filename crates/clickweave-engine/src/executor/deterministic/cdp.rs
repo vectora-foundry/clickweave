@@ -57,16 +57,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         expected: &CdpExpected<'_>,
         mcp: &(impl Mcp + ?Sized),
     ) -> ExecutorResult<String> {
-        // 1. Ensure a page is selected (list_pages triggers auto-selection
-        //    inside chrome-devtools-mcp).
+        // Refresh page list to verify CDP connection is healthy.
         let _ = mcp
-            .call_tool("list_pages", Some(serde_json::json!({})))
+            .call_tool("cdp_list_pages", Some(serde_json::json!({})))
             .await;
 
         // 2. Take CDP snapshot
         self.log(format!("CDP: taking snapshot to find '{}'", target));
         let snapshot_result = mcp
-            .call_tool("take_snapshot", Some(serde_json::json!({})))
+            .call_tool("cdp_take_snapshot", Some(serde_json::json!({})))
             .await
             .map_err(|e| ExecutorError::Cdp(format!("take_snapshot failed: {e}")))?;
 
@@ -122,7 +121,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         self.log(format!("CDP: {} element uid='{}'", action, uid));
         let result = mcp
-            .call_tool(action, Some(serde_json::json!({ "uid": uid })))
+            .call_tool(
+                &format!("cdp_{action}"),
+                Some(serde_json::json!({ "uid": uid })),
+            )
             .await
             .map_err(|e| ExecutorError::Cdp(format!("{} failed: {e}", action)))?;
 
@@ -275,22 +277,25 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// - Test mode: quit the app, relaunch with --remote-debugging-port, connect
     ///   via cdp_connect, poll until ready, store port in cache.
     /// - Run mode: read port from decision cache, try connecting, relaunch if needed.
-    pub(in crate::executor) async fn ensure_cdp_server(
+    pub(in crate::executor) async fn ensure_cdp_connected(
         &mut self,
         _node_id: Uuid,
         app_name: &str,
         mcp: &McpClient,
         node_run: Option<&NodeRun>,
-    ) -> ExecutorResult<String> {
+    ) -> ExecutorResult<()> {
         use clickweave_core::ExecutionMode;
-        use clickweave_core::cdp::cdp_server_name;
         use clickweave_core::decision_cache::CdpPort;
-
-        let server_name = cdp_server_name(app_name);
 
         // Already have a CDP connection for this app -- nothing to do.
         if self.cdp_connected_app.as_deref() == Some(app_name) {
-            return Ok(server_name);
+            return Ok(());
+        }
+
+        // Disconnect from any previously connected app.
+        if self.cdp_connected_app.is_some() {
+            let _ = mcp.call_tool("cdp_disconnect", None).await;
+            self.cdp_connected_app = None;
         }
 
         let port = if self.execution_mode == ExecutionMode::Test {
@@ -341,7 +346,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Connect CDP if not already connected.
         if self.cdp_connected_app.as_deref() != Some(app_name) {
             let connect_args = serde_json::json!({
-                "app_name": app_name,
                 "port": port,
             });
             mcp.call_tool("cdp_connect", Some(connect_args))
@@ -365,13 +369,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         );
 
         self.cdp_connected_app = Some(app_name.to_string());
-        Ok(server_name)
+        Ok(())
     }
 
     /// Try to connect CDP to an app, returning true on success.
     async fn try_cdp_connect(&self, app_name: &str, port: u16, mcp: &(impl Mcp + ?Sized)) -> bool {
         let connect_args = serde_json::json!({
-            "app_name": app_name,
             "port": port,
         });
         if mcp
@@ -463,7 +466,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         loop {
             match mcp
-                .call_tool("list_pages", Some(serde_json::json!({})))
+                .call_tool("cdp_list_pages", Some(serde_json::json!({})))
                 .await
             {
                 Ok(result) if result.is_error != Some(true) => {
