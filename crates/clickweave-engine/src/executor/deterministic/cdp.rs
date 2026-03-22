@@ -492,10 +492,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             {
                 Ok(result) if result.is_error != Some(true) => {
                     let text = Self::extract_result_text(&result);
-                    // Page index may be 0-based or 1-based depending on MCP
-                    // server version -- check for any "N: <url>" page entry.
+                    // Check for page entries in the response. Native-devtools
+                    // uses "[N] url" format; accept any line with a bracketed index.
                     if text.lines().any(|l| {
-                        l.as_bytes().first().is_some_and(|b| b.is_ascii_digit()) && l.contains(": ")
+                        let t = l.trim_start();
+                        t.starts_with('[') && t.contains(']')
                     }) {
                         self.log(format!("CDP pages for '{}': {}", app_name, text.trim()));
                         return Ok(());
