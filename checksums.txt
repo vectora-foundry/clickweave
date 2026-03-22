@@ -1,0 +1,2 @@
+# TODO: populate with actual SHA-256 checksums from native-devtools-mcp release
+# Format: <sha256>  <filename>
