@@ -3,7 +3,6 @@ use clickweave_core::ClickTarget;
 use clickweave_core::NodeRun;
 use clickweave_core::cdp::{SnapshotMatch, find_elements_in_snapshot};
 use clickweave_llm::ChatBackend;
-use clickweave_mcp::McpClient;
 use uuid::Uuid;
 
 /// Expected CDP element attributes for matching during snapshot search.
@@ -281,7 +280,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &mut self,
         _node_id: Uuid,
         app_name: &str,
-        mcp: &McpClient,
+        mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
     ) -> ExecutorResult<()> {
         use clickweave_core::ExecutionMode;
@@ -299,64 +298,45 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         let port = if self.execution_mode == ExecutionMode::Test {
-            // Test mode: pick a random port, relaunch the app.
+            // Test mode: pick a random port, relaunch the app, connect.
             let port = rand_ephemeral_port();
             self.log(format!(
                 "Restarting '{}' with DevTools enabled (port {})...",
                 app_name, port
             ));
             self.relaunch_with_debug_port(app_name, port, mcp).await?;
-            // App was restarted -- evict stale PID from app cache.
             self.evict_app_cache(app_name);
-            // Store in decision cache for Run mode replay.
             self.write_decision_cache()
                 .cdp_port
                 .insert(app_name.to_string(), CdpPort { port });
+
+            self.cdp_connect_and_poll(app_name, port, mcp).await?;
             port
         } else {
             // Run mode: read cached port, try connecting, relaunch if needed.
-            let cached = self
+            let port = self
                 .read_decision_cache()
                 .cdp_port
                 .get(app_name)
-                .map(|e| e.port);
+                .map(|e| e.port)
+                .ok_or_else(|| {
+                    ExecutorError::Cdp(format!(
+                        "No cached CDP port for '{}'. Run in Test mode first.",
+                        app_name
+                    ))
+                })?;
 
-            let port = cached.ok_or_else(|| {
-                ExecutorError::Cdp(format!(
-                    "No cached CDP port for '{}'. Run in Test mode first.",
-                    app_name
-                ))
-            })?;
-
-            // Try connecting with cached port (app may still be running).
-            let connect_ok = self.try_cdp_connect(app_name, port, mcp).await;
-
-            if !connect_ok {
+            if !self.try_cdp_connect(app_name, port, mcp).await {
                 self.log(format!(
                     "CDP connection failed for '{}', relaunching with port {}...",
                     app_name, port
                 ));
                 self.relaunch_with_debug_port(app_name, port, mcp).await?;
-                // App was restarted -- evict stale PID from app cache.
                 self.evict_app_cache(app_name);
+                self.cdp_connect_and_poll(app_name, port, mcp).await?;
             }
             port
         };
-
-        // Connect CDP if not already connected.
-        if self.cdp_connected_app.as_deref() != Some(app_name) {
-            let connect_args = serde_json::json!({
-                "port": port,
-            });
-            mcp.call_tool("cdp_connect", Some(connect_args))
-                .await
-                .map_err(|e| {
-                    ExecutorError::Cdp(format!("Failed to connect CDP for '{}': {}", app_name, e))
-                })?;
-        }
-
-        // Poll until the app is ready for CDP.
-        self.poll_cdp_ready(app_name, mcp, 30).await?;
 
         self.log(format!("CDP connected to '{}' (port {})", app_name, port));
         self.record_event(
@@ -370,6 +350,21 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         self.cdp_connected_app = Some(app_name.to_string());
         Ok(())
+    }
+
+    /// Connect to CDP and poll until ready.
+    async fn cdp_connect_and_poll(
+        &self,
+        app_name: &str,
+        port: u16,
+        mcp: &(impl Mcp + ?Sized),
+    ) -> ExecutorResult<()> {
+        mcp.call_tool("cdp_connect", Some(serde_json::json!({"port": port})))
+            .await
+            .map_err(|e| {
+                ExecutorError::Cdp(format!("Failed to connect CDP for '{}': {}", app_name, e))
+            })?;
+        self.poll_cdp_ready(app_name, mcp, 30).await
     }
 
     /// Try to connect CDP to an app, returning true on success.

@@ -32,15 +32,12 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 /// Minimal trait for MCP tool invocation, used to enable test stubs.
-#[allow(dead_code)] // tools_as_openai used via McpClient, kept for API symmetry
 pub(crate) trait Mcp: Send + Sync {
     fn call_tool(
         &self,
         name: &str,
         arguments: Option<serde_json::Value>,
     ) -> impl Future<Output = anyhow::Result<clickweave_mcp::ToolCallResult>> + Send;
-
-    fn tools_as_openai(&self) -> Vec<serde_json::Value>;
 }
 
 impl Mcp for clickweave_mcp::McpClient {
@@ -50,10 +47,6 @@ impl Mcp for clickweave_mcp::McpClient {
         arguments: Option<serde_json::Value>,
     ) -> impl Future<Output = anyhow::Result<clickweave_mcp::ToolCallResult>> + Send {
         clickweave_mcp::McpClient::call_tool(self, name, arguments)
-    }
-
-    fn tools_as_openai(&self) -> Vec<serde_json::Value> {
-        clickweave_mcp::McpClient::tools_as_openai(self)
     }
 }
 

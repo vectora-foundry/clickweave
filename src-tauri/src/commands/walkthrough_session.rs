@@ -1014,7 +1014,7 @@ pub(super) async fn process_capture_events(
             };
 
             let raw: String = result.content.iter().filter_map(|c| c.as_text()).collect();
-            let text = extract_eval_result(&raw);
+            let text = raw.trim();
             let entries: Vec<serde_json::Value> = match serde_json::from_str(text) {
                 Ok(v) => v,
                 Err(_) => continue,
@@ -1464,13 +1464,6 @@ pub(super) fn emit_cdp_progress(app: &tauri::AppHandle, app_name: &str, status: 
     );
 }
 
-/// Extract the JSON payload from a `cdp_evaluate_script` response.
-///
-/// Native-devtools returns raw JSON without markdown fences.
-fn extract_eval_result(text: &str) -> &str {
-    text.trim()
-}
-
 /// Retrieve the last click's DOM element data from the injected listener.
 ///
 /// Returns a `CdpClickResolved` event if data is available, or None if the
@@ -1522,7 +1515,7 @@ async fn cdp_retrieve_click(
         };
 
         let raw_text: String = result.content.iter().filter_map(|c| c.as_text()).collect();
-        text = extract_eval_result(&raw_text).to_string();
+        text = raw_text.trim().to_string();
         if text != "null" && text != "undefined" && !text.is_empty() {
             break;
         }
@@ -1543,7 +1536,7 @@ async fn cdp_retrieve_click(
         match mcp.call_tool("cdp_evaluate_script", Some(check_args)).await {
             Ok(r) => {
                 let raw: String = r.content.iter().filter_map(|c| c.as_text()).collect();
-                let status = extract_eval_result(&raw);
+                let status = raw.trim();
                 if status.contains("reinjected") {
                     tracing::info!("CDP click listener lost after navigation, re-injected");
                 }

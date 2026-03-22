@@ -98,11 +98,9 @@ impl ChatBackend for ScriptedBackend {
 /// the call panics (test misconfiguration).
 ///
 /// Call history is recorded in `calls` for assertions.
-#[allow(dead_code)] // openai_tools read by Mcp::tools_as_openai
 pub(super) struct StubToolProvider {
     responses: Mutex<Vec<ToolCallResult>>,
     calls: Mutex<Vec<(String, Option<Value>)>>,
-    openai_tools: Vec<Value>,
 }
 
 impl StubToolProvider {
@@ -111,7 +109,6 @@ impl StubToolProvider {
         Self {
             responses: Mutex::new(Vec::new()),
             calls: Mutex::new(Vec::new()),
-            openai_tools: Vec::new(),
         }
     }
 
@@ -154,10 +151,6 @@ impl Mcp for StubToolProvider {
             panic!("StubToolProvider: no queued response for '{}'", name);
         }
         Ok(queue.remove(0))
-    }
-
-    fn tools_as_openai(&self) -> Vec<Value> {
-        self.openai_tools.clone()
     }
 }
 
