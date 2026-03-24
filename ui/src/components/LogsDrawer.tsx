@@ -87,7 +87,7 @@ export function LogsDrawer({ open, logs, onToggle, onClear }: LogsDrawerProps) {
       {open && (
         <div
           ref={scrollRef}
-          className="min-h-0 flex-1 overflow-y-auto p-2 font-mono text-[11px] leading-relaxed"
+          className="min-h-0 flex-1 overflow-y-auto p-2 font-mono text-[11px] leading-relaxed select-text"
         >
           {logs.map((log, i) => (
             <div
