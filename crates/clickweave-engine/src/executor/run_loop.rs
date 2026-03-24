@@ -319,45 +319,23 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                 break (true, false);
                             }
 
-                            // Skip VLM supervision for successful CDP clicks.
-                            // CDP provides structural verification: the element
-                            // was found in the DOM by text/role/parent and the
-                            // click event was dispatched. VLM-based verification
-                            // is redundant and can false-fail when the click
-                            // targets an already-active element (no visual change).
                             if self.last_click_was_cdp {
-                                self.supervision_hint = None;
-                                self.log(format!(
-                                    "Skipping supervision for '{}' (CDP click verified structurally)",
-                                    node_name
-                                ));
-                                self.emit(ExecutorEvent::SupervisionPassed {
+                                self.skip_supervision_structurally(
                                     node_id,
-                                    node_name: node_name.clone(),
-                                    summary: "CDP click — element found and clicked in DOM"
-                                        .to_string(),
-                                });
+                                    &node_name,
+                                    "CDP click verified structurally",
+                                    "CDP click — element found and clicked in DOM",
+                                );
                                 break (true, false);
                             }
 
-                            // Skip VLM supervision for URL-enter navigation that
-                            // was structurally observed via CDP page-list change.
-                            // This avoids false failures/retries on heavy pages
-                            // (e.g. Gmail/YouTube) that keep changing visually
-                            // while still loading.
                             if self.last_url_navigation_was_cdp {
-                                self.supervision_hint = None;
-                                self.log(format!(
-                                    "Skipping supervision for '{}' (CDP URL navigation verified structurally)",
-                                    node_name
-                                ));
-                                self.emit(ExecutorEvent::SupervisionPassed {
+                                self.skip_supervision_structurally(
                                     node_id,
-                                    node_name: node_name.clone(),
-                                    summary:
-                                        "CDP URL navigation — page list moved away from NTP/blank"
-                                            .to_string(),
-                                });
+                                    &node_name,
+                                    "CDP URL navigation verified structurally",
+                                    "CDP URL navigation — page list moved away from NTP/blank",
+                                );
                                 break (true, false);
                             }
 
@@ -569,5 +547,24 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             ));
             None
         }
+    }
+
+    fn skip_supervision_structurally(
+        &mut self,
+        node_id: Uuid,
+        node_name: &str,
+        reason: &str,
+        summary: &str,
+    ) {
+        self.supervision_hint = None;
+        self.log(format!(
+            "Skipping supervision for '{}' ({})",
+            node_name, reason
+        ));
+        self.emit(ExecutorEvent::SupervisionPassed {
+            node_id,
+            node_name: node_name.to_string(),
+            summary: summary.to_string(),
+        });
     }
 }

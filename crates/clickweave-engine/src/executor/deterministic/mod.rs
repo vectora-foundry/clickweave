@@ -56,6 +56,13 @@ fn truncate_for_error(s: &str, max_len: usize) -> &str {
     }
 }
 
+fn is_return_key(key: &str) -> bool {
+    key.eq_ignore_ascii_case("return")
+        || key.eq_ignore_ascii_case("enter")
+        || key == "\r"
+        || key == "\n"
+}
+
 /// Heuristic for URL-like omnibox input (e.g. `gmail.com`, `https://...`).
 /// Used to decide when TypeText/Enter should follow the browser-navigation path.
 fn looks_like_browser_url_input(text: &str) -> bool {
@@ -64,15 +71,12 @@ fn looks_like_browser_url_input(text: &str) -> bool {
         return false;
     }
 
-    if t.starts_with("http://")
-        || t.starts_with("https://")
-        || t.starts_with("about:")
-        || t.starts_with("chrome://")
-        || t.starts_with("edge://")
-        || t.starts_with("brave://")
-    {
+    if t.starts_with("http://") || t.starts_with("https://") || t.starts_with("file://") {
         return true;
     }
+    // Internal schemes (about:, chrome://, edge://) are excluded because
+    // cdp_page_payload_is_navigation only recognises http/https/file, so
+    // intercepting them would sit in the 30s poll loop with no exit.
 
     // Email-like text is usually form input, not URL navigation.
     if t.contains('@') {
@@ -170,7 +174,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // --- TypeText on Chrome/CDP: store URL-like text for navigation delay ---
         if let NodeType::TypeText(p) = node_type {
             let app_kind = self.focused_app_kind();
-            if app_kind.uses_cdp()
+            if app_kind == AppKind::ChromeBrowser
                 && self.cdp_connected_to_focused_app()
                 && looks_like_browser_url_input(&p.text)
             {
@@ -204,19 +208,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             } else {
                 self.last_typed_url = None;
             }
-            // Fall through to execute the native type_text call as normal.
         } else if let NodeType::PressKey(p) = node_type {
-            // PressKey return on Chrome/CDP: if we have a stored URL from the previous
-            // TypeText node, replace the native keypress with cdp_navigate so Chrome
-            // navigation waits for page commit before returning.
             let app_kind = self.focused_app_kind();
-            let is_return = p.key.eq_ignore_ascii_case("return")
-                || p.key.eq_ignore_ascii_case("enter")
-                || p.key == "\r"
-                || p.key == "\n";
-            if app_kind.uses_cdp()
+            if app_kind == AppKind::ChromeBrowser
                 && self.cdp_connected_to_focused_app()
-                && is_return
+                && is_return_key(&p.key)
                 && p.modifiers.is_empty()
                 && self.last_typed_url.is_some()
             {
@@ -243,7 +239,22 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     .call_tool("cdp_list_pages", Some(serde_json::json!({})))
                     .await
                 {
-                    Ok(r) if r.is_error != Some(true) => Some(Self::extract_result_text(&r)),
+                    Ok(r) if r.is_error != Some(true) => {
+                        let text = Self::extract_result_text(&r);
+                        // Only use the baseline if it contains at least one
+                        // parseable page entry. An empty map would cause every
+                        // HTTP tab in the next poll to look "new", spuriously
+                        // setting last_url_navigation_was_cdp = true.
+                        if parse_cdp_page_payloads(&text).is_empty() {
+                            self.log(
+                                "Chrome URL navigation: baseline has no page entries — \
+                                 navigation observation disabled",
+                            );
+                            None
+                        } else {
+                            Some(text)
+                        }
+                    }
                     _ => {
                         self.log(
                             "Chrome URL navigation: baseline cdp_list_pages failed — \
@@ -290,12 +301,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     self.log("Chrome URL navigation: polling for URL change...");
                     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
                     let mut observed_navigation = false;
+                    let mut poll_ms: u64 = 100;
                     loop {
-                        // Respect workflow cancellation inside the long-running poll.
                         if self.cancel_token.is_cancelled() {
                             break;
                         }
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(poll_ms)).await;
+                        poll_ms = (poll_ms * 2).min(500);
                         if tokio::time::Instant::now() >= deadline {
                             self.log("Chrome URL navigation: timeout waiting for URL change");
                             break;
@@ -327,10 +339,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
                 return Ok(Self::parse_result_text(&result_text));
             }
-            // Non-return key or no stored URL: clear stale state and fall through.
             self.last_typed_url = None;
         } else {
-            // Any other node type clears the stored URL to prevent stale intercepts.
             self.last_typed_url = None;
         }
 

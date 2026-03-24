@@ -286,9 +286,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         let port = if self.execution_mode == ExecutionMode::Test {
-            // Check if app is already running with a debug port — skip the
-            // quit/relaunch cycle and reuse the existing port.
-            if let Some(existing_port) = existing_debug_port(app_name).await {
+            // Try reusing an existing debug port before doing a full relaunch.
+            let reused = if let Some(existing_port) = existing_debug_port(app_name).await {
                 self.log(format!(
                     "'{}' already running with --remote-debugging-port={}, reusing",
                     app_name, existing_port
@@ -300,29 +299,21 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             port: existing_port,
                         },
                     );
-                    existing_port
+                    Some(existing_port)
                 } else {
-                    // If the discovered port is stale/unreachable, fall back to
-                    // the standard relaunch path.
                     self.log(format!(
                         "Existing debug port {} for '{}' was unreachable, relaunching",
                         existing_port, app_name
                     ));
-                    let port = clickweave_core::cdp::rand_ephemeral_port();
-                    self.log(format!(
-                        "Restarting '{}' with DevTools enabled (port {})...",
-                        app_name, port
-                    ));
-                    self.relaunch_with_debug_port(app_name, port, mcp).await?;
-                    self.evict_app_cache(app_name);
-                    self.write_decision_cache()
-                        .cdp_port
-                        .insert(app_name.to_string(), CdpPort { port });
-                    self.cdp_connect_and_poll(app_name, port, mcp).await?;
-                    port
+                    None
                 }
             } else {
-                // Test mode: pick a random port, relaunch the app, connect.
+                None
+            };
+
+            if let Some(port) = reused {
+                port
+            } else {
                 let port = clickweave_core::cdp::rand_ephemeral_port();
                 self.log(format!(
                     "Restarting '{}' with DevTools enabled (port {})...",
@@ -631,19 +622,22 @@ async fn existing_debug_port(app_name: &str) -> Option<u16> {
 async fn kill_all_processes(app_name: &str) {
     #[cfg(not(target_os = "windows"))]
     {
-        // Use -f (full command line) rather than -x (process name) because Chrome
-        // spawns sub-processes with names like "Google Chrome Helper (GPU)" that
-        // all contain the app name in their command line. -x would only match the
-        // main process, leaving helpers alive and holding the profile lock.
+        // Anchor to the .app bundle path on macOS to avoid killing unrelated
+        // processes that happen to mention the app name in their arguments.
+        #[cfg(target_os = "macos")]
+        let pattern = format!("{}.app/", app_name);
+        #[cfg(not(target_os = "macos"))]
+        let pattern = app_name.to_string();
+
         let _ = tokio::process::Command::new("pkill")
-            .args(["-f", app_name])
+            .args(["-f", &pattern])
             .output()
             .await;
 
         for _ in 0..10 {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             let still_alive = tokio::process::Command::new("pgrep")
-                .args(["-f", app_name])
+                .args(["-f", &pattern])
                 .output()
                 .await
                 .map(|o| o.status.success())
@@ -791,12 +785,16 @@ async fn copy_chrome_session_cookies(_app_name: &str, debug_dir: &str) {
     // debug profile as a plain session and preserves all copied cookies as-is.
     let cookie_locations: &[&str] = &["Default/Network/Cookies", "Default/Cookies"];
     for rel in cookie_locations {
-        let src = Path::new(&source_dir).join(rel);
-        let dst = Path::new(debug_dir).join(rel);
-        if let Some(parent) = dst.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
+        // Copy the main SQLite DB and its WAL/SHM companions to get a
+        // consistent snapshot (WAL may contain uncommitted transactions).
+        for suffix in &["", "-wal", "-shm"] {
+            let src = Path::new(&source_dir).join(format!("{}{}", rel, suffix));
+            let dst = Path::new(debug_dir).join(format!("{}{}", rel, suffix));
+            if let Some(parent) = dst.parent() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+            let _ = tokio::fs::copy(&src, &dst).await;
         }
-        let _ = tokio::fs::copy(&src, &dst).await;
     }
 }
 
