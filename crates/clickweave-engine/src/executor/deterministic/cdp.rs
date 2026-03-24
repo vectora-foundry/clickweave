@@ -286,20 +286,56 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         let port = if self.execution_mode == ExecutionMode::Test {
-            // Test mode: pick a random port, relaunch the app, connect.
-            let port = clickweave_core::cdp::rand_ephemeral_port();
-            self.log(format!(
-                "Restarting '{}' with DevTools enabled (port {})...",
-                app_name, port
-            ));
-            self.relaunch_with_debug_port(app_name, port, mcp).await?;
-            self.evict_app_cache(app_name);
-            self.write_decision_cache()
-                .cdp_port
-                .insert(app_name.to_string(), CdpPort { port });
-
-            self.cdp_connect_and_poll(app_name, port, mcp).await?;
-            port
+            // Check if app is already running with a debug port — skip the
+            // quit/relaunch cycle and reuse the existing port.
+            if let Some(existing_port) = existing_debug_port(app_name).await {
+                self.log(format!(
+                    "'{}' already running with --remote-debugging-port={}, reusing",
+                    app_name, existing_port
+                ));
+                if self.try_cdp_connect(app_name, existing_port, mcp).await {
+                    self.write_decision_cache().cdp_port.insert(
+                        app_name.to_string(),
+                        CdpPort {
+                            port: existing_port,
+                        },
+                    );
+                    existing_port
+                } else {
+                    // If the discovered port is stale/unreachable, fall back to
+                    // the standard relaunch path.
+                    self.log(format!(
+                        "Existing debug port {} for '{}' was unreachable, relaunching",
+                        existing_port, app_name
+                    ));
+                    let port = clickweave_core::cdp::rand_ephemeral_port();
+                    self.log(format!(
+                        "Restarting '{}' with DevTools enabled (port {})...",
+                        app_name, port
+                    ));
+                    self.relaunch_with_debug_port(app_name, port, mcp).await?;
+                    self.evict_app_cache(app_name);
+                    self.write_decision_cache()
+                        .cdp_port
+                        .insert(app_name.to_string(), CdpPort { port });
+                    self.cdp_connect_and_poll(app_name, port, mcp).await?;
+                    port
+                }
+            } else {
+                // Test mode: pick a random port, relaunch the app, connect.
+                let port = clickweave_core::cdp::rand_ephemeral_port();
+                self.log(format!(
+                    "Restarting '{}' with DevTools enabled (port {})...",
+                    app_name, port
+                ));
+                self.relaunch_with_debug_port(app_name, port, mcp).await?;
+                self.evict_app_cache(app_name);
+                self.write_decision_cache()
+                    .cdp_port
+                    .insert(app_name.to_string(), CdpPort { port });
+                self.cdp_connect_and_poll(app_name, port, mcp).await?;
+                port
+            }
         } else {
             // Run mode: read cached port, try connecting, relaunch if needed.
             let port = self
@@ -448,10 +484,26 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
 
+        // Kill any remaining helper processes (e.g. Chrome GPU/renderer/crashpad).
+        // Multi-process apps keep their profile lock until all sub-processes exit,
+        // which prevents the relaunched instance from opening --remote-debugging-port.
+        kill_all_processes(app_name).await;
+
         // Relaunch with debug port.
+        // Chrome 136+ requires --user-data-dir to point to a non-default directory for
+        // --remote-debugging-port to open. We use a persistent per-app debug profile dir
+        // and copy session cookies from the user's real Chrome profile so they stay
+        // logged in. Electron apps don't need this treatment.
+        let mut args = vec![format!("--remote-debugging-port={}", port)];
+        if let Some(debug_dir) = chrome_debug_profile_dir(app_name) {
+            copy_chrome_session_cookies(app_name, &debug_dir).await;
+            args.push(format!("--user-data-dir={}", debug_dir));
+            args.push("--no-first-run".to_string());
+            args.push("--no-default-browser-check".to_string());
+        }
         let launch_args = serde_json::json!({
             "app_name": app_name,
-            "args": [format!("--remote-debugging-port={}", port)],
+            "args": args,
         });
         let result = mcp
             .call_tool("launch_app", Some(launch_args))
@@ -529,5 +581,250 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
+    }
+}
+
+/// Check if an app is already running with `--remote-debugging-port=<N>`.
+/// Returns the port if found, so the caller can skip the quit/relaunch cycle.
+async fn existing_debug_port(app_name: &str) -> Option<u16> {
+    #[cfg(target_os = "windows")]
+    return None;
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let output = tokio::process::Command::new("pgrep")
+            .args(["-x", app_name])
+            .output()
+            .await
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let pids = String::from_utf8_lossy(&output.stdout);
+        for pid_str in pids.split_whitespace() {
+            // The PID may have exited between pgrep and ps (TOCTOU); skip it
+            // rather than returning None from the whole function.
+            let Ok(args_output) = tokio::process::Command::new("ps")
+                .args(["-p", pid_str, "-o", "args="])
+                .output()
+                .await
+            else {
+                continue;
+            };
+            let args = String::from_utf8_lossy(&args_output.stdout);
+            if let Some(flag) = args
+                .split_whitespace()
+                .find(|a| a.starts_with("--remote-debugging-port="))
+                && let Some(port_str) = flag.strip_prefix("--remote-debugging-port=")
+                && let Ok(port) = port_str.parse::<u16>()
+            {
+                return Some(port);
+            }
+        }
+        None
+    }
+}
+
+/// Kill all processes matching `app_name` and wait for them to exit (up to 5s).
+/// Used to ensure multi-process apps (e.g. Chrome) fully release their profile
+/// lock before we relaunch with --remote-debugging-port.
+async fn kill_all_processes(app_name: &str) {
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Use -f (full command line) rather than -x (process name) because Chrome
+        // spawns sub-processes with names like "Google Chrome Helper (GPU)" that
+        // all contain the app name in their command line. -x would only match the
+        // main process, leaving helpers alive and holding the profile lock.
+        let _ = tokio::process::Command::new("pkill")
+            .args(["-f", app_name])
+            .output()
+            .await;
+
+        for _ in 0..10 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let still_alive = tokio::process::Command::new("pgrep")
+                .args(["-f", app_name])
+                .output()
+                .await
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !still_alive {
+                break;
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        for image in windows_process_image_candidates(app_name) {
+            let _ = tokio::process::Command::new("taskkill")
+                .args(["/F", "/T", "/IM", &image])
+                .output()
+                .await;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+}
+
+/// Return likely Windows process image names for a given app label.
+///
+/// We include known Chrome-family mappings first, then a conservative fallback
+/// using the label itself (with `.exe` suffix when needed).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn windows_process_image_candidates(app_name: &str) -> Vec<String> {
+    let lower = app_name.trim().to_ascii_lowercase();
+    let mut out: Vec<String> = Vec::new();
+
+    if lower.contains("chrome") || lower.contains("chromium") {
+        out.push("chrome.exe".to_string());
+    } else if lower.contains("edge") {
+        out.push("msedge.exe".to_string());
+    } else if lower.contains("brave") {
+        out.push("brave.exe".to_string());
+    } else if lower.contains("arc") {
+        out.push("arc.exe".to_string());
+    }
+
+    let fallback = if lower.ends_with(".exe") {
+        app_name.trim().to_string()
+    } else {
+        format!("{}.exe", app_name.trim())
+    };
+    if !fallback.is_empty()
+        && !out
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(&fallback))
+    {
+        out.push(fallback);
+    }
+
+    out
+}
+
+/// Return a persistent non-default debug profile directory for Chrome-family browsers,
+/// or `None` for non-Chrome apps (e.g. Electron).
+///
+/// Chrome 136+ blocks `--remote-debugging-port` when the user-data-dir is the default
+/// profile. We use a separate persistent directory so the debug port opens, while
+/// keeping the user logged in by copying their session cookies into it.
+fn chrome_debug_profile_dir(app_name: &str) -> Option<String> {
+    let lower = app_name.to_lowercase();
+    if !lower.contains("chrome") && !lower.contains("chromium") {
+        return None;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var("HOME").ok().map(|home| {
+            format!(
+                "{}/Library/Application Support/Google/Chrome-Clickweave",
+                home
+            )
+        })
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("LOCALAPPDATA")
+            .ok()
+            .map(|local| format!("{}\\Google\\Chrome-Clickweave", local))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var("HOME")
+            .ok()
+            .map(|home| format!("{}/.config/google-chrome-clickweave", home))
+    }
+}
+
+/// Copy session cookies from the user's real Chrome profile into the debug profile
+/// directory so the user stays logged in when Chrome opens the debug profile.
+///
+/// Chrome on macOS encrypts cookies using a machine-wide key in the system Keychain,
+/// so cookies copied from any profile are decryptable in any other profile on the same
+/// machine. This is a best-effort operation — failures are silently ignored.
+///
+/// Callers must only call this for Chrome-family apps (already guaranteed by the
+/// `chrome_debug_profile_dir` check upstream that gates the call).
+async fn copy_chrome_session_cookies(_app_name: &str, debug_dir: &str) {
+    use std::path::Path;
+
+    #[cfg(target_os = "macos")]
+    let source_dir = match std::env::var("HOME").ok() {
+        Some(home) => Path::new(&home)
+            .join("Library/Application Support/Google/Chrome")
+            .into_os_string()
+            .into_string()
+            .unwrap_or_default(),
+        None => return,
+    };
+    #[cfg(target_os = "windows")]
+    let source_dir = match std::env::var("LOCALAPPDATA").ok() {
+        Some(local) => Path::new(&local)
+            .join("Google")
+            .join("Chrome")
+            .join("User Data")
+            .into_os_string()
+            .into_string()
+            .unwrap_or_default(),
+        None => return,
+    };
+    #[cfg(target_os = "linux")]
+    let source_dir = match std::env::var("HOME").ok() {
+        Some(home) => Path::new(&home)
+            .join(".config/google-chrome")
+            .into_os_string()
+            .into_string()
+            .unwrap_or_default(),
+        None => return,
+    };
+
+    if source_dir.is_empty() {
+        return;
+    }
+
+    // Chrome 97+ stores cookies in Default/Network/Cookies.
+    // Older versions use Default/Cookies. Copy from both locations if present.
+    //
+    // Do NOT copy Preferences: it contains signed-in account metadata that causes
+    // Chrome to run account re-verification on the new profile path. That verification
+    // strips the .google.com session cookies (SID, SSID, APISID, etc.) as a security
+    // measure, leaving the user signed out. Without Preferences, Chrome treats the
+    // debug profile as a plain session and preserves all copied cookies as-is.
+    let cookie_locations: &[&str] = &["Default/Network/Cookies", "Default/Cookies"];
+    for rel in cookie_locations {
+        let src = Path::new(&source_dir).join(rel);
+        let dst = Path::new(debug_dir).join(rel);
+        if let Some(parent) = dst.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        let _ = tokio::fs::copy(&src, &dst).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::windows_process_image_candidates;
+
+    #[test]
+    fn windows_image_candidates_map_known_browsers() {
+        assert_eq!(
+            windows_process_image_candidates("Google Chrome"),
+            vec!["chrome.exe".to_string(), "Google Chrome.exe".to_string()]
+        );
+        assert_eq!(
+            windows_process_image_candidates("Microsoft Edge"),
+            vec!["msedge.exe".to_string(), "Microsoft Edge.exe".to_string()]
+        );
+    }
+
+    #[test]
+    fn windows_image_candidates_include_fallback() {
+        assert_eq!(
+            windows_process_image_candidates("Code.exe"),
+            vec!["Code.exe".to_string()]
+        );
+        assert_eq!(
+            windows_process_image_candidates("Some App"),
+            vec!["Some App.exe".to_string()]
+        );
     }
 }

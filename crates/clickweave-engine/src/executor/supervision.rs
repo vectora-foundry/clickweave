@@ -12,7 +12,9 @@ After each step executes, you receive the step description and a visual observat
 from a vision model describing the current screen state.
 
 Your job is to determine whether each step achieved its intended effect. \
-Consider the full history of prior steps to understand the workflow's progress.
+Consider the full history of prior steps to understand the workflow's progress. \
+IMPORTANT: Step labels are user-editable and can be stale after workflow edits; \
+use the EXECUTED ACTION as the source of truth for intent, not the label text.
 
 Return ONLY a JSON object: {\"passed\": true/false, \"reasoning\": \"brief explanation\"}";
 
@@ -70,7 +72,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         // Stage 2: Ask planner with persistent conversation history
         let step_message = format!(
-            "Step: \"{}\" — {}\nApp: {}\n\nVisual observation: {}",
+            "Step label (may be stale): \"{}\"\nExecuted action: {}\nApp: {}\n\nVisual observation: {}",
             node_name, action, app_name, observation
         );
         let (passed, reasoning) = self.judge_with_history(&step_message, node_name).await;

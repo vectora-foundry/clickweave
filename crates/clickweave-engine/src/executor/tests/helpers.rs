@@ -230,6 +230,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             tried_click_indices: RwLock::new(Vec::new()),
             tried_cdp_uids: RwLock::new(Vec::new()),
             last_click_was_cdp: false,
+            last_url_navigation_was_cdp: false,
+            last_typed_url: None,
         }
     }
 }

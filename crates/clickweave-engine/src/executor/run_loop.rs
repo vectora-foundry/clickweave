@@ -340,6 +340,27 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                 break (true, false);
                             }
 
+                            // Skip VLM supervision for URL-enter navigation that
+                            // was structurally observed via CDP page-list change.
+                            // This avoids false failures/retries on heavy pages
+                            // (e.g. Gmail/YouTube) that keep changing visually
+                            // while still loading.
+                            if self.last_url_navigation_was_cdp {
+                                self.supervision_hint = None;
+                                self.log(format!(
+                                    "Skipping supervision for '{}' (CDP URL navigation verified structurally)",
+                                    node_name
+                                ));
+                                self.emit(ExecutorEvent::SupervisionPassed {
+                                    node_id,
+                                    node_name: node_name.clone(),
+                                    summary:
+                                        "CDP URL navigation — page list moved away from NTP/blank"
+                                            .to_string(),
+                                });
+                                break (true, false);
+                            }
+
                             let verification = self.verify_step(&node_name, &node_type, &mcp).await;
                             if verification.passed {
                                 self.supervision_hint = None;
@@ -415,6 +436,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     }
                 }
             };
+
+            // URL-enter intent is only meaningful for the current PressKey node.
+            // Clear it when we leave this node so it cannot leak into a later,
+            // unrelated PressKey step after Skip/Retry paths.
+            if matches!(node_type, NodeType::PressKey(_)) {
+                self.last_typed_url = None;
+            }
 
             if !node_succeeded {
                 if verification_failed {

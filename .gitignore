@@ -13,6 +13,7 @@ src-tauri/logs/
 crates/clickweave-llm/eval/eval.toml
 crates/clickweave-llm/eval/results/
 .superpowers/
+.cargo/config.toml
 
 # Sidecar binaries (downloaded by CI or symlinked for dev)
 src-tauri/binaries/native-devtools-mcp*
