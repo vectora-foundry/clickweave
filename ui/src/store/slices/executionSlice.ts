@@ -51,7 +51,7 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
   },
 
   runWorkflow: async () => {
-    const { workflow, projectPath, agentConfig, vlmConfig, vlmEnabled, plannerConfig, executionMode, pushLog } = get();
+    const { workflow, projectPath, agentConfig, vlmConfig, vlmEnabled, plannerConfig, executionMode, selectedChromeProfileId, pushLog } = get();
 
     const graphErrors = validateSingleGraph(workflow.nodes, workflow.edges);
     if (graphErrors.length > 0) {
@@ -68,6 +68,7 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
       vlm: vlmEnabled ? toEndpoint(vlmConfig) : null,
       planner: toEndpoint(plannerConfig),
       execution_mode: executionMode,
+      chrome_profile_id: selectedChromeProfileId,
     };
     const result = await commands.runWorkflow(request);
     if (result.status === "error") {

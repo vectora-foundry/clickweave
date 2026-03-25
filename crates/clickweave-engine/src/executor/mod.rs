@@ -135,6 +135,20 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     /// text/role/parent and click event dispatched), making VLM-based
     /// supervision redundant and error-prone for these clicks.
     last_click_was_cdp: bool,
+    /// Set when the last URL-enter navigation on Chrome/CDP was observed via
+    /// cdp_list_pages moving away from NTP/blank.
+    /// This gives structural verification for the navigation keypress.
+    last_url_navigation_was_cdp: bool,
+    /// Text from the most recent TypeText node on a Chrome/CDP app when it
+    /// looks like a URL (e.g. `gmail.com`, `https://...`).
+    /// Arms the following `press_key return` intercept: fires the native
+    /// keypress (Chrome handles Omnibox navigation), then polls
+    /// `cdp_list_pages` until the URL moves away from NTP/blank so that
+    /// supervision fires when Chrome is already loading the destination page.
+    last_typed_url: Option<String>,
+    /// Persistent Chrome user-data-dir path for `--remote-debugging-port` sessions.
+    /// When set, used as `--user-data-dir` instead of a hardcoded path.
+    chrome_profile_path: Option<PathBuf>,
 }
 
 pub(crate) struct PendingLoopExit {
@@ -172,6 +186,7 @@ impl WorkflowExecutor {
         event_tx: Sender<ExecutorEvent>,
         storage: RunStorage,
         cancel_token: CancellationToken,
+        chrome_profile_path: Option<PathBuf>,
     ) -> Self {
         let decision_cache = DecisionCache::load(&storage.cache_path())
             .unwrap_or_else(|| DecisionCache::new(workflow.id));
@@ -204,6 +219,9 @@ impl WorkflowExecutor {
             tried_click_indices: RwLock::new(Vec::new()),
             tried_cdp_uids: RwLock::new(Vec::new()),
             last_click_was_cdp: false,
+            last_url_navigation_was_cdp: false,
+            last_typed_url: None,
+            chrome_profile_path,
         }
     }
 }

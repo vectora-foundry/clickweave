@@ -12,6 +12,8 @@ export interface SettingsSlice {
   vlmEnabled: boolean;
   maxRepairAttempts: number;
   hoverDwellThreshold: number;
+  selectedChromeProfileId: string | null;
+  chromeProfileConfigured: boolean;
   _settingsLoaded: boolean;
 
   loadSettingsFromDisk: () => void;
@@ -21,6 +23,7 @@ export interface SettingsSlice {
   setVlmEnabled: (enabled: boolean) => void;
   setMaxRepairAttempts: (n: number) => void;
   setHoverDwellThreshold: (ms: number) => void;
+  setSelectedChromeProfileId: (id: string) => void;
 }
 
 function persistSetting<K extends keyof PersistedSettings>(
@@ -47,6 +50,8 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
   vlmEnabled: DEFAULT_VLM_ENABLED,
   maxRepairAttempts: 3,
   hoverDwellThreshold: 2000,
+  selectedChromeProfileId: null,
+  chromeProfileConfigured: true,
   _settingsLoaded: false,
 
   loadSettingsFromDisk: () => {
@@ -61,6 +66,8 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
           vlmEnabled: s.vlmEnabled,
           maxRepairAttempts: clampInt(s.maxRepairAttempts, 0, 10, 3),
           hoverDwellThreshold: clampInt(s.hoverDwellThreshold, 100, 10000, 2000),
+          selectedChromeProfileId: s.selectedChromeProfileId,
+          chromeProfileConfigured: s.selectedChromeProfileId != null,
         });
       })
       .catch((e) => console.error("Failed to load settings:", e));
@@ -72,4 +79,9 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
   setVlmEnabled: (enabled) => persistSetting("vlmEnabled", enabled, set),
   setMaxRepairAttempts: (n) => persistSetting("maxRepairAttempts", clampInt(n, 0, 10, 3), set),
   setHoverDwellThreshold: (ms) => persistSetting("hoverDwellThreshold", clampInt(ms, 100, 10000, 2000), set),
+  setSelectedChromeProfileId: (id) => {
+    if (id === get().selectedChromeProfileId) return;
+    persistSetting("selectedChromeProfileId", id, set);
+    set({ chromeProfileConfigured: true });
+  },
 });

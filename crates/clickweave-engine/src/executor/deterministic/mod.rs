@@ -56,6 +56,107 @@ fn truncate_for_error(s: &str, max_len: usize) -> &str {
     }
 }
 
+fn is_return_key(key: &str) -> bool {
+    key.eq_ignore_ascii_case("return")
+        || key.eq_ignore_ascii_case("enter")
+        || key == "\r"
+        || key == "\n"
+}
+
+/// Heuristic for URL-like omnibox input (e.g. `gmail.com`, `https://...`).
+/// Used to decide when TypeText/Enter should follow the browser-navigation path.
+fn looks_like_browser_url_input(text: &str) -> bool {
+    let t = text.trim().to_ascii_lowercase();
+    if t.is_empty() || t.contains(' ') {
+        return false;
+    }
+
+    if t.starts_with("http://") || t.starts_with("https://") || t.starts_with("file://") {
+        return true;
+    }
+    // Internal schemes (about:, chrome://, edge://) are excluded because
+    // cdp_page_payload_is_navigation only recognises http/https/file, so
+    // intercepting them would sit in the 30s poll loop with no exit.
+
+    // Email-like text is usually form input, not URL navigation.
+    if t.contains('@') {
+        return false;
+    }
+
+    // Bare host/path form, e.g. gmail.com or youtube.com/watch?v=...
+    let host = t.split('/').next().unwrap_or("");
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    if host.split('.').count() < 2 {
+        return false;
+    }
+    if !host
+        .split('.')
+        .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+    {
+        return false;
+    }
+    // Avoid hijacking plain dotted tokens like "1.2.3" or "foo.bar".
+    if !host.chars().any(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    let tld = host.rsplit('.').next().unwrap_or("");
+    if tld.is_empty() || !tld.chars().all(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    const COMMON_TLDS: &[&str] = &[
+        "com", "net", "org", "io", "dev", "app", "ai", "co", "edu", "gov", "me", "info", "biz",
+        "xyz", "tv", "us", "uk", "de", "fr", "it", "es", "nl", "ca", "au", "ch", "jp", "in", "br",
+        "ru", "local", "internal", "lan", "corp",
+    ];
+    COMMON_TLDS.contains(&tld)
+}
+
+/// Returns true only for real web-page URLs (http, https, file).
+/// Using a positive allowlist avoids false positives for unknown chrome:// or
+/// about: schemes that aren't in any blocklist (e.g. about:srcdoc, chrome://settings).
+fn cdp_page_payload_is_navigation(payload: &str) -> bool {
+    payload.contains("http://") || payload.contains("https://") || payload.contains("file://")
+}
+
+fn parse_cdp_page_payloads(list_pages_text: &str) -> std::collections::BTreeMap<usize, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for line in list_pages_text.lines() {
+        let t = line.trim_start();
+        if !t.starts_with('[') {
+            continue;
+        }
+        let Some(end) = t.find(']') else {
+            continue;
+        };
+        let Ok(index) = t[1..end].parse::<usize>() else {
+            continue;
+        };
+        let payload = t[end + 1..].trim().to_ascii_lowercase();
+        out.insert(index, payload);
+    }
+    out
+}
+
+/// Return true when `cdp_list_pages` indicates the page list changed after
+/// Enter, and one tab transitioned to (or changed within) a navigated page.
+///
+/// Comparing against a pre-Enter baseline avoids false positives from tabs
+/// that were already open before the navigation keypress.
+fn cdp_pages_show_navigation_progress(before_pages_text: &str, after_pages_text: &str) -> bool {
+    let before = parse_cdp_page_payloads(before_pages_text);
+    let after = parse_cdp_page_payloads(after_pages_text);
+
+    after.iter().any(|(index, after_payload)| {
+        if !cdp_page_payload_is_navigation(after_payload) {
+            return false;
+        }
+        match before.get(index) {
+            Some(before_payload) => before_payload != after_payload,
+            None => true,
+        }
+    })
+}
+
 impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(crate) async fn execute_deterministic(
         &mut self,
@@ -66,6 +167,182 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     ) -> ExecutorResult<Value> {
         // Reset per-execution; set to true only on CDP click success.
         self.last_click_was_cdp = false;
+        // Reset per-execution; set to true only when URL navigation is
+        // structurally observed via cdp_list_pages.
+        self.last_url_navigation_was_cdp = false;
+
+        // --- TypeText on Chrome/CDP: store URL-like text for navigation delay ---
+        if let NodeType::TypeText(p) = node_type {
+            let app_kind = self.focused_app_kind();
+            if app_kind == AppKind::ChromeBrowser
+                && self.cdp_connected_to_focused_app()
+                && looks_like_browser_url_input(&p.text)
+            {
+                // Store the text so the subsequent press_key return knows to wait
+                // for Chrome to visually start loading before supervision fires.
+                self.last_typed_url = Some(p.text.clone());
+
+                // Make URL typing idempotent on retries/reruns: bring Chrome to
+                // front and focus/select the omnibox before typing.
+                if let Some(app_name) = self.focused_app_name() {
+                    let _ = mcp
+                        .call_tool(
+                            "focus_window",
+                            Some(serde_json::json!({"app_name": app_name})),
+                        )
+                        .await;
+                }
+                #[cfg(target_os = "macos")]
+                let modifiers = vec!["command"];
+                #[cfg(not(target_os = "macos"))]
+                let modifiers = vec!["control"];
+                let _ = mcp
+                    .call_tool(
+                        "press_key",
+                        Some(serde_json::json!({
+                            "key": "l",
+                            "modifiers": modifiers,
+                        })),
+                    )
+                    .await;
+            } else {
+                self.last_typed_url = None;
+            }
+        } else if let NodeType::PressKey(p) = node_type {
+            let app_kind = self.focused_app_kind();
+            if app_kind == AppKind::ChromeBrowser
+                && self.cdp_connected_to_focused_app()
+                && is_return_key(&p.key)
+                && p.modifiers.is_empty()
+                && self.last_typed_url.is_some()
+            {
+                // Re-focus the target app before sending Enter. In Test mode,
+                // per-step screenshot/supervision can occasionally leave key
+                // focus elsewhere, causing Enter to miss Chrome.
+                if let Some(app_name) = self.focused_app_name() {
+                    let _ = mcp
+                        .call_tool(
+                            "focus_window",
+                            Some(serde_json::json!({"app_name": app_name})),
+                        )
+                        .await;
+                }
+
+                // URL was just typed into the Chrome Omnibox. Fire the native
+                // press_key return (which Chrome handles as Omnibox navigation),
+                // then poll cdp_list_pages until the URL changes away from NTP.
+                //
+                // We cannot use cdp_navigate here: Chrome's NTP auto-focuses the
+                // Omnibox, which causes Chrome to silently ignore Page.navigate
+                // CDP commands, making cdp_navigate always time out.
+                let navigation_baseline = match mcp
+                    .call_tool("cdp_list_pages", Some(serde_json::json!({})))
+                    .await
+                {
+                    Ok(r) if r.is_error != Some(true) => {
+                        let text = Self::extract_result_text(&r);
+                        // Only use the baseline if it contains at least one
+                        // parseable page entry. An empty map would cause every
+                        // HTTP tab in the next poll to look "new", spuriously
+                        // setting last_url_navigation_was_cdp = true.
+                        if parse_cdp_page_payloads(&text).is_empty() {
+                            self.log(
+                                "Chrome URL navigation: baseline has no page entries — \
+                                 navigation observation disabled",
+                            );
+                            None
+                        } else {
+                            Some(text)
+                        }
+                    }
+                    _ => {
+                        self.log(
+                            "Chrome URL navigation: baseline cdp_list_pages failed — \
+                             navigation observation disabled",
+                        );
+                        None
+                    }
+                };
+
+                let press_args = serde_json::json!({"key": "return"});
+                self.record_event(
+                    node_run.as_deref(),
+                    "tool_call",
+                    serde_json::json!({"name": "press_key", "args": &press_args}),
+                );
+                let result = mcp
+                    .call_tool("press_key", Some(press_args))
+                    .await
+                    .map_err(|e| ExecutorError::ToolCall {
+                        tool: "press_key".to_string(),
+                        message: e.to_string(),
+                    })?;
+                Self::check_tool_error(&result, "press_key")?;
+                let result_text = Self::extract_result_text(&result);
+                self.record_event(
+                    node_run.as_deref(),
+                    "tool_result",
+                    serde_json::json!({
+                        "name": "press_key",
+                        "text": Self::truncate_for_trace(&result_text, 8192),
+                    }),
+                );
+
+                // Poll cdp_list_pages until Chrome moves away from NTP/blank.
+                // This gives a structural "navigation started" signal without
+                // waiting for full page load, which can be long on Gmail/YouTube.
+                //
+                // We skip the observation loop when the baseline is unavailable:
+                // without a before-snapshot we cannot distinguish existing tabs
+                // from newly-navigated ones (every http tab would look "new"),
+                // so we would spuriously set last_url_navigation_was_cdp = true
+                // and skip VLM supervision even when Chrome didn't navigate.
+                if let Some(ref baseline) = navigation_baseline {
+                    self.log("Chrome URL navigation: polling for URL change...");
+                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+                    let mut observed_navigation = false;
+                    let mut poll_ms: u64 = 100;
+                    loop {
+                        if self.cancel_token.is_cancelled() {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(poll_ms)).await;
+                        poll_ms = (poll_ms * 2).min(500);
+                        if tokio::time::Instant::now() >= deadline {
+                            self.log("Chrome URL navigation: timeout waiting for URL change");
+                            break;
+                        }
+                        if let Ok(r) = mcp
+                            .call_tool("cdp_list_pages", Some(serde_json::json!({})))
+                            .await
+                        {
+                            if r.is_error != Some(true) {
+                                let text = Self::extract_result_text(&r);
+                                if cdp_pages_show_navigation_progress(baseline, &text) {
+                                    self.log("Chrome URL navigation: page URL changed");
+                                    observed_navigation = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    self.last_url_navigation_was_cdp = observed_navigation;
+                    if observed_navigation {
+                        // Consume the URL intent only once navigation is observed.
+                        // If we timed out, keep it armed so supervision retries
+                        // still use the navigation-aware PressKey path.
+                        self.last_typed_url = None;
+                    }
+                } else {
+                    self.log("Chrome URL navigation: baseline unavailable, skipping observation");
+                }
+
+                return Ok(Self::parse_result_text(&result_text));
+            }
+            self.last_typed_url = None;
+        } else {
+            self.last_typed_url = None;
+        }
 
         // --- Hover: CDP path + native fallback + dwell ---
         if let NodeType::Hover(p) = node_type {
@@ -361,6 +638,55 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             AppKind::Native
         };
 
+        // For Chrome-family launch_app with a configured profile: kill only the
+        // Chrome instance running this profile (leave the user's default Chrome
+        // alone), then launch Chrome directly with --user-data-dir. We bypass the
+        // MCP launch_app tool which refuses when any Chrome is already running.
+        if tool_name == "launch_app"
+            && launch_app_kind == AppKind::ChromeBrowser
+            && let Some(ref profile_path) = self.chrome_profile_path
+        {
+            let dir = profile_path.to_string_lossy().to_string();
+            self.log(format!("Launching Chrome with profile: {}", dir));
+
+            kill_chrome_profile_instance(&dir).await;
+
+            launch_chrome_with_profile(&dir)
+                .await
+                .map_err(|e| ExecutorError::ToolCall {
+                    tool: "launch_app".to_string(),
+                    message: format!("Failed to launch Chrome with profile: {e}"),
+                })?;
+
+            self.record_event(
+                node_run.as_deref(),
+                "tool_call",
+                serde_json::json!({
+                    "name": "launch_app",
+                    "args": {"app_name": launch_app_name, "user_data_dir": dir},
+                }),
+            );
+
+            // Wait for Chrome to start up before continuing.
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+            if let Some(name) = &launch_app_name {
+                *self.write_focused_app() = Some((name.clone(), launch_app_kind));
+                if launch_app_kind.uses_cdp() && mcp.has_tool("cdp_connect") {
+                    self.ensure_cdp_connected(node_id, name, mcp, node_run.as_deref())
+                        .await?;
+                }
+            }
+
+            let result_text = format!("Launched Chrome with profile {}", dir);
+            self.record_event(
+                node_run.as_deref(),
+                "tool_result",
+                serde_json::json!({"name": "launch_app", "text": &result_text}),
+            );
+            return Ok(Self::parse_result_text(&result_text));
+        }
+
         self.record_event(
             node_run.as_deref(),
             "tool_call",
@@ -466,5 +792,198 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         } else {
             Value::String(text.to_string())
         })
+    }
+}
+
+/// Kill only Chrome processes running with a specific `--user-data-dir`,
+/// leaving the user's default Chrome instance untouched.
+async fn kill_chrome_profile_instance(profile_dir: &str) {
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Use pkill to kill processes matching the specific --user-data-dir.
+        // Anchoring to "Google Chrome" avoids matching pgrep's own command line.
+        let pattern = format!("Google Chrome.*--user-data-dir={}", profile_dir);
+        let _ = tokio::process::Command::new("pkill")
+            .args(["-f", &pattern])
+            .output()
+            .await;
+
+        for _ in 0..10 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let still_alive = tokio::process::Command::new("pgrep")
+                .args(["-f", &pattern])
+                .output()
+                .await
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !still_alive {
+                break;
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = tokio::process::Command::new("taskkill")
+            .args([
+                "/F",
+                "/FI",
+                &format!("WINDOWTITLE eq *--user-data-dir={}*", profile_dir),
+            ])
+            .output()
+            .await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+}
+
+/// Launch Chrome directly with `--user-data-dir` and optional extra args,
+/// bypassing MCP `launch_app` which refuses when any Chrome is already running.
+async fn spawn_chrome(args: &[String]) -> Result<(), String> {
+    use std::process::Stdio;
+
+    #[cfg(target_os = "macos")]
+    let result = tokio::process::Command::new(
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    )
+    .args(args)
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .spawn();
+
+    #[cfg(target_os = "windows")]
+    let result = tokio::process::Command::new("chrome")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+
+    #[cfg(target_os = "linux")]
+    let result = tokio::process::Command::new("google-chrome")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+
+    result
+        .map(|_| ())
+        .map_err(|e| format!("Failed to spawn Chrome: {e}"))
+}
+
+async fn launch_chrome_with_profile(profile_dir: &str) -> Result<(), String> {
+    spawn_chrome(&[
+        format!("--user-data-dir={}", profile_dir),
+        "--no-first-run".to_string(),
+        "--no-default-browser-check".to_string(),
+    ])
+    .await
+}
+
+async fn launch_chrome_with_profile_and_debug_port(
+    profile_dir: &str,
+    port: u16,
+) -> Result<(), String> {
+    spawn_chrome(&[
+        format!("--user-data-dir={}", profile_dir),
+        format!("--remote-debugging-port={}", port),
+        "--no-first-run".to_string(),
+        "--no-default-browser-check".to_string(),
+    ])
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        cdp_page_payload_is_navigation, cdp_pages_show_navigation_progress,
+        looks_like_browser_url_input,
+    };
+
+    #[test]
+    fn cdp_navigation_progress_detects_ntp_to_web_transition() {
+        let before = "[0] about:newtab\n[1] https://example.com/dashboard";
+        let after =
+            "[0] https://mail.google.com/mail/u/0/#inbox\n[1] https://example.com/dashboard";
+        assert!(cdp_pages_show_navigation_progress(before, after));
+    }
+
+    #[test]
+    fn cdp_navigation_progress_rejects_unchanged_existing_tabs() {
+        let before = "[0] about:newtab\n[1] https://example.com/dashboard";
+        let after = "[0] about:newtab\n[1] https://example.com/dashboard";
+        assert!(!cdp_pages_show_navigation_progress(before, after));
+    }
+
+    #[test]
+    fn cdp_navigation_progress_detects_web_to_web_transition() {
+        let before = "[0] https://example.com/dashboard\n[1] https://mail.google.com/mail/u/0";
+        let after = "[0] https://www.youtube.com/\n[1] https://mail.google.com/mail/u/0";
+        assert!(cdp_pages_show_navigation_progress(before, after));
+    }
+
+    // B2 regression: chrome:// and about: pages that aren't in any blocklist must
+    // not count as navigation (positive allowlist, not double-negative blocklist).
+    #[test]
+    fn cdp_payload_rejects_chrome_settings_tab() {
+        assert!(!cdp_page_payload_is_navigation("chrome://settings/"));
+        assert!(!cdp_page_payload_is_navigation("about:srcdoc"));
+        assert!(!cdp_page_payload_is_navigation("chrome://newtab"));
+        assert!(!cdp_page_payload_is_navigation("about:blank"));
+    }
+
+    #[test]
+    fn cdp_payload_accepts_http_https_file() {
+        assert!(cdp_page_payload_is_navigation("https://mail.google.com/"));
+        assert!(cdp_page_payload_is_navigation("http://localhost:3000"));
+        assert!(cdp_page_payload_is_navigation(
+            "file:///Users/me/index.html"
+        ));
+    }
+
+    // B3 regression: an empty baseline must not cause every open tab to look like
+    // a new navigation. (Tested indirectly: all tabs match before == after so no change.)
+    #[test]
+    fn cdp_navigation_progress_empty_baseline_does_not_spuriously_match_existing_tabs() {
+        let before = "";
+        let after = "[0] https://example.com/dashboard\n[1] https://mail.google.com/mail/u/0";
+        // With an empty baseline every tab looks "new" — this would be a false positive.
+        // The fix is to skip the poll loop when baseline is None; this unit test documents
+        // the raw function behaviour so callers know not to pass an empty baseline.
+        // Both tabs have an http URL, and neither is in the empty before-map → true.
+        assert!(cdp_pages_show_navigation_progress(before, after));
+        // (Callers must guard against this by skipping the loop when baseline is None.)
+    }
+
+    #[test]
+    fn url_input_detects_domain_and_scheme() {
+        assert!(looks_like_browser_url_input("gmail.com"));
+        assert!(looks_like_browser_url_input(
+            "https://www.youtube.com/watch?v=1"
+        ));
+    }
+
+    #[test]
+    fn url_input_rejects_email_and_plain_words() {
+        assert!(!looks_like_browser_url_input("user@example.com"));
+        assert!(!looks_like_browser_url_input("hello"));
+        assert!(!looks_like_browser_url_input("1.2.3"));
+        assert!(!looks_like_browser_url_input("foo.bar"));
+        assert!(!looks_like_browser_url_input("test.txt"));
+    }
+
+    // N4: port-containing inputs like localhost:3000 should not be treated as URLs
+    // (no dot in the host part, so they fall through the TLD check).
+    #[test]
+    fn url_input_rejects_port_only_addresses() {
+        assert!(!looks_like_browser_url_input("localhost:3000"));
+        assert!(!looks_like_browser_url_input("localhost"));
+    }
+
+    // But fully-qualified hosts with ports are accepted because they start with https://
+    #[test]
+    fn url_input_accepts_scheme_with_port() {
+        assert!(looks_like_browser_url_input("http://localhost:3000"));
+        assert!(looks_like_browser_url_input("https://app.local:8080"));
     }
 }

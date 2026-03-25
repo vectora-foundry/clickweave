@@ -77,6 +77,27 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
     let cancel_token = CancellationToken::new();
     let executor_token = cancel_token.clone();
 
+    let chrome_profile_path = {
+        let app_data = app.state::<super::types::AppDataDir>();
+        let profiles_dir = app_data.0.join("chrome-profiles");
+        let store = clickweave_core::chrome_profiles::ChromeProfileStore::new(profiles_dir);
+        match request.chrome_profile_id {
+            Some(id) => Some(store.profile_path(&id)),
+            None => {
+                // Best-effort: resolve default profile for Chrome 136+ compat.
+                // Failures are non-fatal — Chrome may still work (older versions)
+                // or the workflow may not use Chrome at all.
+                match store.ensure_profiles() {
+                    Ok(ps) => ps.into_iter().next().map(|p| store.profile_path(&p.id)),
+                    Err(e) => {
+                        warn!("Chrome profile setup failed (non-fatal): {e}");
+                        None
+                    }
+                }
+            }
+        }
+    };
+
     let task_handle = tauri::async_runtime::spawn(async move {
         let mut executor = WorkflowExecutor::new(
             request.workflow,
@@ -89,6 +110,7 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
             event_tx,
             storage,
             executor_token,
+            chrome_profile_path,
         );
         executor.run(cmd_rx).await;
     });

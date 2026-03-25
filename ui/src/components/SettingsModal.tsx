@@ -1,3 +1,6 @@
+import { useEffect, useRef, useState } from "react";
+import type { ChromeProfile } from "../bindings";
+import { commands } from "../bindings";
 import type { EndpointConfig } from "../store/useAppStore";
 import { Modal } from "./Modal";
 
@@ -9,6 +12,7 @@ interface SettingsModalProps {
   vlmEnabled: boolean;
   maxRepairAttempts: number;
   hoverDwellThreshold: number;
+  selectedChromeProfileId: string | null;
   onClose: () => void;
   onPlannerConfigChange: (config: EndpointConfig) => void;
   onAgentConfigChange: (config: EndpointConfig) => void;
@@ -16,6 +20,7 @@ interface SettingsModalProps {
   onVlmEnabledChange: (enabled: boolean) => void;
   onMaxRepairAttemptsChange: (n: number) => void;
   onHoverDwellThresholdChange: (ms: number) => void;
+  onSelectedChromeProfileIdChange: (id: string) => void;
 }
 
 const inputClass =
@@ -81,6 +86,118 @@ function ConfigSection({
   );
 }
 
+function ChromeProfileSection({
+  selectedProfileId,
+  onProfileChange,
+}: {
+  selectedProfileId: string | null;
+  onProfileChange: (id: string) => void;
+}) {
+  const [profiles, setProfiles] = useState<ChromeProfile[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [showNewInput, setShowNewInput] = useState(false);
+  const selectedProfileIdRef = useRef(selectedProfileId);
+  selectedProfileIdRef.current = selectedProfileId;
+  const onProfileChangeRef = useRef(onProfileChange);
+  onProfileChangeRef.current = onProfileChange;
+
+  const fetchProfiles = async () => {
+    setLoading(true);
+    const result = await commands.listChromeProfiles();
+    if (result.status === "ok") {
+      setProfiles(result.data);
+      if (!selectedProfileIdRef.current && result.data.length > 0) {
+        onProfileChangeRef.current(result.data[0].id);
+      }
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    fetchProfiles();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleCreate = async () => {
+    if (!newName.trim()) return;
+    const result = await commands.createChromeProfile(newName.trim());
+    if (result.status === "ok") {
+      onProfileChange(result.data.id);
+      setNewName("");
+      setShowNewInput(false);
+      fetchProfiles();
+    }
+  };
+
+  const handleConfigure = async () => {
+    if (!selectedProfileId) return;
+    await commands.launchChromeForSetup(selectedProfileId);
+  };
+
+  return (
+    <div>
+      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+        Chrome Profile
+      </h3>
+      <p className="mb-2 text-[10px] text-[var(--text-muted)]">
+        Persistent browser profile for Chrome sessions. Log in once, stay logged in across all runs.
+      </p>
+      <div className="flex items-center gap-2">
+        <select
+          value={selectedProfileId ?? ""}
+          onChange={(e) => onProfileChange(e.target.value)}
+          disabled={loading || profiles.length === 0}
+          className={inputClass}
+        >
+          {profiles.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+        <button
+          onClick={() => setShowNewInput(!showNewInput)}
+          className="shrink-0 rounded bg-[var(--bg-input)] px-2 py-1.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+          title="New profile"
+        >
+          +
+        </button>
+      </div>
+      {showNewInput && (
+        <div className="mt-2 flex items-center gap-2">
+          <input
+            type="text"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+            placeholder="Profile name"
+            autoFocus
+            className={`${inputClass} placeholder-[var(--text-muted)]`}
+          />
+          <button
+            onClick={handleCreate}
+            disabled={!newName.trim()}
+            className="shrink-0 rounded bg-[var(--accent-coral)] px-2.5 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+          >
+            Create
+          </button>
+        </div>
+      )}
+      <button
+        onClick={handleConfigure}
+        disabled={!selectedProfileId}
+        className="mt-2 rounded bg-[var(--bg-input)] px-3 py-1.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-50"
+      >
+        Configure (opens Chrome)
+      </button>
+      <p className="mt-1 text-[10px] text-[var(--text-muted)]">
+        Opens Chrome with this profile so you can log into sites. Close Chrome when done.
+      </p>
+    </div>
+  );
+}
+
 export function SettingsModal({
   open,
   plannerConfig,
@@ -89,6 +206,7 @@ export function SettingsModal({
   vlmEnabled,
   maxRepairAttempts,
   hoverDwellThreshold,
+  selectedChromeProfileId,
   onClose,
   onPlannerConfigChange,
   onAgentConfigChange,
@@ -96,6 +214,7 @@ export function SettingsModal({
   onVlmEnabledChange,
   onMaxRepairAttemptsChange,
   onHoverDwellThresholdChange,
+  onSelectedChromeProfileIdChange,
 }: SettingsModalProps) {
   return (
     <Modal open={open} onClose={onClose} className="w-[480px] max-h-[90vh] overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] shadow-xl">
@@ -185,6 +304,11 @@ export function SettingsModal({
               </p>
             </div>
           </div>
+
+          <ChromeProfileSection
+            selectedProfileId={selectedChromeProfileId}
+            onProfileChange={onSelectedChromeProfileIdChange}
+          />
 
           <div>
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">

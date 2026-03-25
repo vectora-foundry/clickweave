@@ -1,4 +1,5 @@
 mod assistant;
+mod chrome_profiles;
 pub mod error;
 mod executor;
 mod planner;
@@ -10,6 +11,10 @@ mod walkthrough_enrichment;
 mod walkthrough_session;
 
 pub use assistant::{AssistantHandle, assistant_chat, cancel_assistant_chat};
+pub use chrome_profiles::{
+    create_chrome_profile, get_chrome_profile_path, is_chrome_profile_configured,
+    launch_chrome_for_setup, list_chrome_profiles,
+};
 pub use executor::{ExecutorHandle, run_workflow, stop_workflow, supervision_respond};
 pub use planner::{patch_workflow, plan_workflow};
 pub use project::{

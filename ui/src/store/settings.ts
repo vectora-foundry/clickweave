@@ -9,6 +9,7 @@ export interface PersistedSettings {
   vlmEnabled: boolean;
   maxRepairAttempts: number;
   hoverDwellThreshold: number;
+  selectedChromeProfileId: string | null;
 }
 
 const SETTINGS_DEFAULTS: PersistedSettings = {
@@ -18,6 +19,7 @@ const SETTINGS_DEFAULTS: PersistedSettings = {
   vlmEnabled: DEFAULT_VLM_ENABLED,
   maxRepairAttempts: 3,
   hoverDwellThreshold: 2000,
+  selectedChromeProfileId: null,
 };
 
 export async function loadSettings(): Promise<PersistedSettings> {
@@ -33,6 +35,7 @@ export async function loadSettings(): Promise<PersistedSettings> {
   const vlmEnabled = await store.get<boolean>("vlmEnabled");
   const maxRepairAttempts = await store.get<number>("maxRepairAttempts");
   const hoverDwellThreshold = await store.get<number>("hoverDwellThreshold");
+  const selectedChromeProfileId = await store.get<string | null>("selectedChromeProfileId");
   return {
     plannerConfig: plannerConfig ?? fallback,
     agentConfig: agentConfig ?? fallback,
@@ -40,6 +43,7 @@ export async function loadSettings(): Promise<PersistedSettings> {
     vlmEnabled: vlmEnabled ?? SETTINGS_DEFAULTS.vlmEnabled,
     maxRepairAttempts: maxRepairAttempts ?? SETTINGS_DEFAULTS.maxRepairAttempts,
     hoverDwellThreshold: hoverDwellThreshold ?? SETTINGS_DEFAULTS.hoverDwellThreshold,
+    selectedChromeProfileId: selectedChromeProfileId ?? SETTINGS_DEFAULTS.selectedChromeProfileId,
   };
 }
 

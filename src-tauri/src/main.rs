@@ -117,6 +117,11 @@ fn main() {
         seed_walkthrough_cache,
         detect_cdp_apps,
         validate_app_path,
+        list_chrome_profiles,
+        create_chrome_profile,
+        is_chrome_profile_configured,
+        get_chrome_profile_path,
+        launch_chrome_for_setup,
     ]);
 
     #[cfg(debug_assertions)]

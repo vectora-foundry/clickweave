@@ -95,6 +95,8 @@ pub struct RunRequest {
     /// Planner LLM used for supervision in Test mode.
     pub planner: Option<EndpointConfig>,
     pub execution_mode: ExecutionMode,
+    /// Chrome profile ID for persistent browser sessions.
+    pub chrome_profile_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

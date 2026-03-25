@@ -410,6 +410,7 @@ dependencies = [
  "serde",
  "serde_json",
  "specta",
+ "tempfile",
  "thiserror 2.0.18",
  "uuid",
  "windows-sys 0.61.2",

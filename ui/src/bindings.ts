@@ -240,6 +240,46 @@ async validateAppPath(path: string) : Promise<Result<DetectedCdpApp, CommandErro
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async listChromeProfiles() : Promise<Result<ChromeProfile[], CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_chrome_profiles") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async createChromeProfile(name: string) : Promise<Result<ChromeProfile, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("create_chrome_profile", { name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async isChromeProfileConfigured(profileId: string) : Promise<Result<boolean, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("is_chrome_profile_configured", { profileId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getChromeProfilePath(profileId: string) : Promise<Result<string, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_chrome_profile_path", { profileId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async launchChromeForSetup(profileId: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("launch_chrome_for_setup", { profileId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -283,6 +323,7 @@ binary_path: string | null; app_kind: AppKind }
  */
 export type ChatEntry = { role: ChatRole; content: string; timestamp: number; patch_summary?: PatchSummary | null; run_context?: RunContext | null }
 export type ChatRole = "user" | "assistant"
+export type ChromeProfile = { id: string; name: string }
 export type ClickParams = { target: ClickTarget | null; template_image?: string | null; x: number | null; y: number | null; button: MouseButton; click_count: number }
 export type ClickTarget = { type: "Text"; text: string } | { type: "CdpElement"; name: string; role: string | null; href: string | null; parent_role: string | null; parent_name: string | null } | 
 /**
@@ -385,7 +426,11 @@ export type RunRequest = { workflow: Workflow; project_path: string | null; agen
 /**
  * Planner LLM used for supervision in Test mode.
  */
-planner: EndpointConfig | null; execution_mode: ExecutionMode }
+planner: EndpointConfig | null; execution_mode: ExecutionMode; 
+/**
+ * Chrome profile ID for persistent browser sessions.
+ */
+chrome_profile_id: string | null }
 export type RunStatus = "Ok" | "Failed" | "Stopped"
 export type RunsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string }
 /**
