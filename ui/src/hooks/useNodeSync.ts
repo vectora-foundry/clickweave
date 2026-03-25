@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   type Node as RFNode,
   type OnNodesChange,
@@ -720,7 +720,9 @@ export function useNodeSync({
   ]);
 
   // Sync external selectedNode changes into RF selection state
-  useEffect(() => {
+  // useLayoutEffect ensures deselection runs before paint, preventing a frame where
+  // rfNodes still shows the node as selected after the modal closes.
+  useLayoutEffect(() => {
     if (selectionFromCanvasRef.current) {
       selectionFromCanvasRef.current = false;
       return;

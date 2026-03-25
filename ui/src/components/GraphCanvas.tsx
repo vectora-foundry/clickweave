@@ -423,6 +423,7 @@ export function GraphCanvas({
         onNodeDragStart={handleNodeDragStart}
         onPaneClick={handlePaneClick}
         onPaneContextMenu={(e) => handleContextMenu(e)}
+        onNodeClick={(_, rfNode) => { if (rfNode.type === "workflow") onSelectNode(rfNode.id); }}
         onNodeContextMenu={(e, rfNode) => handleContextMenu(e, rfNode)}
         deleteKeyCode={["Backspace", "Delete"]}
         selectionOnDrag
