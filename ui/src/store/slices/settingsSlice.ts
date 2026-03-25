@@ -1,5 +1,4 @@
 import type { StateCreator } from "zustand";
-import { commands } from "../../bindings";
 import type { EndpointConfig } from "../state";
 import { DEFAULT_ENDPOINT, DEFAULT_VLM_ENABLED } from "../state";
 import { loadSettings, saveSetting } from "../settings";
@@ -25,7 +24,6 @@ export interface SettingsSlice {
   setMaxRepairAttempts: (n: number) => void;
   setHoverDwellThreshold: (ms: number) => void;
   setSelectedChromeProfileId: (id: string) => void;
-  checkChromeProfileConfigured: () => Promise<void>;
 }
 
 function persistSetting<K extends keyof PersistedSettings>(
@@ -69,8 +67,8 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
           maxRepairAttempts: clampInt(s.maxRepairAttempts, 0, 10, 3),
           hoverDwellThreshold: clampInt(s.hoverDwellThreshold, 100, 10000, 2000),
           selectedChromeProfileId: s.selectedChromeProfileId,
+          chromeProfileConfigured: s.selectedChromeProfileId != null,
         });
-        get().checkChromeProfileConfigured();
       })
       .catch((e) => console.error("Failed to load settings:", e));
   },
@@ -85,11 +83,5 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
     if (id === get().selectedChromeProfileId) return;
     persistSetting("selectedChromeProfileId", id, set);
     set({ chromeProfileConfigured: true });
-  },
-  checkChromeProfileConfigured: async () => {
-    // A profile is "configured" if one is selected. Chrome creates its
-    // internal files (Default/Preferences) on first launch, so checking
-    // file existence is too strict for a warning banner.
-    set({ chromeProfileConfigured: !!get().selectedChromeProfileId });
   },
 });
