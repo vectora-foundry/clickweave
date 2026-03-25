@@ -152,7 +152,7 @@ function ChromeProfileSection({
         >
           {profiles.map((p) => (
             <option key={p.id} value={p.id}>
-              {p.name}
+              {p.google_email ? `${p.name} (${p.google_email})` : p.name}
             </option>
           ))}
         </select>
