@@ -323,7 +323,7 @@ binary_path: string | null; app_kind: AppKind }
  */
 export type ChatEntry = { role: ChatRole; content: string; timestamp: number; patch_summary?: PatchSummary | null; run_context?: RunContext | null }
 export type ChatRole = "user" | "assistant"
-export type ChromeProfile = { id: string; name: string }
+export type ChromeProfile = { id: string; name: string; google_email: string | null }
 export type ClickParams = { target: ClickTarget | null; template_image?: string | null; x: number | null; y: number | null; button: MouseButton; click_count: number }
 export type ClickTarget = { type: "Text"; text: string } | { type: "CdpElement"; name: string; role: string | null; href: string | null; parent_role: string | null; parent_name: string | null } | 
 /**
