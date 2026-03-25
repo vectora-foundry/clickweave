@@ -7,11 +7,18 @@ use std::path::PathBuf;
 pub struct ChromeProfile {
     pub id: String,
     pub name: String,
+    pub google_email: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ProfileEntry {
+    id: String,
+    name: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ProfilesFile {
-    profiles: Vec<ChromeProfile>,
+    profiles: Vec<ProfileEntry>,
 }
 
 pub struct ChromeProfileStore {
@@ -35,20 +42,30 @@ impl ChromeProfileStore {
     pub fn load_profiles(&self) -> Vec<ChromeProfile> {
         let path = self.base_dir.join("profiles.json");
         match std::fs::read_to_string(&path) {
-            Ok(contents) => {
-                serde_json::from_str::<ProfilesFile>(&contents)
-                    .unwrap_or_default()
-                    .profiles
-            }
+            Ok(contents) => serde_json::from_str::<ProfilesFile>(&contents)
+                .unwrap_or_default()
+                .profiles
+                .into_iter()
+                .map(|e| ChromeProfile {
+                    id: e.id,
+                    name: e.name,
+                    google_email: None,
+                })
+                .collect(),
             Err(_) => Vec::new(),
         }
     }
 
     fn save_profiles(&self, profiles: &[ChromeProfile]) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.base_dir)?;
-        let file = ProfilesFile {
-            profiles: profiles.to_vec(),
-        };
+        let entries: Vec<ProfileEntry> = profiles
+            .iter()
+            .map(|p| ProfileEntry {
+                id: p.id.clone(),
+                name: p.name.clone(),
+            })
+            .collect();
+        let file = ProfilesFile { profiles: entries };
         let json = serde_json::to_string_pretty(&file).map_err(std::io::Error::other)?;
         std::fs::write(self.base_dir.join("profiles.json"), json)
     }
@@ -65,10 +82,24 @@ impl ChromeProfileStore {
         let profile = ChromeProfile {
             id,
             name: name.to_string(),
+            google_email: None,
         };
         profiles.push(profile.clone());
         self.save_profiles(&profiles)?;
         Ok(profile)
+    }
+
+    fn read_google_email(&self, id: &str) -> Option<String> {
+        let prefs_path = self.profile_path(id).join("Default/Preferences");
+        let contents = std::fs::read_to_string(prefs_path).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&contents).ok()?;
+        value
+            .get("account_info")?
+            .as_array()?
+            .first()?
+            .get("email")?
+            .as_str()
+            .map(String::from)
     }
 
     /// Ensure at least one profile exists. Returns all profiles.
@@ -145,5 +176,39 @@ mod tests {
         // Second call returns existing, doesn't duplicate
         let again = store.ensure_profiles().unwrap();
         assert_eq!(again.len(), 1);
+    }
+
+    #[test]
+    fn read_google_email_extracts_email_from_preferences() {
+        let base = TempDir::new().unwrap();
+        let store = ChromeProfileStore::new(base.path().to_path_buf());
+        let prefs_dir = base.path().join("test-profile/Default");
+        std::fs::create_dir_all(&prefs_dir).unwrap();
+        std::fs::write(
+            prefs_dir.join("Preferences"),
+            r#"{"account_info": [{"email": "user@gmail.com", "full_name": "Test User"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            store.read_google_email("test-profile"),
+            Some("user@gmail.com".to_string()),
+        );
+    }
+
+    #[test]
+    fn read_google_email_returns_none_when_no_account() {
+        let base = TempDir::new().unwrap();
+        let store = ChromeProfileStore::new(base.path().to_path_buf());
+        let prefs_dir = base.path().join("test-profile/Default");
+        std::fs::create_dir_all(&prefs_dir).unwrap();
+        std::fs::write(prefs_dir.join("Preferences"), r#"{"account_info": []}"#).unwrap();
+        assert_eq!(store.read_google_email("test-profile"), None);
+    }
+
+    #[test]
+    fn read_google_email_returns_none_when_no_file() {
+        let base = TempDir::new().unwrap();
+        let store = ChromeProfileStore::new(base.path().to_path_buf());
+        assert_eq!(store.read_google_email("nonexistent"), None);
     }
 }
