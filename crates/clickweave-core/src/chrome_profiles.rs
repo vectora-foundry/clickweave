@@ -35,21 +35,28 @@ impl ChromeProfileStore {
         self.base_dir.join(sanitize_for_path(id))
     }
 
-    pub fn is_configured(&self, id: &str) -> bool {
-        self.profile_path(id).join("Default/Preferences").exists()
+    fn preferences_path(&self, id: &str) -> PathBuf {
+        self.profile_path(id).join("Default/Preferences")
     }
 
-    pub fn load_profiles(&self) -> Vec<ChromeProfile> {
+    pub fn is_configured(&self, id: &str) -> bool {
+        self.preferences_path(id).exists()
+    }
+
+    fn load_entries(&self) -> Vec<ProfileEntry> {
         let path = self.base_dir.join("profiles.json");
-        let entries: Vec<ProfileEntry> = match std::fs::read_to_string(&path) {
+        match std::fs::read_to_string(&path) {
             Ok(contents) => {
                 serde_json::from_str::<ProfilesFile>(&contents)
                     .unwrap_or_default()
                     .profiles
             }
             Err(_) => Vec::new(),
-        };
-        entries
+        }
+    }
+
+    pub fn load_profiles(&self) -> Vec<ChromeProfile> {
+        self.load_entries()
             .into_iter()
             .map(|e| ChromeProfile {
                 google_email: self.read_google_email(&e.id),
@@ -59,42 +66,38 @@ impl ChromeProfileStore {
             .collect()
     }
 
-    fn save_profiles(&self, profiles: &[ChromeProfile]) -> std::io::Result<()> {
+    fn save_entries(&self, entries: &[ProfileEntry]) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.base_dir)?;
-        let entries: Vec<ProfileEntry> = profiles
-            .iter()
-            .map(|p| ProfileEntry {
-                id: p.id.clone(),
-                name: p.name.clone(),
-            })
-            .collect();
-        let file = ProfilesFile { profiles: entries };
+        let file = ProfilesFile {
+            profiles: entries.to_vec(),
+        };
         let json = serde_json::to_string_pretty(&file).map_err(std::io::Error::other)?;
         std::fs::write(self.base_dir.join("profiles.json"), json)
     }
 
     pub fn create_profile(&self, name: &str) -> std::io::Result<ChromeProfile> {
         let id = sanitize_for_path(name);
-        let mut profiles = self.load_profiles();
-        if profiles.iter().any(|p| p.id == id) {
+        let mut entries = self.load_entries();
+        if entries.iter().any(|e| e.id == id) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
                 format!("Profile '{}' already exists", id),
             ));
         }
-        let profile = ChromeProfile {
+        entries.push(ProfileEntry {
+            id: id.clone(),
+            name: name.to_string(),
+        });
+        self.save_entries(&entries)?;
+        Ok(ChromeProfile {
             id,
             name: name.to_string(),
             google_email: None,
-        };
-        profiles.push(profile.clone());
-        self.save_profiles(&profiles)?;
-        Ok(profile)
+        })
     }
 
     fn read_google_email(&self, id: &str) -> Option<String> {
-        let prefs_path = self.profile_path(id).join("Default/Preferences");
-        let contents = std::fs::read_to_string(prefs_path).ok()?;
+        let contents = std::fs::read_to_string(self.preferences_path(id)).ok()?;
         let value: serde_json::Value = serde_json::from_str(&contents).ok()?;
         value
             .get("account_info")?
@@ -107,11 +110,9 @@ impl ChromeProfileStore {
 
     /// Ensure at least one profile exists. Returns all profiles.
     pub fn ensure_profiles(&self) -> std::io::Result<Vec<ChromeProfile>> {
-        let profiles = self.load_profiles();
-        if !profiles.is_empty() {
-            return Ok(profiles);
+        if self.load_entries().is_empty() {
+            self.create_profile("Profile 1")?;
         }
-        self.create_profile("Profile 1")?;
         Ok(self.load_profiles())
     }
 }
