@@ -13,6 +13,7 @@ import { IntentEmptyState } from "./components/IntentEmptyState";
 import { VerdictBar } from "./components/VerdictBar";
 import { VerdictModal } from "./components/VerdictModal";
 import { SupervisionModal } from "./components/SupervisionModal";
+import { PlannerConfirmation } from "./components/PlannerConfirmation";
 import { CdpAppSelectModal } from "./components/CdpAppSelectModal";
 import { useEffect, useMemo } from "react";
 import { useEscapeKey } from "./hooks/useEscapeKey";
@@ -327,6 +328,8 @@ function App() {
           onRespond={supervisionRespond}
         />
       )}
+
+      <PlannerConfirmation />
 
       <CdpAppSelectModal
         open={cdpModalOpen}
