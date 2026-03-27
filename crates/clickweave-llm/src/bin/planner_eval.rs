@@ -346,11 +346,13 @@ fn apply_patch(workflow: &Workflow, patch: &PatchResult) -> Workflow {
         .chain(patch.added_edges.iter().cloned())
         .collect();
 
-    Workflow {
+    let mut merged = Workflow {
         nodes,
         edges,
         ..workflow.clone()
-    }
+    };
+    merged.fixup_auto_ids();
+    merged
 }
 
 // ── Helpers ─────────────────────────────────────────────────────
