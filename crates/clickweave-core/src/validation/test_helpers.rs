@@ -1,6 +1,7 @@
 #![cfg(test)]
 
-use crate::{Condition, LiteralValue, Operator, Position, ValueRef};
+use crate::output_schema::{ConditionValue, OutputRef};
+use crate::{Condition, LiteralValue, Operator, Position};
 
 pub fn pos(x: f32, y: f32) -> Position {
     Position { x, y }
@@ -8,11 +9,12 @@ pub fn pos(x: f32, y: f32) -> Position {
 
 pub fn dummy_condition() -> Condition {
     Condition {
-        left: ValueRef::Literal {
-            value: LiteralValue::Bool { value: true },
+        left: OutputRef {
+            node: "click_1".to_string(),
+            field: "result".to_string(),
         },
         operator: Operator::Equals,
-        right: ValueRef::Literal {
+        right: ConditionValue::Literal {
             value: LiteralValue::Bool { value: true },
         },
     }

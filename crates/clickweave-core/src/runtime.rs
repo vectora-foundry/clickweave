@@ -4,7 +4,8 @@
 //! Variables are global to the execution — a variable set inside a loop
 //! is visible after the loop ends (no nested scoping).
 
-use crate::{Condition, LiteralValue, Operator, ValueRef};
+use crate::output_schema::{ConditionValue, OutputRef};
+use crate::{Condition, Operator};
 use serde_json::Value;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -13,7 +14,7 @@ use uuid::Uuid;
 #[derive(Debug, Default)]
 pub struct RuntimeContext {
     /// Variables produced by node outputs.
-    /// Key format: "<sanitized_node_name>.<field>" (e.g., "find_text_1.found").
+    /// Key format: "<auto_id>.<field>" (e.g., "find_text_1.found").
     pub variables: HashMap<String, Value>,
 
     /// Loop iteration counters. Key: Loop node UUID, Value: current iteration (0-indexed).
@@ -36,27 +37,25 @@ impl RuntimeContext {
         self.variables.get(name)
     }
 
-    /// Resolve a [`ValueRef`] to a concrete [`Value`].
-    ///
-    /// - `Variable { name }` → stored value, or `Value::Null` if missing.
-    /// - `Literal { value }` → converted to the corresponding JSON value.
-    pub fn resolve_value_ref(&self, value_ref: &ValueRef) -> Value {
-        match value_ref {
-            ValueRef::Variable { name } => self.variables.get(name).cloned().unwrap_or(Value::Null),
-            ValueRef::Literal { value } => match value {
-                LiteralValue::String { value } => Value::String(value.clone()),
-                LiteralValue::Number { value } => serde_json::Number::from_f64(*value)
-                    .map(Value::Number)
-                    .unwrap_or(Value::Null),
-                LiteralValue::Bool { value } => Value::Bool(*value),
-            },
+    /// Resolve an [`OutputRef`] to the stored variable value.
+    pub fn resolve_output_ref(&self, output_ref: &OutputRef) -> Value {
+        let key = format!("{}.{}", output_ref.node, output_ref.field);
+        self.variables.get(&key).cloned().unwrap_or(Value::Null)
+    }
+
+    /// Resolve a [`ConditionValue`] to a concrete [`Value`].
+    pub fn resolve_condition_value(&self, cv: &ConditionValue) -> Value {
+        match cv {
+            ConditionValue::Literal { value } => value.to_json_value(),
+            ConditionValue::Ref(output_ref) => self.resolve_output_ref(output_ref),
         }
     }
 
     /// Evaluate a [`Condition`] against the current runtime state.
+    /// Left is always an OutputRef, right is either a literal or another OutputRef.
     pub fn evaluate_condition(&self, condition: &Condition) -> bool {
-        let left = self.resolve_value_ref(&condition.left);
-        let right = self.resolve_value_ref(&condition.right);
+        let left = self.resolve_output_ref(&condition.left);
+        let right = self.resolve_condition_value(&condition.right);
         evaluate_operator(&condition.operator, &left, &right)
     }
 }
@@ -181,33 +180,35 @@ fn string_contains(haystack: &Value, needle: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::LiteralValue;
 
-    /// Helper: build a Variable value-ref.
-    fn var(name: &str) -> ValueRef {
-        ValueRef::Variable {
-            name: name.to_string(),
+    /// Helper: build an OutputRef.
+    fn out_ref(node: &str, field: &str) -> OutputRef {
+        OutputRef {
+            node: node.to_string(),
+            field: field.to_string(),
         }
     }
 
-    /// Helper: build a Literal bool value-ref.
-    fn lit_bool(v: bool) -> ValueRef {
-        ValueRef::Literal {
+    /// Helper: build a ConditionValue literal bool.
+    fn lit_bool(v: bool) -> ConditionValue {
+        ConditionValue::Literal {
             value: LiteralValue::Bool { value: v },
         }
     }
 
-    /// Helper: build a Literal string value-ref.
-    fn lit_str(s: &str) -> ValueRef {
-        ValueRef::Literal {
+    /// Helper: build a ConditionValue literal string.
+    fn lit_str(s: &str) -> ConditionValue {
+        ConditionValue::Literal {
             value: LiteralValue::String {
                 value: s.to_string(),
             },
         }
     }
 
-    /// Helper: build a Literal number value-ref.
-    fn lit_num(n: f64) -> ValueRef {
-        ValueRef::Literal {
+    /// Helper: build a ConditionValue literal number.
+    fn lit_num(n: f64) -> ConditionValue {
+        ConditionValue::Literal {
             value: LiteralValue::Number { value: n },
         }
     }
@@ -215,10 +216,10 @@ mod tests {
     #[test]
     fn equals_bool_true() {
         let mut ctx = RuntimeContext::new();
-        ctx.set_variable("found", Value::Bool(true));
+        ctx.set_variable("ft.found", Value::Bool(true));
 
         let cond = Condition {
-            left: var("found"),
+            left: out_ref("ft", "found"),
             operator: Operator::Equals,
             right: lit_bool(true),
         };
@@ -229,10 +230,10 @@ mod tests {
     #[test]
     fn equals_bool_false() {
         let mut ctx = RuntimeContext::new();
-        ctx.set_variable("found", Value::Bool(false));
+        ctx.set_variable("ft.found", Value::Bool(false));
 
         let cond = Condition {
-            left: var("found"),
+            left: out_ref("ft", "found"),
             operator: Operator::Equals,
             right: lit_bool(true),
         };
@@ -243,10 +244,10 @@ mod tests {
     #[test]
     fn not_equals() {
         let mut ctx = RuntimeContext::new();
-        ctx.set_variable("status", Value::String("error".into()));
+        ctx.set_variable("ai.status", Value::String("error".into()));
 
         let cond = Condition {
-            left: var("status"),
+            left: out_ref("ai", "status"),
             operator: Operator::NotEquals,
             right: lit_str("ok"),
         };
@@ -258,12 +259,12 @@ mod tests {
     fn greater_than() {
         let mut ctx = RuntimeContext::new();
         ctx.set_variable(
-            "score",
+            "fi.confidence",
             Value::Number(serde_json::Number::from_f64(0.95).unwrap()),
         );
 
         let cond = Condition {
-            left: var("score"),
+            left: out_ref("fi", "confidence"),
             operator: Operator::GreaterThan,
             right: lit_num(0.8),
         };
@@ -274,10 +275,10 @@ mod tests {
     #[test]
     fn contains_string() {
         let mut ctx = RuntimeContext::new();
-        ctx.set_variable("text", Value::String("Login successful".into()));
+        ctx.set_variable("ft.text", Value::String("Login successful".into()));
 
         let cond = Condition {
-            left: var("text"),
+            left: out_ref("ft", "text"),
             operator: Operator::Contains,
             right: lit_str("successful"),
         };
@@ -289,9 +290,8 @@ mod tests {
     fn is_empty_null() {
         let ctx = RuntimeContext::new();
 
-        // "var" is not set, so it resolves to Null.
         let cond = Condition {
-            left: var("var"),
+            left: out_ref("missing", "field"),
             operator: Operator::IsEmpty,
             right: lit_bool(true), // right side is ignored for IsEmpty
         };
@@ -302,10 +302,10 @@ mod tests {
     #[test]
     fn is_not_empty_with_value() {
         let mut ctx = RuntimeContext::new();
-        ctx.set_variable("result", Value::String("data".into()));
+        ctx.set_variable("ai.result", Value::String("data".into()));
 
         let cond = Condition {
-            left: var("result"),
+            left: out_ref("ai", "result"),
             operator: Operator::IsNotEmpty,
             right: lit_bool(true), // right side is ignored for IsNotEmpty
         };
@@ -317,9 +317,8 @@ mod tests {
     fn missing_variable_equals_null() {
         let ctx = RuntimeContext::new();
 
-        // Missing variable resolves to Null; Null != "" (different types, no coercion rule).
         let cond = Condition {
-            left: var("var"),
+            left: out_ref("missing", "var"),
             operator: Operator::Equals,
             right: lit_str(""),
         };
@@ -330,10 +329,10 @@ mod tests {
     #[test]
     fn bool_string_coercion() {
         let mut ctx = RuntimeContext::new();
-        ctx.set_variable("flag", Value::Bool(true));
+        ctx.set_variable("ft.found", Value::Bool(true));
 
         let cond = Condition {
-            left: var("flag"),
+            left: out_ref("ft", "found"),
             operator: Operator::Equals,
             right: lit_str("true"),
         };
@@ -345,21 +344,19 @@ mod tests {
     fn number_string_coercion() {
         let mut ctx = RuntimeContext::new();
         ctx.set_variable(
-            "count",
+            "ft.count",
             Value::Number(serde_json::Number::from_f64(42.0).unwrap()),
         );
 
-        // Number(42) == String("42") → true
         let cond = Condition {
-            left: var("count"),
+            left: out_ref("ft", "count"),
             operator: Operator::Equals,
             right: lit_str("42"),
         };
         assert!(ctx.evaluate_condition(&cond));
 
-        // Number(42) == String("not_a_number") → false
         let cond2 = Condition {
-            left: var("count"),
+            left: out_ref("ft", "count"),
             operator: Operator::Equals,
             right: lit_str("not_a_number"),
         };
@@ -367,22 +364,38 @@ mod tests {
     }
 
     #[test]
+    fn variable_vs_variable_comparison() {
+        let mut ctx = RuntimeContext::new();
+        ctx.set_variable(
+            "ft1.count",
+            Value::Number(serde_json::Number::from_f64(5.0).unwrap()),
+        );
+        ctx.set_variable(
+            "ft2.count",
+            Value::Number(serde_json::Number::from_f64(3.0).unwrap()),
+        );
+
+        let cond = Condition {
+            left: out_ref("ft1", "count"),
+            operator: Operator::GreaterThan,
+            right: ConditionValue::Ref(out_ref("ft2", "count")),
+        };
+        assert!(ctx.evaluate_condition(&cond));
+    }
+
+    #[test]
     fn loop_counter_tracking() {
         let mut ctx = RuntimeContext::new();
         let loop_id = Uuid::new_v4();
 
-        // Initially no counter.
         assert_eq!(ctx.loop_counters.get(&loop_id), None);
 
-        // Set to 0.
         ctx.loop_counters.insert(loop_id, 0);
         assert_eq!(ctx.loop_counters[&loop_id], 0);
 
-        // Increment.
         *ctx.loop_counters.get_mut(&loop_id).unwrap() += 1;
         assert_eq!(ctx.loop_counters[&loop_id], 1);
 
-        // Increment again.
         *ctx.loop_counters.get_mut(&loop_id).unwrap() += 1;
         assert_eq!(ctx.loop_counters[&loop_id], 2);
     }

@@ -382,8 +382,9 @@ pub fn synthesize_draft(
     workflow_name: &str,
 ) -> crate::Workflow {
     use crate::{
-        ClickParams, ClickTarget, Edge, FocusMethod, FocusWindowParams, HoverParams, Node,
-        NodeType, Position, PressKeyParams, ScrollParams, TypeTextParams, Workflow,
+        CdpClickParams, CdpHoverParams, ClickParams, ClickTarget, Edge, FocusMethod,
+        FocusWindowParams, HoverParams, Node, NodeType, Position, PressKeyParams, ScrollParams,
+        TypeTextParams, Workflow,
     };
 
     let mut workflow = Workflow {
@@ -392,6 +393,7 @@ pub fn synthesize_draft(
         nodes: Vec::new(),
         edges: Vec::new(),
         groups: Vec::new(),
+        next_id_counters: std::collections::HashMap::new(),
     };
 
     let mut node_index = 0usize;
@@ -414,6 +416,7 @@ pub fn synthesize_draft(
                     bring_to_front: true,
                     app_kind: *app_kind,
                     chrome_profile_id: None,
+                    ..Default::default()
                 }),
                 format!("Launch {app_name}"),
             ),
@@ -429,6 +432,7 @@ pub fn synthesize_draft(
                     bring_to_front: true,
                     app_kind: *app_kind,
                     chrome_profile_id: None,
+                    ..Default::default()
                 }),
                 match window_title {
                     Some(t) => format!("Focus '{t}'"),
@@ -450,8 +454,6 @@ pub fn synthesize_draft(
                     let name = wc_action.display_name().to_string();
                     let params = ClickParams {
                         target: Some(ClickTarget::WindowControl { action: wc_action }),
-                        x: None,
-                        y: None,
                         button: *button,
                         click_count: *click_count,
                         ..Default::default()
@@ -460,13 +462,7 @@ pub fn synthesize_draft(
                 } else {
                     // Check for CDP element candidate first (structured target).
                     let cdp_candidate = action.target_candidates.iter().find_map(|c| match c {
-                        TargetCandidate::CdpElement {
-                            name,
-                            role,
-                            href,
-                            parent_role,
-                            parent_name,
-                        } => Some((name, role, href, parent_role, parent_name)),
+                        TargetCandidate::CdpElement { name, .. } => Some(name),
                         _ => None,
                     });
 
@@ -476,79 +472,37 @@ pub fn synthesize_draft(
                         .iter()
                         .find_map(|c| c.preferred_label().map(|s| s.to_string()));
 
-                    // Fallback: if no text target, try image crop.
-                    let image_crop_b64 = if cdp_candidate.is_none() && best_target.is_none() {
-                        action.target_candidates.iter().find_map(|c| match c {
-                            TargetCandidate::ImageCrop { image_b64, .. } => Some(image_b64.clone()),
-                            _ => None,
-                        })
-                    } else {
-                        None
-                    };
-
-                    let (params, name) = if let Some((
-                        cdp_name,
-                        cdp_role,
-                        cdp_href,
-                        cdp_parent_role,
-                        cdp_parent_name,
-                    )) = cdp_candidate
-                    {
+                    if let Some(cdp_name) = cdp_candidate {
                         (
-                            ClickParams {
-                                target: Some(ClickTarget::CdpElement {
-                                    name: cdp_name.clone(),
-                                    role: cdp_role.clone(),
-                                    href: cdp_href.clone(),
-                                    parent_role: cdp_parent_role.clone(),
-                                    parent_name: cdp_parent_name.clone(),
-                                }),
-                                x: None,
-                                y: None,
-                                button: *button,
-                                click_count: *click_count,
+                            NodeType::CdpClick(CdpClickParams {
+                                uid: cdp_name.clone(),
                                 ..Default::default()
-                            },
+                            }),
                             format!("Click '{cdp_name}'"),
                         )
                     } else if let Some(ref target) = best_target {
                         (
-                            ClickParams {
+                            NodeType::Click(ClickParams {
                                 target: Some(ClickTarget::Text {
                                     text: target.clone(),
                                 }),
-                                x: None,
-                                y: None,
                                 button: *button,
                                 click_count: *click_count,
                                 ..Default::default()
-                            },
+                            }),
                             format!("Click '{target}'"),
-                        )
-                    } else if let Some(ref b64) = image_crop_b64 {
-                        (
-                            ClickParams {
-                                template_image: Some(b64.clone()),
-                                button: *button,
-                                click_count: *click_count,
-                                ..Default::default()
-                            },
-                            format!("Click (image match at {x:.0}, {y:.0})"),
                         )
                     } else {
                         (
-                            ClickParams {
-                                target: None,
-                                x: Some(*x),
-                                y: Some(*y),
+                            NodeType::Click(ClickParams {
+                                target: Some(ClickTarget::Coordinates { x: *x, y: *y }),
                                 button: *button,
                                 click_count: *click_count,
                                 ..Default::default()
-                            },
+                            }),
                             format!("Click ({x:.0}, {y:.0})"),
                         )
-                    };
-                    (NodeType::Click(params), name)
+                    }
                 }
             }
 
@@ -560,7 +514,10 @@ pub fn synthesize_draft(
                     format!("Type '{text}'")
                 };
                 (
-                    NodeType::TypeText(TypeTextParams { text: text.clone() }),
+                    NodeType::TypeText(TypeTextParams {
+                        text: text.clone(),
+                        ..Default::default()
+                    }),
                     display,
                 )
             }
@@ -580,6 +537,7 @@ pub fn synthesize_draft(
                     NodeType::PressKey(PressKeyParams {
                         key: key.clone(),
                         modifiers: modifiers.clone(),
+                        ..Default::default()
                     }),
                     name,
                 )
@@ -590,20 +548,15 @@ pub fn synthesize_draft(
                     delta_y: *delta_y as i32,
                     x: None,
                     y: None,
+                    ..Default::default()
                 }),
                 format!("Scroll {}", if *delta_y < 0.0 { "up" } else { "down" }),
             ),
 
             WalkthroughActionKind::Hover { x, y, dwell_ms } => {
-                // Same target resolution logic as Click: CDP > text > image > coordinates
+                // Same target resolution logic as Click: CDP > text > coordinates
                 let cdp_candidate = action.target_candidates.iter().find_map(|c| match c {
-                    TargetCandidate::CdpElement {
-                        name,
-                        role,
-                        href,
-                        parent_role,
-                        parent_name,
-                    } => Some((name, role, href, parent_role, parent_name)),
+                    TargetCandidate::CdpElement { name, .. } => Some(name),
                     _ => None,
                 });
 
@@ -612,74 +565,41 @@ pub fn synthesize_draft(
                     .iter()
                     .find_map(|c| c.preferred_label().map(|s| s.to_string()));
 
-                let image_crop_b64 = if cdp_candidate.is_none() && best_target.is_none() {
-                    action.target_candidates.iter().find_map(|c| match c {
-                        TargetCandidate::ImageCrop { image_b64, .. } => Some(image_b64.clone()),
-                        _ => None,
-                    })
+                let (node_type_out, name) = if let Some(cdp_name) = cdp_candidate {
+                    (
+                        NodeType::CdpHover(CdpHoverParams {
+                            uid: cdp_name.clone(),
+                            ..Default::default()
+                        }),
+                        format!("Hover '{cdp_name}'"),
+                    )
+                } else if let Some(ref target) = best_target {
+                    (
+                        NodeType::Hover(HoverParams {
+                            target: Some(ClickTarget::Text {
+                                text: target.clone(),
+                            }),
+                            dwell_ms: *dwell_ms,
+                            ..Default::default()
+                        }),
+                        format!("Hover '{target}'"),
+                    )
                 } else {
-                    None
+                    (
+                        NodeType::Hover(HoverParams {
+                            target: Some(ClickTarget::Coordinates { x: *x, y: *y }),
+                            dwell_ms: *dwell_ms,
+                            ..Default::default()
+                        }),
+                        format!("Hover ({x:.0}, {y:.0})"),
+                    )
                 };
-
-                let (params, name) =
-                    if let Some((cdp_name, cdp_role, cdp_href, cdp_parent_role, cdp_parent_name)) =
-                        cdp_candidate
-                    {
-                        (
-                            HoverParams {
-                                target: Some(ClickTarget::CdpElement {
-                                    name: cdp_name.clone(),
-                                    role: cdp_role.clone(),
-                                    href: cdp_href.clone(),
-                                    parent_role: cdp_parent_role.clone(),
-                                    parent_name: cdp_parent_name.clone(),
-                                }),
-                                x: None,
-                                y: None,
-                                dwell_ms: *dwell_ms,
-                                ..Default::default()
-                            },
-                            format!("Hover '{cdp_name}'"),
-                        )
-                    } else if let Some(ref target) = best_target {
-                        (
-                            HoverParams {
-                                target: Some(ClickTarget::Text {
-                                    text: target.clone(),
-                                }),
-                                x: None,
-                                y: None,
-                                dwell_ms: *dwell_ms,
-                                ..Default::default()
-                            },
-                            format!("Hover '{target}'"),
-                        )
-                    } else if let Some(ref b64) = image_crop_b64 {
-                        (
-                            HoverParams {
-                                template_image: Some(b64.clone()),
-                                dwell_ms: *dwell_ms,
-                                ..Default::default()
-                            },
-                            format!("Hover (image match at {x:.0}, {y:.0})"),
-                        )
-                    } else {
-                        (
-                            HoverParams {
-                                target: None,
-                                x: Some(*x),
-                                y: Some(*y),
-                                dwell_ms: *dwell_ms,
-                                ..Default::default()
-                            },
-                            format!("Hover ({x:.0}, {y:.0})"),
-                        )
-                    };
-                (NodeType::Hover(params), name)
+                (node_type_out, name)
             }
         };
 
-        let node = Node::new(node_type, position, name);
+        let auto_id = crate::auto_id::assign_auto_id(&node_type, &mut workflow.next_id_counters);
+        let node = Node::new(node_type, position, name, auto_id);
         workflow.nodes.push(node);
     }
 
@@ -1536,12 +1456,12 @@ mod tests {
             let wf = synthesize_draft(&[action], Uuid::new_v4(), "Test");
             assert!(matches!(
                 &wf.nodes[0].node_type,
-                NodeType::Click(p) if p.target.is_none() && p.x == Some(100.0)
+                NodeType::Click(p) if matches!(&p.target, Some(crate::ClickTarget::Coordinates { x, .. }) if (*x - 100.0).abs() < f64::EPSILON)
             ));
         }
 
         #[test]
-        fn synthesize_draft_cdp_element_produces_click_target_cdp() {
+        fn synthesize_draft_cdp_element_produces_cdp_click() {
             let mut action = make_action(WalkthroughActionKind::Click {
                 x: 100.0,
                 y: 200.0,
@@ -1565,21 +1485,10 @@ mod tests {
             let draft = synthesize_draft(&[launch, action], Uuid::new_v4(), "test");
             let click_node = &draft.nodes[1];
             match &click_node.node_type {
-                NodeType::Click(p) => {
-                    match &p.target {
-                        Some(crate::ClickTarget::CdpElement {
-                            name, role, href, ..
-                        }) => {
-                            assert_eq!(name, "Friends");
-                            assert_eq!(role.as_deref(), Some("link"));
-                            assert_eq!(href.as_deref(), Some("https://discord.com/friends"));
-                        }
-                        other => panic!("expected CdpElement, got {:?}", other),
-                    }
-                    assert!(p.x.is_none());
-                    assert!(p.y.is_none());
+                NodeType::CdpClick(p) => {
+                    assert_eq!(p.uid, "Friends");
                 }
-                _ => panic!("expected Click node"),
+                other => panic!("expected CdpClick, got {:?}", other),
             }
         }
 

@@ -1,4 +1,5 @@
 use crate::AppKind;
+use crate::output_schema::{OutputRef, VerificationMethod};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -15,6 +16,8 @@ pub struct AiStepParams {
     pub allowed_tools: Option<Vec<String>>,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_ref: Option<OutputRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,29 +146,16 @@ impl WindowControlAction {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "type")]
 pub enum ClickTarget {
-    Text {
-        text: String,
-    },
-    CdpElement {
-        name: String,
-        role: Option<String>,
-        href: Option<String>,
-        parent_role: Option<String>,
-        parent_name: Option<String>,
-    },
-    /// macOS window control button — resolved at execution time to
-    /// window-relative coordinates via `list_windows`.
-    WindowControl {
-        action: WindowControlAction,
-    },
+    Text { text: String },
+    Coordinates { x: f64, y: f64 },
+    WindowControl { action: WindowControlAction },
 }
 
 impl ClickTarget {
-    /// Return the human-readable text for this target, regardless of variant.
     pub fn text(&self) -> &str {
         match self {
             Self::Text { text } => text,
-            Self::CdpElement { name, .. } => name,
+            Self::Coordinates { .. } => "",
             Self::WindowControl { action } => action.display_name(),
         }
     }
@@ -176,22 +166,24 @@ impl ClickTarget {
 pub struct ClickParams {
     pub target: Option<ClickTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub template_image: Option<String>,
-    pub x: Option<f64>,
-    pub y: Option<f64>,
+    pub target_ref: Option<OutputRef>,
     pub button: MouseButton,
     pub click_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_method: Option<VerificationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_assertion: Option<String>,
 }
 
 impl Default for ClickParams {
     fn default() -> Self {
         Self {
             target: None,
-            template_image: None,
-            x: None,
-            y: None,
+            target_ref: None,
             button: MouseButton::Left,
             click_count: 1,
+            verification_method: None,
+            verification_assertion: None,
         }
     }
 }
@@ -201,20 +193,22 @@ impl Default for ClickParams {
 pub struct HoverParams {
     pub target: Option<ClickTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub template_image: Option<String>,
-    pub x: Option<f64>,
-    pub y: Option<f64>,
+    pub target_ref: Option<OutputRef>,
     pub dwell_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_method: Option<VerificationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_assertion: Option<String>,
 }
 
 impl Default for HoverParams {
     fn default() -> Self {
         Self {
             target: None,
-            template_image: None,
-            x: None,
-            y: None,
+            target_ref: None,
             dwell_ms: 500,
+            verification_method: None,
+            verification_assertion: None,
         }
     }
 }
@@ -231,6 +225,12 @@ pub enum MouseButton {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct TypeTextParams {
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_ref: Option<OutputRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_method: Option<VerificationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_assertion: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -238,6 +238,10 @@ pub struct TypeTextParams {
 pub struct PressKeyParams {
     pub key: String,
     pub modifiers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_method: Option<VerificationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_assertion: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -246,12 +250,10 @@ pub struct ScrollParams {
     pub delta_y: i32,
     pub x: Option<f64>,
     pub y: Option<f64>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct ListWindowsParams {
-    pub app_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_method: Option<VerificationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_assertion: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -264,6 +266,12 @@ pub struct FocusWindowParams {
     pub app_kind: AppKind,
     #[serde(default)]
     pub chrome_profile_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_ref: Option<OutputRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_method: Option<VerificationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_assertion: Option<String>,
 }
 
 impl Default for FocusWindowParams {
@@ -274,6 +282,9 @@ impl Default for FocusWindowParams {
             bring_to_front: true,
             app_kind: AppKind::Native,
             chrome_profile_id: None,
+            value_ref: None,
+            verification_method: None,
+            verification_assertion: None,
         }
     }
 }
@@ -285,6 +296,202 @@ pub enum FocusMethod {
     AppName,
     Pid,
 }
+
+// --- New native node params ---
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct DragParams {
+    pub from_x: Option<f64>,
+    pub from_y: Option<f64>,
+    pub to_x: Option<f64>,
+    pub to_y: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_ref: Option<OutputRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_ref: Option<OutputRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_method: Option<VerificationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_assertion: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct LaunchAppParams {
+    pub app_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_method: Option<VerificationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_assertion: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct QuitAppParams {
+    pub app_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_method: Option<VerificationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_assertion: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct FindAppParams {
+    pub search: String,
+}
+
+// --- CDP node params ---
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct CdpClickParams {
+    pub uid: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_method: Option<VerificationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_assertion: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct CdpHoverParams {
+    pub uid: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_method: Option<VerificationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_assertion: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct CdpFillParams {
+    pub uid: String,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_ref: Option<OutputRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_method: Option<VerificationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_assertion: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct CdpTypeParams {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_ref: Option<OutputRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_method: Option<VerificationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_assertion: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct CdpPressKeyParams {
+    pub key: String,
+    #[serde(default)]
+    pub modifiers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_method: Option<VerificationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_assertion: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct CdpNavigateParams {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_ref: Option<OutputRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_method: Option<VerificationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_assertion: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct CdpNewPageParams {
+    #[serde(default)]
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_ref: Option<OutputRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_method: Option<VerificationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_assertion: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct CdpClosePageParams {
+    #[serde(default)]
+    pub page_index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_method: Option<VerificationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_assertion: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct CdpSelectPageParams {
+    pub page_index: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_method: Option<VerificationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_assertion: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct CdpWaitParams {
+    pub text: String,
+    #[serde(default = "default_cdp_wait_timeout")]
+    pub timeout_ms: u64,
+}
+
+fn default_cdp_wait_timeout() -> u64 {
+    10_000
+}
+
+impl Default for CdpWaitParams {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            timeout_ms: default_cdp_wait_timeout(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct CdpHandleDialogParams {
+    pub accept: bool,
+    #[serde(default)]
+    pub prompt_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_method: Option<VerificationMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_assertion: Option<String>,
+}
+
+impl Default for CdpHandleDialogParams {
+    fn default() -> Self {
+        Self {
+            accept: true,
+            prompt_text: None,
+            verification_method: None,
+            verification_assertion: None,
+        }
+    }
+}
+
+// --- Generic node params ---
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -356,17 +563,9 @@ pub struct EndLoopParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct Condition {
-    pub left: ValueRef,
+    pub left: crate::output_schema::OutputRef,
     pub operator: Operator,
-    pub right: ValueRef,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-#[serde(tag = "type")]
-pub enum ValueRef {
-    Variable { name: String },
-    Literal { value: LiteralValue },
+    pub right: crate::output_schema::ConditionValue,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -376,6 +575,19 @@ pub enum LiteralValue {
     String { value: String },
     Number { value: f64 },
     Bool { value: bool },
+}
+
+impl LiteralValue {
+    /// Convert to a serde_json::Value.
+    pub fn to_json_value(&self) -> serde_json::Value {
+        match self {
+            LiteralValue::String { value } => serde_json::Value::String(value.clone()),
+            LiteralValue::Number { value } => serde_json::Number::from_f64(*value)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null),
+            LiteralValue::Bool { value } => serde_json::Value::Bool(*value),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -530,20 +742,13 @@ mod tests {
     }
 
     #[test]
-    fn click_target_cdp_element_serde_roundtrip() {
-        let target = ClickTarget::CdpElement {
-            name: "Friends".into(),
-            role: Some("link".into()),
-            href: Some("https://example.com".into()),
-            parent_role: None,
-            parent_name: None,
-        };
+    fn click_target_coordinates_serde_roundtrip() {
+        let target = ClickTarget::Coordinates { x: 100.0, y: 200.0 };
         let json = serde_json::to_string(&target).unwrap();
-        assert!(json.contains("\"type\":\"CdpElement\""));
+        assert!(json.contains("\"type\":\"Coordinates\""));
         let back: ClickTarget = serde_json::from_str(&json).unwrap();
         assert!(
-            matches!(back, ClickTarget::CdpElement { name, role, href, .. }
-            if name == "Friends" && role.as_deref() == Some("link") && href.as_deref() == Some("https://example.com"))
+            matches!(back, ClickTarget::Coordinates { x, y } if (x - 100.0).abs() < f64::EPSILON && (y - 200.0).abs() < f64::EPSILON)
         );
     }
 
@@ -554,33 +759,28 @@ mod tests {
         };
         assert_eq!(text.text(), "Submit");
 
-        let cdp = ClickTarget::CdpElement {
-            name: "Friends".into(),
-            role: None,
-            href: None,
-            parent_role: None,
-            parent_name: None,
-        };
-        assert_eq!(cdp.text(), "Friends");
+        let coords = ClickTarget::Coordinates { x: 10.0, y: 20.0 };
+        assert_eq!(coords.text(), "");
     }
 
     #[test]
-    fn click_params_with_click_target_serde() {
-        let params = ClickParams {
-            target: Some(ClickTarget::CdpElement {
-                name: "Friends".into(),
-                role: Some("link".into()),
-                href: None,
-                parent_role: None,
-                parent_name: None,
-            }),
-            ..Default::default()
-        };
-        let json = serde_json::to_string(&params).unwrap();
-        let back: ClickParams = serde_json::from_str(&json).unwrap();
-        assert!(matches!(
-            back.target,
-            Some(ClickTarget::CdpElement { ref name, .. }) if name == "Friends"
-        ));
+    fn click_params_default_has_no_refs() {
+        let params = ClickParams::default();
+        assert!(params.target_ref.is_none());
+        assert!(params.verification_method.is_none());
+        assert!(params.verification_assertion.is_none());
+    }
+
+    #[test]
+    fn cdp_wait_params_default_timeout() {
+        let params = CdpWaitParams::default();
+        assert_eq!(params.timeout_ms, 10_000);
+    }
+
+    #[test]
+    fn cdp_handle_dialog_params_default_accept() {
+        let params = CdpHandleDialogParams::default();
+        assert!(params.accept);
+        assert!(params.prompt_text.is_none());
     }
 }

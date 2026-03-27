@@ -1,9 +1,11 @@
 pub mod app_detection;
 pub mod app_kind;
+pub mod auto_id;
 pub mod cdp;
 pub mod chrome_profiles;
 pub mod decision_cache;
 mod node_params;
+pub mod output_schema;
 pub mod runtime;
 pub mod sanitize;
 pub mod storage;
@@ -14,6 +16,7 @@ mod workflow;
 
 pub use app_kind::AppKind;
 pub use node_params::*;
+pub use output_schema::*;
 pub use validation::*;
 pub use walkthrough::*;
 pub use workflow::*;

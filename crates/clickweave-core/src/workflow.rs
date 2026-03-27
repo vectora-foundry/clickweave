@@ -1,5 +1,7 @@
 use crate::node_params::*;
+use crate::output_schema::{NodeContext, OutputRole};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 const DEFAULT_SUPERVISION_RETRIES: u32 = 2;
@@ -17,6 +19,8 @@ pub struct Workflow {
     pub edges: Vec<Edge>,
     #[serde(default)]
     pub groups: Vec<NodeGroup>,
+    #[serde(default)]
+    pub next_id_counters: HashMap<String, u32>,
 }
 
 impl Default for Workflow {
@@ -27,6 +31,7 @@ impl Default for Workflow {
             nodes: vec![],
             edges: vec![],
             groups: vec![],
+            next_id_counters: HashMap::new(),
         }
     }
 }
@@ -38,6 +43,8 @@ pub struct Node {
     pub node_type: NodeType,
     pub position: Position,
     pub name: String,
+    #[serde(default)]
+    pub auto_id: String,
     pub enabled: bool,
     pub timeout_ms: Option<u64>,
     pub settle_ms: Option<u64>,
@@ -93,12 +100,18 @@ pub struct NodeGroup {
 }
 
 impl Node {
-    pub fn new(node_type: NodeType, position: Position, name: impl Into<String>) -> Self {
+    pub fn new(
+        node_type: NodeType,
+        position: Position,
+        name: impl Into<String>,
+        auto_id: impl Into<String>,
+    ) -> Self {
         Self {
             id: Uuid::new_v4(),
             node_type,
             position,
             name: name.into(),
+            auto_id: auto_id.into(),
             enabled: true,
             timeout_ms: None,
             settle_ms: None,
@@ -121,7 +134,8 @@ impl Workflow {
 
     pub fn add_node(&mut self, node_type: NodeType, position: Position) -> Uuid {
         let name = node_type.display_name().to_string();
-        let node = Node::new(node_type, position, name);
+        let auto_id = crate::auto_id::assign_auto_id(&node_type, &mut self.next_id_counters);
+        let node = Node::new(node_type, position, name, auto_id);
         let id = node.id;
         self.nodes.push(node);
         id
@@ -214,81 +228,118 @@ impl Workflow {
 
 // --- Node type system ---
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub enum NodeCategory {
-    Ai,
-    Vision,
-    Input,
-    Window,
-    AppDebugKit,
-    ControlFlow,
-}
-
-impl NodeCategory {
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            NodeCategory::Ai => "AI",
-            NodeCategory::Vision => "Vision / Discovery",
-            NodeCategory::Input => "Input",
-            NodeCategory::Window => "Window",
-            NodeCategory::AppDebugKit => "AppDebugKit",
-            NodeCategory::ControlFlow => "Control Flow",
-        }
-    }
-
-    pub fn icon(&self) -> &'static str {
-        match self {
-            NodeCategory::Ai => "🤖",
-            NodeCategory::Vision => "👁",
-            NodeCategory::Input => "🖱",
-            NodeCategory::Window => "🪟",
-            NodeCategory::AppDebugKit => "🔧",
-            NodeCategory::ControlFlow => "🔀",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "type")]
 pub enum NodeType {
-    AiStep(AiStepParams),
-    TakeScreenshot(TakeScreenshotParams),
+    // Native — Query
     FindText(FindTextParams),
     FindImage(FindImageParams),
+    FindApp(FindAppParams),
+    TakeScreenshot(TakeScreenshotParams),
+    // Native — Action
     Click(ClickParams),
     Hover(HoverParams),
+    Drag(DragParams),
     TypeText(TypeTextParams),
     PressKey(PressKeyParams),
     Scroll(ScrollParams),
-    ListWindows(ListWindowsParams),
     FocusWindow(FocusWindowParams),
-    McpToolCall(McpToolCallParams),
-    AppDebugKitOp(AppDebugKitParams),
+    LaunchApp(LaunchAppParams),
+    QuitApp(QuitAppParams),
+    // CDP — Query
+    CdpWait(CdpWaitParams),
+    // CDP — Action
+    CdpClick(CdpClickParams),
+    CdpHover(CdpHoverParams),
+    CdpFill(CdpFillParams),
+    CdpType(CdpTypeParams),
+    CdpPressKey(CdpPressKeyParams),
+    CdpNavigate(CdpNavigateParams),
+    CdpNewPage(CdpNewPageParams),
+    CdpClosePage(CdpClosePageParams),
+    CdpSelectPage(CdpSelectPageParams),
+    CdpHandleDialog(CdpHandleDialogParams),
+    // AI
+    AiStep(AiStepParams),
+    // Control Flow
     If(IfParams),
     Switch(SwitchParams),
     Loop(LoopParams),
     EndLoop(EndLoopParams),
+    // Generic
+    McpToolCall(McpToolCallParams),
+    AppDebugKitOp(AppDebugKitParams),
 }
 
 impl NodeType {
-    pub fn category(&self) -> NodeCategory {
+    pub fn output_role(&self) -> OutputRole {
         match self {
-            NodeType::AiStep(_) => NodeCategory::Ai,
-            NodeType::TakeScreenshot(_) | NodeType::FindText(_) | NodeType::FindImage(_) => {
-                NodeCategory::Vision
+            Self::FindText(_)
+            | Self::FindImage(_)
+            | Self::FindApp(_)
+            | Self::TakeScreenshot(_)
+            | Self::CdpWait(_) => OutputRole::Query,
+
+            Self::Click(_)
+            | Self::Hover(_)
+            | Self::Drag(_)
+            | Self::TypeText(_)
+            | Self::PressKey(_)
+            | Self::Scroll(_)
+            | Self::FocusWindow(_)
+            | Self::LaunchApp(_)
+            | Self::QuitApp(_)
+            | Self::CdpClick(_)
+            | Self::CdpHover(_)
+            | Self::CdpFill(_)
+            | Self::CdpType(_)
+            | Self::CdpPressKey(_)
+            | Self::CdpNavigate(_)
+            | Self::CdpNewPage(_)
+            | Self::CdpClosePage(_)
+            | Self::CdpSelectPage(_)
+            | Self::CdpHandleDialog(_) => OutputRole::Action,
+
+            Self::AiStep(_) => OutputRole::Ai,
+
+            Self::If(_) | Self::Switch(_) | Self::Loop(_) | Self::EndLoop(_) => {
+                OutputRole::ControlFlow
             }
-            NodeType::Click(_)
-            | NodeType::Hover(_)
-            | NodeType::TypeText(_)
-            | NodeType::PressKey(_)
-            | NodeType::Scroll(_) => NodeCategory::Input,
-            NodeType::ListWindows(_) | NodeType::FocusWindow(_) => NodeCategory::Window,
-            NodeType::McpToolCall(_) | NodeType::AppDebugKitOp(_) => NodeCategory::AppDebugKit,
-            NodeType::If(_) | NodeType::Switch(_) | NodeType::Loop(_) | NodeType::EndLoop(_) => {
-                NodeCategory::ControlFlow
-            }
+
+            Self::McpToolCall(_) | Self::AppDebugKitOp(_) => OutputRole::Generic,
+        }
+    }
+
+    pub fn node_context(&self) -> NodeContext {
+        match self {
+            Self::FindText(_)
+            | Self::FindImage(_)
+            | Self::FindApp(_)
+            | Self::TakeScreenshot(_)
+            | Self::Click(_)
+            | Self::Hover(_)
+            | Self::Drag(_)
+            | Self::TypeText(_)
+            | Self::PressKey(_)
+            | Self::Scroll(_)
+            | Self::FocusWindow(_)
+            | Self::LaunchApp(_)
+            | Self::QuitApp(_) => NodeContext::Native,
+
+            Self::CdpWait(_)
+            | Self::CdpClick(_)
+            | Self::CdpHover(_)
+            | Self::CdpFill(_)
+            | Self::CdpType(_)
+            | Self::CdpPressKey(_)
+            | Self::CdpNavigate(_)
+            | Self::CdpNewPage(_)
+            | Self::CdpClosePage(_)
+            | Self::CdpSelectPage(_)
+            | Self::CdpHandleDialog(_) => NodeContext::Cdp,
+
+            _ => NodeContext::Independent,
         }
     }
 
@@ -299,65 +350,153 @@ impl NodeType {
             self,
             NodeType::FindText(_)
                 | NodeType::FindImage(_)
+                | NodeType::FindApp(_)
                 | NodeType::TakeScreenshot(_)
-                | NodeType::ListWindows(_)
+                | NodeType::CdpWait(_)
         )
     }
 
     pub fn display_name(&self) -> &'static str {
         match self {
-            NodeType::AiStep(_) => "AI Step",
-            NodeType::TakeScreenshot(_) => "Take Screenshot",
             NodeType::FindText(_) => "Find Text",
             NodeType::FindImage(_) => "Find Image",
+            NodeType::FindApp(_) => "Find App",
+            NodeType::TakeScreenshot(_) => "Take Screenshot",
             NodeType::Click(_) => "Click",
             NodeType::Hover(_) => "Hover",
+            NodeType::Drag(_) => "Drag",
             NodeType::TypeText(_) => "Type Text",
             NodeType::PressKey(_) => "Press Key",
             NodeType::Scroll(_) => "Scroll",
-            NodeType::ListWindows(_) => "List Windows",
             NodeType::FocusWindow(_) => "Focus Window",
-            NodeType::McpToolCall(_) => "MCP Tool Call",
-            NodeType::AppDebugKitOp(_) => "AppDebugKit Op",
+            NodeType::LaunchApp(_) => "Launch App",
+            NodeType::QuitApp(_) => "Quit App",
+            NodeType::CdpWait(_) => "CDP Wait",
+            NodeType::CdpClick(_) => "CDP Click",
+            NodeType::CdpHover(_) => "CDP Hover",
+            NodeType::CdpFill(_) => "CDP Fill",
+            NodeType::CdpType(_) => "CDP Type",
+            NodeType::CdpPressKey(_) => "CDP Press Key",
+            NodeType::CdpNavigate(_) => "CDP Navigate",
+            NodeType::CdpNewPage(_) => "CDP New Page",
+            NodeType::CdpClosePage(_) => "CDP Close Page",
+            NodeType::CdpSelectPage(_) => "CDP Select Page",
+            NodeType::CdpHandleDialog(_) => "CDP Handle Dialog",
+            NodeType::AiStep(_) => "AI Step",
             NodeType::If(_) => "If",
             NodeType::Switch(_) => "Switch",
             NodeType::Loop(_) => "Loop",
             NodeType::EndLoop(_) => "End Loop",
+            NodeType::McpToolCall(_) => "MCP Tool Call",
+            NodeType::AppDebugKitOp(_) => "AppDebugKit Op",
         }
     }
 
     /// Human-readable description of what this node does, for LLM verification prompts.
     pub fn action_description(&self) -> String {
         match self {
-            NodeType::Click(p) => match &p.target {
-                Some(t) => format!("Clicked on '{}'", t.text()),
-                None if p.template_image.is_some() => "Clicked on image match".to_string(),
-                None => format!(
-                    "Clicked at ({}, {})",
-                    p.x.unwrap_or(0.0),
-                    p.y.unwrap_or(0.0)
-                ),
-            },
-            NodeType::Hover(p) => match &p.target {
-                Some(t) => format!("Hovered over '{}'", t.text()),
-                None if p.template_image.is_some() => "Hovered over image match".to_string(),
-                None => format!(
-                    "Hovered at ({}, {})",
-                    p.x.unwrap_or(0.0),
-                    p.y.unwrap_or(0.0)
-                ),
-            },
-            NodeType::TypeText(p) => format!("Typed '{}'", p.text),
+            NodeType::Click(p) => {
+                if let Some(ref r) = p.target_ref {
+                    return format!("Click at {{{}.{}}}", r.node, r.field);
+                }
+                match &p.target {
+                    Some(t) if !t.text().is_empty() => format!("Clicked on '{}'", t.text()),
+                    Some(ClickTarget::Coordinates { x, y }) => {
+                        format!("Clicked at ({}, {})", x, y)
+                    }
+                    None => "Clicked".to_string(),
+                    _ => "Clicked".to_string(),
+                }
+            }
+            NodeType::Hover(p) => {
+                if let Some(ref r) = p.target_ref {
+                    return format!("Hover at {{{}.{}}}", r.node, r.field);
+                }
+                match &p.target {
+                    Some(t) if !t.text().is_empty() => format!("Hovered over '{}'", t.text()),
+                    Some(ClickTarget::Coordinates { x, y }) => {
+                        format!("Hovered at ({}, {})", x, y)
+                    }
+                    None => "Hovered".to_string(),
+                    _ => "Hovered".to_string(),
+                }
+            }
+            NodeType::Drag(p) => {
+                if p.from_ref.is_some() || p.to_ref.is_some() {
+                    return "Dragged (using refs)".to_string();
+                }
+                format!(
+                    "Dragged from ({}, {}) to ({}, {})",
+                    p.from_x.unwrap_or(0.0),
+                    p.from_y.unwrap_or(0.0),
+                    p.to_x.unwrap_or(0.0),
+                    p.to_y.unwrap_or(0.0)
+                )
+            }
+            NodeType::TypeText(p) => {
+                if let Some(ref r) = p.text_ref {
+                    return format!("Type {{{}.{}}}", r.node, r.field);
+                }
+                format!("Typed '{}'", p.text)
+            }
             NodeType::PressKey(p) => format!("Pressed key '{}'", p.key),
             NodeType::Scroll(p) => format!("Scrolled by {}", p.delta_y),
-            NodeType::FocusWindow(p) => match &p.value {
-                Some(v) => format!("Focused window '{}'", v),
-                None => "Focused window".to_string(),
-            },
-            NodeType::ListWindows(_) => "Listed windows".to_string(),
+            NodeType::FocusWindow(p) => {
+                if let Some(ref r) = p.value_ref {
+                    return format!("Focus window {{{}.{}}}", r.node, r.field);
+                }
+                match &p.value {
+                    Some(v) => format!("Focused window '{}'", v),
+                    None => "Focused window".to_string(),
+                }
+            }
+            NodeType::LaunchApp(p) => format!("Launched app '{}'", p.app_name),
+            NodeType::QuitApp(p) => format!("Quit app '{}'", p.app_name),
             NodeType::FindText(p) => format!("Searched for text '{}'", p.search_text),
             NodeType::FindImage(_) => "Searched for image template".to_string(),
+            NodeType::FindApp(p) => format!("Searched for app '{}'", p.search),
             NodeType::TakeScreenshot(_) => "Took a screenshot".to_string(),
+            NodeType::CdpWait(p) => format!("Waited for text '{}'", p.text),
+            NodeType::CdpClick(p) => format!("CDP clicked element '{}'", p.uid),
+            NodeType::CdpHover(p) => format!("CDP hovered element '{}'", p.uid),
+            NodeType::CdpFill(p) => {
+                if let Some(ref r) = p.value_ref {
+                    return format!("CDP filled with {{{}.{}}}", r.node, r.field);
+                }
+                format!("CDP filled with '{}'", p.value)
+            }
+            NodeType::CdpType(p) => {
+                if let Some(ref r) = p.text_ref {
+                    return format!("CDP typed {{{}.{}}}", r.node, r.field);
+                }
+                format!("CDP typed '{}'", p.text)
+            }
+            NodeType::CdpPressKey(p) => format!("CDP pressed key '{}'", p.key),
+            NodeType::CdpNavigate(p) => {
+                if let Some(ref r) = p.url_ref {
+                    return format!("CDP navigated to {{{}.{}}}", r.node, r.field);
+                }
+                format!("CDP navigated to '{}'", p.url)
+            }
+            NodeType::CdpNewPage(p) => {
+                if let Some(ref r) = p.url_ref {
+                    return format!("CDP opened new page {{{}.{}}}", r.node, r.field);
+                }
+                if p.url.is_empty() {
+                    "CDP opened new page".to_string()
+                } else {
+                    format!("CDP opened new page '{}'", p.url)
+                }
+            }
+            NodeType::CdpClosePage(_) => "CDP closed page".to_string(),
+            NodeType::CdpSelectPage(p) => format!("CDP selected page {}", p.page_index),
+            NodeType::CdpHandleDialog(p) => {
+                if p.accept {
+                    "CDP accepted dialog".to_string()
+                } else {
+                    "CDP dismissed dialog".to_string()
+                }
+            }
             NodeType::McpToolCall(p) => format!("Called tool '{}'", p.tool_name),
             NodeType::AppDebugKitOp(p) => format!("Called AppDebugKit '{}'", p.operation_name),
             _ => self.display_name().to_string(),
@@ -370,15 +509,23 @@ impl NodeType {
             NodeType::TakeScreenshot(_) => "📸",
             NodeType::FindText(_) => "🔍",
             NodeType::FindImage(_) => "🖼",
-            NodeType::Click(_) => "🖱",
-            NodeType::Hover(_) => "👆",
-            NodeType::TypeText(_) => "⌨",
-            NodeType::PressKey(_) => "⌨",
+            NodeType::FindApp(_) => "🔍",
+            NodeType::Click(_) | NodeType::CdpClick(_) => "🖱",
+            NodeType::Hover(_) | NodeType::CdpHover(_) => "👆",
+            NodeType::Drag(_) => "↔",
+            NodeType::TypeText(_) | NodeType::CdpType(_) | NodeType::CdpFill(_) => "⌨",
+            NodeType::PressKey(_) | NodeType::CdpPressKey(_) => "⌨",
             NodeType::Scroll(_) => "📜",
-            NodeType::ListWindows(_) => "📋",
             NodeType::FocusWindow(_) => "🪟",
-            NodeType::McpToolCall(_) => "🔧",
-            NodeType::AppDebugKitOp(_) => "🔧",
+            NodeType::LaunchApp(_) => "🚀",
+            NodeType::QuitApp(_) => "❌",
+            NodeType::CdpWait(_) => "⏳",
+            NodeType::CdpNavigate(_) => "🌐",
+            NodeType::CdpNewPage(_) => "📄",
+            NodeType::CdpClosePage(_) => "🗑",
+            NodeType::CdpSelectPage(_) => "📑",
+            NodeType::CdpHandleDialog(_) => "💬",
+            NodeType::McpToolCall(_) | NodeType::AppDebugKitOp(_) => "🔧",
             NodeType::If(_) | NodeType::Switch(_) => "\u{2442}",
             NodeType::Loop(_) | NodeType::EndLoop(_) => "\u{21BB}",
         }
@@ -391,26 +538,45 @@ impl NodeType {
     /// All available node types with default parameters.
     pub fn all_defaults() -> Vec<NodeType> {
         vec![
-            NodeType::AiStep(AiStepParams::default()),
-            NodeType::TakeScreenshot(TakeScreenshotParams::default()),
+            // Native — Query
             NodeType::FindText(FindTextParams::default()),
             NodeType::FindImage(FindImageParams::default()),
+            NodeType::FindApp(FindAppParams::default()),
+            NodeType::TakeScreenshot(TakeScreenshotParams::default()),
+            // Native — Action
             NodeType::Click(ClickParams::default()),
             NodeType::Hover(HoverParams::default()),
+            NodeType::Drag(DragParams::default()),
             NodeType::TypeText(TypeTextParams::default()),
             NodeType::PressKey(PressKeyParams::default()),
             NodeType::Scroll(ScrollParams::default()),
-            NodeType::ListWindows(ListWindowsParams::default()),
             NodeType::FocusWindow(FocusWindowParams::default()),
-            NodeType::McpToolCall(McpToolCallParams::default()),
-            NodeType::AppDebugKitOp(AppDebugKitParams::default()),
+            NodeType::LaunchApp(LaunchAppParams::default()),
+            NodeType::QuitApp(QuitAppParams::default()),
+            // CDP — Query
+            NodeType::CdpWait(CdpWaitParams::default()),
+            // CDP — Action
+            NodeType::CdpClick(CdpClickParams::default()),
+            NodeType::CdpHover(CdpHoverParams::default()),
+            NodeType::CdpFill(CdpFillParams::default()),
+            NodeType::CdpType(CdpTypeParams::default()),
+            NodeType::CdpPressKey(CdpPressKeyParams::default()),
+            NodeType::CdpNavigate(CdpNavigateParams::default()),
+            NodeType::CdpNewPage(CdpNewPageParams::default()),
+            NodeType::CdpClosePage(CdpClosePageParams::default()),
+            NodeType::CdpSelectPage(CdpSelectPageParams::default()),
+            NodeType::CdpHandleDialog(CdpHandleDialogParams::default()),
+            // AI
+            NodeType::AiStep(AiStepParams::default()),
+            // Control Flow
             NodeType::If(IfParams {
                 condition: Condition {
-                    left: ValueRef::Variable {
-                        name: String::new(),
+                    left: crate::output_schema::OutputRef {
+                        node: String::new(),
+                        field: String::new(),
                     },
                     operator: Operator::Equals,
-                    right: ValueRef::Literal {
+                    right: crate::output_schema::ConditionValue::Literal {
                         value: LiteralValue::Bool { value: true },
                     },
                 },
@@ -418,11 +584,12 @@ impl NodeType {
             NodeType::Switch(SwitchParams { cases: vec![] }),
             NodeType::Loop(LoopParams {
                 exit_condition: Condition {
-                    left: ValueRef::Variable {
-                        name: String::new(),
+                    left: crate::output_schema::OutputRef {
+                        node: String::new(),
+                        field: String::new(),
                     },
                     operator: Operator::Equals,
-                    right: ValueRef::Literal {
+                    right: crate::output_schema::ConditionValue::Literal {
                         value: LiteralValue::Bool { value: true },
                     },
                 },
@@ -431,21 +598,17 @@ impl NodeType {
             NodeType::EndLoop(EndLoopParams {
                 loop_id: Uuid::nil(),
             }),
+            // Generic
+            NodeType::McpToolCall(McpToolCallParams::default()),
+            NodeType::AppDebugKitOp(AppDebugKitParams::default()),
         ]
     }
-}
-
-/// Sanitize a node name for use as a variable prefix.
-/// Converts to lowercase, replaces non-alphanumeric chars (except `_`) with underscores.
-///
-/// Examples: `"Find Text"` → `"find_text"`, `"Click (Login Button)"` → `"click__login_button_"`
-pub fn sanitize_node_name(name: &str) -> String {
-    crate::sanitize::sanitize_for_node_name(name)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::output_schema::{ConditionValue, OutputRef};
 
     #[test]
     fn test_node_type_serialization_roundtrip() {
@@ -453,55 +616,75 @@ mod tests {
             let json = serde_json::to_string(&nt).expect("serialize");
             let deserialized: NodeType = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(nt.display_name(), deserialized.display_name());
-            assert_eq!(nt.category(), deserialized.category());
+            assert_eq!(nt.output_role(), deserialized.output_role());
         }
     }
 
     #[test]
-    fn test_node_type_category_correctness() {
+    fn test_node_type_output_role_correctness() {
         assert_eq!(
-            NodeType::AiStep(AiStepParams::default()).category(),
-            NodeCategory::Ai
+            NodeType::AiStep(AiStepParams::default()).output_role(),
+            OutputRole::Ai
         );
         assert_eq!(
-            NodeType::TakeScreenshot(TakeScreenshotParams::default()).category(),
-            NodeCategory::Vision
+            NodeType::TakeScreenshot(TakeScreenshotParams::default()).output_role(),
+            OutputRole::Query
         );
         assert_eq!(
-            NodeType::FindText(FindTextParams::default()).category(),
-            NodeCategory::Vision
+            NodeType::FindText(FindTextParams::default()).output_role(),
+            OutputRole::Query
         );
         assert_eq!(
-            NodeType::FindImage(FindImageParams::default()).category(),
-            NodeCategory::Vision
+            NodeType::FindImage(FindImageParams::default()).output_role(),
+            OutputRole::Query
         );
         assert_eq!(
-            NodeType::Click(ClickParams::default()).category(),
-            NodeCategory::Input
+            NodeType::FindApp(FindAppParams::default()).output_role(),
+            OutputRole::Query
         );
         assert_eq!(
-            NodeType::Hover(HoverParams::default()).category(),
-            NodeCategory::Input
+            NodeType::Click(ClickParams::default()).output_role(),
+            OutputRole::Action
         );
         assert_eq!(
-            NodeType::TypeText(TypeTextParams::default()).category(),
-            NodeCategory::Input
+            NodeType::Hover(HoverParams::default()).output_role(),
+            OutputRole::Action
         );
         assert_eq!(
-            NodeType::Scroll(ScrollParams::default()).category(),
-            NodeCategory::Input
+            NodeType::Drag(DragParams::default()).output_role(),
+            OutputRole::Action
         );
         assert_eq!(
-            NodeType::ListWindows(ListWindowsParams::default()).category(),
-            NodeCategory::Window
+            NodeType::TypeText(TypeTextParams::default()).output_role(),
+            OutputRole::Action
         );
         assert_eq!(
-            NodeType::FocusWindow(FocusWindowParams::default()).category(),
-            NodeCategory::Window
+            NodeType::Scroll(ScrollParams::default()).output_role(),
+            OutputRole::Action
         );
         assert_eq!(
-            NodeType::AppDebugKitOp(AppDebugKitParams::default()).category(),
-            NodeCategory::AppDebugKit
+            NodeType::FocusWindow(FocusWindowParams::default()).output_role(),
+            OutputRole::Action
+        );
+        assert_eq!(
+            NodeType::LaunchApp(LaunchAppParams::default()).output_role(),
+            OutputRole::Action
+        );
+        assert_eq!(
+            NodeType::QuitApp(QuitAppParams::default()).output_role(),
+            OutputRole::Action
+        );
+        assert_eq!(
+            NodeType::CdpClick(CdpClickParams::default()).output_role(),
+            OutputRole::Action
+        );
+        assert_eq!(
+            NodeType::CdpWait(CdpWaitParams::default()).output_role(),
+            OutputRole::Query
+        );
+        assert_eq!(
+            NodeType::AppDebugKitOp(AppDebugKitParams::default()).output_role(),
+            OutputRole::Generic
         );
     }
 
@@ -515,16 +698,18 @@ mod tests {
         assert!(NodeType::Scroll(ScrollParams::default()).is_deterministic());
         assert!(NodeType::FindText(FindTextParams::default()).is_deterministic());
         assert!(NodeType::FindImage(FindImageParams::default()).is_deterministic());
-        assert!(NodeType::ListWindows(ListWindowsParams::default()).is_deterministic());
         assert!(NodeType::FocusWindow(FocusWindowParams::default()).is_deterministic());
         assert!(NodeType::AppDebugKitOp(AppDebugKitParams::default()).is_deterministic());
+        assert!(NodeType::CdpClick(CdpClickParams::default()).is_deterministic());
+        assert!(NodeType::CdpWait(CdpWaitParams::default()).is_deterministic());
 
         let dummy_condition = Condition {
-            left: ValueRef::Variable {
-                name: String::new(),
+            left: OutputRef {
+                node: String::new(),
+                field: String::new(),
             },
             operator: Operator::Equals,
-            right: ValueRef::Literal {
+            right: ConditionValue::Literal {
                 value: LiteralValue::Bool { value: true },
             },
         };
@@ -551,18 +736,17 @@ mod tests {
     }
 
     #[test]
-    fn test_all_defaults_covers_all_categories() {
+    fn test_all_defaults_covers_all_roles() {
         let defaults = NodeType::all_defaults();
-        assert_eq!(defaults.len(), 17);
+        assert_eq!(defaults.len(), 31);
 
-        let categories: std::collections::HashSet<NodeCategory> =
-            defaults.iter().map(|nt| nt.category()).collect();
-        assert!(categories.contains(&NodeCategory::Ai));
-        assert!(categories.contains(&NodeCategory::Vision));
-        assert!(categories.contains(&NodeCategory::Input));
-        assert!(categories.contains(&NodeCategory::Window));
-        assert!(categories.contains(&NodeCategory::AppDebugKit));
-        assert!(categories.contains(&NodeCategory::ControlFlow));
+        let roles: std::collections::HashSet<OutputRole> =
+            defaults.iter().map(|nt| nt.output_role()).collect();
+        assert!(roles.contains(&OutputRole::Ai));
+        assert!(roles.contains(&OutputRole::Query));
+        assert!(roles.contains(&OutputRole::Action));
+        assert!(roles.contains(&OutputRole::Generic));
+        assert!(roles.contains(&OutputRole::ControlFlow));
     }
 
     #[test]
@@ -604,7 +788,6 @@ mod tests {
             NodeType::TypeText(TypeTextParams::default()),
             Position { x: 100.0, y: 0.0 },
         );
-        // No edges - both are entry points
         let order = wf.execution_order();
         assert_eq!(order.len(), 2);
         assert!(order.contains(&a));
@@ -623,10 +806,9 @@ mod tests {
             Position { x: 100.0, y: 0.0 },
         );
         wf.add_edge(a, b);
-        wf.add_edge(b, a); // cycle
+        wf.add_edge(b, a);
 
         let order = wf.execution_order();
-        // Should not hang, should visit each node at most once
         assert!(order.len() <= 2);
     }
 
@@ -693,33 +875,11 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_node_name_simple() {
-        assert_eq!(sanitize_node_name("Find Text"), "find_text");
-    }
-
-    #[test]
-    fn test_sanitize_node_name_special_chars() {
-        assert_eq!(
-            sanitize_node_name("Click (Login Button)"),
-            "click__login_button_"
-        );
-    }
-
-    #[test]
-    fn test_sanitize_node_name_preserves_underscores() {
-        assert_eq!(sanitize_node_name("my_node_1"), "my_node_1");
-    }
-
-    #[test]
-    fn test_sanitize_node_name_empty() {
-        assert_eq!(sanitize_node_name(""), "");
-    }
-
-    #[test]
     fn test_workflow_without_groups_deserializes() {
         let json = r#"{"id":"00000000-0000-0000-0000-000000000001","name":"Old Workflow","nodes":[],"edges":[]}"#;
         let wf: Workflow = serde_json::from_str(json).expect("should deserialize without groups");
         assert!(wf.groups.is_empty());
+        assert!(wf.next_id_counters.is_empty());
     }
 
     #[test]
@@ -751,31 +911,34 @@ mod tests {
     fn test_condition_serialization_roundtrip() {
         let conditions = vec![
             Condition {
-                left: ValueRef::Variable {
-                    name: "result".to_string(),
+                left: OutputRef {
+                    node: "result".to_string(),
+                    field: "result".to_string(),
                 },
                 operator: Operator::Equals,
-                right: ValueRef::Literal {
+                right: ConditionValue::Literal {
                     value: LiteralValue::String {
                         value: "success".to_string(),
                     },
                 },
             },
             Condition {
-                left: ValueRef::Variable {
-                    name: "count".to_string(),
+                left: OutputRef {
+                    node: "count".to_string(),
+                    field: "result".to_string(),
                 },
                 operator: Operator::GreaterThan,
-                right: ValueRef::Literal {
+                right: ConditionValue::Literal {
                     value: LiteralValue::Number { value: 5.0 },
                 },
             },
             Condition {
-                left: ValueRef::Variable {
-                    name: "done".to_string(),
+                left: OutputRef {
+                    node: "done".to_string(),
+                    field: "result".to_string(),
                 },
                 operator: Operator::Equals,
-                right: ValueRef::Literal {
+                right: ConditionValue::Literal {
                     value: LiteralValue::Bool { value: true },
                 },
             },
@@ -784,9 +947,25 @@ mod tests {
             let json = serde_json::to_string(condition).expect("serialize Condition");
             let deserialized: Condition =
                 serde_json::from_str(&json).expect("deserialize Condition");
-            // Verify round-trip by re-serializing
             let json2 = serde_json::to_string(&deserialized).expect("re-serialize Condition");
             assert_eq!(json, json2);
         }
+    }
+
+    #[test]
+    fn test_auto_id_assigned_on_add_node() {
+        let mut wf = Workflow::default();
+        let a = wf.add_node(
+            NodeType::FindText(FindTextParams::default()),
+            Position { x: 0.0, y: 0.0 },
+        );
+        let b = wf.add_node(
+            NodeType::FindText(FindTextParams::default()),
+            Position { x: 100.0, y: 0.0 },
+        );
+        let node_a = wf.find_node(a).unwrap();
+        let node_b = wf.find_node(b).unwrap();
+        assert_eq!(node_a.auto_id, "find_text_1");
+        assert_eq!(node_b.auto_id, "find_text_2");
     }
 }

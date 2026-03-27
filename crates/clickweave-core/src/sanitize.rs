@@ -27,30 +27,9 @@ pub fn sanitize_for_path(name: &str) -> String {
     collapsed
 }
 
-/// Sanitize a string for use as a variable/node name prefix.
-///
-/// Lowercases, replaces non-alphanumeric chars (except `_`) with underscores.
-/// Does NOT collapse consecutive underscores (preserving current behavior).
-///
-/// Examples: `"Find Text"` -> `"find_text"`, `"Click (Login Button)"` -> `"click__login_button_"`
-pub fn sanitize_for_node_name(name: &str) -> String {
-    name.to_lowercase()
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // --- sanitize_for_path ---
 
     #[test]
     fn path_basic_spaces() {
@@ -111,45 +90,5 @@ mod tests {
     fn path_unicode_replaced() {
         // U+0301 (combining accent) is not ascii-alphanumeric, becomes a trailing dash that gets trimmed
         assert_eq!(sanitize_for_path("cafe\u{0301}"), "cafe");
-    }
-
-    // --- sanitize_for_node_name ---
-
-    #[test]
-    fn node_name_basic_spaces() {
-        assert_eq!(sanitize_for_node_name("Find Text"), "find_text");
-    }
-
-    #[test]
-    fn node_name_special_chars() {
-        assert_eq!(
-            sanitize_for_node_name("Click (Login Button)"),
-            "click__login_button_"
-        );
-    }
-
-    #[test]
-    fn node_name_preserves_underscores() {
-        assert_eq!(sanitize_for_node_name("my_node_1"), "my_node_1");
-    }
-
-    #[test]
-    fn node_name_empty_string() {
-        assert_eq!(sanitize_for_node_name(""), "");
-    }
-
-    #[test]
-    fn node_name_does_not_collapse_underscores() {
-        assert_eq!(sanitize_for_node_name("a  b"), "a__b");
-    }
-
-    #[test]
-    fn node_name_uppercase() {
-        assert_eq!(sanitize_for_node_name("HELLO World"), "hello_world");
-    }
-
-    #[test]
-    fn node_name_mixed_special_chars() {
-        assert_eq!(sanitize_for_node_name("a@b!c"), "a_b_c");
     }
 }

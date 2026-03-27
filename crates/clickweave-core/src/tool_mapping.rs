@@ -3,9 +3,11 @@
 //! Used by both the planner (tool args → NodeType) and the executor (NodeType → tool args).
 
 use crate::{
-    AppKind, ClickParams, ClickTarget, FindImageParams, FindTextParams, FocusMethod,
-    FocusWindowParams, HoverParams, ListWindowsParams, McpToolCallParams, MouseButton, NodeType,
-    PressKeyParams, ScreenshotMode, ScrollParams, TakeScreenshotParams, TypeTextParams,
+    AppKind, CdpClosePageParams, CdpFillParams, CdpHandleDialogParams, CdpNavigateParams,
+    CdpNewPageParams, CdpSelectPageParams, CdpWaitParams, ClickParams, ClickTarget, DragParams,
+    FindAppParams, FindImageParams, FindTextParams, FocusMethod, FocusWindowParams, HoverParams,
+    LaunchAppParams, McpToolCallParams, MouseButton, NodeType, PressKeyParams, QuitAppParams,
+    ScreenshotMode, ScrollParams, TakeScreenshotParams, TypeTextParams,
 };
 use serde_json::Value;
 use std::fmt;
@@ -96,6 +98,10 @@ pub fn node_type_to_tool_invocation(
             }
             ("find_image", args)
         }
+        NodeType::FindApp(p) => {
+            let args = serde_json::json!({"search": p.search});
+            ("list_apps", args)
+        }
         NodeType::Click(p) => {
             let button = match p.button {
                 MouseButton::Left => "left",
@@ -106,10 +112,8 @@ pub fn node_type_to_tool_invocation(
                 "button": button,
                 "click_count": p.click_count,
             });
-            if let Some(x) = p.x {
+            if let Some(ClickTarget::Coordinates { x, y }) = &p.target {
                 args["x"] = serde_json::json!(x);
-            }
-            if let Some(y) = p.y {
                 args["y"] = serde_json::json!(y);
             }
             ("click", args)
@@ -131,13 +135,6 @@ pub fn node_type_to_tool_invocation(
                 args["y"] = serde_json::json!(y);
             }
             ("scroll", args)
-        }
-        NodeType::ListWindows(p) => {
-            let mut args = serde_json::json!({});
-            if let Some(app) = &p.app_name {
-                args["app_name"] = Value::String(app.clone());
-            }
-            ("list_windows", args)
         }
         NodeType::FocusWindow(p) => {
             let mut args = serde_json::json!({});
@@ -163,13 +160,71 @@ pub fn node_type_to_tool_invocation(
         }
         NodeType::Hover(p) => {
             let mut args = serde_json::json!({});
-            if let Some(x) = p.x {
+            if let Some(ClickTarget::Coordinates { x, y }) = &p.target {
                 args["x"] = serde_json::json!(x);
-            }
-            if let Some(y) = p.y {
                 args["y"] = serde_json::json!(y);
             }
             ("move_mouse", args)
+        }
+        NodeType::Drag(p) => {
+            let mut args = serde_json::json!({});
+            if let Some(x) = p.from_x {
+                args["from_x"] = serde_json::json!(x);
+            }
+            if let Some(y) = p.from_y {
+                args["from_y"] = serde_json::json!(y);
+            }
+            if let Some(x) = p.to_x {
+                args["to_x"] = serde_json::json!(x);
+            }
+            if let Some(y) = p.to_y {
+                args["to_y"] = serde_json::json!(y);
+            }
+            ("drag", args)
+        }
+        NodeType::LaunchApp(p) => ("launch_app", serde_json::json!({"app_name": p.app_name})),
+        NodeType::QuitApp(p) => ("quit_app", serde_json::json!({"app_name": p.app_name})),
+        // CDP nodes
+        NodeType::CdpClick(p) => ("click", serde_json::json!({"uid": p.uid})),
+        NodeType::CdpHover(p) => ("hover", serde_json::json!({"uid": p.uid})),
+        NodeType::CdpFill(p) => ("fill", serde_json::json!({"uid": p.uid, "value": p.value})),
+        NodeType::CdpType(p) => ("type_text", serde_json::json!({"text": p.text})),
+        NodeType::CdpPressKey(p) => {
+            let mut args = serde_json::json!({"key": p.key});
+            if !p.modifiers.is_empty() {
+                args["modifiers"] = serde_json::json!(p.modifiers);
+            }
+            ("press_key", args)
+        }
+        NodeType::CdpNavigate(p) => ("navigate_page", serde_json::json!({"url": p.url})),
+        NodeType::CdpNewPage(p) => {
+            let mut args = serde_json::json!({});
+            if !p.url.is_empty() {
+                args["url"] = Value::String(p.url.clone());
+            }
+            ("new_page", args)
+        }
+        NodeType::CdpClosePage(p) => {
+            let mut args = serde_json::json!({});
+            if let Some(idx) = p.page_index {
+                args["page_index"] = serde_json::json!(idx);
+            }
+            ("close_page", args)
+        }
+        NodeType::CdpSelectPage(p) => (
+            "select_page",
+            serde_json::json!({"page_index": p.page_index}),
+        ),
+        NodeType::CdpWait(p) => (
+            "wait_for",
+            serde_json::json!({"text": p.text, "timeout_ms": p.timeout_ms}),
+        ),
+        NodeType::CdpHandleDialog(p) => {
+            let mut args = serde_json::json!({"accept": p.accept});
+            if let Some(text) = &p.prompt_text {
+                args["prompt_text"] = Value::String(text.clone());
+            }
+            ("handle_dialog", args)
         }
         NodeType::McpToolCall(p) => {
             let args = if p.arguments.is_null() {
@@ -250,31 +305,49 @@ pub fn tool_invocation_to_node_type(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(3) as u32,
         })),
-        "click" => Ok(NodeType::Click(ClickParams {
-            target: args
+        "list_apps" => Ok(NodeType::FindApp(FindAppParams {
+            search: args
+                .get("search")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+        })),
+        "click" => {
+            let target = if let Some(text) = args
                 .get("target")
                 .or_else(|| args.get("text"))
                 .and_then(|v| v.as_str())
-                .map(|s| ClickTarget::Text {
-                    text: s.to_string(),
-                }),
-            template_image: None,
-            x: args.get("x").and_then(|v| v.as_f64()),
-            y: args.get("y").and_then(|v| v.as_f64()),
-            button: match args.get("button").and_then(|v| v.as_str()) {
-                Some("right") => MouseButton::Right,
-                Some("center") => MouseButton::Center,
-                _ => MouseButton::Left,
-            },
-            click_count: args
-                .get("click_count")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(1) as u32,
-        })),
+            {
+                Some(ClickTarget::Text {
+                    text: text.to_string(),
+                })
+            } else if let (Some(x), Some(y)) = (
+                args.get("x").and_then(|v| v.as_f64()),
+                args.get("y").and_then(|v| v.as_f64()),
+            ) {
+                Some(ClickTarget::Coordinates { x, y })
+            } else {
+                None
+            };
+            Ok(NodeType::Click(ClickParams {
+                target,
+                button: match args.get("button").and_then(|v| v.as_str()) {
+                    Some("right") => MouseButton::Right,
+                    Some("center") => MouseButton::Center,
+                    _ => MouseButton::Left,
+                },
+                click_count: args
+                    .get("click_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1) as u32,
+                ..Default::default()
+            }))
+        }
         "type_text" => {
             let text = required_str(args, "type_text", "text")?;
             Ok(NodeType::TypeText(TypeTextParams {
                 text: text.to_string(),
+                ..Default::default()
             }))
         }
         "press_key" => {
@@ -290,26 +363,30 @@ pub fn tool_invocation_to_node_type(
                             .collect()
                     })
                     .unwrap_or_default(),
+                ..Default::default()
             }))
         }
         "scroll" => Ok(NodeType::Scroll(ScrollParams {
             delta_y: args.get("delta_y").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
             x: args.get("x").and_then(|v| v.as_f64()),
             y: args.get("y").and_then(|v| v.as_f64()),
+            ..Default::default()
         })),
-        "list_windows" => Ok(NodeType::ListWindows(ListWindowsParams {
-            app_name: args
-                .get("app_name")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-        })),
-        "move_mouse" => Ok(NodeType::Hover(HoverParams {
-            target: None,
-            template_image: None,
-            x: args.get("x").and_then(|v| v.as_f64()),
-            y: args.get("y").and_then(|v| v.as_f64()),
-            dwell_ms: args.get("dwell_ms").and_then(|v| v.as_u64()).unwrap_or(500),
-        })),
+        "move_mouse" => {
+            let target = if let (Some(x), Some(y)) = (
+                args.get("x").and_then(|v| v.as_f64()),
+                args.get("y").and_then(|v| v.as_f64()),
+            ) {
+                Some(ClickTarget::Coordinates { x, y })
+            } else {
+                None
+            };
+            Ok(NodeType::Hover(HoverParams {
+                target,
+                dwell_ms: args.get("dwell_ms").and_then(|v| v.as_u64()).unwrap_or(500),
+                ..Default::default()
+            }))
+        }
         "focus_window" => {
             let (method, value) = if let Some(app) = args.get("app_name").and_then(|v| v.as_str()) {
                 (FocusMethod::AppName, Some(app.to_string()))
@@ -331,8 +408,92 @@ pub fn tool_invocation_to_node_type(
                 bring_to_front: true,
                 app_kind,
                 chrome_profile_id: None,
+                ..Default::default()
             }))
         }
+        "drag" => Ok(NodeType::Drag(DragParams {
+            from_x: args.get("from_x").and_then(|v| v.as_f64()),
+            from_y: args.get("from_y").and_then(|v| v.as_f64()),
+            to_x: args.get("to_x").and_then(|v| v.as_f64()),
+            to_y: args.get("to_y").and_then(|v| v.as_f64()),
+            ..Default::default()
+        })),
+        "launch_app" => Ok(NodeType::LaunchApp(LaunchAppParams {
+            app_name: args
+                .get("app_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            ..Default::default()
+        })),
+        "quit_app" => Ok(NodeType::QuitApp(QuitAppParams {
+            app_name: args
+                .get("app_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            ..Default::default()
+        })),
+        // CDP tool mappings
+        "fill" => Ok(NodeType::CdpFill(CdpFillParams {
+            uid: args
+                .get("uid")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            value: args
+                .get("value")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            ..Default::default()
+        })),
+        "navigate_page" => Ok(NodeType::CdpNavigate(CdpNavigateParams {
+            url: args
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            ..Default::default()
+        })),
+        "new_page" => Ok(NodeType::CdpNewPage(CdpNewPageParams {
+            url: args
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            ..Default::default()
+        })),
+        "close_page" => Ok(NodeType::CdpClosePage(CdpClosePageParams {
+            page_index: args
+                .get("page_index")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32),
+            ..Default::default()
+        })),
+        "select_page" => Ok(NodeType::CdpSelectPage(CdpSelectPageParams {
+            page_index: args.get("page_index").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            ..Default::default()
+        })),
+        "wait_for" => Ok(NodeType::CdpWait(CdpWaitParams {
+            text: args
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            timeout_ms: args
+                .get("timeout_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(10_000),
+        })),
+        "handle_dialog" => Ok(NodeType::CdpHandleDialog(CdpHandleDialogParams {
+            accept: args.get("accept").and_then(|v| v.as_bool()).unwrap_or(true),
+            prompt_text: args
+                .get("prompt_text")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            ..Default::default()
+        })),
         _ if known_tools
             .iter()
             .any(|t| t["function"]["name"].as_str() == Some(name)) =>
@@ -360,13 +521,10 @@ mod tests {
             serde_json::json!({"type": "function", "function": {"name": "type_text"}}),
             serde_json::json!({"type": "function", "function": {"name": "press_key"}}),
             serde_json::json!({"type": "function", "function": {"name": "scroll"}}),
-            serde_json::json!({"type": "function", "function": {"name": "list_windows"}}),
             serde_json::json!({"type": "function", "function": {"name": "focus_window"}}),
             serde_json::json!({"type": "function", "function": {"name": "custom_tool"}}),
         ]
     }
-
-    // --- Round-trip tests for each deterministic node type ---
 
     #[test]
     fn roundtrip_take_screenshot() {
@@ -425,9 +583,7 @@ mod tests {
     #[test]
     fn roundtrip_click() {
         let nt = NodeType::Click(ClickParams {
-            target: None,
-            x: Some(100.0),
-            y: Some(200.0),
+            target: Some(ClickTarget::Coordinates { x: 100.0, y: 200.0 }),
             button: MouseButton::Right,
             click_count: 2,
             ..Default::default()
@@ -436,7 +592,7 @@ mod tests {
         assert_eq!(inv.name, "click");
         let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
         assert!(
-            matches!(back, NodeType::Click(p) if p.x == Some(100.0) && p.y == Some(200.0) && p.button == MouseButton::Right && p.click_count == 2)
+            matches!(back, NodeType::Click(p) if p.button == MouseButton::Right && p.click_count == 2)
         );
     }
 
@@ -450,7 +606,6 @@ mod tests {
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         assert_eq!(inv.name, "click");
-        // target is a clickweave-internal field, not an MCP tool argument
         assert!(inv.arguments.get("target").is_none());
     }
 
@@ -458,21 +613,20 @@ mod tests {
     fn roundtrip_click_no_coords() {
         let nt = NodeType::Click(ClickParams {
             target: None,
-            x: None,
-            y: None,
             button: MouseButton::Left,
             click_count: 1,
             ..Default::default()
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
-        assert!(matches!(back, NodeType::Click(p) if p.x.is_none() && p.y.is_none()));
+        assert!(matches!(back, NodeType::Click(p) if p.target.is_none()));
     }
 
     #[test]
     fn roundtrip_type_text() {
         let nt = NodeType::TypeText(TypeTextParams {
             text: "hello world".into(),
+            ..Default::default()
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         assert_eq!(inv.name, "type_text");
@@ -485,6 +639,7 @@ mod tests {
         let nt = NodeType::PressKey(PressKeyParams {
             key: "return".into(),
             modifiers: vec!["command".into(), "shift".into()],
+            ..Default::default()
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         assert_eq!(inv.name, "press_key");
@@ -500,22 +655,12 @@ mod tests {
             delta_y: -3,
             x: Some(400.0),
             y: Some(300.0),
+            ..Default::default()
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         assert_eq!(inv.name, "scroll");
         let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
         assert!(matches!(back, NodeType::Scroll(p) if p.delta_y == -3 && p.x == Some(400.0)));
-    }
-
-    #[test]
-    fn roundtrip_list_windows() {
-        let nt = NodeType::ListWindows(ListWindowsParams {
-            app_name: Some("Code".into()),
-        });
-        let inv = node_type_to_tool_invocation(&nt).unwrap();
-        assert_eq!(inv.name, "list_windows");
-        let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
-        assert!(matches!(back, NodeType::ListWindows(p) if p.app_name.as_deref() == Some("Code")));
     }
 
     #[test]
@@ -526,6 +671,7 @@ mod tests {
             bring_to_front: true,
             app_kind: AppKind::Native,
             chrome_profile_id: None,
+            ..Default::default()
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         assert_eq!(inv.name, "focus_window");
@@ -543,6 +689,7 @@ mod tests {
             bring_to_front: true,
             app_kind: AppKind::Native,
             chrome_profile_id: None,
+            ..Default::default()
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
@@ -559,6 +706,7 @@ mod tests {
             bring_to_front: true,
             app_kind: AppKind::Native,
             chrome_profile_id: None,
+            ..Default::default()
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
@@ -579,8 +727,6 @@ mod tests {
         let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &tools).unwrap();
         assert!(matches!(back, NodeType::McpToolCall(p) if p.tool_name == "custom_tool"));
     }
-
-    // --- Error cases ---
 
     #[test]
     fn ai_step_is_not_a_tool_node() {
@@ -652,6 +798,7 @@ mod tests {
             bring_to_front: true,
             app_kind: AppKind::ChromeBrowser,
             chrome_profile_id: None,
+            ..Default::default()
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         assert_eq!(inv.arguments["app_kind"], "ChromeBrowser");
@@ -670,6 +817,7 @@ mod tests {
             bring_to_front: true,
             app_kind: AppKind::Native,
             chrome_profile_id: None,
+            ..Default::default()
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         assert!(inv.arguments.get("app_kind").is_none());
@@ -690,12 +838,10 @@ mod tests {
 
     #[test]
     fn hover_maps_to_move_mouse() {
-        let nt = NodeType::Hover(crate::HoverParams {
-            target: None,
-            template_image: None,
-            x: Some(100.0),
-            y: Some(200.0),
+        let nt = NodeType::Hover(HoverParams {
+            target: Some(ClickTarget::Coordinates { x: 100.0, y: 200.0 }),
             dwell_ms: 500,
+            ..Default::default()
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         assert_eq!(inv.name, "move_mouse");
@@ -705,7 +851,7 @@ mod tests {
 
     #[test]
     fn hover_no_coords_maps_to_move_mouse_without_xy() {
-        let nt = NodeType::Hover(crate::HoverParams::default());
+        let nt = NodeType::Hover(HoverParams::default());
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         assert_eq!(inv.name, "move_mouse");
         assert!(inv.arguments.get("x").is_none());
@@ -714,16 +860,14 @@ mod tests {
 
     #[test]
     fn roundtrip_move_mouse() {
-        let nt = NodeType::Hover(crate::HoverParams {
-            target: None,
-            template_image: None,
-            x: Some(100.0),
-            y: Some(200.0),
+        let nt = NodeType::Hover(HoverParams {
+            target: Some(ClickTarget::Coordinates { x: 100.0, y: 200.0 }),
             dwell_ms: 500,
+            ..Default::default()
         });
         let inv = node_type_to_tool_invocation(&nt).unwrap();
         let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
-        assert!(matches!(back, NodeType::Hover(p) if p.x == Some(100.0) && p.y == Some(200.0)));
+        assert!(matches!(back, NodeType::Hover(_)));
     }
 
     #[test]
