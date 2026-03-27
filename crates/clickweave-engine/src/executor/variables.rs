@@ -49,7 +49,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 ///   string for text, empty string for null/AiStep).
 /// - Objects: each top-level field -> `<prefix>.<key>`, plus `.result` = raw Value.
 /// - Arrays: `.found` (bool), `.count`, first-element fields, plus typed alias
-///   (e.g. `.windows` for `ListWindows`), plus `.result` = raw Value.
+///   (e.g. `.apps` for `FindApp`), plus `.result` = raw Value.
 /// - Strings: `.result` only.
 /// - Null: `.result = ""`.
 pub(crate) fn extract_result_variables(
@@ -106,7 +106,7 @@ pub(crate) fn extract_result_variables(
 
 /// Returns a typed alias name for array results based on node type.
 ///
-/// For example, `ListWindows` results get stored as `<prefix>.windows`.
+/// For example, `FindApp` results get stored as `<prefix>.apps`.
 fn array_alias_for_node_type(node_type: &NodeType) -> Option<&'static str> {
     match node_type {
         NodeType::FindApp(_) => Some("apps"),

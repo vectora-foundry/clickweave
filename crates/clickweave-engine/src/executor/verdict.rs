@@ -35,7 +35,7 @@ pub(crate) fn verdict_passed(verdict: &NodeVerdict) -> bool {
 }
 
 /// Create a deterministic NodeVerdict for a Verification-role node based on its
-/// runtime result. Works for FindText, FindImage, and ListWindows which produce
+/// runtime result. Works for FindText, FindImage, and FindApp which produce
 /// array results with a `.found` boolean.
 pub(crate) fn deterministic_verdict(
     node_id: Uuid,
