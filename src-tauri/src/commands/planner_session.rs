@@ -21,6 +21,13 @@ pub struct PlannerHandle {
     pub session_id: Option<String>,
 }
 
+/// Helper to lock the planner handle, recovering from poisoning.
+fn lock_handle(
+    handle: &std::sync::Mutex<PlannerHandle>,
+) -> std::sync::MutexGuard<'_, PlannerHandle> {
+    handle.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Holds the MCP client and Tauri app handle for a planning session.
 pub struct PlannerSession {
     mcp: Arc<Mutex<McpClient>>,
@@ -31,25 +38,31 @@ pub struct PlannerSession {
 }
 
 impl PlannerSession {
-    pub async fn new(
+    /// Create a new planning session. Returns an error if a session is already active.
+    pub async fn try_new(
         mcp: McpClient,
         app: AppHandle,
         planner_handle: Arc<std::sync::Mutex<PlannerHandle>>,
         mcp_tools_openai: &[Value],
-    ) -> Self {
+    ) -> Result<Self, CommandError> {
         let session_id = Uuid::new_v4().to_string();
         let planning_tools_openai = Self::build_planning_tools(mcp_tools_openai);
         {
-            let mut handle = planner_handle.lock().unwrap();
+            let mut handle = lock_handle(&planner_handle);
+            if handle.session_id.is_some() {
+                return Err(CommandError::validation(
+                    "A planning session is already active",
+                ));
+            }
             handle.session_id = Some(session_id.clone());
         }
-        Self {
+        Ok(Self {
             mcp: Arc::new(Mutex::new(mcp)),
             app,
             session_id,
             planner_handle,
             planning_tools_openai,
-        }
+        })
     }
 
     /// Build the list of available planning tools by filtering the MCP tool list.
@@ -66,7 +79,8 @@ impl PlannerSession {
             .collect()
     }
 
-    /// Clean up after planning: disconnect CDP if connected.
+    /// Clean up after planning: disconnect CDP if connected, clear handle state,
+    /// and notify the frontend to clear its planner UI.
     pub async fn cleanup(&self) {
         let mcp = self.mcp.lock().await;
         if mcp.has_tool("cdp_disconnect") {
@@ -74,9 +88,15 @@ impl PlannerSession {
             info!("Planning cleanup: disconnected CDP");
         }
         // Clear session from handle
-        let mut handle = self.planner_handle.lock().unwrap();
+        let mut handle = lock_handle(&self.planner_handle);
         handle.session_id = None;
         handle.confirmation_tx = None;
+
+        // Notify frontend to clear planner state (dismisses stale confirmation dialogs)
+        let _ = self.app.emit(
+            "planner://session_ended",
+            serde_json::json!({ "session_id": self.session_id }),
+        );
     }
 }
 
@@ -95,7 +115,6 @@ impl PlannerToolExecutor for PlannerSession {
             .unwrap_or("")
             .to_string();
 
-        // Emit tool call event for UI logging
         let _ = self.app.emit(
             "planner://tool_call",
             PlannerToolCallPayload {
@@ -119,13 +138,11 @@ impl PlannerToolExecutor for PlannerSession {
     async fn request_confirmation(&self, message: &str, tool_name: &str) -> anyhow::Result<bool> {
         let (tx, rx) = oneshot::channel();
 
-        // Store the sender in the handle
         {
-            let mut handle = self.planner_handle.lock().unwrap();
+            let mut handle = lock_handle(&self.planner_handle);
             handle.confirmation_tx = Some(tx);
         }
 
-        // Emit confirmation request to frontend
         let _ = self.app.emit(
             "planner://confirmation_required",
             PlannerConfirmationPayload {
@@ -135,7 +152,6 @@ impl PlannerToolExecutor for PlannerSession {
             },
         );
 
-        // Wait for the frontend to respond
         let approved = rx
             .await
             .map_err(|_| anyhow::anyhow!("Confirmation channel closed"))?;
@@ -160,7 +176,7 @@ pub async fn planner_confirmation_respond(
 ) -> Result<(), CommandError> {
     let handle = app.state::<std::sync::Arc<std::sync::Mutex<PlannerHandle>>>();
     let tx = {
-        let mut guard = handle.lock().unwrap();
+        let mut guard = lock_handle(&handle);
         guard.confirmation_tx.take()
     };
 

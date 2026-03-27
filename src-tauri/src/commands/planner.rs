@@ -36,13 +36,13 @@ pub async fn plan_workflow(
     let workflow_tools = mcp.tools_as_openai();
 
     let planner_handle = app.state::<Arc<std::sync::Mutex<PlannerHandle>>>();
-    let session = PlannerSession::new(
+    let session = PlannerSession::try_new(
         mcp,
         app.clone(),
         Arc::clone(&planner_handle),
         &workflow_tools,
     )
-    .await;
+    .await?;
 
     let planner_config = request.planner.into_llm_config(None);
     let planner = clickweave_llm::LlmClient::new(planner_config);

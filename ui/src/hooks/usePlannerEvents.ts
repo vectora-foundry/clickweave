@@ -32,6 +32,10 @@ export function usePlannerEvents() {
           toolName: e.payload.tool_name,
         });
       }),
+
+      listen<{ session_id: string }>("planner://session_ended", () => {
+        useStore.getState().clearPlannerState();
+      }),
     ]);
 
     return () => {
