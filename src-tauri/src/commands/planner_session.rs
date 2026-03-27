@@ -12,21 +12,13 @@ use tracing::info;
 use uuid::Uuid;
 
 /// Managed state for the active planner session.
+#[derive(Default)]
 pub struct PlannerHandle {
     /// Channel to send the user's confirmation response.
     /// Set when a confirmation is pending; taken when the response arrives.
     pub confirmation_tx: Option<oneshot::Sender<bool>>,
     /// Session ID of the active planning session.
     pub session_id: Option<String>,
-}
-
-impl Default for PlannerHandle {
-    fn default() -> Self {
-        Self {
-            confirmation_tx: None,
-            session_id: None,
-        }
-    }
 }
 
 /// Holds the MCP client and Tauri app handle for a planning session.

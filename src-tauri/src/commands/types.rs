@@ -257,9 +257,3 @@ pub struct PlannerConfirmationPayload {
     pub message: String,
     pub tool_name: String,
 }
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PlannerErrorPayload {
-    pub session_id: String,
-    pub error: String,
-}

@@ -23,13 +23,13 @@ pub(crate) fn step_rejected_reason(
     allow_ai_transforms: bool,
     allow_agent_steps: bool,
 ) -> Option<String> {
-    if let PlanStep::Tool { tool_name, .. } = step {
-        if super::tool_use::is_planning_only_tool(tool_name) {
-            return Some(format!(
-                "'{}' is a planning-only tool and cannot appear in the workflow",
-                tool_name
-            ));
-        }
+    if let PlanStep::Tool { tool_name, .. } = step
+        && super::tool_use::is_planning_only_tool(tool_name)
+    {
+        return Some(format!(
+            "'{}' is a planning-only tool and cannot appear in the workflow",
+            tool_name
+        ));
     }
     if !allow_agent_steps && matches!(step, PlanStep::AiStep { .. }) {
         return Some("AiStep rejected (agent steps disabled)".to_string());
