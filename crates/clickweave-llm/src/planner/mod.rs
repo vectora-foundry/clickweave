@@ -4,6 +4,7 @@ mod patch;
 mod plan;
 mod prompt;
 mod repair;
+pub mod tool_use;
 
 pub mod assistant;
 pub mod conversation;
@@ -992,3 +993,4 @@ fn translate_node_refs(id_map: &HashMap<String, String>, node: &mut Node) {
 pub use assistant::{AssistantResult, assistant_chat, assistant_chat_with_backend};
 pub use patch::{patch_workflow, patch_workflow_with_backend};
 pub use plan::{plan_workflow, plan_workflow_with_backend};
+pub use tool_use::{PlannerToolExecutor, ToolPermission};
