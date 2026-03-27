@@ -288,6 +288,14 @@ async launchChromeForSetup(profileId: string) : Promise<Result<null, CommandErro
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async plannerConfirmationRespond(approved: boolean) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("planner_confirmation_respond", { approved }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 

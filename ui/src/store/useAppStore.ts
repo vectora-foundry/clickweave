@@ -3,6 +3,7 @@ import { createAssistantSlice } from "./slices/assistantSlice";
 import { createExecutionSlice } from "./slices/executionSlice";
 import { createHistorySlice } from "./slices/historySlice";
 import { createLogSlice } from "./slices/logSlice";
+import { createPlannerSlice } from "./slices/plannerSlice";
 import { createProjectSlice } from "./slices/projectSlice";
 import { createSettingsSlice } from "./slices/settingsSlice";
 import { createUiSlice } from "./slices/uiSlice";
@@ -23,6 +24,7 @@ export const useStore = create<StoreState>()((...a) => ({
   ...createExecutionSlice(...a),
   ...createHistorySlice(...a),
   ...createLogSlice(...a),
+  ...createPlannerSlice(...a),
   ...createUiSlice(...a),
   ...createVerdictSlice(...a),
   ...createWalkthroughSlice(...a),

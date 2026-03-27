@@ -19,6 +19,7 @@ import { useEscapeKey } from "./hooks/useEscapeKey";
 import { useUndoRedoKeyboard } from "./hooks/useUndoRedoKeyboard";
 import { useWorkflowActions } from "./hooks/useWorkflowActions";
 import { useExecutorEvents } from "./hooks/useExecutorEvents";
+import { usePlannerEvents } from "./hooks/usePlannerEvents";
 import { buildAppKindMap } from "./hooks/useNodeSync";
 import { isWalkthroughBusy } from "./store/slices/walkthroughSlice";
 
@@ -163,6 +164,7 @@ function App() {
 
   // ── Tauri event listeners (use getState() to avoid stale closures) ──
   useExecutorEvents();
+  usePlannerEvents();
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-[var(--bg-dark)]">
