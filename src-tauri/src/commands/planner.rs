@@ -3,6 +3,7 @@ use super::planner_session::{PlannerHandle, PlannerSession};
 use super::types::*;
 use clickweave_mcp::McpClient;
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::Manager;
 
 pub(crate) async fn fetch_mcp_tool_schemas() -> Result<Vec<serde_json::Value>, CommandError> {
@@ -47,21 +48,29 @@ pub async fn plan_workflow(
         None
     };
 
-    let result = clickweave_llm::planner::plan_workflow_with_tools(
-        &planner,
-        &request.intent,
-        &workflow_tools,
-        request.allow_ai_transforms,
-        request.allow_agent_steps,
-        profiles_ref,
-        &session,
+    let result = tokio::time::timeout(
+        Duration::from_secs(60),
+        clickweave_llm::planner::plan_workflow_with_tools(
+            &planner,
+            &request.intent,
+            &workflow_tools,
+            request.allow_ai_transforms,
+            request.allow_agent_steps,
+            profiles_ref,
+            &session,
+        ),
     )
     .await;
 
     // Always clean up (disconnect CDP, etc.)
     session.cleanup().await;
 
-    let result = result.map_err(|e| CommandError::llm(format!("Planning failed: {}", e)))?;
+    let result = match result {
+        Ok(inner) => inner.map_err(|e| CommandError::llm(format!("Planning failed: {}", e))),
+        Err(_) => Err(CommandError::llm(
+            "Planning timed out after 60 seconds".to_string(),
+        )),
+    }?;
 
     Ok(PlanResponse {
         workflow: result.workflow,
