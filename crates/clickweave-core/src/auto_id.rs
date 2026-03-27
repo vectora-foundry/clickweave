@@ -40,9 +40,14 @@ pub fn auto_id_base(node_type: &NodeType) -> &'static str {
 
 /// Assign an auto_id using the workflow's counters. Returns the new auto_id.
 pub fn assign_auto_id(node_type: &NodeType, counters: &mut HashMap<String, u32>) -> String {
-    let base = auto_id_base(node_type).to_string();
-    let counter = counters.entry(base.clone()).or_insert(0);
-    *counter += 1;
+    let base = auto_id_base(node_type);
+    let counter = if let Some(c) = counters.get_mut(base) {
+        *c += 1;
+        *c
+    } else {
+        counters.insert(base.to_string(), 1);
+        1
+    };
     format!("{}_{}", base, counter)
 }
 

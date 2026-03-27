@@ -36,5 +36,19 @@ export function getOutputSchema(nodeTypeName: string): OutputFieldInfo[] {
 
 /** Get the node type name from a NodeType tagged union object. */
 export function nodeTypeName(nodeType: Record<string, unknown>): string {
-  return Object.keys(nodeType)[0] ?? "";
+  return (nodeType as { type?: string }).type ?? "";
+}
+
+export interface ExtractedRef {
+  key: string;
+  ref: { node: string; field: string };
+}
+
+/** Extract all OutputRef fields from a NodeType's inner params. */
+export function extractOutputRefs(nodeType: Record<string, unknown>): ExtractedRef[] {
+  const inner = Object.values(nodeType)[0] as Record<string, unknown> | undefined;
+  if (!inner) return [];
+  return Object.entries(inner)
+    .filter(([key, val]) => key.endsWith("_ref") && val != null)
+    .map(([key, val]) => ({ key, ref: val as { node: string; field: string } }));
 }

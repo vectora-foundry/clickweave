@@ -3,6 +3,8 @@ mod click;
 mod hover;
 mod window;
 
+use std::borrow::Cow;
+
 use super::{ExecutorError, ExecutorResult, WorkflowExecutor};
 use clickweave_core::AppKind;
 use clickweave_core::output_schema::NodeContext;
@@ -162,7 +164,10 @@ fn cdp_pages_show_navigation_progress(before_pages_text: &str, after_pages_text:
 impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Resolve `_ref` params before execution by producing a new NodeType with
     /// resolved literal values (coordinates, text, URLs).
-    fn resolve_output_refs(&self, node_type: &NodeType) -> ExecutorResult<NodeType> {
+    fn resolve_output_refs<'a>(
+        &self,
+        node_type: &'a NodeType,
+    ) -> ExecutorResult<Cow<'a, NodeType>> {
         use super::output_ref::*;
         let ctx = &self.context;
 
@@ -170,20 +175,20 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             NodeType::Click(p) if p.target_ref.is_some() => {
                 let coords_val = resolve_ref(ctx, p.target_ref.as_ref().unwrap())?;
                 let (x, y) = extract_coordinates(&coords_val)?;
-                Ok(NodeType::Click(ClickParams {
+                Ok(Cow::Owned(NodeType::Click(ClickParams {
                     target: Some(ClickTarget::Coordinates { x, y }),
                     ..p.clone()
-                }))
+                })))
             }
             NodeType::Hover(p) if p.target_ref.is_some() => {
                 let coords_val = resolve_ref(ctx, p.target_ref.as_ref().unwrap())?;
                 let (x, y) = extract_coordinates(&coords_val)?;
-                Ok(NodeType::Hover(HoverParams {
+                Ok(Cow::Owned(NodeType::Hover(HoverParams {
                     target: Some(ClickTarget::Coordinates { x, y }),
                     ..p.clone()
-                }))
+                })))
             }
-            NodeType::Drag(p) => {
+            NodeType::Drag(p) if p.from_ref.is_some() || p.to_ref.is_some() => {
                 let mut resolved = p.clone();
                 if let Some(ref from_ref) = p.from_ref {
                     let val = resolve_ref(ctx, from_ref)?;
@@ -197,55 +202,51 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     resolved.to_x = Some(x);
                     resolved.to_y = Some(y);
                 }
-                if p.from_ref.is_some() || p.to_ref.is_some() {
-                    Ok(NodeType::Drag(resolved))
-                } else {
-                    Ok(node_type.clone())
-                }
+                Ok(Cow::Owned(NodeType::Drag(resolved)))
             }
             NodeType::TypeText(p) if p.text_ref.is_some() => {
                 let val = resolve_ref(ctx, p.text_ref.as_ref().unwrap())?;
-                Ok(NodeType::TypeText(TypeTextParams {
+                Ok(Cow::Owned(NodeType::TypeText(TypeTextParams {
                     text: coerce_to_string(&val),
                     ..p.clone()
-                }))
+                })))
             }
             NodeType::FocusWindow(p) if p.value_ref.is_some() => {
                 let val = resolve_ref(ctx, p.value_ref.as_ref().unwrap())?;
-                Ok(NodeType::FocusWindow(FocusWindowParams {
+                Ok(Cow::Owned(NodeType::FocusWindow(FocusWindowParams {
                     value: Some(coerce_to_string(&val)),
                     ..p.clone()
-                }))
+                })))
             }
             NodeType::CdpFill(p) if p.value_ref.is_some() => {
                 let val = resolve_ref(ctx, p.value_ref.as_ref().unwrap())?;
-                Ok(NodeType::CdpFill(CdpFillParams {
+                Ok(Cow::Owned(NodeType::CdpFill(CdpFillParams {
                     value: coerce_to_string(&val),
                     ..p.clone()
-                }))
+                })))
             }
             NodeType::CdpType(p) if p.text_ref.is_some() => {
                 let val = resolve_ref(ctx, p.text_ref.as_ref().unwrap())?;
-                Ok(NodeType::CdpType(CdpTypeParams {
+                Ok(Cow::Owned(NodeType::CdpType(CdpTypeParams {
                     text: coerce_to_string(&val),
                     ..p.clone()
-                }))
+                })))
             }
             NodeType::CdpNavigate(p) if p.url_ref.is_some() => {
                 let val = resolve_ref(ctx, p.url_ref.as_ref().unwrap())?;
-                Ok(NodeType::CdpNavigate(CdpNavigateParams {
+                Ok(Cow::Owned(NodeType::CdpNavigate(CdpNavigateParams {
                     url: coerce_to_string(&val),
                     ..p.clone()
-                }))
+                })))
             }
             NodeType::CdpNewPage(p) if p.url_ref.is_some() => {
                 let val = resolve_ref(ctx, p.url_ref.as_ref().unwrap())?;
-                Ok(NodeType::CdpNewPage(CdpNewPageParams {
+                Ok(Cow::Owned(NodeType::CdpNewPage(CdpNewPageParams {
                     url: coerce_to_string(&val),
                     ..p.clone()
-                }))
+                })))
             }
-            _ => Ok(node_type.clone()),
+            _ => Ok(Cow::Borrowed(node_type)),
         }
     }
 
@@ -258,7 +259,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     ) -> ExecutorResult<Value> {
         // Resolve OutputRef parameters before execution.
         let resolved = self.resolve_output_refs(node_type)?;
-        let node_type = &resolved;
+        let node_type = resolved.as_ref();
 
         // Check CDP scope — nodes that require a CDP connection fail early
         // if no CDP-capable app has been focused.

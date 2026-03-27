@@ -902,7 +902,7 @@ pub(crate) fn build_workflow_from_graph(
         nodes,
         edges,
         groups: vec![],
-        next_id_counters: std::collections::HashMap::new(),
+        next_id_counters,
     };
 
     clickweave_core::validate_workflow(&workflow)
@@ -917,7 +917,7 @@ pub(crate) fn build_workflow_from_graph(
 /// LLM temporary IDs to auto-IDs in all OutputRefs and conditions.
 pub(crate) fn normalize_auto_ids(workflow: &mut Workflow) {
     // Pass 1: Assign auto-IDs, build LLM-temp-ID -> auto-ID mapping
-    let mut counters = workflow.next_id_counters.clone();
+    let mut counters = std::mem::take(&mut workflow.next_id_counters);
     let mut id_map: HashMap<String, String> = HashMap::new();
 
     for node in &mut workflow.nodes {

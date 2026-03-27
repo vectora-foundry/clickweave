@@ -115,20 +115,19 @@ pub fn node_type_defaults() -> Vec<NodeTypeInfo> {
 #[specta::specta]
 pub fn generate_auto_id(
     node_type_name: String,
-    workflow_json: String,
+    counters_json: String,
 ) -> Result<(String, String), String> {
-    let mut workflow: Workflow = serde_json::from_str(&workflow_json).map_err(|e| e.to_string())?;
+    let mut counters: std::collections::HashMap<String, u32> =
+        serde_json::from_str(&counters_json).map_err(|e| e.to_string())?;
 
     let node_type = NodeType::default_for_name(&node_type_name)
         .ok_or_else(|| format!("Unknown node type: {}", node_type_name))?;
 
-    let auto_id =
-        clickweave_core::auto_id::assign_auto_id(&node_type, &mut workflow.next_id_counters);
+    let auto_id = clickweave_core::auto_id::assign_auto_id(&node_type, &mut counters);
 
-    let counters_json =
-        serde_json::to_string(&workflow.next_id_counters).map_err(|e| e.to_string())?;
+    let updated_counters = serde_json::to_string(&counters).map_err(|e| e.to_string())?;
 
-    Ok((auto_id, counters_json))
+    Ok((auto_id, updated_counters))
 }
 
 #[tauri::command]

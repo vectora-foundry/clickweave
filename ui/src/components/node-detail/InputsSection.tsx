@@ -1,4 +1,5 @@
 import { typeColor } from "../../utils/typeColors";
+import { extractOutputRefs } from "../../utils/outputSchema";
 
 interface InputsSectionProps {
   nodeType: Record<string, unknown>;
@@ -14,17 +15,22 @@ const REF_FIELD_LABELS: Record<string, string> = {
   prompt_ref: "Prompt data",
 };
 
-export function InputsSection({ nodeType }: InputsSectionProps) {
-  // Extract any _ref fields that are set
-  const inner = Object.values(nodeType)[0] as Record<string, unknown> | undefined;
-  if (!inner) return null;
+const REF_TYPE_HINTS: Record<string, string> = {
+  target_ref: "Object",
+  from_ref: "Object",
+  to_ref: "Object",
+  text_ref: "String",
+  value_ref: "String",
+  url_ref: "String",
+  prompt_ref: "String",
+};
 
-  const refs = Object.entries(inner)
-    .filter(([key, val]) => key.endsWith("_ref") && val != null)
-    .map(([key, val]) => {
-      const ref = val as { node: string; field: string };
-      return { key, label: REF_FIELD_LABELS[key] || key, ref };
-    });
+export function InputsSection({ nodeType }: InputsSectionProps) {
+  const refs = extractOutputRefs(nodeType).map(({ key, ref }) => ({
+    key,
+    label: REF_FIELD_LABELS[key] || key,
+    ref,
+  }));
 
   if (refs.length === 0) return null;
 
@@ -36,7 +42,7 @@ export function InputsSection({ nodeType }: InputsSectionProps) {
           <div key={key} className="flex items-center gap-2 text-xs">
             <span
               className="w-2 h-2 rounded-full flex-shrink-0"
-              style={{ backgroundColor: typeColor("Object") }}
+              style={{ backgroundColor: typeColor(REF_TYPE_HINTS[key] || "Any") }}
             />
             <span className="text-[var(--text-muted)]">{label}:</span>
             <span className="font-mono text-[var(--text-primary)]">

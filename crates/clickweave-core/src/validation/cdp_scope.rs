@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use uuid::Uuid;
 
 use crate::output_schema::NodeContext;
-use crate::{NodeType, Workflow};
+use crate::{Node, NodeType, Workflow};
 
 /// Validation warning (not error) for CDP nodes without a CDP scope.
 #[derive(Debug, Clone)]
@@ -17,6 +17,9 @@ pub struct CdpScopeWarning {
 /// app in its execution path. Returns warnings, not errors.
 pub(crate) fn validate_cdp_scope(workflow: &Workflow) -> Vec<CdpScopeWarning> {
     let mut warnings = Vec::new();
+
+    // Build node lookup map for O(1) access
+    let node_map: HashMap<Uuid, &Node> = workflow.nodes.iter().map(|n| (n.id, n)).collect();
 
     // Build reverse adjacency list
     let mut predecessors: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
@@ -43,7 +46,7 @@ pub(crate) fn validate_cdp_scope(workflow: &Workflow) -> Vec<CdpScopeWarning> {
             if !visited.insert(current_id) {
                 continue;
             }
-            let Some(current) = workflow.find_node(current_id) else {
+            let Some(current) = node_map.get(&current_id).copied() else {
                 continue;
             };
 

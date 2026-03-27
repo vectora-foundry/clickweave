@@ -404,7 +404,9 @@ impl NodeType {
                     Some(ClickTarget::Coordinates { x, y }) => {
                         format!("Clicked at ({}, {})", x, y)
                     }
-                    None => "Clicked".to_string(),
+                    Some(ClickTarget::WindowControl { action }) => {
+                        format!("Clicked {}", action.display_name().to_lowercase())
+                    }
                     _ => "Clicked".to_string(),
                 }
             }
@@ -417,7 +419,9 @@ impl NodeType {
                     Some(ClickTarget::Coordinates { x, y }) => {
                         format!("Hovered at ({}, {})", x, y)
                     }
-                    None => "Hovered".to_string(),
+                    Some(ClickTarget::WindowControl { action }) => {
+                        format!("Hovered {}", action.display_name().to_lowercase())
+                    }
                     _ => "Hovered".to_string(),
                 }
             }
@@ -606,9 +610,36 @@ impl NodeType {
 
     /// Look up a default NodeType by its display name.
     pub fn default_for_name(name: &str) -> Option<NodeType> {
-        Self::all_defaults()
-            .into_iter()
-            .find(|nt| nt.display_name() == name)
+        Some(match name {
+            "Find Text" => NodeType::FindText(FindTextParams::default()),
+            "Find Image" => NodeType::FindImage(FindImageParams::default()),
+            "Find App" => NodeType::FindApp(FindAppParams::default()),
+            "Take Screenshot" => NodeType::TakeScreenshot(TakeScreenshotParams::default()),
+            "Click" => NodeType::Click(ClickParams::default()),
+            "Hover" => NodeType::Hover(HoverParams::default()),
+            "Drag" => NodeType::Drag(DragParams::default()),
+            "Type Text" => NodeType::TypeText(TypeTextParams::default()),
+            "Press Key" => NodeType::PressKey(PressKeyParams::default()),
+            "Scroll" => NodeType::Scroll(ScrollParams::default()),
+            "Focus Window" => NodeType::FocusWindow(FocusWindowParams::default()),
+            "Launch App" => NodeType::LaunchApp(LaunchAppParams::default()),
+            "Quit App" => NodeType::QuitApp(QuitAppParams::default()),
+            "CDP Wait" => NodeType::CdpWait(CdpWaitParams::default()),
+            "CDP Click" => NodeType::CdpClick(CdpClickParams::default()),
+            "CDP Hover" => NodeType::CdpHover(CdpHoverParams::default()),
+            "CDP Fill" => NodeType::CdpFill(CdpFillParams::default()),
+            "CDP Type" => NodeType::CdpType(CdpTypeParams::default()),
+            "CDP Press Key" => NodeType::CdpPressKey(CdpPressKeyParams::default()),
+            "CDP Navigate" => NodeType::CdpNavigate(CdpNavigateParams::default()),
+            "CDP New Page" => NodeType::CdpNewPage(CdpNewPageParams::default()),
+            "CDP Close Page" => NodeType::CdpClosePage(CdpClosePageParams::default()),
+            "CDP Select Page" => NodeType::CdpSelectPage(CdpSelectPageParams::default()),
+            "CDP Handle Dialog" => NodeType::CdpHandleDialog(CdpHandleDialogParams::default()),
+            "AI Step" => NodeType::AiStep(AiStepParams::default()),
+            "MCP Tool Call" => NodeType::McpToolCall(McpToolCallParams::default()),
+            "AppDebugKit Op" => NodeType::AppDebugKitOp(AppDebugKitParams::default()),
+            _ => return None,
+        })
     }
 }
 

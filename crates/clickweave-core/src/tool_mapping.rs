@@ -58,6 +58,13 @@ fn required_str<'a>(
         })
 }
 
+fn optional_str(args: &Value, field: &str) -> String {
+    args.get(field)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
 /// Convert a `NodeType` to a `ToolInvocation` (tool name + JSON arguments).
 ///
 /// Returns `Err(NotAToolNode)` for `AiStep` and `AppDebugKitOp`, which are not
@@ -306,11 +313,7 @@ pub fn tool_invocation_to_node_type(
                 .unwrap_or(3) as u32,
         })),
         "list_apps" => Ok(NodeType::FindApp(FindAppParams {
-            search: args
-                .get("search")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+            search: optional_str(args, "search"),
         })),
         "click" => {
             let target = if let Some(text) = args
@@ -419,49 +422,25 @@ pub fn tool_invocation_to_node_type(
             ..Default::default()
         })),
         "launch_app" => Ok(NodeType::LaunchApp(LaunchAppParams {
-            app_name: args
-                .get("app_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+            app_name: optional_str(args, "app_name"),
             ..Default::default()
         })),
         "quit_app" => Ok(NodeType::QuitApp(QuitAppParams {
-            app_name: args
-                .get("app_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+            app_name: optional_str(args, "app_name"),
             ..Default::default()
         })),
         // CDP tool mappings
         "fill" => Ok(NodeType::CdpFill(CdpFillParams {
-            uid: args
-                .get("uid")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            value: args
-                .get("value")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+            uid: optional_str(args, "uid"),
+            value: optional_str(args, "value"),
             ..Default::default()
         })),
         "navigate_page" => Ok(NodeType::CdpNavigate(CdpNavigateParams {
-            url: args
-                .get("url")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+            url: optional_str(args, "url"),
             ..Default::default()
         })),
         "new_page" => Ok(NodeType::CdpNewPage(CdpNewPageParams {
-            url: args
-                .get("url")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+            url: optional_str(args, "url"),
             ..Default::default()
         })),
         "close_page" => Ok(NodeType::CdpClosePage(CdpClosePageParams {
@@ -476,11 +455,7 @@ pub fn tool_invocation_to_node_type(
             ..Default::default()
         })),
         "wait_for" => Ok(NodeType::CdpWait(CdpWaitParams {
-            text: args
-                .get("text")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
+            text: optional_str(args, "text"),
             timeout_ms: args
                 .get("timeout_ms")
                 .and_then(|v| v.as_u64())

@@ -6,10 +6,13 @@ use super::error::{ExecutorError, ExecutorResult};
 
 /// Resolve an OutputRef against the runtime context. Fails if the variable is missing.
 pub(crate) fn resolve_ref(ctx: &RuntimeContext, output_ref: &OutputRef) -> ExecutorResult<Value> {
-    let key = format!("{}.{}", output_ref.node, output_ref.field);
-    ctx.get_variable(&key)
-        .cloned()
-        .ok_or_else(|| ExecutorError::VariableNotFound { reference: key })
+    let value = ctx.resolve_output_ref(output_ref);
+    if value.is_null() {
+        let key = format!("{}.{}", output_ref.node, output_ref.field);
+        Err(ExecutorError::VariableNotFound { reference: key })
+    } else {
+        Ok(value)
+    }
 }
 
 /// Resolve an optional OutputRef — returns None if the ref is None, Some(value) if present.

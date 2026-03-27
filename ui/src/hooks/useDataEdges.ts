@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import type { Edge } from "@xyflow/react";
 import type { Node as WfNode } from "../bindings";
+import { extractOutputRefs } from "../utils/outputSchema";
 
 /** Derive data-carrying edges from OutputRef params in the workflow. */
 export function useDataEdges(nodes: WfNode[]): Edge[] {
@@ -14,13 +15,7 @@ export function useDataEdges(nodes: WfNode[]): Edge[] {
     const edges: Edge[] = [];
 
     for (const node of nodes) {
-      const inner = Object.values(node.node_type)[0] as Record<string, unknown> | undefined;
-      if (!inner) continue;
-
-      // Scan for _ref fields
-      for (const [key, val] of Object.entries(inner)) {
-        if (!key.endsWith("_ref") || val == null) continue;
-        const ref = val as { node: string; field: string };
+      for (const { key, ref } of extractOutputRefs(node.node_type as Record<string, unknown>)) {
         const sourceUuid = autoIdToUuid.get(ref.node);
         if (!sourceUuid) continue;
 

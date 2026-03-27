@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 
 /// The type of data an output field produces.
@@ -279,14 +281,17 @@ impl NodeType {
 }
 
 /// Full output schema including verification fields when enabled.
-pub fn full_output_schema(node_type: &NodeType, has_verification: bool) -> Vec<OutputField> {
+pub fn full_output_schema(
+    node_type: &NodeType,
+    has_verification: bool,
+) -> Cow<'static, [OutputField]> {
     let base = node_type.output_schema();
     if has_verification && node_type.output_role() == OutputRole::Action {
         let mut fields: Vec<OutputField> = base.to_vec();
         fields.extend_from_slice(VERIFICATION_OUTPUTS);
-        fields
+        Cow::Owned(fields)
     } else {
-        base.to_vec()
+        Cow::Borrowed(base)
     }
 }
 
