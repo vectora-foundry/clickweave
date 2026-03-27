@@ -3,6 +3,7 @@ mod chrome_profiles;
 pub mod error;
 mod executor;
 mod planner;
+mod planner_session;
 mod project;
 mod runs;
 mod types;
@@ -17,6 +18,7 @@ pub use chrome_profiles::{
 };
 pub use executor::{ExecutorHandle, run_workflow, stop_workflow, supervision_respond};
 pub use planner::{patch_workflow, plan_workflow};
+pub use planner_session::{PlannerHandle, planner_confirmation_respond};
 pub use project::{
     generate_auto_id, get_mcp_status, import_asset, load_conversation, node_type_defaults,
     open_project, pick_save_file, pick_workflow_file, ping, save_conversation, save_project,

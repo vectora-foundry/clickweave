@@ -240,3 +240,26 @@ pub struct AppResolutionSeedEntry {
     pub node_id: String,
     pub app_name: String,
 }
+
+// --- Planner session event payloads ---
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlannerToolCallPayload {
+    pub session_id: String,
+    pub tool_name: String,
+    pub args: serde_json::Value,
+    pub result: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlannerConfirmationPayload {
+    pub session_id: String,
+    pub message: String,
+    pub tool_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlannerErrorPayload {
+    pub session_id: String,
+    pub error: String,
+}

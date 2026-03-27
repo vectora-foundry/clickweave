@@ -123,6 +123,7 @@ fn main() {
         is_chrome_profile_configured,
         get_chrome_profile_path,
         launch_chrome_for_setup,
+        planner_confirmation_respond,
     ]);
 
     #[cfg(debug_assertions)]
@@ -148,6 +149,7 @@ fn main() {
         .manage(Mutex::new(ExecutorHandle::default()))
         .manage(Mutex::new(AssistantHandle::default()))
         .manage(Mutex::new(WalkthroughHandle::default()))
+        .manage(Mutex::new(PlannerHandle::default()))
         .invoke_handler(builder.invoke_handler())
         .menu(menu::build_menu)
         .setup(move |app| {
