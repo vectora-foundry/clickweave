@@ -199,7 +199,19 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
         node_ids: g.node_ids.filter((id: string) => !removedIdSet.has(id)),
       })),
     );
-    const patched: Workflow = { ...workflow, nodes, edges, groups: cleanedGroups };
+    // Rebuild counters from merged nodes to include patch-added auto_ids
+    const patchedCounters: Record<string, number> = { ...(workflow.next_id_counters ?? {}) };
+    for (const node of nodes) {
+      if (!node.auto_id) continue;
+      const idx = node.auto_id.lastIndexOf("_");
+      if (idx === -1) continue;
+      const base = node.auto_id.slice(0, idx);
+      const num = parseInt(node.auto_id.slice(idx + 1), 10);
+      if (!isNaN(num) && num > (patchedCounters[base] ?? 0)) {
+        patchedCounters[base] = num;
+      }
+    }
+    const patched: Workflow = { ...workflow, nodes, edges, groups: cleanedGroups, next_id_counters: patchedCounters };
     try {
       const validation = await commands.validate(patched);
       if (!validation.valid) {

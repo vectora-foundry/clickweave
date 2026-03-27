@@ -346,14 +346,17 @@ fn merge_patch_into_workflow(workflow: &Workflow, patch: &PatchResult) -> Workfl
         .chain(patch.added_edges.iter().cloned())
         .collect();
 
-    Workflow {
+    let mut merged = Workflow {
         id: workflow.id,
         name: workflow.name.clone(),
         nodes,
         edges,
         groups: workflow.groups.clone(),
         next_id_counters: workflow.next_id_counters.clone(),
-    }
+    };
+    // Ensure counters reflect any new nodes added by the patch
+    merged.fixup_auto_ids();
+    merged
 }
 
 /// Generate a default description of what a patch does.

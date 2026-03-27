@@ -297,11 +297,10 @@ pub fn full_output_schema(
 
 /// Add the fixup_auto_ids method to Workflow.
 impl crate::Workflow {
-    /// Rebuild next_id_counters from existing auto_ids.
-    /// Always scans all nodes to ensure counters reflect the actual state,
-    /// preventing duplicate auto_id assignment after patches or deletions.
+    /// Ensure next_id_counters are at least as high as the max auto_id seen
+    /// in the workflow. Raises counters but never lowers them, preserving the
+    /// monotonic high-water mark so deleted nodes don't release their IDs.
     pub fn fixup_auto_ids(&mut self) {
-        self.next_id_counters.clear();
         let ids: Vec<&str> = self
             .nodes
             .iter()
