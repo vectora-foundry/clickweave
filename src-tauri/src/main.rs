@@ -94,6 +94,7 @@ fn main() {
         save_project,
         validate,
         node_type_defaults,
+        generate_auto_id,
         plan_workflow,
         patch_workflow,
         assistant_chat,

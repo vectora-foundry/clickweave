@@ -85,7 +85,7 @@ pub fn save_project(path: String, workflow: Workflow) -> Result<(), CommandError
 #[specta::specta]
 pub fn validate(workflow: Workflow) -> ValidationResult {
     match validate_workflow(&workflow) {
-        Ok(()) => ValidationResult {
+        Ok(_) => ValidationResult {
             valid: true,
             errors: vec![],
         },
@@ -109,6 +109,26 @@ pub fn node_type_defaults() -> Vec<NodeTypeInfo> {
             node_type: nt,
         })
         .collect()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn generate_auto_id(
+    node_type_name: String,
+    workflow_json: String,
+) -> Result<(String, String), String> {
+    let mut workflow: Workflow = serde_json::from_str(&workflow_json).map_err(|e| e.to_string())?;
+
+    let node_type = NodeType::default_for_name(&node_type_name)
+        .ok_or_else(|| format!("Unknown node type: {}", node_type_name))?;
+
+    let auto_id =
+        clickweave_core::auto_id::assign_auto_id(&node_type, &mut workflow.next_id_counters);
+
+    let counters_json =
+        serde_json::to_string(&workflow.next_id_counters).map_err(|e| e.to_string())?;
+
+    Ok((auto_id, counters_json))
 }
 
 #[tauri::command]
