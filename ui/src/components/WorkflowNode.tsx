@@ -2,6 +2,13 @@ import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { NodeRole } from "../bindings";
 import { InlineRenameInput } from "./InlineRenameInput";
+import type { OutputFieldInfo } from "../utils/outputSchema";
+import { typeColor } from "../utils/typeColors";
+
+interface WiredInput {
+  key: string;
+  fieldType: string;
+}
 
 interface WorkflowNodeData {
   label: string;
@@ -21,11 +28,15 @@ interface WorkflowNodeData {
   hideSourceHandle?: boolean;
   onRenameConfirm?: (newName: string) => void;
   onRenameCancel?: () => void;
+  outputFields?: OutputFieldInfo[];
+  wiredInputs?: WiredInput[];
+  availableInputs?: WiredInput[];
   [key: string]: unknown;
 }
 
 const CONTROL_FLOW_TYPES = new Set(["If", "Switch", "Loop", "EndLoop"]);
-const HANDLE_CLS = "!h-3 !w-3 !rounded-full !border-2 !bg-[var(--bg-panel)]";
+const EXEC_HANDLE_CLS = "!h-2 !w-2 !rounded-full !border !bg-[var(--bg-panel)]";
+const EXEC_STYLE = { borderColor: "var(--text-muted)" };
 
 function SourceHandles({ data }: { data: WorkflowNodeData }) {
   const { nodeType, switchCases } = data;
@@ -34,11 +45,11 @@ function SourceHandles({ data }: { data: WorkflowNodeData }) {
     return (
       <>
         <Handle type="source" position={Position.Right} id="IfTrue"
-          className={HANDLE_CLS} style={{ borderColor: "#10b981", top: "30%" }} />
+          className={EXEC_HANDLE_CLS} style={{ borderColor: "#10b981", top: "30%" }} />
         <span className="absolute right-5 text-[8px] text-[var(--text-muted)]"
           style={{ top: "26%" }}>T</span>
         <Handle type="source" position={Position.Right} id="IfFalse"
-          className={HANDLE_CLS} style={{ borderColor: "#ef4444", top: "70%" }} />
+          className={EXEC_HANDLE_CLS} style={{ borderColor: "#ef4444", top: "70%" }} />
         <span className="absolute right-5 text-[8px] text-[var(--text-muted)]"
           style={{ top: "66%" }}>F</span>
       </>
@@ -48,7 +59,7 @@ function SourceHandles({ data }: { data: WorkflowNodeData }) {
   if (nodeType === "Loop") {
     return (
       <Handle type="source" position={Position.Right} id="LoopDone"
-        className={HANDLE_CLS} style={{ borderColor: "#f59e0b" }} />
+        className={EXEC_HANDLE_CLS} style={{ borderColor: "#f59e0b" }} />
     );
   }
 
@@ -61,7 +72,7 @@ function SourceHandles({ data }: { data: WorkflowNodeData }) {
           return (
             <span key={caseName}>
               <Handle type="source" position={Position.Right} id={`SwitchCase:${caseName}`}
-                className={HANDLE_CLS} style={{ borderColor: "#10b981", top: `${pct}%` }} />
+                className={EXEC_HANDLE_CLS} style={{ borderColor: "#10b981", top: `${pct}%` }} />
               <span className="absolute right-5 text-[8px] text-[var(--text-muted)] whitespace-nowrap"
                 style={{ top: `${pct - 4}%` }}>{caseName}</span>
             </span>
@@ -72,7 +83,7 @@ function SourceHandles({ data }: { data: WorkflowNodeData }) {
           return (
             <span>
               <Handle type="source" position={Position.Right} id="SwitchDefault"
-                className={HANDLE_CLS} style={{ borderColor: "#666", top: `${pct}%` }} />
+                className={EXEC_HANDLE_CLS} style={{ borderColor: "#666", top: `${pct}%` }} />
               <span className="absolute right-5 text-[8px] text-[var(--text-muted)]"
                 style={{ top: `${pct - 4}%` }}>default</span>
             </span>
@@ -84,8 +95,38 @@ function SourceHandles({ data }: { data: WorkflowNodeData }) {
 
   return (
     <Handle type="source" position={Position.Right}
-      className={HANDLE_CLS} style={{ borderColor: "var(--accent-coral)" }}
+      className={EXEC_HANDLE_CLS} style={EXEC_STYLE}
       isConnectable={!data.hideSourceHandle} />
+  );
+}
+
+const DATA_PORT_CLS = "!h-2.5 !w-2.5 !rounded-full !border-0";
+
+/** Data port handles — renders colored dots for output fields or wired input refs. */
+function PortHandles({ items, type, position, idPrefix, sideOffset }: {
+  items: { key: string; color: string }[];
+  type: "source" | "target";
+  position: typeof Position.Left | typeof Position.Right;
+  idPrefix: string;
+  sideOffset: "left" | "right";
+}) {
+  if (items.length === 0) return null;
+  return (
+    <>
+      {items.map((item, i) => {
+        const pct = 30 + ((i + 1) / (items.length + 1)) * 60;
+        return (
+          <Handle
+            key={`${idPrefix}${item.key}`}
+            type={type}
+            position={position}
+            id={`${idPrefix}${item.key}`}
+            className={DATA_PORT_CLS}
+            style={{ top: `${pct}%`, backgroundColor: item.color, [sideOffset]: -10 }}
+          />
+        );
+      })}
+    </>
   );
 }
 
@@ -130,8 +171,8 @@ export const WorkflowNode = memo(function WorkflowNode({
       <Handle
         type="target"
         position={Position.Left}
-        className={HANDLE_CLS}
-        style={{ borderColor: "var(--accent-green)" }}
+        className={EXEC_HANDLE_CLS}
+        style={EXEC_STYLE}
       />
 
       {isActive && (
@@ -200,6 +241,19 @@ export const WorkflowNode = memo(function WorkflowNode({
       </div>
 
       <SourceHandles data={d} />
+      {d.outputFields && d.outputFields.length > 0 && (
+        <PortHandles
+          items={d.outputFields.map((f) => ({ key: f.name, color: typeColor(f.type) }))}
+          type="source" position={Position.Right} idPrefix="data-" sideOffset="right"
+        />
+      )}
+      {/* Visible input port dots — only for wired (connected) inputs */}
+      {d.wiredInputs && d.wiredInputs.length > 0 && (
+        <PortHandles
+          items={d.wiredInputs.map((w) => ({ key: w.key, color: typeColor(w.fieldType) }))}
+          type="target" position={Position.Left} idPrefix="data-input-" sideOffset="left"
+        />
+      )}
     </div>
   );
 });
