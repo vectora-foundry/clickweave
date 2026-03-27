@@ -33,30 +33,38 @@ describe("extractOutputRefs", () => {
 });
 
 describe("generateAutoId", () => {
-  it("generates first id when no existing nodes", () => {
-    expect(generateAutoId("FindText", [])).toBe("find_text_1");
+  it("generates first id when counters are empty", () => {
+    const counters: Record<string, number> = {};
+    const result = generateAutoId("FindText", counters);
+    expect(result.autoId).toBe("find_text_1");
+    expect(result.counter).toBe(1);
   });
 
-  it("increments counter based on existing auto_ids", () => {
-    expect(generateAutoId("FindText", ["find_text_1", "find_text_2"])).toBe("find_text_3");
+  it("increments counter from existing value", () => {
+    const counters: Record<string, number> = { find_text: 2 };
+    const result = generateAutoId("FindText", counters);
+    expect(result.autoId).toBe("find_text_3");
+    expect(result.counter).toBe(3);
   });
 
-  it("handles gaps in numbering", () => {
-    expect(generateAutoId("Click", ["click_1", "click_5"])).toBe("click_6");
+  it("does not reuse deleted IDs (monotonic)", () => {
+    // Counter was at 5, node was deleted, but counter stays at 5
+    const counters: Record<string, number> = { click: 5 };
+    const result = generateAutoId("Click", counters);
+    expect(result.autoId).toBe("click_6");
   });
 
-  it("ignores unrelated auto_ids", () => {
-    expect(generateAutoId("Click", ["find_text_1", "hover_3"])).toBe("click_1");
+  it("handles different types independently", () => {
+    const counters: Record<string, number> = { find_text: 2, click: 1 };
+    expect(generateAutoId("FindText", counters).autoId).toBe("find_text_3");
+    expect(generateAutoId("Click", counters).autoId).toBe("click_2");
+    expect(generateAutoId("Hover", counters).autoId).toBe("hover_1");
   });
 
-  it("handles undefined entries in existing ids", () => {
-    expect(generateAutoId("AiStep", [undefined, "ai_step_1", undefined])).toBe("ai_step_2");
-  });
-
-  it("handles mixed node types correctly", () => {
-    const existing = ["find_text_1", "click_1", "find_text_2", "click_2"];
-    expect(generateAutoId("FindText", existing)).toBe("find_text_3");
-    expect(generateAutoId("Click", existing)).toBe("click_3");
-    expect(generateAutoId("Hover", existing)).toBe("hover_1");
+  it("returns the base for counter map updates", () => {
+    const counters: Record<string, number> = {};
+    const result = generateAutoId("AiStep", counters);
+    expect(result.base).toBe("ai_step");
+    expect(result.counter).toBe(1);
   });
 });

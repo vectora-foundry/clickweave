@@ -297,18 +297,18 @@ pub fn full_output_schema(
 
 /// Add the fixup_auto_ids method to Workflow.
 impl crate::Workflow {
-    /// Fix up next_id_counters from existing auto_ids after deserialization.
-    /// Call this after loading a workflow from disk.
+    /// Rebuild next_id_counters from existing auto_ids.
+    /// Always scans all nodes to ensure counters reflect the actual state,
+    /// preventing duplicate auto_id assignment after patches or deletions.
     pub fn fixup_auto_ids(&mut self) {
-        if self.next_id_counters.is_empty() {
-            let ids: Vec<&str> = self
-                .nodes
-                .iter()
-                .filter(|n| !n.auto_id.is_empty())
-                .map(|n| n.auto_id.as_str())
-                .collect();
-            crate::auto_id::fixup_counters(&ids, &mut self.next_id_counters);
-        }
+        self.next_id_counters.clear();
+        let ids: Vec<&str> = self
+            .nodes
+            .iter()
+            .filter(|n| !n.auto_id.is_empty())
+            .map(|n| n.auto_id.as_str())
+            .collect();
+        crate::auto_id::fixup_counters(&ids, &mut self.next_id_counters);
     }
 }
 

@@ -88,22 +88,14 @@ const AUTO_ID_BASE: Record<string, string> = {
   AppDebugKitOp: "app_debug_kit_op",
 };
 
-/** Generate an auto_id for a new node, scanning existing auto_ids to pick the next counter.
- *  Returns the generated auto_id string. */
+/** Generate an auto_id for a new node using the workflow's counter map.
+ *  Returns [auto_id, updated_counter_value]. The counter map is monotonic —
+ *  deleted nodes don't release their IDs, preventing OutputRef retargeting. */
 export function generateAutoId(
   nodeTypeName: string,
-  existingAutoIds: (string | undefined)[],
-): string {
+  counters: Record<string, number>,
+): { autoId: string; base: string; counter: number } {
   const base = AUTO_ID_BASE[nodeTypeName] ?? nodeTypeName.toLowerCase().replace(/\s+/g, "_");
-  let maxCounter = 0;
-  const prefix = base + "_";
-  for (const id of existingAutoIds) {
-    if (id && id.startsWith(prefix)) {
-      const num = parseInt(id.slice(prefix.length), 10);
-      if (!isNaN(num) && num > maxCounter) {
-        maxCounter = num;
-      }
-    }
-  }
-  return `${base}_${maxCounter + 1}`;
+  const counter = (counters[base] ?? 0) + 1;
+  return { autoId: `${base}_${counter}`, base, counter };
 }

@@ -49,8 +49,9 @@ export function useWorkflowMutations(
       const offsetY = Math.floor(nodesLength / 4) * 150;
       setWorkflow((prev) => {
         const typeName = nodeTypeName(nodeType as unknown as Record<string, unknown>);
-        const existingAutoIds = prev.nodes.map((n) => n.auto_id);
-        const auto_id = generateAutoId(typeName, existingAutoIds);
+        const counters: Record<string, number> = { ...(prev.next_id_counters ?? {}) };
+        const { autoId, base, counter } = generateAutoId(typeName, counters);
+        counters[base] = counter;
         const node: Node = {
           id,
           node_type: nodeType,
@@ -63,15 +64,9 @@ export function useWorkflowMutations(
           trace_level: "Minimal",
           role: "Default" as const,
           expected_outcome: null,
-          auto_id,
+          auto_id: autoId,
         };
-        // Update next_id_counters so backend stays in sync
-        const underscoreIdx = auto_id.lastIndexOf("_");
-        const counterBase = auto_id.slice(0, underscoreIdx);
-        const counterNum = parseInt(auto_id.slice(underscoreIdx + 1), 10);
-        const updatedCounters: Record<string, number> = { ...(prev.next_id_counters ?? {}) };
-        updatedCounters[counterBase] = counterNum;
-        return { ...prev, nodes: [...prev.nodes, node], next_id_counters: updatedCounters };
+        return { ...prev, nodes: [...prev.nodes, node], next_id_counters: counters };
       });
       setSelectedNode(id);
     },
