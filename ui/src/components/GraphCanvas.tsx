@@ -6,6 +6,7 @@ import {
   SelectionMode,
   type Node as RFNode,
   type NodeTypes,
+  type EdgeTypes,
   MarkerType,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -15,9 +16,11 @@ import { useAppGrouping } from "../hooks/useAppGrouping";
 import { useUserGrouping } from "../hooks/useUserGrouping";
 import { useNodeSync } from "../hooks/useNodeSync";
 import { useEdgeSync } from "../hooks/useEdgeSync";
+import { useDataEdges } from "../hooks/useDataEdges";
 import { AppGroupNode } from "./AppGroupNode";
 import { LoopGroupNode } from "./LoopGroupNode";
 import { UserGroupNode } from "./UserGroupNode";
+import { DataEdge } from "./DataEdge";
 import { WorkflowNode } from "./WorkflowNode";
 import { GroupContextMenu, type GroupContextMenuItem } from "./GroupContextMenu";
 import { CreateGroupPopover } from "./CreateGroupPopover";
@@ -65,6 +68,11 @@ export function GraphCanvas({
 }: GraphCanvasProps) {
   const nodeTypes: NodeTypes = useMemo(
     () => ({ workflow: WorkflowNode, loopGroup: LoopGroupNode, appGroup: AppGroupNode, userGroup: UserGroupNode }),
+    [],
+  );
+
+  const edgeTypes: EdgeTypes = useMemo(
+    () => ({ dataEdge: DataEdge }),
     [],
   );
 
@@ -145,6 +153,8 @@ export function GraphCanvas({
     onRemoveExtraEdges,
     onConnect,
   });
+
+  const dataEdges = useDataEdges(workflow.nodes);
 
   const handlePaneClick = useCallback(() => {
     onSelectNode(null);
@@ -415,8 +425,9 @@ export function GraphCanvas({
     <div ref={wrapperRef} className="relative h-full w-full" data-graph-canvas-wrapper>
       <ReactFlow
         nodes={rfNodes}
-        edges={rfEdges}
+        edges={[...rfEdges, ...dataEdges]}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         onNodesChange={handleNodesChange}
         onEdgesChange={handleEdgesChange}
         onConnect={handleConnect}

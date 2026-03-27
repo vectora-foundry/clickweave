@@ -1,30 +1,5 @@
 import { typeColor } from "../../utils/typeColors";
-
-// A simple static lookup matching the Rust output_schema() registry
-const OUTPUT_SCHEMAS: Record<string, Array<{ name: string; type: string; description: string }>> = {
-  FindText: [
-    { name: "found", type: "Bool", description: "Whether any matches were found" },
-    { name: "count", type: "Number", description: "Number of matches found" },
-    { name: "text", type: "String", description: "Text of the first match" },
-    { name: "coordinates", type: "Object", description: "Coordinates of the first match" },
-  ],
-  FindImage: [
-    { name: "found", type: "Bool", description: "Whether any matches were found" },
-    { name: "count", type: "Number", description: "Number of matches found" },
-    { name: "coordinates", type: "Object", description: "Coordinates of the first match" },
-    { name: "confidence", type: "Number", description: "Confidence score" },
-  ],
-  FindApp: [
-    { name: "found", type: "Bool", description: "Whether the app is running" },
-    { name: "name", type: "String", description: "App name" },
-    { name: "pid", type: "Number", description: "Process ID" },
-  ],
-  TakeScreenshot: [{ name: "result", type: "String", description: "Screenshot data" }],
-  CdpWait: [{ name: "found", type: "Bool", description: "Whether text appeared" }],
-  AiStep: [{ name: "result", type: "String", description: "LLM response text" }],
-  McpToolCall: [{ name: "result", type: "Any", description: "Raw tool result" }],
-  AppDebugKitOp: [{ name: "result", type: "Any", description: "Raw tool result" }],
-};
+import { OUTPUT_SCHEMAS } from "../../utils/outputSchema";
 
 interface OutputsSectionProps {
   nodeTypeName: string;
