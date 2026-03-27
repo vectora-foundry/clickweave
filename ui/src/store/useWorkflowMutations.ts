@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import type { Edge, EdgeOutput, Node, NodeGroup, NodeType, Workflow } from "../bindings";
 import { edgeOutputsEqual, handleToEdgeOutput } from "../utils/edgeHandles";
 import { topologicalSortMembers } from "../utils/groupValidation";
+import { generateAutoId, nodeTypeName } from "../utils/outputSchema";
 
 /** Count effective members: direct nodes (not in any child subgroup) + child subgroups.
  *  A parent with only subgroup members but ≥2 subgroups stays alive. */
@@ -46,20 +47,26 @@ export function useWorkflowMutations(
       const id = crypto.randomUUID();
       const offsetX = (nodesLength % 4) * 250;
       const offsetY = Math.floor(nodesLength / 4) * 150;
-      const node: Node = {
-        id,
-        node_type: nodeType,
-        position: { x: 200 + offsetX, y: 150 + offsetY },
-        name: nodeType.type === "AiStep" ? "AI Step" : nodeType.type.replace(/([A-Z])/g, " $1").trim(),
-        enabled: true,
-        timeout_ms: null,
-        settle_ms: null,
-        retries: 0,
-        trace_level: "Minimal",
-        role: "Default" as const,
-        expected_outcome: null,
-      };
-      setWorkflow((prev) => ({ ...prev, nodes: [...prev.nodes, node] }));
+      setWorkflow((prev) => {
+        const typeName = nodeTypeName(nodeType as unknown as Record<string, unknown>);
+        const existingAutoIds = prev.nodes.map((n) => n.auto_id);
+        const auto_id = generateAutoId(typeName, existingAutoIds);
+        const node: Node = {
+          id,
+          node_type: nodeType,
+          position: { x: 200 + offsetX, y: 150 + offsetY },
+          name: nodeType.type === "AiStep" ? "AI Step" : nodeType.type.replace(/([A-Z])/g, " $1").trim(),
+          enabled: true,
+          timeout_ms: null,
+          settle_ms: null,
+          retries: 0,
+          trace_level: "Minimal",
+          role: "Default" as const,
+          expected_outcome: null,
+          auto_id,
+        };
+        return { ...prev, nodes: [...prev.nodes, node] };
+      });
       setSelectedNode(id);
     },
     [nodesLength, setWorkflow, setSelectedNode, pushHistory],

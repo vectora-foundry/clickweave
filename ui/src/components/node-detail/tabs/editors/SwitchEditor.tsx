@@ -54,13 +54,13 @@ export function SwitchEditor({ nodeType, onUpdate }: NodeEditorProps) {
           const newCase: SwitchCase = {
             name: `Case ${nt.cases.length + 1}`,
             condition: {
-              left: { type: "Variable" as const, name: "" },
+              left: { node: "", field: "" },
               operator: "Equals" as Operator,
               right: {
                 type: "Literal" as const,
                 value: { type: "Bool" as const, value: true },
               },
-            },
+            } as unknown as SwitchCase["condition"],
           };
           updateType({ cases: [...nt.cases, newCase] });
         }}

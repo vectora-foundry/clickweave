@@ -9,8 +9,8 @@ use super::{ExecutorError, ExecutorResult, WorkflowExecutor};
 use clickweave_core::AppKind;
 use clickweave_core::output_schema::NodeContext;
 use clickweave_core::{
-    CdpFillParams, CdpNavigateParams, CdpNewPageParams, CdpTypeParams, ClickParams, ClickTarget,
-    FocusMethod, FocusWindowParams, HoverParams, NodeRun, NodeType, ScreenshotMode,
+    AiStepParams, CdpFillParams, CdpNavigateParams, CdpNewPageParams, CdpTypeParams, ClickParams,
+    ClickTarget, FocusMethod, FocusWindowParams, HoverParams, NodeRun, NodeType, ScreenshotMode,
     TakeScreenshotParams, TypeTextParams, tool_mapping,
 };
 use clickweave_llm::ChatBackend;
@@ -241,6 +241,19 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 let r = p.url_ref.as_ref().expect("guarded by is_some");
                 Ok(Cow::Owned(NodeType::CdpNewPage(CdpNewPageParams {
                     url: coerce_to_string(&resolve_ref(ctx, r)?),
+                    ..p.clone()
+                })))
+            }
+            NodeType::AiStep(p) if p.prompt_ref.is_some() => {
+                let r = p.prompt_ref.as_ref().expect("guarded by is_some");
+                let val = resolve_ref(ctx, r)?;
+                let resolved_text = if p.prompt.is_empty() {
+                    coerce_to_string(&val)
+                } else {
+                    format!("{}\n\nContext: {}", p.prompt, coerce_to_string(&val))
+                };
+                Ok(Cow::Owned(NodeType::AiStep(AiStepParams {
+                    prompt: resolved_text,
                     ..p.clone()
                 })))
             }

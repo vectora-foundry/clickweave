@@ -56,8 +56,10 @@ pub fn open_project(path: String) -> Result<ProjectData, CommandError> {
     let content = std::fs::read_to_string(&file_path)
         .map_err(|e| CommandError::io(format!("Failed to read file: {}", e)))?;
 
-    let workflow: Workflow = serde_json::from_str(&content)
+    let mut workflow: Workflow = serde_json::from_str(&content)
         .map_err(|e| CommandError::validation(format!("Failed to parse workflow: {}", e)))?;
+
+    workflow.fixup_auto_ids();
 
     Ok(ProjectData { path, workflow })
 }

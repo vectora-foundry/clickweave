@@ -83,6 +83,15 @@ pub(crate) fn extract_result_variables(
                 for (key, value) in first {
                     set(format!("{}.{}", prefix, key), value.clone());
                 }
+                // Store a coordinates object for FindText/FindImage results
+                if let (Some(x), Some(y)) = (first.get("x"), first.get("y")) {
+                    if matches!(node_type, NodeType::FindText(_) | NodeType::FindImage(_)) {
+                        set(
+                            format!("{}.coordinates", prefix),
+                            serde_json::json!({"x": x, "y": y}),
+                        );
+                    }
+                }
             }
             // Typed alias for the full array based on node type
             if let Some(alias) = array_alias_for_node_type(node_type) {
@@ -163,6 +172,11 @@ mod tests {
         assert_eq!(ctx.get_variable("find_text.result"), Some(&result));
         // .matches typed alias for the full array
         assert_eq!(ctx.get_variable("find_text.matches"), Some(&result));
+        // .coordinates object from first match
+        assert_eq!(
+            ctx.get_variable("find_text.coordinates"),
+            Some(&serde_json::json!({"x": 100, "y": 200}))
+        );
         assert!(!vars.is_empty());
     }
 
@@ -176,6 +190,29 @@ mod tests {
         assert_eq!(ctx.get_variable("find_app.found"), Some(&Value::Bool(true)));
         // .apps typed alias
         assert_eq!(ctx.get_variable("find_app.apps"), Some(&result));
+    }
+
+    #[test]
+    fn extract_coordinates_for_find_image() {
+        let mut ctx = RuntimeContext::new();
+        let result = serde_json::json!([{"x": 50.5, "y": 75.0, "confidence": 0.95}]);
+        let node_type = NodeType::FindImage(clickweave_core::FindImageParams::default());
+        extract_result_variables(&mut ctx, "find_image", &result, &node_type);
+
+        assert_eq!(
+            ctx.get_variable("find_image.coordinates"),
+            Some(&serde_json::json!({"x": 50.5, "y": 75.0}))
+        );
+    }
+
+    #[test]
+    fn no_coordinates_for_find_app() {
+        let mut ctx = RuntimeContext::new();
+        let result = serde_json::json!([{"name": "Safari", "id": 1}]);
+        let node_type = NodeType::FindApp(clickweave_core::FindAppParams::default());
+        extract_result_variables(&mut ctx, "find_app", &result, &node_type);
+
+        assert!(ctx.get_variable("find_app.coordinates").is_none());
     }
 
     #[test]

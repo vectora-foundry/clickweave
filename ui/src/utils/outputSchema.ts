@@ -44,11 +44,66 @@ export interface ExtractedRef {
   ref: { node: string; field: string };
 }
 
-/** Extract all OutputRef fields from a NodeType's inner params. */
+/** Extract all OutputRef fields from a NodeType's inner params.
+ *  NodeType uses internally-tagged serde: the variant name is in the `type` field
+ *  and params are spread as sibling keys. */
 export function extractOutputRefs(nodeType: Record<string, unknown>): ExtractedRef[] {
-  const inner = Object.values(nodeType)[0] as Record<string, unknown> | undefined;
-  if (!inner) return [];
-  return Object.entries(inner)
+  return Object.entries(nodeType)
     .filter(([key, val]) => key.endsWith("_ref") && val != null)
     .map(([key, val]) => ({ key, ref: val as { node: string; field: string } }));
+}
+
+/** Map NodeType variant name to auto_id base string (mirrors Rust auto_id_base). */
+const AUTO_ID_BASE: Record<string, string> = {
+  FindText: "find_text",
+  FindImage: "find_image",
+  FindApp: "find_app",
+  TakeScreenshot: "take_screenshot",
+  Click: "click",
+  Hover: "hover",
+  Drag: "drag",
+  TypeText: "type_text",
+  PressKey: "press_key",
+  Scroll: "scroll",
+  FocusWindow: "focus_window",
+  LaunchApp: "launch_app",
+  QuitApp: "quit_app",
+  CdpClick: "cdp_click",
+  CdpHover: "cdp_hover",
+  CdpFill: "cdp_fill",
+  CdpType: "cdp_type",
+  CdpPressKey: "cdp_press_key",
+  CdpNavigate: "cdp_navigate",
+  CdpNewPage: "cdp_new_page",
+  CdpClosePage: "cdp_close_page",
+  CdpSelectPage: "cdp_select_page",
+  CdpWait: "cdp_wait",
+  CdpHandleDialog: "cdp_handle_dialog",
+  AiStep: "ai_step",
+  If: "if",
+  Switch: "switch",
+  Loop: "loop",
+  EndLoop: "end_loop",
+  McpToolCall: "mcp_tool_call",
+  AppDebugKitOp: "app_debug_kit_op",
+};
+
+/** Generate an auto_id for a new node, scanning existing auto_ids to pick the next counter.
+ *  Returns the generated auto_id string. */
+export function generateAutoId(
+  nodeTypeName: string,
+  existingAutoIds: (string | undefined)[],
+): string {
+  const base = AUTO_ID_BASE[nodeTypeName] ?? nodeTypeName.toLowerCase().replace(/\s+/g, "_");
+  let maxCounter = 0;
+  const prefix = base + "_";
+  for (const id of existingAutoIds) {
+    if (id && id.startsWith(prefix)) {
+      const num = parseInt(id.slice(prefix.length), 10);
+      if (!isNaN(num) && num > maxCounter) {
+        maxCounter = num;
+      }
+    }
+  }
+  return `${base}_${maxCounter + 1}`;
 }
