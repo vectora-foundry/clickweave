@@ -1,6 +1,9 @@
 use super::error::CommandError;
+use super::planner_session::{PlannerHandle, PlannerSession};
 use super::types::*;
 use clickweave_mcp::McpClient;
+use std::sync::Arc;
+use tauri::Manager;
 
 pub(crate) async fn fetch_mcp_tool_schemas() -> Result<Vec<serde_json::Value>, CommandError> {
     let mcp_binary =
@@ -13,33 +16,52 @@ pub(crate) async fn fetch_mcp_tool_schemas() -> Result<Vec<serde_json::Value>, C
     Ok(tools)
 }
 
+/// Spawn a long-lived MCP client for the planning session.
+async fn spawn_planning_mcp() -> Result<McpClient, CommandError> {
+    let mcp_binary =
+        crate::mcp_resolve::resolve_mcp_binary().map_err(|e| CommandError::mcp(format!("{e}")))?;
+    McpClient::spawn(&mcp_binary, &[])
+        .await
+        .map_err(|e| CommandError::mcp(format!("Failed to spawn MCP server: {e}")))
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn plan_workflow(
     app: tauri::AppHandle,
     request: PlanRequest,
 ) -> Result<PlanResponse, CommandError> {
-    let tools = fetch_mcp_tool_schemas().await?;
+    let mcp = spawn_planning_mcp().await?;
+    let workflow_tools = mcp.tools_as_openai();
+
+    let planner_handle = app.state::<Arc<std::sync::Mutex<PlannerHandle>>>();
+    let session = PlannerSession::new(mcp, app.clone(), Arc::clone(&planner_handle)).await;
+
     let planner_config = request.planner.into_llm_config(None);
+    let planner = clickweave_llm::LlmClient::new(planner_config);
 
     let chrome_profiles = super::chrome_profiles::get_store(&app).load_profiles();
-
     let profiles_ref = if chrome_profiles.len() > 1 {
         Some(chrome_profiles.as_slice())
     } else {
         None
     };
 
-    let result = clickweave_llm::planner::plan_workflow(
+    let result = clickweave_llm::planner::plan_workflow_with_tools(
+        &planner,
         &request.intent,
-        planner_config,
-        &tools,
+        &workflow_tools,
         request.allow_ai_transforms,
         request.allow_agent_steps,
         profiles_ref,
+        &session,
     )
-    .await
-    .map_err(|e| CommandError::llm(format!("Planning failed: {}", e)))?;
+    .await;
+
+    // Always clean up (disconnect CDP, etc.)
+    session.cleanup().await;
+
+    let result = result.map_err(|e| CommandError::llm(format!("Planning failed: {}", e)))?;
 
     Ok(PlanResponse {
         workflow: result.workflow,

@@ -149,7 +149,7 @@ fn main() {
         .manage(Mutex::new(ExecutorHandle::default()))
         .manage(Mutex::new(AssistantHandle::default()))
         .manage(Mutex::new(WalkthroughHandle::default()))
-        .manage(Mutex::new(PlannerHandle::default()))
+        .manage(std::sync::Arc::new(Mutex::new(PlannerHandle::default())))
         .invoke_handler(builder.invoke_handler())
         .menu(menu::build_menu)
         .setup(move |app| {

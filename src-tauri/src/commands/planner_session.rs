@@ -164,7 +164,7 @@ pub async fn planner_confirmation_respond(
     app: tauri::AppHandle,
     approved: bool,
 ) -> Result<(), CommandError> {
-    let handle = app.state::<std::sync::Mutex<PlannerHandle>>();
+    let handle = app.state::<std::sync::Arc<std::sync::Mutex<PlannerHandle>>>();
     let tx = {
         let mut guard = handle.lock().unwrap();
         guard.confirmation_tx.take()
