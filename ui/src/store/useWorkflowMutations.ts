@@ -65,7 +65,13 @@ export function useWorkflowMutations(
           expected_outcome: null,
           auto_id,
         };
-        return { ...prev, nodes: [...prev.nodes, node] };
+        // Update next_id_counters so backend stays in sync
+        const underscoreIdx = auto_id.lastIndexOf("_");
+        const counterBase = auto_id.slice(0, underscoreIdx);
+        const counterNum = parseInt(auto_id.slice(underscoreIdx + 1), 10);
+        const updatedCounters: Record<string, number> = { ...(prev.next_id_counters ?? {}) };
+        updatedCounters[counterBase] = counterNum;
+        return { ...prev, nodes: [...prev.nodes, node], next_id_counters: updatedCounters };
       });
       setSelectedNode(id);
     },

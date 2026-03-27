@@ -51,16 +51,18 @@ pub fn assign_auto_id(node_type: &NodeType, counters: &mut HashMap<String, u32>)
     format!("{}_{}", base, counter)
 }
 
-/// Scan existing nodes' auto_ids and set counters to max(existing) + 1.
+/// Scan existing nodes' auto_ids and set counters to max(existing).
 /// Called on workflow load when `next_id_counters` is empty/missing.
+/// Stores the highest seen number so `assign_auto_id` (which increments
+/// before returning) produces the correct next value.
 pub fn fixup_counters(existing_auto_ids: &[&str], counters: &mut HashMap<String, u32>) {
     for auto_id in existing_auto_ids {
         if let Some(pos) = auto_id.rfind('_') {
             let base = &auto_id[..pos];
             if let Ok(num) = auto_id[pos + 1..].parse::<u32>() {
                 let entry = counters.entry(base.to_string()).or_insert(0);
-                if num >= *entry {
-                    *entry = num + 1;
+                if num > *entry {
+                    *entry = num;
                 }
             }
         }
@@ -87,8 +89,18 @@ mod tests {
     fn fixup_counters_from_existing() {
         let mut counters = HashMap::new();
         fixup_counters(&["find_text_1", "find_text_3", "click_2"], &mut counters);
-        assert_eq!(counters["find_text"], 4);
-        assert_eq!(counters["click"], 3);
+        // Stores max seen (3 and 2), so next assign_auto_id produces 4 and 3
+        assert_eq!(counters["find_text"], 3);
+        assert_eq!(counters["click"], 2);
+    }
+
+    #[test]
+    fn fixup_then_assign_produces_correct_next() {
+        let mut counters = HashMap::new();
+        fixup_counters(&["find_text_1", "find_text_3"], &mut counters);
+        let ft = NodeType::FindText(FindTextParams::default());
+        // Should produce find_text_4 (counter was 3, increments to 4)
+        assert_eq!(assign_auto_id(&ft, &mut counters), "find_text_4");
     }
 
     #[test]
