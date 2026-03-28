@@ -103,7 +103,7 @@ pub const MAX_REPAIR_ATTEMPTS: usize = 3;
 pub const MAX_BLOCKED_REJECTIONS: usize = 3;
 
 /// Execute a planning tool and return a tool_result message.
-async fn execute_tool<E: PlannerToolExecutor>(
+pub(crate) async fn execute_tool<E: PlannerToolExecutor>(
     executor: &E,
     name: &str,
     args: Value,

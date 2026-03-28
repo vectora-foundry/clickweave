@@ -8,6 +8,7 @@ pub mod tool_use;
 
 pub mod assistant;
 pub mod conversation;
+pub mod conversation_loop;
 pub mod summarize;
 
 #[cfg(test)]
@@ -991,6 +992,7 @@ fn translate_node_refs(id_map: &HashMap<String, String>, node: &mut Node) {
 // ── Re-exports ──────────────────────────────────────────────────
 
 pub use assistant::{AssistantResult, assistant_chat, assistant_chat_with_backend};
+pub use conversation_loop::{ConversationOutput, ToolCallRecord, conversation_loop};
 pub use patch::{patch_workflow, patch_workflow_with_backend};
 pub use plan::{plan_workflow, plan_workflow_with_backend, plan_workflow_with_tools};
 pub use tool_use::{PlannerToolExecutor, ToolPermission};
