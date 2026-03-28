@@ -156,7 +156,44 @@ pub struct ToolCall {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionCall {
     pub name: String,
+    /// Tool call arguments as a JSON string.
+    /// Some providers (e.g. vLLM/llama.cpp) return this as an object instead
+    /// of a string — the custom deserializer handles both.
+    #[serde(deserialize_with = "deserialize_arguments")]
     pub arguments: String,
+}
+
+fn deserialize_arguments<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct ArgsVisitor;
+
+    impl<'de> de::Visitor<'de> for ArgsVisitor {
+        type Value = String;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a JSON string or object for tool call arguments")
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<String, E> {
+            Ok(v.to_string())
+        }
+
+        fn visit_string<E: de::Error>(self, v: String) -> Result<String, E> {
+            Ok(v)
+        }
+
+        fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<String, M::Error> {
+            let obj = serde_json::Value::deserialize(de::value::MapAccessDeserializer::new(map))
+                .map_err(de::Error::custom)?;
+            serde_json::to_string(&obj).map_err(de::Error::custom)
+        }
+    }
+
+    deserializer.deserialize_any(ArgsVisitor)
 }
 
 #[derive(Debug, Deserialize)]

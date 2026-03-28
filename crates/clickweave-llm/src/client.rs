@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tracing::{debug, info, trace};
+use tracing::{debug, error, info, trace};
 
 /// Seam for LLM interaction, allowing mock backends in tests.
 pub trait ChatBackend: Send + Sync {
@@ -201,26 +201,47 @@ impl ChatBackend for LlmClient {
             req_builder = req_builder.bearer_auth(api_key);
         }
 
-        let response = req_builder
-            .send()
-            .await
-            .context("Failed to send request to LLM")?;
+        let response = match req_builder.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                error!(url = %url, error = %e, "LLM request failed to send");
+                return Err(e).context("Failed to send request to LLM");
+            }
+        };
 
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            anyhow::bail!("LLM request failed ({}): {}", status, error_text);
+            error!(url = %url, status = %status, body = %error_text, "LLM returned error");
+            // Try to extract a clean message from the JSON error body
+            let user_msg = serde_json::from_str::<Value>(&error_text)
+                .ok()
+                .and_then(|v| v["error"]["message"].as_str().map(String::from))
+                .unwrap_or_else(|| format!("LLM request failed ({})", status));
+            anyhow::bail!("{}", user_msg);
         }
 
-        let response_text = response
-            .text()
-            .await
-            .context("Failed to read LLM response body")?;
+        let response_text = match response.text().await {
+            Ok(t) => t,
+            Err(e) => {
+                error!(url = %url, error = %e, "Failed to read LLM response body");
+                return Err(e).context("Failed to read LLM response body");
+            }
+        };
 
         trace!(response_body = %response_text, "LLM response body");
 
-        let chat_response: ChatResponse =
-            serde_json::from_str(&response_text).context("Failed to parse LLM response")?;
+        let chat_response: ChatResponse = match serde_json::from_str(&response_text) {
+            Ok(r) => r,
+            Err(e) => {
+                error!(
+                    error = %e,
+                    body = %&response_text[..response_text.len().min(500)],
+                    "Failed to parse LLM response"
+                );
+                return Err(e).context("Failed to parse LLM response");
+            }
+        };
 
         self.log_usage(&chat_response);
 

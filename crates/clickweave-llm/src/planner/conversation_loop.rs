@@ -173,6 +173,13 @@ pub async fn conversation_loop<T, E: PlannerToolExecutor>(
                 // Execute tool and record result (shared by Allowed and approved Confirmation)
                 let msg = execute_tool(executor, tool_name, args.clone(), &tc.id).await;
                 let result_text = msg.text_content().map(|s| s.to_string());
+                if let Some(ref text) = result_text {
+                    debug!(
+                        tool = %tool_name,
+                        result = %&text[..text.len().min(500)],
+                        "Planning tool result"
+                    );
+                }
                 messages.push(msg);
                 tool_call_log.push(ToolCallRecord {
                     tool_name: tool_name.to_string(),

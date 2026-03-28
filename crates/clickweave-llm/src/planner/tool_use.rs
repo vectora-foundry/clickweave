@@ -100,6 +100,10 @@ pub fn is_planning_only_tool(name: &str) -> bool {
 pub const MAX_PLANNING_TOOL_CALLS: usize = 15;
 pub const MAX_BLOCKED_REJECTIONS: usize = 3;
 
+/// Maximum characters for a tool result before truncation.
+/// Keeps the result within ~3K tokens to avoid blowing context windows.
+const MAX_TOOL_RESULT_CHARS: usize = 12_000;
+
 /// Execute a planning tool and return a tool_result message.
 pub(crate) async fn execute_tool<E: PlannerToolExecutor>(
     executor: &E,
@@ -108,7 +112,25 @@ pub(crate) async fn execute_tool<E: PlannerToolExecutor>(
     tc_id: &str,
 ) -> Message {
     match executor.call_tool(name, args).await {
-        Ok(result) => Message::tool_result(tc_id, &result),
+        Ok(result) => {
+            if result.len() > MAX_TOOL_RESULT_CHARS {
+                let truncated = &result[..result
+                    .char_indices()
+                    .nth(MAX_TOOL_RESULT_CHARS)
+                    .map(|(i, _)| i)
+                    .unwrap_or(result.len())];
+                Message::tool_result(
+                    tc_id,
+                    format!(
+                        "{}\n\n[truncated — result was {} chars]",
+                        truncated,
+                        result.len()
+                    ),
+                )
+            } else {
+                Message::tool_result(tc_id, &result)
+            }
+        }
         Err(e) => Message::tool_result(tc_id, format!("Tool call failed: {}", e)),
     }
 }

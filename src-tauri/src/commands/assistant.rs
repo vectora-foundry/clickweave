@@ -95,7 +95,11 @@ pub async fn assistant_chat(
             Some(&*session_for_task),
         )
         .await
-        .map_err(|e| CommandError::llm(format!("Assistant chat failed: {}", e)))?;
+        .map_err(|e| {
+            // Use the root cause for a cleaner user-facing message
+            let root = e.root_cause().to_string();
+            CommandError::llm(root)
+        })?;
 
         // Write chat trace (non-fatal)
         let trace_base = match &request.project_path {

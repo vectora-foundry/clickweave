@@ -37,7 +37,7 @@ pub async fn patch_workflow(request: PatchRequest) -> Result<WorkflowPatch, Comm
         request.allow_agent_steps,
     )
     .await
-    .map_err(|e| CommandError::llm(format!("Patching failed: {}", e)))?;
+    .map_err(|e| CommandError::llm(e.root_cause().to_string()))?;
 
     Ok(WorkflowPatch {
         added_nodes: result.added_nodes,
