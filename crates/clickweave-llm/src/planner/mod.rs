@@ -3,7 +3,6 @@ mod parse;
 mod patch;
 mod plan;
 mod prompt;
-mod repair;
 pub mod tool_use;
 
 pub mod assistant;

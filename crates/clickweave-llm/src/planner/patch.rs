@@ -1,6 +1,6 @@
+use super::conversation_loop::{NoExecutor, conversation_loop};
 use super::parse::extract_json;
 use super::prompt::patcher_system_prompt;
-use super::repair::chat_with_repair;
 use super::{PatchResult, PatcherOutput};
 use crate::{ChatBackend, LlmClient, LlmConfig, Message};
 use anyhow::{Context, Result};
@@ -51,15 +51,24 @@ pub async fn patch_workflow_with_backend(
 
     let messages = vec![Message::system(&system), Message::user(&user_msg)];
 
-    let patcher_output = chat_with_repair(backend, "Patcher", messages, |content| {
-        let json_str = extract_json(content);
-        serde_json::from_str::<PatcherOutput>(json_str)
-            .context("Failed to parse patcher output as JSON")
-    })
+    let output = conversation_loop(
+        backend,
+        messages,
+        None::<&NoExecutor>,
+        |content| {
+            let json_str = extract_json(content);
+            serde_json::from_str::<PatcherOutput>(json_str)
+                .context("Failed to parse patcher output as JSON")
+        },
+        None::<fn(&PatcherOutput) -> Result<()>>,
+        1, // 1 repair attempt
+        None,
+        None,
+    )
     .await?;
 
     let patch = super::build_patch_from_output(
-        &patcher_output,
+        &output.result,
         workflow,
         mcp_tools_openai,
         allow_ai_transforms,
