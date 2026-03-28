@@ -1,6 +1,7 @@
 use super::helpers::*;
 use crate::planner::assistant::assistant_chat_with_backend;
 use crate::planner::conversation::ConversationSession;
+use crate::planner::conversation_loop::NoExecutor;
 use crate::planner::prompt::assistant_system_prompt;
 use crate::planner::summarize::summarize_overflow;
 use crate::planner::*;
@@ -95,6 +96,7 @@ async fn test_assistant_chat_plans_empty_workflow() {
         0,
         None,
         None,
+        None::<&NoExecutor>,
     )
     .await
     .unwrap();
@@ -132,6 +134,7 @@ async fn test_assistant_chat_patches_existing_workflow() {
         0,
         None,
         None,
+        None::<&NoExecutor>,
     )
     .await
     .unwrap();
@@ -167,6 +170,7 @@ async fn test_assistant_chat_conversational_response() {
         0,
         None,
         None,
+        None::<&NoExecutor>,
     )
     .await
     .unwrap();
@@ -247,6 +251,7 @@ async fn test_assistant_patches_with_add_nodes_and_add_edges() {
         0,
         None,
         None,
+        None::<&NoExecutor>,
     )
     .await
     .unwrap();
@@ -301,6 +306,7 @@ async fn test_assistant_plans_graph_format_for_empty_workflow() {
         0,
         None,
         None,
+        None::<&NoExecutor>,
     )
     .await
     .unwrap();
@@ -357,6 +363,7 @@ async fn test_assistant_retry_succeeds_on_second_attempt() {
         3,
         None,
         None,
+        None::<&NoExecutor>,
     )
     .await
     .unwrap();
@@ -409,6 +416,7 @@ async fn test_assistant_repair_callback_is_invoked() {
         3,
         Some(&on_repair),
         None,
+        None::<&NoExecutor>,
     )
     .await
     .unwrap();
@@ -450,6 +458,7 @@ async fn test_assistant_retry_exhausted_returns_last_patch() {
         3, // value 3 → validate + 2 retries = 3 LLM calls max
         None,
         None,
+        None::<&NoExecutor>,
     )
     .await
     .unwrap();
@@ -491,6 +500,7 @@ async fn test_assistant_no_validation_when_max_is_zero() {
         0, // 0 = skip validation entirely
         None,
         None,
+        None::<&NoExecutor>,
     )
     .await
     .unwrap();
@@ -531,6 +541,7 @@ async fn test_assistant_validate_only_no_retry_when_max_is_one() {
         1, // 1 = validate only, no retry
         None,
         None,
+        None::<&NoExecutor>,
     )
     .await
     .unwrap();
@@ -562,6 +573,7 @@ async fn test_assistant_valid_patch_no_retry_needed() {
         3, // retries enabled, but not needed
         None,
         None,
+        None::<&NoExecutor>,
     )
     .await
     .unwrap();

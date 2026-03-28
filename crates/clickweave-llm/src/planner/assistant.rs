@@ -1,8 +1,9 @@
-use super::conversation::{ChatRole, ConversationSession};
+use super::conversation::{ChatEntry, ChatRole, ConversationSession};
+use super::conversation_loop::conversation_loop;
 use super::parse::extract_json;
 use super::prompt::assistant_system_prompt;
-use super::repair::chat_with_repair_and_validate;
 use super::summarize::summarize_overflow;
+use super::tool_use::PlannerToolExecutor;
 use super::{PatchResult, PatcherOutput, PlannerGraphOutput, PlannerOutput};
 use crate::{ChatBackend, LlmClient, LlmConfig, Message};
 use anyhow::Result;
@@ -21,11 +22,15 @@ pub struct AssistantResult {
     pub new_summary: Option<String>,
     /// Warnings from step processing.
     pub warnings: Vec<String>,
+    /// Tool call/result entries made during this turn.
+    pub tool_entries: Vec<ChatEntry>,
+    /// Raw prompt token count from the LLM response.
+    pub prompt_tokens: Option<u32>,
 }
 
 /// Chat with the assistant, creating an LlmClient from config.
 #[allow(clippy::too_many_arguments)]
-pub async fn assistant_chat(
+pub async fn assistant_chat<E: PlannerToolExecutor>(
     workflow: &Workflow,
     user_message: &str,
     session: &ConversationSession,
@@ -37,6 +42,7 @@ pub async fn assistant_chat(
     max_repair_attempts: usize,
     on_repair_attempt: Option<&(dyn Fn(usize, usize) + Send + Sync)>,
     chrome_profiles: Option<&[ChromeProfile]>,
+    executor: Option<&E>,
 ) -> Result<AssistantResult> {
     let client = LlmClient::new(config);
     assistant_chat_with_backend(
@@ -51,13 +57,14 @@ pub async fn assistant_chat(
         max_repair_attempts,
         on_repair_attempt,
         chrome_profiles,
+        executor,
     )
     .await
 }
 
 /// Chat with the assistant using a given ChatBackend (for testability).
 #[allow(clippy::too_many_arguments)]
-pub async fn assistant_chat_with_backend(
+pub async fn assistant_chat_with_backend<E: PlannerToolExecutor>(
     backend: &impl ChatBackend,
     workflow: &Workflow,
     user_message: &str,
@@ -69,6 +76,7 @@ pub async fn assistant_chat_with_backend(
     max_repair_attempts: usize,
     on_repair_attempt: Option<&(dyn Fn(usize, usize) + Send + Sync)>,
     chrome_profiles: Option<&[ChromeProfile]>,
+    executor: Option<&E>,
 ) -> Result<AssistantResult> {
     // 1. Optionally summarize overflow (non-fatal on error)
     let new_summary = if session.needs_summarization(None) {
@@ -88,6 +96,7 @@ pub async fn assistant_chat_with_backend(
     };
 
     // 2. Build system prompt
+    let has_planning_tools = executor.map_or(false, |e| e.has_planning_tools());
     let system = assistant_system_prompt(
         workflow,
         mcp_tools,
@@ -95,7 +104,7 @@ pub async fn assistant_chat_with_backend(
         allow_agent_steps,
         run_context_text,
         chrome_profiles,
-        false, // has_planning_tools — updated in Task 4 when executor is wired in
+        has_planning_tools,
     );
 
     // 3. Assemble messages: system + optional summary context + recent window + new user message
@@ -126,28 +135,17 @@ pub async fn assistant_chat_with_backend(
     // Add the new user message
     messages.push(Message::user(user_message));
 
-    // 4. Call the LLM with validation retry loop
+    // 4. Call the LLM via the unified conversation_loop
     //
     // When max_repair_attempts == 0 we skip validation entirely (1 LLM call, no-op validate).
     // Otherwise max_repair_attempts is the total number of LLM calls allowed.
     let wf = workflow.clone();
-    let validate_patch = {
-        let wf = wf.clone();
-        move |result: &(String, Option<PatchResult>, Vec<String>)| -> Result<()> {
-            if let Some(ref p) = result.1 {
-                let candidate = merge_patch_into_workflow(&wf, p);
-                validate_workflow(&candidate)?;
-            }
-            Ok(())
-        }
-    };
 
     let effective_max = if max_repair_attempts == 0 {
         1
     } else {
         max_repair_attempts
     };
-    let noop_validate = |_: &(String, Option<PatchResult>, Vec<String>)| -> Result<()> { Ok(()) };
 
     // Build closures for parse and on_repair
     let process = {
@@ -165,46 +163,71 @@ pub async fn assistant_chat_with_backend(
         }
     };
 
-    let on_repair_fn = |attempt: usize, max: usize| {
-        if let Some(cb) = &on_repair_attempt {
-            cb(attempt, max);
-        }
-    };
-
     static REPAIR_HINT: &str = "\
         Reminder: EndLoop must have exactly 1 outgoing edge that points BACK to its paired Loop node \
         (regular edge, no output label). The last body step flows into EndLoop, and EndLoop flows back to Loop. \
         EndLoop never has a forward edge to post-loop nodes — Loop's LoopDone edge handles the exit path.";
 
-    let (message, patch, warnings) = if max_repair_attempts == 0 {
-        chat_with_repair_and_validate(
-            backend,
-            "Assistant",
-            messages,
-            effective_max,
-            process,
-            noop_validate,
-            on_repair_fn,
-            None,
-        )
-        .await?
+    let validate_closure: Option<
+        Box<dyn FnMut(&(String, Option<PatchResult>, Vec<String>)) -> Result<()> + Send>,
+    > = if max_repair_attempts > 0 {
+        let wf = wf.clone();
+        Some(Box::new(
+            move |result: &(String, Option<PatchResult>, Vec<String>)| -> Result<()> {
+                if let Some(ref p) = result.1 {
+                    let candidate = merge_patch_into_workflow(&wf, p);
+                    validate_workflow(&candidate)?;
+                }
+                Ok(())
+            },
+        ))
     } else {
-        chat_with_repair_and_validate(
-            backend,
-            "Assistant",
-            messages,
-            effective_max,
-            process,
-            validate_patch,
-            on_repair_fn,
-            Some(REPAIR_HINT),
-        )
-        .await?
+        None
     };
+
+    let repair_hint = if max_repair_attempts > 0 {
+        Some(REPAIR_HINT)
+    } else {
+        None
+    };
+
+    let output = conversation_loop(
+        backend,
+        messages,
+        executor,
+        process,
+        validate_closure,
+        effective_max.saturating_sub(1), // max_repairs (attempts beyond the first)
+        on_repair_attempt,
+        repair_hint,
+    )
+    .await?;
+
+    let (message, patch, warnings) = output.result;
+
+    // Build tool-call entries for the conversation history
+    let mut tool_entries: Vec<ChatEntry> = Vec::new();
+    for tc in &output.tool_calls {
+        tool_entries.push(ChatEntry::tool_call(
+            &tc.tool_name,
+            &tc.tool_call_id,
+            &serde_json::to_string(&tc.args).unwrap_or_default(),
+        ));
+        if let Some(ref result) = tc.result {
+            tool_entries.push(ChatEntry::tool_result(
+                &tc.tool_call_id,
+                &tc.tool_name,
+                result,
+            ));
+        }
+    }
+
+    let prompt_tokens = output.usage.as_ref().map(|u| u.prompt_tokens);
 
     info!(
         has_patch = patch.is_some(),
         warnings = warnings.len(),
+        tool_calls = output.tool_calls.len(),
         "Assistant response processed"
     );
 
@@ -213,6 +236,8 @@ pub async fn assistant_chat_with_backend(
         patch,
         new_summary,
         warnings,
+        tool_entries,
+        prompt_tokens,
     })
 }
 

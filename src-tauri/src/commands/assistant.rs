@@ -70,6 +70,7 @@ pub async fn assistant_chat(
             (request.max_repair_attempts as usize).min(10),
             Some(&on_repair),
             profiles_ref,
+            None::<&clickweave_llm::planner::conversation_loop::NoExecutor>,
         )
         .await
         .map_err(|e| CommandError::llm(format!("Assistant chat failed: {}", e)))?;
