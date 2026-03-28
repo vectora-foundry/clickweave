@@ -216,6 +216,75 @@ pub fn narrow_by_parent(
     }
 }
 
+/// Result of searching interactive elements in a CDP snapshot.
+#[derive(Debug, Clone)]
+pub struct InteractiveSearchResult {
+    /// Interactive element matches.
+    pub matches: Vec<SnapshotMatch>,
+    /// Best-effort count of non-interactive matches omitted from results.
+    /// Note: `find_elements_in_snapshot()` excludes leaf text nodes
+    /// (StaticText, InlineTextBox) before matching, and returns only exact
+    /// matches when they exist, so this count may understate the true total
+    /// of non-interactive elements containing the query text.
+    pub omitted_count: usize,
+}
+
+/// Interactive ARIA roles returned by `search_interactive_elements`.
+/// Non-interactive roles (heading, StaticText, generic, etc.) are counted but omitted.
+const INTERACTIVE_ROLES: &[&str] = &[
+    "button",
+    "checkbox",
+    "combobox",
+    "link",
+    "menuitem",
+    "menuitemcheckbox",
+    "menuitemradio",
+    "option",
+    "radio",
+    "searchbox",
+    "slider",
+    "spinbutton",
+    "switch",
+    "tab",
+    "textbox",
+    "treeitem",
+];
+
+/// Search a CDP snapshot for interactive elements matching a query.
+///
+/// Unlike `find_elements_in_snapshot()`, this function:
+/// - Only returns elements with interactive ARIA roles
+/// - Supports an optional role filter
+/// - Caps results at `max_results`
+/// - Reports how many non-interactive matches were omitted
+pub fn search_interactive_elements(
+    snapshot_text: &str,
+    query: &str,
+    role_filter: Option<&str>,
+    max_results: usize,
+) -> InteractiveSearchResult {
+    let all_matches = find_elements_in_snapshot(snapshot_text, query);
+
+    let (mut interactive, non_interactive): (Vec<_>, Vec<_>) =
+        all_matches.into_iter().partition(|m| {
+            INTERACTIVE_ROLES
+                .iter()
+                .any(|r| r.eq_ignore_ascii_case(&m.role))
+        });
+
+    if let Some(role) = role_filter {
+        interactive.retain(|m| m.role.eq_ignore_ascii_case(role));
+    }
+
+    let omitted_count = non_interactive.len();
+    interactive.truncate(max_results);
+
+    InteractiveSearchResult {
+        matches: interactive,
+        omitted_count,
+    }
+}
+
 /// Extract `url=` attribute value from a snapshot line.
 ///
 /// For `uid=1_0 link "Home" url="https://example.com"` → `Some("https://example.com")`.
@@ -230,8 +299,87 @@ fn extract_url(line: &str) -> Option<String> {
 mod tests {
     use super::{
         extract_label, extract_url, find_elements_in_snapshot, narrow_by_parent, narrow_matches,
-        parse_line_uid,
+        parse_line_uid, search_interactive_elements,
     };
+
+    const SNAPSHOT_MIXED_ROLES: &str = r##"
+uid=1_0 RootWebArea "App" url="https://app.example.com/"
+  uid=1_1 navigation "Sidebar"
+    uid=1_2 button "Settings"
+    uid=1_3 link "Home"
+    uid=1_4 heading "Menu"
+      uid=1_5 StaticText "Menu"
+  uid=1_6 main "Content"
+    uid=1_7 textbox "Search"
+    uid=1_8 button "Submit"
+    uid=1_9 generic "container"
+    uid=1_10 checkbox "Remember me"
+    uid=1_11 heading "Welcome"
+      uid=1_12 StaticText "Welcome"
+"##;
+
+    #[test]
+    fn search_interactive_returns_only_interactive_roles() {
+        let result = search_interactive_elements(SNAPSHOT_MIXED_ROLES, "Menu", None, 10);
+        // "Menu" matches heading uid=1_4 (non-interactive) — should be omitted.
+        assert!(
+            result.matches.is_empty(),
+            "heading should not be in interactive results"
+        );
+        assert_eq!(result.omitted_count, 1);
+    }
+
+    #[test]
+    fn search_interactive_returns_buttons_and_links() {
+        let result = search_interactive_elements(SNAPSHOT_MIXED_ROLES, "Settings", None, 10);
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].uid, "1_2");
+        assert_eq!(result.matches[0].role, "button");
+        assert_eq!(result.omitted_count, 0);
+    }
+
+    #[test]
+    fn search_interactive_role_filter() {
+        let result = search_interactive_elements(SNAPSHOT_MIXED_ROLES, "button", None, 10);
+        let all_uids: Vec<&str> = result.matches.iter().map(|m| m.uid.as_str()).collect();
+        assert!(all_uids.contains(&"1_2"), "Settings button should match");
+        assert!(all_uids.contains(&"1_8"), "Submit button should match");
+
+        let filtered =
+            search_interactive_elements(SNAPSHOT_MIXED_ROLES, "button", Some("button"), 10);
+        assert!(filtered.matches.iter().all(|m| m.role == "button"));
+    }
+
+    #[test]
+    fn search_interactive_max_results() {
+        let result = search_interactive_elements(SNAPSHOT_MIXED_ROLES, "e", None, 2);
+        assert!(result.matches.len() <= 2, "should cap at max_results");
+    }
+
+    #[test]
+    fn search_interactive_empty_snapshot() {
+        let result = search_interactive_elements("", "anything", None, 10);
+        assert!(result.matches.is_empty());
+        assert_eq!(result.omitted_count, 0);
+    }
+
+    #[test]
+    fn search_interactive_no_matches() {
+        let result = search_interactive_elements(SNAPSHOT_MIXED_ROLES, "Nonexistent", None, 10);
+        assert!(result.matches.is_empty());
+        assert_eq!(result.omitted_count, 0);
+    }
+
+    #[test]
+    fn search_interactive_includes_checkbox_and_textbox() {
+        let result = search_interactive_elements(SNAPSHOT_MIXED_ROLES, "Remember", None, 10);
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].role, "checkbox");
+
+        let result = search_interactive_elements(SNAPSHOT_MIXED_ROLES, "Search", None, 10);
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].role, "textbox");
+    }
 
     // Real chrome-devtools-mcp format (unquoted UIDs).
     const SNAPSHOT: &str = r##"
