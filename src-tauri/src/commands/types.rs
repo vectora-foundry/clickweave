@@ -244,6 +244,7 @@ pub struct PlannerConfirmationPayload {
 // --- Resolution event payloads ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResolutionProposedPayload {
     pub node_id: String,
     pub node_name: String,

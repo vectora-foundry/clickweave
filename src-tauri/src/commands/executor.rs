@@ -266,10 +266,10 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
         }
 
         // Dismiss any pending resolution approval
+        let _ = cleanup_handle.emit("executor://resolution_dismissed", ());
         {
             let res_state = cleanup_handle.state::<Mutex<ResolutionState>>();
             let mut guard = res_state.lock().unwrap();
-            // Drop the sender without sending — the listener will see the channel close
             guard.response_tx.take();
         }
 
@@ -304,6 +304,7 @@ pub async fn stop_workflow(app: tauri::AppHandle) -> Result<(), CommandError> {
     }
 
     // Dismiss any pending resolution approval
+    let _ = app.emit("executor://resolution_dismissed", ());
     {
         let res_state = app.state::<Mutex<ResolutionState>>();
         let mut guard = res_state.lock().unwrap();

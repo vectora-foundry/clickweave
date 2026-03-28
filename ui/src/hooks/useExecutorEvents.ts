@@ -103,9 +103,6 @@ export function useExecutorEvents() {
         // For now, just dismiss the resolution proposal.
         useStore.setState({ resolutionProposal: null });
       }),
-      listen("executor://node_cancelled", () => {
-        // Clear active node visual (similar to node_completed)
-      }),
       listen<{ status: string }>("walkthrough://state", (e) => {
         useStore.getState().setWalkthroughStatus(
           e.payload.status as WalkthroughStatus,

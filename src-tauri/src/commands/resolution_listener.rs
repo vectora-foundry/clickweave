@@ -59,7 +59,7 @@ async fn handle_query(
     // --- Retrieve the LLM config and conversation from session handle ---
     let session_handle = app.state::<tokio::sync::Mutex<AssistantSessionHandle>>();
 
-    let (config, conversation, workflow) = {
+    let (config, conversation, resolution_wf) = {
         let guard = session_handle.lock().await;
         let config = match &guard.assistant_config {
             Some(c) => c.clone(),
@@ -69,21 +69,9 @@ async fn handle_query(
             }
         };
         let conversation = guard.conversation.clone();
-        // Reconstruct workflow from conversation context is not possible;
-        // we build the query message with context from the RuntimeQuery.
-        (config, conversation, None::<Workflow>)
+        let wf = guard.resolution_workflow.clone().unwrap_or_default();
+        (config, conversation, wf)
     };
-
-    // We need the workflow to build the resolution prompt. The conversation
-    // session doesn't carry a snapshot, so for now we build a minimal one
-    // from the query node context. The resolution_chat_with_backend will use
-    // its own system prompt with the workflow summary.
-    //
-    // Since we don't have the full workflow in the session handle,
-    // we skip the full LLM call and emit a query-only event.
-    // The real fix is to store the workflow in the session handle,
-    // but for this initial implementation we use a stub workflow.
-    let _ = workflow;
 
     // Build the query message for the LLM (may include screenshot)
     let query_text = format!(
@@ -131,18 +119,8 @@ async fn handle_query(
         },
     );
 
-    // Call the resolution LLM
-    // We need the workflow for the system prompt. Retrieve it from the
-    // session handle where run_workflow stores it before spawning.
-    let workflow_for_prompt = {
-        let guard = session_handle.lock().await;
-        guard.resolution_workflow.clone()
-    };
-
-    let Some(workflow) = workflow_for_prompt else {
-        warn!("No workflow available for resolution prompt");
-        return RuntimeResolution::Rejected;
-    };
+    // Use the workflow snapshot stored during run_workflow for the system prompt.
+    let workflow = resolution_wf;
 
     let client = LlmClient::new(config);
     let result = resolution_chat_with_backend(
@@ -303,10 +281,26 @@ async fn handle_query(
         },
     );
 
+    // Update the resolution workflow snapshot so subsequent queries
+    // see the patched graph (not the stale pre-patch version).
+    {
+        let mut guard = session_handle.lock().await;
+        if let Some(ref wf) = guard.resolution_workflow {
+            guard.resolution_workflow = Some(clickweave_core::merge_patch_into_workflow(
+                wf,
+                &compact.added_nodes,
+                &compact.removed_node_ids,
+                &compact.updated_nodes,
+                &compact.added_edges,
+                &compact.removed_edges,
+            ));
+        }
+    }
+
     // Determine the resolution variant.
     // If there are only updates (no adds/removes), it's Updated.
     // If there are removals, it's Removed.
-    // For now, we don't implement Rewind (insert_before splice logic).
+    // TODO: implement insert_before splice logic to return Rewind for added nodes.
     if !compact.removed_node_ids.is_empty() {
         RuntimeResolution::Removed(compact)
     } else {

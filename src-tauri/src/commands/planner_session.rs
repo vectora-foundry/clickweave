@@ -430,8 +430,6 @@ pub struct AssistantSessionHandle {
     pub(crate) abort: Option<tokio::task::AbortHandle>,
     pub(crate) execution_locked: bool,
     pub(crate) session_in_use: bool,
-    /// Monotonically increasing counter to detect stale session returns.
-    pub(crate) session_generation: u64,
     /// Snapshot of the workflow at execution start, used by the resolution listener
     /// to build the resolution system prompt.
     pub(crate) resolution_workflow: Option<clickweave_core::Workflow>,

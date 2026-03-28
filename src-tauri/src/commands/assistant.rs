@@ -24,6 +24,20 @@ fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
+fn patch_summary_from_ui(
+    patch: &WorkflowPatch,
+) -> clickweave_llm::planner::conversation::PatchSummary {
+    clickweave_llm::planner::conversation::PatchSummary {
+        added: patch.added_nodes.len() as u32,
+        removed: patch.removed_node_ids.len() as u32,
+        updated: patch.updated_nodes.len() as u32,
+        added_names: patch.added_nodes.iter().map(|n| n.name.clone()).collect(),
+        removed_names: Vec::new(),
+        updated_names: patch.updated_nodes.iter().map(|n| n.name.clone()).collect(),
+        description: None,
+    }
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn assistant_chat(
@@ -233,18 +247,7 @@ pub async fn assistant_chat(
             guard.conversation.messages.push(tc.clone());
         }
         // Append assistant message
-        let patch_summary =
-            patch
-                .as_ref()
-                .map(|p| clickweave_llm::planner::conversation::PatchSummary {
-                    added: p.added_nodes.len() as u32,
-                    removed: p.removed_node_ids.len() as u32,
-                    updated: p.updated_nodes.len() as u32,
-                    added_names: p.added_nodes.iter().map(|n| n.name.clone()).collect(),
-                    removed_names: Vec::new(),
-                    updated_names: p.updated_nodes.iter().map(|n| n.name.clone()).collect(),
-                    description: None,
-                });
+        let patch_summary = patch.as_ref().map(|p| patch_summary_from_ui(p));
         guard
             .conversation
             .push_assistant(message.clone(), patch_summary);
@@ -268,18 +271,7 @@ pub async fn assistant_chat(
     }
 
     // Emit assistant response event
-    let patch_summary =
-        patch
-            .as_ref()
-            .map(|p| clickweave_llm::planner::conversation::PatchSummary {
-                added: p.added_nodes.len() as u32,
-                removed: p.removed_node_ids.len() as u32,
-                updated: p.updated_nodes.len() as u32,
-                added_names: p.added_nodes.iter().map(|n| n.name.clone()).collect(),
-                removed_names: Vec::new(),
-                updated_names: p.updated_nodes.iter().map(|n| n.name.clone()).collect(),
-                description: None,
-            });
+    let patch_summary = patch.as_ref().map(|p| patch_summary_from_ui(p));
     let _ = app.emit(
         "assistant://message",
         AssistantMessagePayload {
