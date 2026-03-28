@@ -105,44 +105,38 @@ impl ConversationSession {
         });
     }
 
+    /// Index where the recent window starts, counting only User/Assistant entries.
+    fn window_start_index(&self, window_size: Option<usize>) -> usize {
+        let target = window_size.unwrap_or(DEFAULT_WINDOW_SIZE) * 2;
+        let mut count = 0;
+        for (i, entry) in self.messages.iter().enumerate().rev() {
+            if matches!(entry.role, ChatRole::User | ChatRole::Assistant) {
+                count += 1;
+                if count >= target {
+                    return i;
+                }
+            }
+        }
+        0 // fewer entries than the window — start from the beginning
+    }
+
     /// Messages in the recent window (last N user+assistant exchanges).
     ///
     /// Counts only User and Assistant entries when determining the window
     /// boundary, so interleaved ToolCall/ToolResult entries don't shrink
     /// the effective window.
     pub fn recent_window(&self, window_size: Option<usize>) -> &[ChatEntry] {
-        let target = window_size.unwrap_or(DEFAULT_WINDOW_SIZE) * 2;
-        let mut count = 0;
-        let mut start = self.messages.len();
-        for (i, entry) in self.messages.iter().enumerate().rev() {
-            if matches!(entry.role, ChatRole::User | ChatRole::Assistant) {
-                count += 1;
-                if count >= target {
-                    start = i;
-                    break;
-                }
-            }
-        }
-        if count < target {
-            &self.messages[..]
-        } else {
-            &self.messages[start..]
-        }
+        let start = self.window_start_index(window_size);
+        &self.messages[start..]
     }
 
     /// Messages that have aged out of the window but haven't been summarized yet.
     pub fn unsummarized_overflow(&self, window_size: Option<usize>) -> &[ChatEntry] {
-        let n = window_size.unwrap_or(DEFAULT_WINDOW_SIZE) * 2;
-        let len = self.messages.len();
-        if len <= n {
-            &[]
+        let window_start = self.window_start_index(window_size);
+        if window_start > self.summary_cutoff {
+            &self.messages[self.summary_cutoff..window_start]
         } else {
-            let window_start = len - n;
-            if window_start > self.summary_cutoff {
-                &self.messages[self.summary_cutoff..window_start]
-            } else {
-                &[]
-            }
+            &[]
         }
     }
 
@@ -153,9 +147,7 @@ impl ConversationSession {
 
     /// Compute the summary_cutoff value for the current message count.
     pub fn current_cutoff(&self, window_size: Option<usize>) -> usize {
-        let n = window_size.unwrap_or(DEFAULT_WINDOW_SIZE) * 2;
-        let len = self.messages.len();
-        if len > n { len - n } else { len }
+        self.window_start_index(window_size)
     }
 
     /// Update the summary after summarization.
