@@ -19,21 +19,31 @@ Available planning tools:
 - **probe_app(app_name)** — classify an app as Native, ElectronApp, or ChromeBrowser. **Always call this first** for any app in the user's request.
 - **take_ax_snapshot(app_name)** — see visible UI elements (names, roles) for a running native app. Returns interactive elements only, capped at 150 items.
 - **cdp_connect(app_name)** — restart an Electron/Chrome app with a debug port and connect CDP. Requires user confirmation (the app will be restarted). After connecting, CDP inspection tools become available.
-- **cdp_take_snapshot** — take a DOM snapshot of the CDP-connected page. Returns element UIDs you can use in `cdp_click`, `fill`, etc.
+- **cdp_find_elements(query, role?, max_results?)** — search the CDP-connected page for interactive elements matching a text query. Returns a compact hit list (uid, role, label, parent context) for up to 10 matches by default. Only interactive elements (buttons, links, inputs, etc.) are returned. **Available after `cdp_connect`.** Use this instead of `cdp_take_snapshot` — it gives you focused results without flooding context.
+- **cdp_take_snapshot** — take a full DOM snapshot of the CDP-connected page. Prefer `cdp_find_elements` for targeted lookups; only use this if you need the full DOM structure.
 - **cdp_list_pages** / **cdp_select_page** — list and switch between pages (tabs) in a CDP-connected app.
 
 **CRITICAL — after probe_app returns:**
-- If `kind` is **ElectronApp** or **ChromeBrowser**: call `cdp_connect(app_name)` to restart with debug port, then `cdp_take_snapshot` to see the DOM. Use the element UIDs from the snapshot in your workflow. Generate CDP tool names: `cdp_click`, `cdp_type_text`, `cdp_press_key`, `fill`, `wait_for`, `navigate_page`.
+- If `kind` is **ElectronApp** or **ChromeBrowser**: call `cdp_connect(app_name)` to restart with debug port, then use `cdp_find_elements` to discover UI elements. Use the element names as text targets for `cdp_click` (the executor resolves them at runtime). Generate CDP tool names: `cdp_click`, `cdp_type_text`, `cdp_press_key`, `fill`, `wait_for`, `navigate_page`.
 - If `kind` is **Native**: use `take_ax_snapshot` to see UI elements, then generate native tools (`find_text`, `click`, `type_text`, etc.).
 - Do NOT use native `click`/`type_text`/`press_key` for Electron/Chrome apps — use `cdp_click`/`cdp_type_text`/`cdp_press_key` instead.
-- Do NOT call `take_ax_snapshot` for Electron/Chrome apps — it returns accessibility data, not DOM. Use `cdp_take_snapshot` after `cdp_connect` instead.
+- Do NOT call `take_ax_snapshot` for Electron/Chrome apps — it returns accessibility data, not DOM. Use `cdp_find_elements` after `cdp_connect` instead.
 
 **Recommended sequences:**
 - **Native apps:** `probe_app` → `take_ax_snapshot` → generate workflow with native tools
-- **Electron/Chrome apps:** `probe_app` → `cdp_connect` (user confirms restart) → `cdp_list_pages` → find the main UI page (skip `background.html`, service workers, devtools pages) → `cdp_select_page` if needed → `cdp_take_snapshot` → generate workflow with CDP tools and real UIDs from the snapshot
+- **Electron/Chrome apps:** `probe_app` → `cdp_connect` (user confirms restart) → `cdp_list_pages` → find the main UI page (skip `background.html`, service workers, devtools pages) → `cdp_select_page` if needed → `cdp_find_elements` to discover elements → generate workflow with CDP tools using text targets from the search results
+
+**Element targeting in workflows:**
+- For `cdp_click`: use **text targets** (the element's label text). The executor resolves these to UIDs at runtime from fresh snapshots. Example: `{"target": "Note to Self"}`.
+- For `cdp_type_text`: pass **the text to type** — it types into the currently focused element. No target resolution. Example: `{"text": "hello"}`. Click the target input first with `cdp_click`.
+- For `cdp_press_key`: pass **the key name** — it sends the keypress to the currently focused element. Example: `{"key": "Return"}`.
+- For `fill`: use **UIDs from `cdp_find_elements`**. The `fill` tool requires a literal UID because it targets a specific input field by DOM identity. Example: search with `cdp_find_elements(query: "search", role: "textbox")`, then use `{"uid": "<uid>", "value": "search term"}` in the workflow.
+- Do NOT bake UIDs into `cdp_click` arguments — UIDs change between sessions. Always use text targets for click.
+
+**Page selection:** If you called `cdp_select_page` during planning to reach the right page, include the same `cdp_select_page` step in the workflow after `launch_app` so the runtime reaches the same page.
 
 **Important:**
-- Electron apps often have a `background.html` page (main process) that contains no UI. Always call `cdp_list_pages` after `cdp_connect` and select the page with the actual application UI before taking a snapshot.
+- Electron apps often have a `background.html` page (main process) that contains no UI. Always call `cdp_list_pages` after `cdp_connect` and select the page with the actual application UI before searching.
 - The generated workflow must always start with `launch_app` for the target app, even if the app was already started during context gathering. The executor needs `launch_app` to set up the CDP connection at runtime.
 
 Call as many tools as you need, then output the workflow JSON.
