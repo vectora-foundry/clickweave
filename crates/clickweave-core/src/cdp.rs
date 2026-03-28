@@ -34,6 +34,21 @@ pub struct SnapshotMatch {
 /// uid=1_1 link "Friends"
 /// ```
 pub fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<SnapshotMatch> {
+    let (exact, substring) = find_matches_split(snapshot_text, target);
+    // Prefer exact label matches; fall back to substring matches.
+    if exact.is_empty() { substring } else { exact }
+}
+
+/// Core parsing: scan a CDP snapshot for elements matching `target`,
+/// returning exact-label matches and substring matches separately.
+///
+/// Callers that need both sets (e.g. `search_interactive_elements`) use
+/// this directly instead of `find_elements_in_snapshot` which collapses
+/// them with an exact-preference rule.
+fn find_matches_split(
+    snapshot_text: &str,
+    target: &str,
+) -> (Vec<SnapshotMatch>, Vec<SnapshotMatch>) {
     let target_lower = target.to_lowercase();
     let mut exact = Vec::new();
     let mut substring = Vec::new();
@@ -47,10 +62,8 @@ pub fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<Snaps
             continue;
         };
 
-        // Compute indent level (number of leading spaces).
         let indent = line.len() - line.trim_start().len();
 
-        // Pop stack entries at same or deeper level to find the parent.
         while let Some(top) = parent_stack.last() {
             if top.0 >= indent {
                 parent_stack.pop();
@@ -67,7 +80,6 @@ pub fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<Snaps
 
         let label = extract_label(line);
 
-        // Push this element onto the stack so deeper children pop correctly.
         let label_for_stack = if label == line.trim() {
             None
         } else {
@@ -85,7 +97,6 @@ pub fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<Snaps
             None
         };
         if let Some(is_exact) = is_match {
-            // Clone parent context only for actual matches (not every line).
             let (parent_role, parent_name) = parent_stack
                 .iter()
                 .rev()
@@ -108,8 +119,7 @@ pub fn find_elements_in_snapshot(snapshot_text: &str, target: &str) -> Vec<Snaps
             }
         }
     }
-    // Prefer exact label matches; fall back to substring matches.
-    if exact.is_empty() { substring } else { exact }
+    (exact, substring)
 }
 
 /// Parse a snapshot line to extract its UID, role, and whether it's a leaf text node.
@@ -257,24 +267,47 @@ const INTERACTIVE_ROLES: &[&str] = &[
 /// - Supports an optional role filter
 /// - Caps results at `max_results`
 /// - Reports how many non-interactive matches were omitted
+///
+/// Uses `find_matches_split` directly so the interactive-role filter
+/// is applied before the exact/substring preference. This avoids a
+/// false-negative when an exact-match non-interactive element (e.g. a
+/// heading "Settings") would shadow a substring-match interactive one
+/// (e.g. a button "Open Settings").
 pub fn search_interactive_elements(
     snapshot_text: &str,
     query: &str,
     role_filter: Option<&str>,
     max_results: usize,
 ) -> InteractiveSearchResult {
-    let mut matches = find_elements_in_snapshot(snapshot_text, query);
+    let (exact, substring) = find_matches_split(snapshot_text, query);
 
-    let mut omitted_count = 0;
-    matches.retain(|m| {
-        let dominated_interactive = INTERACTIVE_ROLES
+    let is_interactive = |m: &SnapshotMatch| {
+        INTERACTIVE_ROLES
             .iter()
-            .any(|r| r.eq_ignore_ascii_case(&m.role));
-        if !dominated_interactive {
+            .any(|r| r.eq_ignore_ascii_case(&m.role))
+    };
+
+    // Partition exact matches into interactive and non-interactive.
+    let mut omitted_count = 0;
+    let mut matches: Vec<SnapshotMatch> = Vec::new();
+    for m in exact {
+        if is_interactive(&m) {
+            matches.push(m);
+        } else {
             omitted_count += 1;
         }
-        dominated_interactive
-    });
+    }
+
+    // If exact matches produced no interactive results, try substring matches.
+    if matches.is_empty() {
+        for m in substring {
+            if is_interactive(&m) {
+                matches.push(m);
+            } else {
+                omitted_count += 1;
+            }
+        }
+    }
 
     if let Some(role) = role_filter {
         matches.retain(|m| m.role.eq_ignore_ascii_case(role));
@@ -371,6 +404,28 @@ uid=1_0 RootWebArea "App" url="https://app.example.com/"
         let result = search_interactive_elements(SNAPSHOT_MIXED_ROLES, "Nonexistent", None, 10);
         assert!(result.matches.is_empty());
         assert_eq!(result.omitted_count, 0);
+    }
+
+    #[test]
+    fn search_interactive_falls_back_to_substring_when_exact_is_non_interactive() {
+        // "Settings" exactly matches heading uid=1_4 (non-interactive) and
+        // substring-matches button uid=1_2 "Settings" via the line containing
+        // "button" + "Settings". But the button label is also "Settings" (exact),
+        // so both match exactly. Let's use a snapshot where the exact match is
+        // only non-interactive but a substring match is interactive.
+        let snapshot = r##"
+uid=1_0 RootWebArea "App"
+  uid=1_1 heading "Settings"
+  uid=1_2 button "Open Settings"
+"##;
+        let result = search_interactive_elements(snapshot, "Settings", None, 10);
+        // Without the fallback, only heading "Settings" (exact) would be returned
+        // and filtered out, leaving no results. With the fallback, button "Open
+        // Settings" (substring) should be found.
+        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.matches[0].uid, "1_2");
+        assert_eq!(result.matches[0].role, "button");
+        assert_eq!(result.omitted_count, 1); // the heading
     }
 
     #[test]
