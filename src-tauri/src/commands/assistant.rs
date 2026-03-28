@@ -160,16 +160,22 @@ pub async fn assistant_chat(
         ))),
     };
 
-    // Return session to handle. Unwrap the Arc — we hold the only strong ref
-    // since the spawned task's clone was dropped when the task completed.
+    // Return session to handle, or clean up if the task was cancelled.
     {
         let mut guard = session_handle_state.lock().await;
         guard.abort = None;
-        if let Ok(session) = Arc::try_unwrap(session) {
-            guard.return_session(session);
+        match Arc::try_unwrap(session) {
+            Ok(session) => guard.return_session(session),
+            Err(arc_session) => {
+                // Task was cancelled — can't unwrap Arc yet because the aborted
+                // task may still briefly hold a ref. Run cleanup via &self (works
+                // through Arc) to clear PlannerHandle.session_id so the next turn
+                // can create a fresh session.
+                tokio::spawn(async move {
+                    arc_session.cleanup().await;
+                });
+            }
         }
-        // If try_unwrap fails, the task was cancelled and still holds a ref.
-        // The session is lost — next turn will create a new one.
     }
 
     result
