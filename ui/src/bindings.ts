@@ -452,8 +452,6 @@ export type PatchRequest = { workflow: Workflow; user_prompt: string; planner: E
  * Compact summary of what a patch did (for conversation context, not the full patch).
  */
 export type PatchSummary = { added: number; removed: number; updated: number; added_names?: string[]; removed_names?: string[]; updated_names?: string[]; description?: string | null }
-export type PlanRequest = { intent: string; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean }
-export type PlanResponse = { workflow: Workflow; warnings: string[] }
 export type Position = { x: number; y: number }
 export type PressKeyParams = { key: string; modifiers: string[]; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type ProjectData = { path: string; workflow: Workflow }
