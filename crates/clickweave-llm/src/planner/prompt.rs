@@ -36,7 +36,7 @@ Available planning tools:
 **Element targeting in workflows:**
 - For `cdp_click`: use **text targets** (the element's label text). The executor resolves these to UIDs at runtime from fresh snapshots. Example: `{"target": "Note to Self"}`.
 - For `cdp_type_text`: pass **the text to type** — it types into the currently focused element. No target resolution. Example: `{"text": "hello"}`. Click the target input first with `cdp_click`.
-- For `cdp_press_key`: pass **the key name** — it sends the keypress to the currently focused element. Example: `{"key": "Return"}`.
+- For `cdp_press_key`: pass **the key name** — it sends the keypress to the currently focused element. Example: `{"key": "Enter"}`. Use DOM key names: `Enter` (not `Return`), `Tab`, `Escape`, `ArrowUp`, `ArrowDown`, `Backspace`, `Delete`, or single characters.
 - For `fill`: use **UIDs from `cdp_find_elements`**. The `fill` tool requires a literal UID because it targets a specific input field by DOM identity. Example: search with `cdp_find_elements(query: "search", role: "textbox")`, then use `{"uid": "<uid>", "value": "search term"}` in the workflow.
 - Do NOT bake UIDs into `cdp_click` arguments — UIDs change between sessions. Always use text targets for click.
 

@@ -150,7 +150,7 @@ Signal is an Electron app (probe_app returns `kind: "ElectronApp"`), so use CDP 
     {"step_type": "Tool", "tool_name": "cdp_click", "arguments": {"target": "Note to Self"}, "name": "Click Note to Self"},
     {"step_type": "Tool", "tool_name": "cdp_click", "arguments": {"target": "message input"}, "name": "Focus message input"},
     {"step_type": "Tool", "tool_name": "cdp_type_text", "arguments": {"text": "hello"}, "name": "Type hello"},
-    {"step_type": "Tool", "tool_name": "cdp_press_key", "arguments": {"key": "Return"}, "name": "Press Enter"}
+    {"step_type": "Tool", "tool_name": "cdp_press_key", "arguments": {"key": "Enter"}, "name": "Press Enter"}
   ]
 }
 ```
