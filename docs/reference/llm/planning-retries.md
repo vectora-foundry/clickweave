@@ -241,11 +241,25 @@ Both `assistant_chat` and `assistant_chat_with_backend` accept an `on_repair_att
 4. If patch and validation enabled: merge + validate + retry loop (fires `on_repair_attempt` callback on each retry)
 5. Return assistant text, optional patch, warnings, optional summary update
 
+## Resolution Pipeline (`resolution_chat_with_backend`)
+
+Used by the Tauri resolution listener when element/target resolution fails at runtime.
+
+1. Build system prompt via `resolution_system_prompt()` — restricted patch grammar (update/insert/remove)
+2. Include summary context + recent conversation window WITH tool results (unlike assistant which skips them)
+3. Append the resolution query message (includes element inventory, may include screenshot)
+4. Single LLM call — no planning tools, no conversation loop
+5. Parse response to extract patch
+6. Return to listener for user approval before applying
+
+The conversation is backend-owned (`AssistantSessionHandle.conversation`), not passed from the frontend.
+
 ## Key Files
 
 | File | Role |
 |------|------|
 | `crates/clickweave-llm/src/planner/prompt.rs` | prompt builders (planner, patcher, assistant); builds step type catalog and substitutes into template |
+| `crates/clickweave-llm/src/planner/resolution.rs` | `resolution_system_prompt()` — restricted patch grammar for runtime fixes |
 | `crates/clickweave-llm/prompts/planner.md` | planner prompt template (Markdown with `{{tool_list}}` and `{{step_types}}` placeholders); compiled in via `include_str!`, overridable at runtime |
 | `crates/clickweave-llm/src/client.rs` | AI-step runtime prompt (`workflow_system_prompt`, `build_step_prompt`) |
 | `crates/clickweave-llm/src/planner/repair.rs` | one-shot repair retry wrapper |

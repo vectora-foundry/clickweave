@@ -127,6 +127,14 @@ UI
        - passed => emit executor://supervision_passed
        - failed => emit executor://supervision_paused, wait for user command
        - user sends supervision_respond (retry / skip / abort)
+     - [Test mode] element/target resolution failure => runtime resolution callback
+       - executor sends RuntimeQuery via channel to Tauri resolution listener
+       - listener calls resolution_chat_with_backend with planning conversation context
+       - emits executor://resolution_proposed to frontend (PatchReviewDialog)
+       - user sends resolution_respond (approve / reject)
+       - Updated => apply patch to workflow, retry node
+       - Rewind => apply patch, jump to inserted node
+       - Rejected => fall through to normal error
   -> persist DecisionCache to decisions.json (Run mode replays cached decisions)
   -> emit executor://* events to UI
 ```
@@ -142,8 +150,9 @@ src-tauri/src/commands/
 ├── mod.rs                    # Re-exports all public commands and handles
 ├── types.rs                  # IPC request/response payloads, shared helpers (resolve_storage, project_dir)
 ├── planner.rs                # plan_workflow, patch_workflow, fetch_mcp_tool_schemas
-├── assistant.rs              # assistant_chat, cancel_assistant_chat (AssistantHandle with AbortHandle)
+├── assistant.rs              # assistant_chat, cancel_assistant_chat, get_assistant_session_id, rewind_conversation
 ├── executor.rs               # run_workflow, stop_workflow, supervision_respond (ExecutorHandle with cancel token + command channel)
+├── resolution_listener.rs    # Resolution listener task, resolution_respond command, ResolutionState
 ├── project.rs                # open/save/validate, node_type_defaults, import_asset, pick_*_file, conversation I/O, ping
 ├── runs.rs                   # list_runs, load_run_events, read_artifact_base64
 ├── walkthrough.rs            # start/pause/resume/stop/cancel_walkthrough, get/apply/seed walkthrough, detect_cdp_apps, validate_app_path
@@ -153,13 +162,14 @@ src-tauri/src/commands/
 
 ### Managed State
 
-Three `Mutex`-wrapped handles are registered as Tauri managed state:
+Handles registered as Tauri managed state:
 
 | Handle | State | Purpose |
 |--------|-------|---------|
-| `ExecutorHandle` | `cancel_token: Option<CancellationToken>`, `cmd_tx: Option<Sender<ExecutorCommand>>`, `task_handle: Option<JoinHandle<()>>` | Cancels the executor task via token (graceful) then abort (forceful); `cmd_tx` sends `Resume`/`Skip`/`Abort` commands |
-| `AssistantHandle` | `Option<AbortHandle>` | Cancels in-flight assistant LLM call |
+| `ExecutorHandle` | `cancel_token`, `cmd_tx`, `task_handle`, `listener_cancel_token` | Cancels executor + resolution listener via tokens; `cmd_tx` sends `Resume`/`Skip`/`Abort` commands |
+| `AssistantSessionHandle` | `session`, `conversation`, `assistant_config`, `abort`, `execution_locked`, `session_in_use`, `resolution_workflow` | Owns the assistant conversation backend, PlannerSession lifecycle, and execution lock state |
 | `WalkthroughHandle` | `session`, `session_dir`, `storage`, `event_tap`, `processing_task`, `cancel_tx` | Manages walkthrough recording session lifecycle, event capture, and cancellation |
+| `ResolutionState` | `response_tx: Option<oneshot::Sender<bool>>` | Holds the oneshot channel for user approval/rejection of resolution patches |
 
 ### Command Summary
 
@@ -169,6 +179,9 @@ Three `Mutex`-wrapped handles are registered as Tauri managed state:
 | `patch_workflow` | `planner.rs` | Generate workflow patch |
 | `assistant_chat` | `assistant.rs` | Conversational assistant + optional patch |
 | `cancel_assistant_chat` | `assistant.rs` | Cancel in-flight assistant request |
+| `get_assistant_session_id` | `assistant.rs` | Get current session ID (if exists) |
+| `rewind_conversation` | `assistant.rs` | Truncate conversation to given index |
+| `resolution_respond` | `resolution_listener.rs` | Approve/reject a pending resolution patch |
 | `run_workflow` | `executor.rs` | Execute workflow |
 | `stop_workflow` | `executor.rs` | Stop active execution |
 | `supervision_respond` | `executor.rs` | Send supervision action (`retry`/`skip`/`abort`) to paused executor |
@@ -207,6 +220,12 @@ Emitted from `src-tauri/src/commands/executor.rs` and `src-tauri/src/commands/as
 | `executor://checks_completed` | `NodeVerdict[]` |
 | `executor://supervision_passed` | `{ node_id: string, node_name: string, summary: string }` |
 | `executor://supervision_paused` | `{ node_id: string, node_name: string, finding: string, screenshot: string? }` |
+| `executor://node_cancelled` | `{ node_id: string }` |
+| `executor://resolution_proposed` | `{ node_id: string, node_name: string, reason: string, patch: WorkflowPatch, screenshot: string? }` |
+| `executor://resolution_dismissed` | `()` |
+| `executor://patch_applied` | `{ patch: WorkflowPatch }` |
+| `assistant://message` | `{ session_id: string, entry: ChatEntry }` |
+| `assistant://session_started` | `{ session_id: string }` |
 | `assistant://repairing` | `[attempt: number, max: number]` |
 | `walkthrough://state` | `{ status: WalkthroughStatus }` |
 | `walkthrough://event` | `{ event: WalkthroughEvent }` |

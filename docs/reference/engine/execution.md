@@ -23,6 +23,9 @@ Execution starts at Tauri command `run_workflow` (`src-tauri/src/commands/execut
 | `verdict_vlm` | `Option<LlmClient>` | Dedicated VLM for screenshot verification with low max_tokens and thinking disabled |
 | `cdp_connected_app` | `Option<String>` | The app currently connected via CDP (one connection at a time) |
 | `cancel_token` | `CancellationToken` | Graceful cancellation signal (replaces the removed `ExecutorCommand::Stop`) |
+| `resolution_tx` | `Option<mpsc::Sender<RuntimeQuery>>` | Channel to send resolution queries to Tauri listener (Test mode only) |
+| `completed_node_ids` | `Vec<Uuid>` | Node IDs completed in this run, included in resolution queries for patch validation |
+| `rejected_resolutions` | `HashSet<(Uuid, String)>` | Rejected (node_id, target) pairs to skip on retry |
 
 High-level flow in `run()`:
 
@@ -48,6 +51,24 @@ Main state machine (in `executor/run_loop.rs`):
 5. For execution nodes, run with retries
 6. If node has `role == Verification`: run `evaluate_verification()` inline (fail-fast — a failed verdict breaks the walk immediately)
 7. If Test mode and not inside a loop: run `verify_step` supervision check
+8. If node execution fails with `ElementResolution`, `ClickTarget`, or `Cdp` error in Test mode: attempt runtime resolution callback (see below)
+
+## Runtime Resolution Callback
+
+When element/target resolution fails in Test mode and a `resolution_tx` channel is available, the executor:
+
+1. Takes a screenshot and builds an element inventory from the error
+2. Sends a `RuntimeQuery` to the Tauri resolution listener via the mpsc channel
+3. The listener calls `resolution_chat_with_backend` with the planning conversation context
+4. If the LLM proposes a patch, emits `executor://resolution_proposed` to the frontend
+5. Waits for user approval via `resolution_respond` command
+6. Returns one of:
+   - `RuntimeResolution::Updated(patch)` — apply patch, cancel current node, re-enter same node
+   - `RuntimeResolution::Rewind { patch, first_node_id }` — apply patch, cancel current node, jump to inserted node
+   - `RuntimeResolution::Removed(patch)` — apply patch, cancel current node, follow updated edges
+   - `RuntimeResolution::Rejected` — record in `rejected_resolutions`, fall through to normal error
+
+Error variants: `ExecutorError::Rewind(Uuid)` propagates through the supervision loop. `RunStatus::Cancelled` and `ExecutorEvent::NodeCancelled` are used when a resolution cancels the current node attempt.
 8. On supervision failure: pause and wait for user command (`Resume`, `Skip`, `Abort`)
 9. Follow next edge (`follow_single_edge`)
 
