@@ -225,6 +225,15 @@ pub async fn plan_with_tool_use<E: PlannerToolExecutor>(
                     }
                 }
             }
+            // Refresh the tool list — tools may have changed after cdp_connect.
+            if tools_param.is_some() {
+                let refreshed = executor.available_planning_tools();
+                tools_param = if refreshed.is_empty() {
+                    None
+                } else {
+                    Some(refreshed)
+                };
+            }
             continue; // Next LLM turn
         }
 

@@ -34,7 +34,8 @@ pub struct PlannerSession {
     app: AppHandle,
     session_id: String,
     planner_handle: Arc<std::sync::Mutex<PlannerHandle>>,
-    planning_tools_openai: Vec<Value>,
+    /// Planning tools available to the LLM, updated after cdp_connect.
+    planning_tools_openai: std::sync::RwLock<Vec<Value>>,
 }
 
 impl PlannerSession {
@@ -61,7 +62,7 @@ impl PlannerSession {
             app,
             session_id,
             planner_handle,
-            planning_tools_openai,
+            planning_tools_openai: std::sync::RwLock::new(planning_tools_openai),
         })
     }
 
@@ -98,15 +99,35 @@ impl PlannerSession {
             serde_json::json!({ "session_id": self.session_id }),
         );
     }
+
+    /// After cdp_connect succeeds, re-fetch the tool list from the MCP server
+    /// so newly available CDP tools appear in subsequent LLM turns.
+    async fn refresh_planning_tools(&self) {
+        let mut mcp = self.mcp.lock().await;
+        if let Err(e) = mcp.refresh_tools().await {
+            tracing::warn!("Failed to refresh MCP tools after cdp_connect: {}", e);
+            return;
+        }
+        let new_tools = Self::build_planning_tools(&mcp.tools_as_openai());
+        info!(
+            "Refreshed planning tools after cdp_connect: {} tools available",
+            new_tools.len()
+        );
+        *self
+            .planning_tools_openai
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = new_tools;
+    }
 }
 
 impl PlannerToolExecutor for PlannerSession {
     async fn call_tool(&self, name: &str, args: Value) -> anyhow::Result<String> {
-        let mcp = self.mcp.lock().await;
-        let result = mcp
-            .call_tool(name, Some(args.clone()))
-            .await
-            .map_err(|e| anyhow::anyhow!("MCP tool call failed: {}", e))?;
+        let result = {
+            let mcp = self.mcp.lock().await;
+            mcp.call_tool(name, Some(args.clone()))
+                .await
+                .map_err(|e| anyhow::anyhow!("MCP tool call failed: {}", e))?
+        };
 
         let text = result
             .content
@@ -124,6 +145,12 @@ impl PlannerToolExecutor for PlannerSession {
                 result: Some(text.clone()),
             },
         );
+
+        // After cdp_connect, the MCP server exposes new CDP inspection tools.
+        // Re-fetch so subsequent LLM turns can use them.
+        if name == "cdp_connect" {
+            self.refresh_planning_tools().await;
+        }
 
         Ok(text)
     }
@@ -160,11 +187,18 @@ impl PlannerToolExecutor for PlannerSession {
     }
 
     fn has_planning_tools(&self) -> bool {
-        !self.planning_tools_openai.is_empty()
+        !self
+            .planning_tools_openai
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
     }
 
     fn available_planning_tools(&self) -> Vec<Value> {
-        self.planning_tools_openai.clone()
+        self.planning_tools_openai
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }
 

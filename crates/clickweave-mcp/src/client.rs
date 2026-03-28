@@ -145,6 +145,13 @@ impl McpClient {
         self.send_notification("notifications/initialized").await
     }
 
+    /// Re-fetch the tool list from the MCP server.
+    /// Call after operations that change the server's available tools
+    /// (e.g., `cdp_connect` exposes new CDP inspection tools).
+    pub async fn refresh_tools(&mut self) -> Result<()> {
+        self.fetch_tools().await
+    }
+
     async fn fetch_tools(&mut self) -> Result<()> {
         let response = self.send_request("tools/list", None).await?;
 
