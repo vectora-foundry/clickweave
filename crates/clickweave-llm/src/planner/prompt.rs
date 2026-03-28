@@ -160,6 +160,7 @@ pub(crate) fn patcher_system_prompt(
     tools_json: &[Value],
     allow_ai_transforms: bool,
     allow_agent_steps: bool,
+    has_planning_tools: bool,
 ) -> String {
     let tool_list = serde_json::to_string_pretty(tools_json).unwrap_or_default();
 
@@ -213,10 +214,12 @@ pub(crate) fn patcher_system_prompt(
     step_types.push_str("see the tool schemas below).");
     step_types.push_str(" For control flow nodes (Loop, EndLoop, If), use \"add_nodes\" + \"add_edges\" instead of \"add\".");
 
+    let context_gathering = context_gathering_section(has_planning_tools);
+
     format!(
         r#"You are a workflow editor for UI automation. Given an existing workflow and a user's modification request, produce a JSON patch.
 
-Current workflow nodes:
+{context_gathering}Current workflow nodes:
 {nodes_json}
 
 Current edges:
@@ -281,15 +284,37 @@ pub(crate) fn assistant_system_prompt(
     allow_agent_steps: bool,
     run_context: Option<&str>,
     chrome_profiles: Option<&[ChromeProfile]>,
+    has_planning_tools: bool,
 ) -> String {
+    use super::tool_use::is_planning_only_tool;
+
+    // When planning tools are available, filter them out of the workflow catalog
+    // so the LLM prompt only shows tools valid as workflow nodes.
+    let workflow_tools: Vec<Value> = if has_planning_tools {
+        tools_json
+            .iter()
+            .filter(|tool| {
+                let name = tool
+                    .get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("");
+                !is_planning_only_tool(name)
+            })
+            .cloned()
+            .collect()
+    } else {
+        tools_json.to_vec()
+    };
+
     if workflow.nodes.is_empty() {
         let base = planner_system_prompt(
-            tools_json,
+            &workflow_tools,
             allow_ai_transforms,
             allow_agent_steps,
             None,
             chrome_profiles,
-            false, // has_planning_tools
+            has_planning_tools,
         );
         let mut prompt = format!(
             "You are a conversational workflow assistant for UI automation. \
@@ -302,8 +327,13 @@ pub(crate) fn assistant_system_prompt(
         }
         prompt
     } else {
-        let base =
-            patcher_system_prompt(workflow, tools_json, allow_ai_transforms, allow_agent_steps);
+        let base = patcher_system_prompt(
+            workflow,
+            &workflow_tools,
+            allow_ai_transforms,
+            allow_agent_steps,
+            has_planning_tools,
+        );
         let mut prompt = format!(
             "You are a conversational workflow assistant for UI automation. \
              You help users modify their existing workflow through natural dialogue.\n\n\

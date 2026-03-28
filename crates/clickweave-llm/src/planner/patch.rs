@@ -43,6 +43,7 @@ pub async fn patch_workflow_with_backend(
         mcp_tools_openai,
         allow_ai_transforms,
         allow_agent_steps,
+        false, // has_planning_tools
     );
     let user_msg = format!("Modify the workflow: {}", user_prompt);
 

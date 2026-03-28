@@ -180,7 +180,7 @@ async fn test_assistant_chat_conversational_response() {
 #[test]
 fn test_assistant_prompt_empty_workflow_includes_control_flow() {
     let wf = Workflow::new("Test");
-    let prompt = assistant_system_prompt(&wf, &[], false, false, None, None);
+    let prompt = assistant_system_prompt(&wf, &[], false, false, None, None, false);
     assert!(
         prompt.contains("Loop"),
         "Assistant prompt should mention Loop"
@@ -194,7 +194,7 @@ fn test_assistant_prompt_empty_workflow_includes_control_flow() {
 #[test]
 fn test_assistant_prompt_existing_workflow_includes_control_flow() {
     let (_, workflow) = single_node_workflow(NodeType::Click(ClickParams::default()), "Click");
-    let prompt = assistant_system_prompt(&workflow, &[], false, false, None, None);
+    let prompt = assistant_system_prompt(&workflow, &[], false, false, None, None, false);
     assert!(
         prompt.contains("add_nodes"),
         "Patcher assistant prompt should mention add_nodes for control flow"

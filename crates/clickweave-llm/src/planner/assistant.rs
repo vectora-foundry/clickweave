@@ -95,6 +95,7 @@ pub async fn assistant_chat_with_backend(
         allow_agent_steps,
         run_context_text,
         chrome_profiles,
+        false, // has_planning_tools — updated in Task 4 when executor is wired in
     );
 
     // 3. Assemble messages: system + optional summary context + recent window + new user message

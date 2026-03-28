@@ -37,7 +37,7 @@ fn test_patcher_prompt_includes_node_arguments() {
         Position { x: 0.0, y: 200.0 },
     );
 
-    let prompt = patcher_system_prompt(&workflow, &sample_tools(), false, false);
+    let prompt = patcher_system_prompt(&workflow, &sample_tools(), false, false, false);
 
     // Must contain the actual tool arguments so the LLM knows what to change
     assert!(
