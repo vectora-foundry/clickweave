@@ -603,6 +603,19 @@ fn build_nodes_and_edges_from_graph(
         }
     }
 
+    // Translate OutputRefs from graph IDs (n1, n2, …) to assigned auto-IDs
+    let graph_id_to_auto_id: HashMap<String, String> = plan_nodes
+        .iter()
+        .filter_map(|pn| {
+            let &uuid = id_map.get(&pn.id)?;
+            let node = nodes.iter().find(|n| n.id == uuid)?;
+            Some((pn.id.clone(), node.auto_id.clone()))
+        })
+        .collect();
+    for node in &mut nodes {
+        translate_node_refs(&graph_id_to_auto_id, node);
+    }
+
     // Parse edges leniently — skip malformed ones with a warning.
     let (plan_edges, edge_warnings) = parse_lenient::<PlanEdge>(raw_edges);
     warnings.extend(edge_warnings);

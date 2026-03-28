@@ -247,10 +247,13 @@ export const WorkflowNode = memo(function WorkflowNode({
           type="source" position={Position.Right} idPrefix="data-" sideOffset="right"
         />
       )}
-      {/* Visible input port dots — only for wired (connected) inputs */}
-      {d.wiredInputs && d.wiredInputs.length > 0 && (
+      {/* Input port dots for all ref-capable params (wired and unwired) */}
+      {d.availableInputs && d.availableInputs.length > 0 && (
         <PortHandles
-          items={d.wiredInputs.map((w) => ({ key: w.key, color: typeColor(w.fieldType) }))}
+          items={d.availableInputs.map((a) => {
+            const wired = d.wiredInputs?.find((w) => w.key === a.key);
+            return { key: a.key, color: typeColor(wired?.fieldType ?? a.fieldType) };
+          })}
           type="target" position={Position.Left} idPrefix="data-input-" sideOffset="left"
         />
       )}

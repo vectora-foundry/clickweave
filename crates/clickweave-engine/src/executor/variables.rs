@@ -71,6 +71,40 @@ pub(crate) fn extract_result_variables(
                 set(format!("{}.{}", prefix, key), value.clone());
             }
             set(format!("{}.result", prefix), result.clone());
+
+            // Synthesize .found/.count/.coordinates from a `matches` array
+            // for FindText/FindImage whose MCP response is object-shaped.
+            if matches!(node_type, NodeType::FindText(_) | NodeType::FindImage(_)) {
+                if let Some(Value::Array(matches)) = map.get("matches") {
+                    set(
+                        format!("{}.found", prefix),
+                        Value::Bool(!matches.is_empty()),
+                    );
+                    set(
+                        format!("{}.count", prefix),
+                        Value::Number(serde_json::Number::from(matches.len())),
+                    );
+                    if let Some(Value::Object(first)) = matches.first() {
+                        let coords = if let (Some(x), Some(y)) =
+                            (first.get("screen_x"), first.get("screen_y"))
+                        {
+                            Some(serde_json::json!({"x": x, "y": y}))
+                        } else if let Some(Value::Object(center)) = first.get("center") {
+                            match (center.get("x"), center.get("y")) {
+                                (Some(x), Some(y)) => Some(serde_json::json!({"x": x, "y": y})),
+                                _ => None,
+                            }
+                        } else if let (Some(x), Some(y)) = (first.get("x"), first.get("y")) {
+                            Some(serde_json::json!({"x": x, "y": y}))
+                        } else {
+                            None
+                        };
+                        if let Some(coords) = coords {
+                            set(format!("{}.coordinates", prefix), coords);
+                        }
+                    }
+                }
+            }
         }
         Value::Array(arr) => {
             let found = !arr.is_empty();
