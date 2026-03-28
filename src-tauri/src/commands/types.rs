@@ -99,20 +99,6 @@ pub struct RunRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct PlanRequest {
-    pub intent: String,
-    pub planner: EndpointConfig,
-    pub allow_ai_transforms: bool,
-    pub allow_agent_steps: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct PlanResponse {
-    pub workflow: Workflow,
-    pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct PatchRequest {
     pub workflow: Workflow,
     pub user_prompt: String,

@@ -55,6 +55,7 @@ pub struct ConversationOutput<T> {
 /// - With executor: handles tool calls (context gathering)
 /// - With validate: post-parse validation with retry
 /// - With on_repair: callback before each retry for UI feedback
+#[allow(clippy::too_many_arguments)]
 pub async fn conversation_loop<T, E: PlannerToolExecutor>(
     backend: &(impl ChatBackend + ?Sized),
     mut messages: Vec<Message>,
@@ -92,114 +93,112 @@ pub async fn conversation_loop<T, E: PlannerToolExecutor>(
             .ok_or_else(|| anyhow!("No response from LLM"))?;
 
         // Handle tool calls
-        if let Some(tool_calls) = &choice.message.tool_calls {
-            if !tool_calls.is_empty() {
-                let executor = executor.ok_or_else(|| {
-                    anyhow!("LLM returned tool calls but no executor was provided")
-                })?;
+        if let Some(tool_calls) = &choice.message.tool_calls
+            && !tool_calls.is_empty()
+        {
+            let executor = executor
+                .ok_or_else(|| anyhow!("LLM returned tool calls but no executor was provided"))?;
 
-                messages.push(Message::assistant_tool_calls(tool_calls.clone()));
+            messages.push(Message::assistant_tool_calls(tool_calls.clone()));
 
-                for tc in tool_calls {
-                    total_tool_calls += 1;
+            for tc in tool_calls {
+                total_tool_calls += 1;
 
-                    if total_tool_calls > MAX_PLANNING_TOOL_CALLS {
-                        warn!(
-                            "Tool call budget exhausted ({} calls), forcing text output",
-                            total_tool_calls
-                        );
-                        messages.push(Message::tool_result(
+                if total_tool_calls > MAX_PLANNING_TOOL_CALLS {
+                    warn!(
+                        "Tool call budget exhausted ({} calls), forcing text output",
+                        total_tool_calls
+                    );
+                    messages.push(Message::tool_result(
                             &tc.id,
                             "Tool call budget exhausted. Output your response now with whatever context you have.",
                         ));
-                        tools_param = None;
-                        continue;
-                    }
+                    tools_param = None;
+                    continue;
+                }
 
-                    let tool_name = &tc.function.name;
-                    let args: Value = serde_json::from_str(&tc.function.arguments)
-                        .unwrap_or(Value::Object(Default::default()));
+                let tool_name = &tc.function.name;
+                let args: Value = serde_json::from_str(&tc.function.arguments)
+                    .unwrap_or(Value::Object(Default::default()));
 
-                    let permission = executor.permission(tool_name);
+                let permission = executor.permission(tool_name);
 
-                    match permission {
-                        ToolPermission::Blocked => {
-                            blocked_rejections += 1;
-                            let msg = format!(
-                                "Tool '{}' is not available. Use only planning tools.",
-                                tool_name
+                match permission {
+                    ToolPermission::Blocked => {
+                        blocked_rejections += 1;
+                        let msg = format!(
+                            "Tool '{}' is not available. Use only planning tools.",
+                            tool_name
+                        );
+                        messages.push(Message::tool_result(&tc.id, &msg));
+
+                        if blocked_rejections >= MAX_BLOCKED_REJECTIONS {
+                            warn!(
+                                "Too many blocked tool rejections ({}), disabling tools",
+                                blocked_rejections
                             );
-                            messages.push(Message::tool_result(&tc.id, &msg));
-
-                            if blocked_rejections >= MAX_BLOCKED_REJECTIONS {
-                                warn!(
-                                    "Too many blocked tool rejections ({}), disabling tools",
-                                    blocked_rejections
-                                );
-                                tools_param = None;
-                            }
-                        }
-                        ToolPermission::RequiresConfirmation => {
-                            let confirm_msg = format!(
-                                "The assistant wants to call '{}'. This will affect the running app.",
-                                tool_name
-                            );
-                            match executor.request_confirmation(&confirm_msg, tool_name).await {
-                                Ok(true) => {
-                                    info!("User approved planning tool: {}", tool_name);
-                                    let msg =
-                                        execute_tool(executor, tool_name, args.clone(), &tc.id)
-                                            .await;
-                                    let result_text = msg.text_content().map(|s| s.to_string());
-                                    messages.push(msg);
-                                    tool_call_log.push(ToolCallRecord {
-                                        tool_name: tool_name.to_string(),
-                                        args,
-                                        result: result_text,
-                                        tool_call_id: tc.id.clone(),
-                                    });
-                                }
-                                Ok(false) => {
-                                    info!("User declined planning tool: {}", tool_name);
-                                    messages.push(Message::tool_result(
-                                        &tc.id,
-                                        "User declined. Proceed without this tool.",
-                                    ));
-                                }
-                                Err(e) => {
-                                    warn!("Confirmation request failed: {}", e);
-                                    messages.push(Message::tool_result(
-                                        &tc.id,
-                                        "Confirmation unavailable. Proceed without this tool.",
-                                    ));
-                                }
-                            }
-                        }
-                        ToolPermission::Allowed => {
-                            debug!("Executing planning tool: {}", tool_name);
-                            let msg = execute_tool(executor, tool_name, args.clone(), &tc.id).await;
-                            let result_text = msg.text_content().map(|s| s.to_string());
-                            messages.push(msg);
-                            tool_call_log.push(ToolCallRecord {
-                                tool_name: tool_name.to_string(),
-                                args,
-                                result: result_text,
-                                tool_call_id: tc.id.clone(),
-                            });
+                            tools_param = None;
                         }
                     }
+                    ToolPermission::RequiresConfirmation => {
+                        let confirm_msg = format!(
+                            "The assistant wants to call '{}'. This will affect the running app.",
+                            tool_name
+                        );
+                        match executor.request_confirmation(&confirm_msg, tool_name).await {
+                            Ok(true) => {
+                                info!("User approved planning tool: {}", tool_name);
+                                let msg =
+                                    execute_tool(executor, tool_name, args.clone(), &tc.id).await;
+                                let result_text = msg.text_content().map(|s| s.to_string());
+                                messages.push(msg);
+                                tool_call_log.push(ToolCallRecord {
+                                    tool_name: tool_name.to_string(),
+                                    args,
+                                    result: result_text,
+                                    tool_call_id: tc.id.clone(),
+                                });
+                            }
+                            Ok(false) => {
+                                info!("User declined planning tool: {}", tool_name);
+                                messages.push(Message::tool_result(
+                                    &tc.id,
+                                    "User declined. Proceed without this tool.",
+                                ));
+                            }
+                            Err(e) => {
+                                warn!("Confirmation request failed: {}", e);
+                                messages.push(Message::tool_result(
+                                    &tc.id,
+                                    "Confirmation unavailable. Proceed without this tool.",
+                                ));
+                            }
+                        }
+                    }
+                    ToolPermission::Allowed => {
+                        debug!("Executing planning tool: {}", tool_name);
+                        let msg = execute_tool(executor, tool_name, args.clone(), &tc.id).await;
+                        let result_text = msg.text_content().map(|s| s.to_string());
+                        messages.push(msg);
+                        tool_call_log.push(ToolCallRecord {
+                            tool_name: tool_name.to_string(),
+                            args,
+                            result: result_text,
+                            tool_call_id: tc.id.clone(),
+                        });
+                    }
                 }
-                // Refresh tool list after tool-call round (tools may have changed after cdp_connect)
-                if tools_param.is_some() {
-                    let refreshed = executor.available_planning_tools();
-                    tools_param = if refreshed.is_empty() {
-                        None
-                    } else {
-                        Some(refreshed)
-                    };
-                }
-                continue;
             }
+            // Refresh tool list after tool-call round (tools may have changed after cdp_connect)
+            if tools_param.is_some() {
+                let refreshed = executor.available_planning_tools();
+                tools_param = if refreshed.is_empty() {
+                    None
+                } else {
+                    Some(refreshed)
+                };
+            }
+            continue;
         }
 
         // Text response — try to parse

@@ -18,14 +18,13 @@ impl ChatTraceWriter {
     }
 
     pub fn append(&self, entry: &serde_json::Value) {
-        if let Ok(line) = serde_json::to_string(entry) {
-            if let Ok(mut file) = OpenOptions::new()
+        if let Ok(line) = serde_json::to_string(entry)
+            && let Ok(mut file) = OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&self.path)
-            {
-                let _ = writeln!(file, "{}", line);
-            }
+        {
+            let _ = writeln!(file, "{}", line);
         }
     }
 }

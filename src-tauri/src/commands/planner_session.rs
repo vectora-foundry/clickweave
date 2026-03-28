@@ -214,18 +214,10 @@ impl PlannerToolExecutor for PlannerSession {
 ///
 /// The session is taken out via `take_session()` during LLM calls so the lock
 /// isn't held while waiting for tool confirmations. Put it back with `return_session()`.
+#[derive(Default)]
 pub struct AssistantSessionHandle {
     session: Option<PlannerSession>,
     pub(crate) abort: Option<tokio::task::AbortHandle>,
-}
-
-impl Default for AssistantSessionHandle {
-    fn default() -> Self {
-        Self {
-            session: None,
-            abort: None,
-        }
-    }
 }
 
 impl AssistantSessionHandle {
@@ -243,16 +235,6 @@ impl AssistantSessionHandle {
     /// Check if a session already exists.
     pub fn has_session(&self) -> bool {
         self.session.is_some()
-    }
-
-    /// Store the abort handle for cancellation.
-    pub fn set_abort(&mut self, abort: tokio::task::AbortHandle) {
-        self.abort = Some(abort);
-    }
-
-    /// Clear abort handle after task completes.
-    pub fn clear_abort(&mut self) {
-        self.abort = None;
     }
 
     pub async fn clear(&mut self) {

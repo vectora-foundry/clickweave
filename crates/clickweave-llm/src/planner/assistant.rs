@@ -96,7 +96,7 @@ pub async fn assistant_chat_with_backend<E: PlannerToolExecutor>(
     };
 
     // 2. Build system prompt
-    let has_planning_tools = executor.map_or(false, |e| e.has_planning_tools());
+    let has_planning_tools = executor.is_some_and(|e| e.has_planning_tools());
     let system = assistant_system_prompt(
         workflow,
         mcp_tools,
@@ -168,9 +168,9 @@ pub async fn assistant_chat_with_backend<E: PlannerToolExecutor>(
         (regular edge, no output label). The last body step flows into EndLoop, and EndLoop flows back to Loop. \
         EndLoop never has a forward edge to post-loop nodes — Loop's LoopDone edge handles the exit path.";
 
-    let validate_closure: Option<
-        Box<dyn FnMut(&(String, Option<PatchResult>, Vec<String>)) -> Result<()> + Send>,
-    > = if max_repair_attempts > 0 {
+    type ValidateFn =
+        Box<dyn FnMut(&(String, Option<PatchResult>, Vec<String>)) -> Result<()> + Send>;
+    let validate_closure: Option<ValidateFn> = if max_repair_attempts > 0 {
         let wf = wf.clone();
         Some(Box::new(
             move |result: &(String, Option<PatchResult>, Vec<String>)| -> Result<()> {
