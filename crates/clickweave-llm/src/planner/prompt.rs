@@ -106,8 +106,7 @@ Literal types: `{"type": "String", "value": "text"}`, `{"type": "Number", "value
 **Variable names** follow `<auto_id>.<field>`. The auto_id is assigned automatically from the node type (e.g. `find_text_1`, `click_1`, `find_image_2`). The variable name in conditions MUST use the node's `auto_id`. Fields per tool:
 - find_text: `.found` (bool), `.count`, `.text`, `.coordinates` (object with x/y)
 - find_image: `.found` (bool), `.count`, `.coordinates` (object with x/y), `.confidence`
-- find_app: `.found` (bool), `.name`, `.pid`
-- list_apps: `.found` (bool), `.count`, `.apps`
+- find_app / list_apps: `.found` (bool), `.name`, `.pid`
 - click, type_text, press_key, scroll, focus_window: `.success` (bool)
 - take_screenshot: `.result`
 - Any tool: `.result` (raw JSON response)
