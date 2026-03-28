@@ -25,6 +25,10 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
   setWorkflow: (w) => set({ workflow: w }),
 
   openProject: async () => {
+    if (get().executorState === "running") {
+      console.warn("Cannot open project during execution");
+      return;
+    }
     const { pushLog } = get();
     const result = await commands.pickWorkflowFile();
     if (result.status !== "ok" || !result.data) return;
@@ -91,6 +95,10 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
   },
 
   newProject: () => {
+    if (get().executorState === "running") {
+      console.warn("Cannot create new project during execution");
+      return;
+    }
     const { pushLog } = get();
     commands.clearAssistantSession().catch(() => {});
     set({

@@ -27,6 +27,7 @@ export interface ExecutionSlice {
   runWorkflow: () => Promise<void>;
   stopWorkflow: () => Promise<void>;
   setLastRunStatus: (status: "completed" | "failed" | null) => void;
+  isExecutionLocked: () => boolean;
 }
 
 export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSlice> = (set, get) => ({
@@ -37,6 +38,7 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
 
   setExecutorState: (state) => set({ executorState: state }),
   setLastRunStatus: (status) => set({ lastRunStatus: status }),
+  isExecutionLocked: () => get().executorState === "running",
   setExecutionMode: (mode) => set({ executionMode: mode }),
   setSupervisionPause: (pause) => set({ supervisionPause: pause }),
   clearSupervisionPause: () => set({ supervisionPause: null }),
