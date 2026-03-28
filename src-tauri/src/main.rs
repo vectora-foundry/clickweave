@@ -98,6 +98,8 @@ fn main() {
         patch_workflow,
         assistant_chat,
         cancel_assistant_chat,
+        get_assistant_session_id,
+        rewind_conversation,
         clear_assistant_session,
         save_conversation,
         load_conversation,

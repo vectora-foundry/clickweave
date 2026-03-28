@@ -174,14 +174,16 @@ pub async fn import_asset(
 
 #[tauri::command]
 #[specta::specta]
-pub fn save_conversation(
-    path: String,
-    conversation: ConversationSession,
-) -> Result<(), CommandError> {
+pub async fn save_conversation(app: tauri::AppHandle, path: String) -> Result<(), CommandError> {
+    let handle = app.state::<tokio::sync::Mutex<super::planner_session::AssistantSessionHandle>>();
+    let guard = handle.lock().await;
+    let conversation = &guard.conversation;
+
     let dir = project_dir(&path);
     let conv_path = dir.join("conversation.json");
+    std::fs::create_dir_all(conv_path.parent().unwrap()).ok();
 
-    let content = serde_json::to_string_pretty(&conversation)
+    let content = serde_json::to_string_pretty(conversation)
         .map_err(|e| CommandError::internal(format!("Failed to serialize conversation: {}", e)))?;
 
     std::fs::write(&conv_path, content)
@@ -192,19 +194,26 @@ pub fn save_conversation(
 
 #[tauri::command]
 #[specta::specta]
-pub fn load_conversation(path: String) -> Result<Option<ConversationSession>, CommandError> {
+pub async fn load_conversation(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<Vec<clickweave_llm::planner::conversation::ChatEntry>, CommandError> {
     let dir = project_dir(&path);
     let conv_path = dir.join("conversation.json");
 
-    if !conv_path.exists() {
-        return Ok(None);
+    let handle = app.state::<tokio::sync::Mutex<super::planner_session::AssistantSessionHandle>>();
+    let mut guard = handle.lock().await;
+
+    if conv_path.exists() {
+        let content = std::fs::read_to_string(&conv_path)
+            .map_err(|e| CommandError::io(format!("Failed to read conversation: {}", e)))?;
+        let conversation: ConversationSession = serde_json::from_str(&content).map_err(|e| {
+            CommandError::validation(format!("Failed to parse conversation: {}", e))
+        })?;
+        guard.conversation = conversation;
+    } else {
+        guard.conversation = ConversationSession::default();
     }
 
-    let content = std::fs::read_to_string(&conv_path)
-        .map_err(|e| CommandError::io(format!("Failed to read conversation: {}", e)))?;
-
-    let conversation: ConversationSession = serde_json::from_str(&content)
-        .map_err(|e| CommandError::validation(format!("Failed to parse conversation: {}", e)))?;
-
-    Ok(Some(conversation))
+    Ok(guard.conversation.messages.clone())
 }

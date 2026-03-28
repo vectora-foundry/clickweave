@@ -11,7 +11,9 @@ mod walkthrough;
 mod walkthrough_enrichment;
 mod walkthrough_session;
 
-pub use assistant::{assistant_chat, cancel_assistant_chat};
+pub use assistant::{
+    assistant_chat, cancel_assistant_chat, get_assistant_session_id, rewind_conversation,
+};
 pub use chrome_profiles::{
     create_chrome_profile, get_chrome_profile_path, is_chrome_profile_configured,
     launch_chrome_for_setup, list_chrome_profiles,

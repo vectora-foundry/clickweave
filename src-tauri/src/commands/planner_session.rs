@@ -102,6 +102,10 @@ pub struct PlannerSession {
 }
 
 impl PlannerSession {
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
     /// Create a new planning session. Returns an error if a session is already active.
     pub async fn try_new(
         mcp: McpClient,
@@ -421,7 +425,13 @@ impl PlannerToolExecutor for PlannerSession {
 #[derive(Default)]
 pub struct AssistantSessionHandle {
     session: Option<PlannerSession>,
+    pub(crate) conversation: clickweave_llm::planner::conversation::ConversationSession,
+    pub(crate) assistant_config: Option<clickweave_llm::LlmConfig>,
     pub(crate) abort: Option<tokio::task::AbortHandle>,
+    pub(crate) execution_locked: bool,
+    pub(crate) session_in_use: bool,
+    /// Monotonically increasing counter to detect stale session returns.
+    pub(crate) session_generation: u64,
 }
 
 impl AssistantSessionHandle {
@@ -441,6 +451,16 @@ impl AssistantSessionHandle {
         self.session.is_some()
     }
 
+    /// Check if the session is locked by an active execution.
+    pub fn is_execution_locked(&self) -> bool {
+        self.execution_locked
+    }
+
+    /// Get the current session ID (if a session exists).
+    pub fn session_id(&self) -> Option<&str> {
+        self.session.as_ref().map(|s| s.session_id.as_str())
+    }
+
     pub async fn clear(&mut self) {
         if let Some(session) = self.session.take() {
             session.cleanup().await;
@@ -448,6 +468,10 @@ impl AssistantSessionHandle {
         if let Some(abort) = self.abort.take() {
             abort.abort();
         }
+        self.conversation = clickweave_llm::planner::conversation::ConversationSession::default();
+        self.assistant_config = None;
+        self.execution_locked = false;
+        self.session_in_use = false;
     }
 }
 
@@ -456,6 +480,11 @@ impl AssistantSessionHandle {
 pub async fn clear_assistant_session(app: tauri::AppHandle) -> Result<(), CommandError> {
     let handle = app.state::<tokio::sync::Mutex<AssistantSessionHandle>>();
     let mut guard = handle.lock().await;
+    if guard.execution_locked {
+        return Err(CommandError::validation(
+            "Cannot clear session during execution",
+        ));
+    }
     guard.clear().await;
     Ok(())
 }

@@ -1,7 +1,7 @@
 use super::error::CommandError;
 use super::planner_session::{AssistantSessionHandle, PlannerHandle, PlannerSession};
 use super::types::*;
-use clickweave_llm::planner::conversation::{ConversationSession, RunContext};
+use clickweave_llm::planner::conversation::{ChatEntry, ChatRole, RunContext};
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
@@ -17,6 +17,13 @@ fn format_run_context(ctx: &RunContext) -> String {
     lines.join("\n")
 }
 
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn assistant_chat(
@@ -27,6 +34,16 @@ pub async fn assistant_chat(
 
     let planner_handle_state = app.state::<Arc<std::sync::Mutex<PlannerHandle>>>();
     let session_handle_state = app.state::<tokio::sync::Mutex<AssistantSessionHandle>>();
+
+    // Check execution lock
+    {
+        let guard = session_handle_state.lock().await;
+        if guard.is_execution_locked() {
+            return Err(CommandError::validation(
+                "Cannot send assistant messages during execution",
+            ));
+        }
+    }
 
     // Step 1: Check if we need to create a session (brief lock)
     let needs_creation = {
@@ -43,22 +60,57 @@ pub async fn assistant_chat(
                 .await?;
         let mut guard = session_handle_state.lock().await;
         guard.return_session(session);
+
+        // Emit session_started
+        let session_id = guard.session_id().unwrap_or("").to_string();
+        let _ = app.emit(
+            "assistant://session_started",
+            SessionStartedPayload {
+                session_id: session_id.clone(),
+            },
+        );
     }
 
     // Step 3: Take session out and wrap in Arc (brief lock)
-    let session = {
+    let (session, conversation, config_for_task) = {
         let mut guard = session_handle_state.lock().await;
-        Arc::new(
+        guard.session_in_use = true;
+        let session = Arc::new(
             guard
                 .take_session()
                 .ok_or_else(|| CommandError::validation("No planning session available"))?,
-        )
+        );
+        let conversation = guard.conversation.clone();
+        let config = request.planner.clone().into_llm_config(None);
+        (session, conversation, config)
     };
 
+    let session_id_for_events = session.session_id().to_string();
+
+    // Emit user message event immediately
+    let _ = app.emit(
+        "assistant://message",
+        AssistantMessagePayload {
+            session_id: session_id_for_events.clone(),
+            entry: ChatEntry {
+                role: ChatRole::User,
+                content: request.user_message.clone(),
+                timestamp: now_millis(),
+                patch_summary: None,
+                run_context: request.run_context.clone(),
+                tool_call_id: None,
+                tool_name: None,
+            },
+        },
+    );
+
     // Step 4: Spawn the LLM call as a task so it can be cancelled.
-    // The session Arc is shared into the task; we unwrap it back after completion.
     let session_for_task = Arc::clone(&session);
     let app_for_task = app.clone();
+    let request_user_message = request.user_message.clone();
+    let request_run_context = request.run_context.clone();
+    let request_run_context_for_task = request_run_context.clone();
+    let request_project_path = request.project_path.clone();
     let join_handle = tokio::task::spawn(async move {
         let profiles_ref = if chrome_profiles.len() > 1 {
             Some(chrome_profiles.as_slice())
@@ -71,21 +123,17 @@ pub async fn assistant_chat(
             let _ = emit_handle.emit("assistant://repairing", (attempt, max));
         };
 
-        let config = request.planner.into_llm_config(None);
-        let conversation_session = ConversationSession {
-            messages: request.history,
-            summary: request.summary,
-            summary_cutoff: request.summary_cutoff,
-        };
-        let run_context_text = request.run_context.as_ref().map(format_run_context);
+        let run_context_text = request_run_context_for_task
+            .as_ref()
+            .map(format_run_context);
         let workflow_tools = session_for_task.mcp_tools_openai().await;
 
         let result = clickweave_llm::planner::assistant_chat(
             &request.workflow,
             &request.user_message,
-            &conversation_session,
+            &conversation,
             run_context_text.as_deref(),
-            config,
+            config_for_task,
             &workflow_tools,
             request.allow_ai_transforms,
             request.allow_agent_steps,
@@ -96,13 +144,12 @@ pub async fn assistant_chat(
         )
         .await
         .map_err(|e| {
-            // Use the root cause for a cleaner user-facing message
             let root = e.root_cause().to_string();
             CommandError::llm(root)
         })?;
 
         // Write chat trace (non-fatal)
-        let trace_base = match &request.project_path {
+        let trace_base = match &request_project_path {
             Some(p) => super::types::project_dir(p).join(".clickweave"),
             None => {
                 let app_data_dir = app_for_task.state::<AppDataDir>();
@@ -119,15 +166,9 @@ pub async fn assistant_chat(
 
         // Compute context_usage percentage
         let context_usage = result.prompt_tokens.map(|tokens| {
-            let context_window = 32000.0_f32; // fallback; ideally query model_info
+            let context_window = 32000.0_f32;
             (tokens as f32 / context_window).min(1.0)
         });
-
-        let new_cutoff = if result.new_summary.is_some() {
-            conversation_session.current_cutoff(None)
-        } else {
-            request.summary_cutoff
-        };
 
         let patch = result.patch.map(|p| WorkflowPatch {
             added_nodes: p.added_nodes,
@@ -138,15 +179,14 @@ pub async fn assistant_chat(
             warnings: p.warnings,
         });
 
-        Ok(AssistantChatResponse {
-            assistant_message: result.message,
+        Ok((
+            result.message,
+            result.tool_entries,
+            result.new_summary,
+            result.warnings,
             patch,
-            new_summary: result.new_summary,
-            summary_cutoff: new_cutoff,
-            warnings: result.warnings,
-            tool_entries: result.tool_entries,
             context_usage,
-        })
+        ))
     });
 
     // Store the abort handle so cancel_assistant_chat can abort this task
@@ -164,17 +204,14 @@ pub async fn assistant_chat(
         ))),
     };
 
-    // Return session to handle, or clean up if the task was cancelled.
+    // Return session to handle
     {
         let mut guard = session_handle_state.lock().await;
         guard.abort = None;
+        guard.session_in_use = false;
         match Arc::try_unwrap(session) {
             Ok(session) => guard.return_session(session),
             Err(arc_session) => {
-                // Task was cancelled — can't unwrap Arc yet because the aborted
-                // task may still briefly hold a ref. Run cleanup via &self (works
-                // through Arc) to clear PlannerHandle.session_id so the next turn
-                // can create a fresh session.
                 tokio::spawn(async move {
                     arc_session.cleanup().await;
                 });
@@ -182,7 +219,88 @@ pub async fn assistant_chat(
         }
     }
 
-    result
+    let (message, tool_entries, new_summary, warnings, patch, context_usage) = result?;
+
+    // Update backend conversation
+    {
+        let mut guard = session_handle_state.lock().await;
+        // Append user message
+        guard
+            .conversation
+            .push_user(request_user_message.clone(), request_run_context);
+        // Append tool entries
+        for tc in &tool_entries {
+            guard.conversation.messages.push(tc.clone());
+        }
+        // Append assistant message
+        let patch_summary =
+            patch
+                .as_ref()
+                .map(|p| clickweave_llm::planner::conversation::PatchSummary {
+                    added: p.added_nodes.len() as u32,
+                    removed: p.removed_node_ids.len() as u32,
+                    updated: p.updated_nodes.len() as u32,
+                    added_names: p.added_nodes.iter().map(|n| n.name.clone()).collect(),
+                    removed_names: Vec::new(),
+                    updated_names: p.updated_nodes.iter().map(|n| n.name.clone()).collect(),
+                    description: None,
+                });
+        guard
+            .conversation
+            .push_assistant(message.clone(), patch_summary);
+        // Handle summarization
+        if let Some(ref summary) = new_summary {
+            guard.conversation.set_summary(summary.clone(), None);
+        }
+        // Update config
+        guard.assistant_config = Some(request.planner.into_llm_config(None));
+    }
+
+    // Emit tool call/result events
+    for tc in &tool_entries {
+        let _ = app.emit(
+            "assistant://message",
+            AssistantMessagePayload {
+                session_id: session_id_for_events.clone(),
+                entry: tc.clone(),
+            },
+        );
+    }
+
+    // Emit assistant response event
+    let patch_summary =
+        patch
+            .as_ref()
+            .map(|p| clickweave_llm::planner::conversation::PatchSummary {
+                added: p.added_nodes.len() as u32,
+                removed: p.removed_node_ids.len() as u32,
+                updated: p.updated_nodes.len() as u32,
+                added_names: p.added_nodes.iter().map(|n| n.name.clone()).collect(),
+                removed_names: Vec::new(),
+                updated_names: p.updated_nodes.iter().map(|n| n.name.clone()).collect(),
+                description: None,
+            });
+    let _ = app.emit(
+        "assistant://message",
+        AssistantMessagePayload {
+            session_id: session_id_for_events,
+            entry: ChatEntry {
+                role: ChatRole::Assistant,
+                content: message,
+                timestamp: now_millis(),
+                patch_summary,
+                run_context: None,
+                tool_call_id: None,
+                tool_name: None,
+            },
+        },
+    );
+
+    Ok(AssistantChatResponse {
+        patch,
+        warnings,
+        context_usage,
+    })
 }
 
 #[tauri::command]
@@ -194,4 +312,35 @@ pub async fn cancel_assistant_chat(app: tauri::AppHandle) -> Result<(), CommandE
         abort.abort();
     }
     Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_assistant_session_id(
+    app: tauri::AppHandle,
+) -> Result<Option<String>, CommandError> {
+    let handle = app.state::<tokio::sync::Mutex<AssistantSessionHandle>>();
+    let guard = handle.lock().await;
+    Ok(guard.session_id().map(|s| s.to_string()))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn rewind_conversation(
+    app: tauri::AppHandle,
+    to_index: usize,
+) -> Result<Vec<ChatEntry>, CommandError> {
+    let handle = app.state::<tokio::sync::Mutex<AssistantSessionHandle>>();
+    let mut guard = handle.lock().await;
+    if guard.execution_locked {
+        return Err(CommandError::validation(
+            "Cannot rewind conversation during execution",
+        ));
+    }
+    guard.conversation.messages.truncate(to_index);
+    if to_index < guard.conversation.summary_cutoff {
+        guard.conversation.summary = None;
+        guard.conversation.summary_cutoff = 0;
+    }
+    Ok(guard.conversation.messages.clone())
 }

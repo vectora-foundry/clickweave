@@ -178,6 +178,12 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
                         screenshot,
                     },
                 ),
+                ExecutorEvent::NodeCancelled(id) => emit_handle.emit(
+                    "executor://node_cancelled",
+                    NodePayload {
+                        node_id: id.to_string(),
+                    },
+                ),
             };
             if let Err(e) = emit_result {
                 warn!("Failed to emit executor event to UI: {}", e);

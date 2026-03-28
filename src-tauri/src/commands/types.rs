@@ -182,9 +182,6 @@ pub struct SupervisionPausedPayload {
 pub struct AssistantChatRequest {
     pub workflow: Workflow,
     pub user_message: String,
-    pub history: Vec<ChatEntry>,
-    pub summary: Option<String>,
-    pub summary_cutoff: usize,
     pub run_context: Option<RunContext>,
     pub planner: EndpointConfig,
     pub allow_ai_transforms: bool,
@@ -196,12 +193,8 @@ pub struct AssistantChatRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct AssistantChatResponse {
-    pub assistant_message: String,
     pub patch: Option<WorkflowPatch>,
-    pub new_summary: Option<String>,
-    pub summary_cutoff: usize,
     pub warnings: Vec<String>,
-    pub tool_entries: Vec<clickweave_llm::planner::conversation::ChatEntry>,
     pub context_usage: Option<f32>,
 }
 
@@ -246,4 +239,31 @@ pub struct PlannerConfirmationPayload {
     pub session_id: String,
     pub message: String,
     pub tool_name: String,
+}
+
+// --- Resolution event payloads ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolutionProposedPayload {
+    pub node_id: String,
+    pub node_name: String,
+    pub reason: String,
+    pub patch: WorkflowPatch,
+    pub screenshot: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistantMessagePayload {
+    pub session_id: String,
+    pub entry: clickweave_llm::planner::conversation::ChatEntry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionStartedPayload {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatchAppliedPayload {
+    pub patch: WorkflowPatch,
 }
