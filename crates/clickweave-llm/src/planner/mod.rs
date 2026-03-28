@@ -190,6 +190,8 @@ pub struct PatchResult {
     pub added_edges: Vec<Edge>,
     pub removed_edges: Vec<Edge>,
     pub warnings: Vec<String>,
+    /// Maps added_node_id -> anchor_node_id for `insert_before` splicing.
+    pub insert_before_map: std::collections::HashMap<Uuid, Uuid>,
 }
 
 // ── Shared patch-building logic ─────────────────────────────────
@@ -422,6 +424,21 @@ pub(crate) fn build_patch_from_output(
         translate_node_refs(&name_to_auto_id, node);
     }
 
+    // Parse insert_before metadata from raw add entries
+    let mut insert_before_map = std::collections::HashMap::new();
+    let add_values = if output.add_nodes.is_empty() {
+        &output.add
+    } else {
+        &output.add_nodes
+    };
+    for (node, raw) in added_nodes.iter().zip(add_values.iter()) {
+        if let Some(anchor_str) = raw.get("insert_before").and_then(|v| v.as_str()) {
+            if let Ok(anchor_id) = anchor_str.parse::<Uuid>() {
+                insert_before_map.insert(node.id, anchor_id);
+            }
+        }
+    }
+
     PatchResult {
         added_nodes,
         removed_node_ids,
@@ -429,6 +446,7 @@ pub(crate) fn build_patch_from_output(
         added_edges,
         removed_edges,
         warnings,
+        insert_before_map,
     }
 }
 
@@ -497,6 +515,7 @@ pub(crate) fn build_plan_as_patch(
         added_edges,
         removed_edges: Vec::new(),
         warnings,
+        insert_before_map: HashMap::new(),
     }
 }
 
@@ -529,6 +548,7 @@ pub(crate) fn build_graph_plan_as_patch(
         added_edges,
         removed_edges: Vec::new(),
         warnings,
+        insert_before_map: HashMap::new(),
     }
 }
 
