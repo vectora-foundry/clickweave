@@ -148,13 +148,14 @@ Signal is an Electron app (probe_app returns `kind: "ElectronApp"`), so use CDP 
   "steps": [
     {"step_type": "Tool", "tool_name": "launch_app", "arguments": {"app_name": "Signal"}, "name": "Launch Signal"},
     {"step_type": "Tool", "tool_name": "cdp_click", "arguments": {"target": "Note to Self"}, "name": "Click Note to Self"},
-    {"step_type": "Tool", "tool_name": "fill", "arguments": {"selector": "[data-testid='CompositionInput'] [role='textbox']", "value": "hello"}, "name": "Type hello"},
+    {"step_type": "Tool", "tool_name": "cdp_click", "arguments": {"target": "message input"}, "name": "Focus message input"},
+    {"step_type": "Tool", "tool_name": "cdp_type_text", "arguments": {"text": "hello"}, "name": "Type hello"},
     {"step_type": "Tool", "tool_name": "cdp_press_key", "arguments": {"key": "Return"}, "name": "Press Enter"}
   ]
 }
 ```
 
-Note: `launch_app` auto-detects Electron and connects CDP. Use `cdp_click` for clicking, `cdp_type_text` for typing, `cdp_press_key` for keys, and `fill` for filling input fields by selector. If you don't know a CSS selector, use the element name as the `target` argument to `cdp_click`.
+Note: `launch_app` auto-detects Electron and connects CDP. Use `cdp_click` with a `target` name to click elements (the executor resolves the target to a UID at runtime via DOM snapshot). Use `cdp_type_text` to type into the currently focused element. Use `fill` only when you have a UID from `cdp_take_snapshot` — pass it as `{"uid": "<uid>", "value": "<text>"}`.
 
 ## Conditional example
 
