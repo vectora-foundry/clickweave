@@ -550,6 +550,66 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             return self.execute_cdp_wait(&p.text, p.timeout_ms, mcp).await;
         }
 
+        // CDP Click: resolve target via snapshot if it's a text target, otherwise use uid directly
+        if let NodeType::CdpClick(p) = node_type {
+            let expected = cdp::CdpExpected::default();
+            let result_text = self
+                .resolve_and_click_cdp(&p.uid, &expected, mcp, node_run.as_deref())
+                .await?;
+            self.last_click_was_cdp = true;
+            return Ok(Self::parse_result_text(&result_text));
+        }
+
+        // CDP Hover: same resolve path as CdpClick
+        if let NodeType::CdpHover(p) = node_type {
+            let expected = cdp::CdpExpected::default();
+            let result_text = self
+                .resolve_and_hover_cdp(&p.uid, &expected, mcp, node_run.as_deref())
+                .await?;
+            return Ok(Self::parse_result_text(&result_text));
+        }
+
+        // CDP Type: call cdp_type_text directly
+        if let NodeType::CdpType(p) = node_type {
+            let args = serde_json::json!({"text": p.text});
+            self.record_event(
+                node_run.as_deref(),
+                "tool_call",
+                serde_json::json!({"name": "cdp_type_text", "args": &args}),
+            );
+            let result = mcp
+                .call_tool("cdp_type_text", Some(args))
+                .await
+                .map_err(|e| ExecutorError::ToolCall {
+                    tool: "cdp_type_text".to_string(),
+                    message: e.to_string(),
+                })?;
+            Self::check_tool_error(&result, "cdp_type_text")?;
+            return Ok(Self::parse_result_text(&Self::extract_result_text(&result)));
+        }
+
+        // CDP Press Key: call cdp_press_key directly
+        if let NodeType::CdpPressKey(p) = node_type {
+            let mut args = serde_json::json!({"key": p.key});
+            if !p.modifiers.is_empty() {
+                args["modifiers"] = serde_json::json!(p.modifiers);
+            }
+            self.record_event(
+                node_run.as_deref(),
+                "tool_call",
+                serde_json::json!({"name": "cdp_press_key", "args": &args}),
+            );
+            let result = mcp
+                .call_tool("cdp_press_key", Some(args))
+                .await
+                .map_err(|e| ExecutorError::ToolCall {
+                    tool: "cdp_press_key".to_string(),
+                    message: e.to_string(),
+                })?;
+            Self::check_tool_error(&result, "cdp_press_key")?;
+            return Ok(Self::parse_result_text(&Self::extract_result_text(&result)));
+        }
+
         if let NodeType::AppDebugKitOp(p) = node_type {
             self.log(format!("AppDebugKit operation: {}", p.operation_name));
             let args = if p.parameters.is_null() {

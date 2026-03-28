@@ -192,39 +192,42 @@ pub fn node_type_to_tool_invocation(
         }
         NodeType::LaunchApp(p) => ("launch_app", serde_json::json!({"app_name": p.app_name})),
         NodeType::QuitApp(p) => ("quit_app", serde_json::json!({"app_name": p.app_name})),
-        // CDP nodes
-        NodeType::CdpClick(p) => ("click", serde_json::json!({"uid": p.uid})),
-        NodeType::CdpHover(p) => ("hover", serde_json::json!({"uid": p.uid})),
-        NodeType::CdpFill(p) => ("fill", serde_json::json!({"uid": p.uid, "value": p.value})),
-        NodeType::CdpType(p) => ("type_text", serde_json::json!({"text": p.text})),
+        // CDP nodes — use cdp_ prefixed MCP tool names
+        NodeType::CdpClick(p) => ("cdp_click", serde_json::json!({"uid": p.uid})),
+        NodeType::CdpHover(p) => ("cdp_hover", serde_json::json!({"uid": p.uid})),
+        NodeType::CdpFill(p) => (
+            "cdp_fill",
+            serde_json::json!({"uid": p.uid, "value": p.value}),
+        ),
+        NodeType::CdpType(p) => ("cdp_type_text", serde_json::json!({"text": p.text})),
         NodeType::CdpPressKey(p) => {
             let mut args = serde_json::json!({"key": p.key});
             if !p.modifiers.is_empty() {
                 args["modifiers"] = serde_json::json!(p.modifiers);
             }
-            ("press_key", args)
+            ("cdp_press_key", args)
         }
-        NodeType::CdpNavigate(p) => ("navigate_page", serde_json::json!({"url": p.url})),
+        NodeType::CdpNavigate(p) => ("cdp_navigate", serde_json::json!({"url": p.url})),
         NodeType::CdpNewPage(p) => {
             let mut args = serde_json::json!({});
             if !p.url.is_empty() {
                 args["url"] = Value::String(p.url.clone());
             }
-            ("new_page", args)
+            ("cdp_new_page", args)
         }
         NodeType::CdpClosePage(p) => {
             let mut args = serde_json::json!({});
             if let Some(idx) = p.page_index {
                 args["page_index"] = serde_json::json!(idx);
             }
-            ("close_page", args)
+            ("cdp_close_page", args)
         }
         NodeType::CdpSelectPage(p) => (
-            "select_page",
+            "cdp_select_page",
             serde_json::json!({"page_index": p.page_index}),
         ),
         NodeType::CdpWait(p) => (
-            "wait_for",
+            "cdp_wait_for",
             serde_json::json!({"text": p.text, "timeout_ms": p.timeout_ms}),
         ),
         NodeType::CdpHandleDialog(p) => {
@@ -232,7 +235,7 @@ pub fn node_type_to_tool_invocation(
             if let Some(text) = &p.prompt_text {
                 args["prompt_text"] = Value::String(text.clone());
             }
-            ("handle_dialog", args)
+            ("cdp_handle_dialog", args)
         }
         NodeType::McpToolCall(p) => {
             let args = if p.arguments.is_null() {
@@ -466,46 +469,48 @@ pub fn tool_invocation_to_node_type(
                 .unwrap_or_default(),
             ..Default::default()
         })),
-        // CDP tool mappings — real MCP tool names
-        "fill" => Ok(NodeType::CdpFill(CdpFillParams {
+        // CDP tool mappings — accept both old (fill, navigate_page) and new (cdp_fill, cdp_navigate) names
+        "fill" | "cdp_fill" => Ok(NodeType::CdpFill(CdpFillParams {
             uid: optional_str(args, "uid"),
             value: optional_str(args, "value"),
             ..Default::default()
         })),
-        "navigate_page" => Ok(NodeType::CdpNavigate(CdpNavigateParams {
+        "navigate_page" | "cdp_navigate" => Ok(NodeType::CdpNavigate(CdpNavigateParams {
             url: optional_str(args, "url"),
             ..Default::default()
         })),
-        "new_page" => Ok(NodeType::CdpNewPage(CdpNewPageParams {
+        "new_page" | "cdp_new_page" => Ok(NodeType::CdpNewPage(CdpNewPageParams {
             url: optional_str(args, "url"),
             ..Default::default()
         })),
-        "close_page" => Ok(NodeType::CdpClosePage(CdpClosePageParams {
+        "close_page" | "cdp_close_page" => Ok(NodeType::CdpClosePage(CdpClosePageParams {
             page_index: args
                 .get("page_index")
                 .and_then(|v| v.as_u64())
                 .map(|v| v as u32),
             ..Default::default()
         })),
-        "select_page" => Ok(NodeType::CdpSelectPage(CdpSelectPageParams {
+        "select_page" | "cdp_select_page" => Ok(NodeType::CdpSelectPage(CdpSelectPageParams {
             page_index: args.get("page_index").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
             ..Default::default()
         })),
-        "wait_for" => Ok(NodeType::CdpWait(CdpWaitParams {
+        "wait_for" | "cdp_wait_for" => Ok(NodeType::CdpWait(CdpWaitParams {
             text: optional_str(args, "text"),
             timeout_ms: args
                 .get("timeout_ms")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(10_000),
         })),
-        "handle_dialog" => Ok(NodeType::CdpHandleDialog(CdpHandleDialogParams {
-            accept: args.get("accept").and_then(|v| v.as_bool()).unwrap_or(true),
-            prompt_text: args
-                .get("prompt_text")
-                .and_then(|v| v.as_str())
-                .map(String::from),
-            ..Default::default()
-        })),
+        "handle_dialog" | "cdp_handle_dialog" => {
+            Ok(NodeType::CdpHandleDialog(CdpHandleDialogParams {
+                accept: args.get("accept").and_then(|v| v.as_bool()).unwrap_or(true),
+                prompt_text: args
+                    .get("prompt_text")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                ..Default::default()
+            }))
+        }
         _ if known_tools
             .iter()
             .any(|t| t["function"]["name"].as_str() == Some(name)) =>
