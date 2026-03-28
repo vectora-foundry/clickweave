@@ -98,26 +98,10 @@ export function useExecutorEvents() {
         useStore.setState({ resolutionProposal: null });
       }),
       listen<{ patch: WorkflowPatch }>("executor://patch_applied", (e) => {
-        const { workflow } = useStore.getState();
-        const p = e.payload.patch;
-        const removedIds = new Set(p.removed_node_ids);
-        const nodes = [
-          ...workflow.nodes
-            .filter((n) => !removedIds.has(n.id))
-            .map((n) => p.updated_nodes.find((u) => u.id === n.id) ?? n),
-          ...p.added_nodes,
-        ];
-        const edgeKey = (edge: { from: string; to: string; output: string | null }) =>
-          `${edge.from}-${edge.to}-${edge.output ?? ""}`;
-        const removedEdgeKeys = new Set(p.removed_edges.map(edgeKey));
-        const edges = [
-          ...workflow.edges.filter((edge) => !removedEdgeKeys.has(edgeKey(edge))),
-          ...p.added_edges,
-        ];
-        useStore.setState({
-          workflow: { ...workflow, nodes, edges },
-          resolutionProposal: null,
-        });
+        // Merge the approved runtime patch into the frontend workflow,
+        // reusing the same merge logic as applyApprovedPatch.
+        useStore.getState().applyRuntimePatch(e.payload.patch);
+        useStore.setState({ resolutionProposal: null });
       }),
       listen<{ status: string }>("walkthrough://state", (e) => {
         useStore.getState().setWalkthroughStatus(

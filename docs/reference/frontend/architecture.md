@@ -175,25 +175,16 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 
 ## App Event Wiring
 
-`ui/src/hooks/useExecutorEvents.ts` subscribes to backend events (called from `App.tsx`):
+`ui/src/hooks/useExecutorEvents.ts` subscribes to all backend events (mounted by `App.tsx`):
 
-- `executor://log`
-- `executor://state`
-- `executor://node_started`
-- `executor://node_completed`
-- `executor://node_failed`
-- `executor://checks_completed`
-- `executor://workflow_completed`
-- `executor://supervision_passed`
-- `executor://supervision_paused`
-- `assistant://repairing`
-- `walkthrough://state`
-- `walkthrough://event`
-- `walkthrough://draft_ready`
-- `walkthrough://cdp-setup`
+- `executor://log`, `executor://state`, `executor://node_started`, `executor://node_completed`, `executor://node_failed`
+- `executor://checks_completed`, `executor://workflow_completed`
+- `executor://supervision_passed`, `executor://supervision_paused`
+- `executor://resolution_proposed`, `executor://resolution_dismissed`, `executor://patch_applied`
+- `assistant://repairing`, `assistant://message`, `assistant://session_started`
+- `walkthrough://state`, `walkthrough://event`, `walkthrough://draft_ready`, `walkthrough://cdp-setup`
 - `recording-bar://action`
-
-`App.tsx` also listens to menu events (`menu://new`, `menu://open`, etc.) and maps them to store actions.
+- `menu://new`, `menu://open`, `menu://save`, `menu://save-as`, `menu://run-workflow`, `menu://stop-workflow`, `menu://toggle-logs`, `menu://toggle-assistant`
 
 ## Graph Editor (`GraphCanvas`)
 
