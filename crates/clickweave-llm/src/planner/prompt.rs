@@ -30,7 +30,11 @@ Available planning tools:
 
 **Recommended sequences:**
 - **Native apps:** `probe_app` → `take_ax_snapshot` → generate workflow with native tools
-- **Electron/Chrome apps:** `probe_app` → `cdp_connect` (user confirms restart) → `cdp_take_snapshot` → generate workflow with CDP tools and real UIDs from the snapshot
+- **Electron/Chrome apps:** `probe_app` → `cdp_connect` (user confirms restart) → `cdp_list_pages` → find the main UI page (skip `background.html`, service workers, devtools pages) → `cdp_select_page` if needed → `cdp_take_snapshot` → generate workflow with CDP tools and real UIDs from the snapshot
+
+**Important:**
+- Electron apps often have a `background.html` page (main process) that contains no UI. Always call `cdp_list_pages` after `cdp_connect` and select the page with the actual application UI before taking a snapshot.
+- The generated workflow must always start with `launch_app` for the target app, even if the app was already started during context gathering. The executor needs `launch_app` to set up the CDP connection at runtime.
 
 Call as many tools as you need, then output the workflow JSON.
 For simple tasks on well-known native apps (e.g., Calculator), you may skip probing.

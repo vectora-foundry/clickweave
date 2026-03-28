@@ -114,6 +114,12 @@ pub(crate) async fn execute_tool<E: PlannerToolExecutor>(
     match executor.call_tool(name, args).await {
         Ok(result) => {
             if result.len() > MAX_TOOL_RESULT_CHARS {
+                tracing::warn!(
+                    tool = %name,
+                    original_len = result.len(),
+                    truncated_to = MAX_TOOL_RESULT_CHARS,
+                    "Planning tool result truncated"
+                );
                 let truncated = &result[..result
                     .char_indices()
                     .nth(MAX_TOOL_RESULT_CHARS)
