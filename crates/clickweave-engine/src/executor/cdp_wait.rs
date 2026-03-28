@@ -4,7 +4,7 @@ use clickweave_llm::ChatBackend;
 use serde_json::Value;
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
-    /// Execute a CdpWait node: call chrome-devtools-mcp wait_for tool.
+    /// Execute a CdpWait node: call native-devtools cdp_wait_for tool.
     pub(crate) async fn execute_cdp_wait(
         &self,
         text: &str,
@@ -13,7 +13,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     ) -> ExecutorResult<Value> {
         let result = mcp
             .call_tool(
-                "wait_for",
+                "cdp_wait_for",
                 Some(serde_json::json!({
                     "text": [text],
                     "timeout": timeout_ms
@@ -21,7 +21,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             )
             .await
             .map_err(|e| super::ExecutorError::ToolCall {
-                tool: "wait_for".into(),
+                tool: "cdp_wait_for".into(),
                 message: e.to_string(),
             })?;
 
