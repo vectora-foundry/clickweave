@@ -537,11 +537,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             return self.execute_cdp_wait(&p.text, p.timeout_ms, mcp).await;
         }
 
-        // CDP Click: resolve target via snapshot if it's a text target, otherwise use uid directly
+        // CDP Click: resolve target via snapshot + LLM
         if let NodeType::CdpClick(p) = node_type {
             let expected = cdp::CdpExpected::default();
             let result_text = self
-                .resolve_and_click_cdp(&p.uid, &expected, mcp, node_run.as_deref())
+                .resolve_and_click_cdp(p.target.as_str(), &expected, mcp, node_run.as_deref())
                 .await?;
             return Ok(Self::parse_result_text(&result_text));
         }
@@ -550,7 +550,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         if let NodeType::CdpHover(p) = node_type {
             let expected = cdp::CdpExpected::default();
             let result_text = self
-                .resolve_and_hover_cdp(&p.uid, &expected, mcp, node_run.as_deref())
+                .resolve_and_hover_cdp(p.target.as_str(), &expected, mcp, node_run.as_deref())
                 .await?;
             return Ok(Self::parse_result_text(&result_text));
         }

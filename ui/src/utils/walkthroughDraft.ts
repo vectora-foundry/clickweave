@@ -68,7 +68,7 @@ export function applyAnnotationsToDraft(
           if (candidate.type === "CdpElement") {
             // CDP candidates become CdpClick/CdpHover nodes rather than native Click/Hover with text targets.
             const cdpType = updated.node_type.type === "Click" ? "CdpClick" : "CdpHover";
-            updated = { ...updated, node_type: { type: cdpType, uid: candidate.name } as unknown as typeof updated.node_type };
+            updated = { ...updated, node_type: { type: cdpType, target: { kind: "ExactLabel", value: candidate.name } } as unknown as typeof updated.node_type };
           } else {
             let target: ClickTarget | null;
             if (candidate.type === "AccessibilityLabel" || candidate.type === "VlmLabel") {
@@ -134,7 +134,7 @@ export function synthesizeNodeForKeptCandidate(
     return {
       id: nodeId,
       name,
-      node_type: { type: "CdpHover", uid: cdp.name } as unknown as Node["node_type"],
+      node_type: { type: "CdpHover", target: { kind: "ExactLabel", value: cdp.name } } as unknown as Node["node_type"],
       position,
       enabled: true,
       timeout_ms: null,

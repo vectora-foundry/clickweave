@@ -342,27 +342,100 @@ pub struct FindAppParams {
     pub search: String,
 }
 
+// --- CDP target enum ---
+
+/// Distinguishes how a CDP element target was produced, so the executor can
+/// choose the right resolution strategy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "kind", content = "value")]
+pub enum CdpTarget {
+    /// Precise element name from `cdp_find_elements` or walkthrough recording.
+    ExactLabel(String),
+    /// Semantic description (e.g. "the message input field") — always resolved
+    /// via snapshot + LLM at execution time.
+    Intent(String),
+    /// Concrete DOM UID resolved at execution time (for Run mode / decision cache).
+    ResolvedUid(String),
+}
+
+impl Default for CdpTarget {
+    fn default() -> Self {
+        Self::Intent(String::new())
+    }
+}
+
+impl CdpTarget {
+    /// The inner string regardless of variant.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::ExactLabel(s) | Self::Intent(s) | Self::ResolvedUid(s) => s,
+        }
+    }
+}
+
 // --- CDP node params ---
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Macro to generate backward-compatible deserialization for CDP params structs.
+/// Old format `{"uid": "..."}` deserializes as `CdpTarget::ExactLabel(...)`.
+macro_rules! impl_cdp_target_deser {
+    ($ty:ident { $($extra_field:ident : $extra_ty:ty),* $(,)? }) => {
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                #[derive(Deserialize)]
+                struct Raw {
+                    #[serde(default)]
+                    target: Option<CdpTarget>,
+                    #[serde(default)]
+                    uid: Option<String>,
+                    $(
+                        #[serde(default)]
+                        $extra_field: $extra_ty,
+                    )*
+                    #[serde(default)]
+                    verification_method: Option<VerificationMethod>,
+                    #[serde(default)]
+                    verification_assertion: Option<String>,
+                }
+                let raw = Raw::deserialize(deserializer)?;
+                Ok(Self {
+                    target: match (raw.target, raw.uid) {
+                        (Some(t), _) => t,
+                        (None, Some(uid)) => CdpTarget::ExactLabel(uid),
+                        (None, None) => CdpTarget::default(),
+                    },
+                    $( $extra_field: raw.$extra_field, )*
+                    verification_method: raw.verification_method,
+                    verification_assertion: raw.verification_assertion,
+                })
+            }
+        }
+    };
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct CdpClickParams {
-    pub uid: String,
+    pub target: CdpTarget,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_method: Option<VerificationMethod>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_assertion: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+impl_cdp_target_deser!(CdpClickParams {});
+
+#[derive(Debug, Clone, Default, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct CdpHoverParams {
-    pub uid: String,
+    pub target: CdpTarget,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_method: Option<VerificationMethod>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_assertion: Option<String>,
 }
+
+impl_cdp_target_deser!(CdpHoverParams {});
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -783,5 +856,65 @@ mod tests {
         let params = CdpHandleDialogParams::default();
         assert!(params.accept);
         assert!(params.prompt_text.is_none());
+    }
+
+    #[test]
+    fn cdp_target_serde_roundtrip() {
+        let target = CdpTarget::ExactLabel("Friends".into());
+        let json = serde_json::to_string(&target).unwrap();
+        assert!(json.contains("\"kind\":\"ExactLabel\""));
+        let back: CdpTarget = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, CdpTarget::ExactLabel("Friends".into()));
+    }
+
+    #[test]
+    fn cdp_target_as_str() {
+        assert_eq!(CdpTarget::ExactLabel("a".into()).as_str(), "a");
+        assert_eq!(CdpTarget::Intent("b".into()).as_str(), "b");
+        assert_eq!(CdpTarget::ResolvedUid("c".into()).as_str(), "c");
+    }
+
+    #[test]
+    fn cdp_click_params_new_format_roundtrip() {
+        let params = CdpClickParams {
+            target: CdpTarget::Intent("message input".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        let back: CdpClickParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.target, CdpTarget::Intent("message input".into()));
+    }
+
+    #[test]
+    fn cdp_click_params_legacy_uid_deserializes_as_exact_label() {
+        let json = r#"{"uid": "Friends"}"#;
+        let params: CdpClickParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.target, CdpTarget::ExactLabel("Friends".into()));
+    }
+
+    #[test]
+    fn cdp_hover_params_legacy_uid_deserializes_as_exact_label() {
+        let json = r#"{"uid": "Submit"}"#;
+        let params: CdpHoverParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.target, CdpTarget::ExactLabel("Submit".into()));
+    }
+
+    #[test]
+    fn cdp_click_params_legacy_preserves_verification_fields() {
+        let json = r#"{"uid": "OK", "verification_assertion": "button visible"}"#;
+        let params: CdpClickParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.target, CdpTarget::ExactLabel("OK".into()));
+        assert_eq!(
+            params.verification_assertion.as_deref(),
+            Some("button visible")
+        );
+    }
+
+    #[test]
+    fn cdp_click_params_missing_both_fields_defaults_to_intent() {
+        let json = r#"{}"#;
+        let params: CdpClickParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.target, CdpTarget::default());
+        assert!(matches!(params.target, CdpTarget::Intent(ref s) if s.is_empty()));
     }
 }

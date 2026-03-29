@@ -372,8 +372,8 @@ impl NodeType {
                 .map(|t| t.text())
                 .filter(|s| !s.is_empty()),
             NodeType::FindText(p) => Some(p.search_text.as_str()).filter(|s| !s.is_empty()),
-            NodeType::CdpClick(p) => Some(p.uid.as_str()).filter(|s| !s.is_empty()),
-            NodeType::CdpHover(p) => Some(p.uid.as_str()).filter(|s| !s.is_empty()),
+            NodeType::CdpClick(p) => Some(p.target.as_str()).filter(|s| !s.is_empty()),
+            NodeType::CdpHover(p) => Some(p.target.as_str()).filter(|s| !s.is_empty()),
             NodeType::CdpWait(p) => Some(p.text.as_str()).filter(|s| !s.is_empty()),
             _ => None,
         }
@@ -484,8 +484,8 @@ impl NodeType {
             NodeType::FindApp(p) => format!("Searched for app '{}'", p.search),
             NodeType::TakeScreenshot(_) => "Took a screenshot".to_string(),
             NodeType::CdpWait(p) => format!("Waited for text '{}'", p.text),
-            NodeType::CdpClick(p) => format!("CDP clicked element '{}'", p.uid),
-            NodeType::CdpHover(p) => format!("CDP hovered element '{}'", p.uid),
+            NodeType::CdpClick(p) => format!("CDP clicked element '{}'", p.target.as_str()),
+            NodeType::CdpHover(p) => format!("CDP hovered element '{}'", p.target.as_str()),
             NodeType::CdpFill(p) => {
                 if let Some(ref r) = p.value_ref {
                     return format!("CDP filled with {{{}.{}}}", r.node, r.field);

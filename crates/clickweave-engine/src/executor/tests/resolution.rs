@@ -1,7 +1,7 @@
 use super::helpers::*;
 use clickweave_core::{
-    CdpClickParams, CdpPressKeyParams, Node, NodeType, Position, RuntimeResolution, Workflow,
-    WorkflowPatchCompact,
+    CdpClickParams, CdpPressKeyParams, CdpTarget, Node, NodeType, Position, RuntimeResolution,
+    Workflow, WorkflowPatchCompact,
 };
 use uuid::Uuid;
 
@@ -40,7 +40,7 @@ fn apply_resolution_patch_changes_node_type() {
         id: press_key_id,
         name: "Click Note to Self".to_string(),
         node_type: NodeType::CdpClick(CdpClickParams {
-            uid: "Note to Self".to_string(),
+            target: CdpTarget::ExactLabel("Note to Self".to_string()),
             ..Default::default()
         }),
         position: Position { x: 0.0, y: 0.0 },
@@ -74,7 +74,7 @@ fn apply_resolution_patch_changes_node_type() {
         .unwrap();
     assert_eq!(node.name, "Click Note to Self");
     assert!(
-        matches!(&node.node_type, NodeType::CdpClick(p) if p.uid == "Note to Self"),
+        matches!(&node.node_type, NodeType::CdpClick(p) if p.target.as_str() == "Note to Self"),
         "Expected CdpClick but got {:?}",
         node.node_type
     );
@@ -90,7 +90,7 @@ fn apply_resolution_patch_preserves_edges() {
         id: a_id,
         name: "Click target".to_string(),
         node_type: NodeType::CdpClick(CdpClickParams {
-            uid: "target".to_string(),
+            target: CdpTarget::ExactLabel("target".to_string()),
             ..Default::default()
         }),
         position: Position { x: 0.0, y: 0.0 },
@@ -190,7 +190,7 @@ async fn request_resolution_sends_query_and_receives_response() {
                     id: a_id,
                     name: "Click Note to Self".to_string(),
                     node_type: NodeType::CdpClick(CdpClickParams {
-                        uid: "Note to Self".to_string(),
+                        target: CdpTarget::ExactLabel("Note to Self".to_string()),
                         ..Default::default()
                     }),
                     position: Position { x: 0.0, y: 0.0 },
@@ -252,7 +252,7 @@ async fn resolution_updated_changes_executor_workflow() {
                     id: a_id,
                     name: "Click Note to Self".to_string(),
                     node_type: NodeType::CdpClick(CdpClickParams {
-                        uid: "Note to Self".to_string(),
+                        target: CdpTarget::ExactLabel("Note to Self".to_string()),
                         ..Default::default()
                     }),
                     position: Position { x: 0.0, y: 0.0 },
@@ -286,7 +286,7 @@ async fn resolution_updated_changes_executor_workflow() {
     // Verify: node A is now CdpClick, not CdpPressKey
     let node_a = exec.workflow.nodes.iter().find(|n| n.id == a_id).unwrap();
     assert!(
-        matches!(&node_a.node_type, NodeType::CdpClick(p) if p.uid == "Note to Self"),
+        matches!(&node_a.node_type, NodeType::CdpClick(p) if p.target.as_str() == "Note to Self"),
         "Node A should be CdpClick after resolution, got {:?}",
         node_a.node_type
     );

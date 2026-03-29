@@ -2,8 +2,8 @@ use super::helpers::*;
 use crate::planner::prompt::patcher_system_prompt;
 use crate::planner::*;
 use clickweave_core::{
-    CdpClickParams, CdpPressKeyParams, ClickParams, ClickTarget, FindTextParams, FocusMethod,
-    FocusWindowParams, MouseButton, NodeType, Position, ScreenshotMode, TakeScreenshotParams,
+    CdpPressKeyParams, ClickParams, ClickTarget, FindTextParams, FocusMethod, FocusWindowParams,
+    MouseButton, NodeType, Position, ScreenshotMode, TakeScreenshotParams,
 };
 
 #[test]
@@ -444,8 +444,8 @@ fn update_tool_name_changes_cdp_press_key_to_cdp_click() {
     let updated = &result.updated_nodes[0];
     assert_eq!(updated.name, "Click Note to Self");
     assert!(
-        matches!(&updated.node_type, NodeType::CdpClick(CdpClickParams { uid, .. }) if uid == "Note to Self"),
-        "Expected CdpClick with uid 'Note to Self', got {:?}",
+        matches!(&updated.node_type, NodeType::CdpClick(p) if p.target.as_str() == "Note to Self"),
+        "Expected CdpClick with target 'Note to Self', got {:?}",
         updated.node_type
     );
 }

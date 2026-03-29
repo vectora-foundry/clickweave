@@ -382,7 +382,7 @@ pub fn synthesize_draft(
     workflow_name: &str,
 ) -> crate::Workflow {
     use crate::{
-        CdpClickParams, CdpHoverParams, ClickParams, ClickTarget, Edge, FocusMethod,
+        CdpClickParams, CdpHoverParams, CdpTarget, ClickParams, ClickTarget, Edge, FocusMethod,
         FocusWindowParams, HoverParams, Node, NodeType, Position, PressKeyParams, ScrollParams,
         TypeTextParams, Workflow,
     };
@@ -475,7 +475,7 @@ pub fn synthesize_draft(
                     if let Some(cdp_name) = cdp_candidate {
                         (
                             NodeType::CdpClick(CdpClickParams {
-                                uid: cdp_name.clone(),
+                                target: CdpTarget::ExactLabel(cdp_name.clone()),
                                 ..Default::default()
                             }),
                             format!("Click '{cdp_name}'"),
@@ -568,7 +568,7 @@ pub fn synthesize_draft(
                 let (node_type_out, name) = if let Some(cdp_name) = cdp_candidate {
                     (
                         NodeType::CdpHover(CdpHoverParams {
-                            uid: cdp_name.clone(),
+                            target: CdpTarget::ExactLabel(cdp_name.clone()),
                             ..Default::default()
                         }),
                         format!("Hover '{cdp_name}'"),
@@ -1486,7 +1486,8 @@ mod tests {
             let click_node = &draft.nodes[1];
             match &click_node.node_type {
                 NodeType::CdpClick(p) => {
-                    assert_eq!(p.uid, "Friends");
+                    assert_eq!(p.target.as_str(), "Friends");
+                    assert!(matches!(&p.target, crate::CdpTarget::ExactLabel(_)));
                 }
                 other => panic!("expected CdpClick, got {:?}", other),
             }
