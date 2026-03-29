@@ -356,6 +356,23 @@ impl NodeType {
         )
     }
 
+    /// Returns true for node types that type or fill text into an input field.
+    /// Used to determine whether a supervision retry should re-run the preceding
+    /// click to re-establish focus.
+    pub fn is_text_input(&self) -> bool {
+        matches!(
+            self,
+            NodeType::TypeText(_) | NodeType::CdpFill(_) | NodeType::CdpType(_)
+        )
+    }
+
+    /// Returns true for node types that establish element-level focus (clicks).
+    /// Used to identify predecessor nodes that should be re-run before retrying
+    /// a text-input node.
+    pub fn is_focus_establishing(&self) -> bool {
+        matches!(self, NodeType::Click(_) | NodeType::CdpClick(_))
+    }
+
     /// Extract the primary text target from node types that resolve elements by name.
     /// Returns `None` for node types that don't have a text-based target (e.g.
     /// coordinate clicks, key presses, AI steps).

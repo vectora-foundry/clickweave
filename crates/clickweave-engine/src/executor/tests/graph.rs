@@ -1,8 +1,9 @@
 use super::helpers::*;
 use clickweave_core::output_schema::{ConditionValue, OutputRef};
 use clickweave_core::{
-    ClickParams, Condition, EdgeOutput, EndLoopParams, IfParams, LiteralValue, LoopParams,
-    NodeType, Operator, Position, TypeTextParams, Workflow,
+    CdpClickParams, CdpFillParams, CdpTypeParams, ClickParams, Condition, EdgeOutput,
+    EndLoopParams, IfParams, LiteralValue, LoopParams, NodeType, Operator, Position,
+    TypeTextParams, Workflow,
 };
 use serde_json::Value;
 
@@ -217,4 +218,85 @@ fn test_runtime_context_variables_through_executor() {
     let loop_id = uuid::Uuid::new_v4();
     exec.context.loop_counters.insert(loop_id, 3);
     assert_eq!(exec.context.loop_counters[&loop_id], 3);
+}
+
+// ---------------------------------------------------------------------------
+// find_predecessor tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_find_predecessor_linear() {
+    let mut workflow = Workflow::new("test");
+    let click = workflow.add_node(
+        NodeType::Click(ClickParams::default()),
+        Position { x: 0.0, y: 0.0 },
+    );
+    let type_text = workflow.add_node(
+        NodeType::TypeText(TypeTextParams::default()),
+        Position { x: 100.0, y: 0.0 },
+    );
+    workflow.add_edge(click, type_text);
+
+    let exec = make_executor_with_workflow(workflow);
+    assert_eq!(exec.find_predecessor(type_text), Some(click));
+}
+
+#[test]
+fn test_find_predecessor_entry_point_has_none() {
+    let mut workflow = Workflow::new("test");
+    let a = workflow.add_node(
+        NodeType::Click(ClickParams::default()),
+        Position { x: 0.0, y: 0.0 },
+    );
+    let b = workflow.add_node(
+        NodeType::TypeText(TypeTextParams::default()),
+        Position { x: 100.0, y: 0.0 },
+    );
+    workflow.add_edge(a, b);
+
+    let exec = make_executor_with_workflow(workflow);
+    assert_eq!(exec.find_predecessor(a), None);
+}
+
+#[test]
+fn test_find_predecessor_ignores_labeled_edges() {
+    let mut workflow = Workflow::new("test");
+    let if_node = workflow.add_node(
+        NodeType::If(IfParams {
+            condition: dummy_condition(),
+        }),
+        Position { x: 0.0, y: 0.0 },
+    );
+    let type_text = workflow.add_node(
+        NodeType::TypeText(TypeTextParams::default()),
+        Position { x: 100.0, y: 0.0 },
+    );
+    workflow.add_edge_with_output(if_node, type_text, EdgeOutput::IfTrue);
+
+    let exec = make_executor_with_workflow(workflow);
+    // Labeled edge — find_predecessor returns None
+    assert_eq!(exec.find_predecessor(type_text), None);
+}
+
+// ---------------------------------------------------------------------------
+// NodeType classification tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_is_text_input() {
+    assert!(NodeType::TypeText(TypeTextParams::default()).is_text_input());
+    assert!(NodeType::CdpFill(CdpFillParams::default()).is_text_input());
+    assert!(NodeType::CdpType(CdpTypeParams::default()).is_text_input());
+
+    assert!(!NodeType::Click(ClickParams::default()).is_text_input());
+    assert!(!NodeType::CdpClick(CdpClickParams::default()).is_text_input());
+}
+
+#[test]
+fn test_is_focus_establishing() {
+    assert!(NodeType::Click(ClickParams::default()).is_focus_establishing());
+    assert!(NodeType::CdpClick(CdpClickParams::default()).is_focus_establishing());
+
+    assert!(!NodeType::TypeText(TypeTextParams::default()).is_focus_establishing());
+    assert!(!NodeType::CdpFill(CdpFillParams::default()).is_focus_establishing());
 }

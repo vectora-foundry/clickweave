@@ -52,6 +52,17 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .map(|e| e.to)
     }
 
+    /// Find the predecessor of a node by looking for an unlabeled incoming edge.
+    /// Returns `None` if the node has no unlabeled predecessor (e.g. entry point
+    /// or target of a labeled control-flow edge).
+    pub(crate) fn find_predecessor(&self, node_id: Uuid) -> Option<Uuid> {
+        self.workflow
+            .edges
+            .iter()
+            .find(|e| e.to == node_id && e.output.is_none())
+            .map(|e| e.from)
+    }
+
     /// Follow the "default" edge when a control flow node is disabled.
     /// Falls through to the non-executing branch: IfFalse, LoopDone, or
     /// the first available outgoing edge for Switch.

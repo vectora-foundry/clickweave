@@ -32,6 +32,68 @@ async fn wait_for_supervision_command(
 }
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
+    /// For text-input nodes (TypeText, CdpFill, CdpType), re-execute the
+    /// preceding click node to re-establish element focus before a supervision
+    /// retry.  Without this, retries keep typing into the same wrong field
+    /// when the original click targeted the wrong element.
+    async fn re_execute_preceding_click(
+        &mut self,
+        node_id: Uuid,
+        node_type: &NodeType,
+        mcp: &McpClient,
+    ) {
+        if !node_type.is_text_input() {
+            return;
+        }
+
+        let Some(pred_id) = self.find_predecessor(node_id) else {
+            return;
+        };
+
+        // Clone what we need to avoid holding an immutable borrow on
+        // self.workflow across the mutable execute_deterministic call.
+        let pred = self
+            .workflow
+            .find_node(pred_id)
+            .filter(|n| n.enabled)
+            .map(|n| (n.name.clone(), n.node_type.clone()));
+
+        let Some((pred_name, pred_type)) = pred else {
+            return;
+        };
+
+        if !pred_type.is_focus_establishing() {
+            return;
+        }
+
+        self.log(format!(
+            "Re-running preceding click '{}' to re-establish focus",
+            pred_name
+        ));
+        self.evict_caches_for_node(&pred_type);
+
+        // Evict click disambiguation entries for the predecessor so the
+        // re-executed click doesn't replay the same (wrong) cached choice.
+        let prefix = format!("{}\0", pred_id);
+        self.write_decision_cache()
+            .click_disambiguation
+            .retain(|k, _| !k.starts_with(&prefix));
+        match self
+            .execute_deterministic(pred_id, &pred_type, mcp, None)
+            .await
+        {
+            Ok(_) => {
+                self.log(format!("Preceding click '{}' succeeded", pred_name));
+            }
+            Err(e) => {
+                self.log(format!(
+                    "Warning: preceding click '{}' failed: {} (continuing with retry)",
+                    pred_name, e
+                ));
+            }
+        }
+    }
+
     /// Execute a regular node with retry logic. Returns the result value on success.
     #[allow(clippy::too_many_arguments)]
     async fn execute_node_with_retries(
@@ -372,6 +434,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                         "reason": verification.reasoning,
                                     }),
                                 );
+                                self.re_execute_preceding_click(node_id, &node_type, &mcp)
+                                    .await;
                                 continue;
                             } else {
                                 // Exhausted auto-retries — try runtime resolution
@@ -477,6 +541,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                 {
                                     SupervisionAction::Retry => {
                                         self.log("Supervision: user chose Retry");
+                                        self.re_execute_preceding_click(node_id, &node_type, &mcp)
+                                            .await;
                                         continue;
                                     }
                                     SupervisionAction::Skip => {
