@@ -59,8 +59,8 @@ async fn handle_query(
     // --- Retrieve the LLM config and conversation from session handle ---
     let session_handle = app.state::<tokio::sync::Mutex<AssistantSessionHandle>>();
 
-    let (config, conversation, resolution_wf) = {
-        let guard = session_handle.lock().await;
+    let (config, conversation, resolution_wf, mcp_tools) = {
+        let mut guard = session_handle.lock().await;
         let config = match &guard.assistant_config {
             Some(c) => c.clone(),
             None => {
@@ -70,7 +70,15 @@ async fn handle_query(
         };
         let conversation = guard.conversation.clone();
         let wf = guard.resolution_workflow.clone().unwrap_or_default();
-        (config, conversation, wf)
+        // Take the session briefly to get MCP tools, then return it
+        let tools = if let Some(session) = guard.take_session() {
+            let tools = session.mcp_tools_openai().await;
+            guard.return_session(session);
+            tools
+        } else {
+            Vec::new()
+        };
+        (config, conversation, wf, tools)
     };
 
     // Build the query message for the LLM (may include screenshot)
@@ -123,15 +131,9 @@ async fn handle_query(
     let workflow = resolution_wf;
 
     let client = LlmClient::new(config);
-    let result = resolution_chat_with_backend(
-        &client,
-        &workflow,
-        query_message,
-        &conversation,
-        0,    // max_repair_attempts
-        None, // on_repair_attempt
-    )
-    .await;
+    let result =
+        resolution_chat_with_backend(&client, &workflow, query_message, &conversation, &mcp_tools)
+            .await;
 
     let assistant_result = match result {
         Ok(r) => r,

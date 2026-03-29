@@ -352,8 +352,7 @@ pub async fn resolution_chat_with_backend(
     workflow: &Workflow,
     query_message: Message,
     session: &ConversationSession,
-    _max_repair_attempts: usize,
-    _on_repair_attempt: Option<&(dyn Fn(usize, usize) + Send + Sync)>,
+    mcp_tools: &[Value],
 ) -> Result<AssistantResult> {
     let system = super::resolution::resolution_system_prompt(workflow);
 
@@ -397,7 +396,8 @@ pub async fn resolution_chat_with_backend(
         .ok_or_else(|| anyhow::anyhow!("No response from LLM"))?;
     let content = choice.message.content_text().unwrap_or_default();
 
-    let (message, patch, warnings) = parse_assistant_response(content, workflow, &[], false, false);
+    let (message, patch, warnings) =
+        parse_assistant_response(content, workflow, mcp_tools, false, false);
 
     let prompt_tokens = response.usage.as_ref().map(|u| u.prompt_tokens);
 

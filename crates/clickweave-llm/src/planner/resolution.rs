@@ -22,7 +22,7 @@ Return a JSON object with optional fields:
 {{
   "reasoning": "Brief explanation of the fix",
   "update": [{{"node_id": "<uuid>", ...changed_fields}}],
-  "add_nodes": [{{"name": "...", "node_type": "...", "arguments": {{}}, "insert_before": "<failing_node_uuid>"}}],
+  "add_nodes": [{{"name": "...", "tool_name": "...", "arguments": {{}}, "insert_before": "<failing_node_uuid>"}}],
   "remove_node_ids": ["<uuid>", ...]
 }}
 ```
@@ -30,10 +30,12 @@ Return a JSON object with optional fields:
 ### Update (field corrections on the failing node)
 - `target` — the element to interact with
 - `name` — node display name
-- `text` — text to type
+- `tool_name` + `arguments` — change the tool when the action itself is wrong (e.g., `"tool_name": "cdp_click", "arguments": {{"target": "OK"}}` to change a press_key into a click)
+- `text` — text to type (for type_text / cdp_type_text)
+- `key` — key name (for press_key / cdp_press_key)
 - `expected_outcome` — verification criteria
-- Tool-specific arguments (`key`, `direction`, `app_name`)
-- The node type (tool) MUST stay the same
+
+Available tool names: click, press_key, type_text, hover, focus_window, scroll, find_text, launch_app, cdp_click, cdp_type_text, cdp_press_key, cdp_hover, cdp_fill, cdp_select_page
 
 ### Insert (new steps before the failing node)
 - Allowed types: Click, PressKey, TypeText, Hover, FocusWindow, Scroll, FindText
