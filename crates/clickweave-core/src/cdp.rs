@@ -108,13 +108,9 @@ fn find_matches_split(
                 .unwrap_or((None, None));
 
             let ancestors: Vec<(String, String)> = parent_stack
+                [..parent_stack.len().saturating_sub(1)]
                 .iter()
-                .rev()
-                .skip(1) // skip the element itself (just pushed)
                 .map(|(_, role, name)| (role.clone(), name.clone().unwrap_or_default()))
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
                 .collect();
 
             let m = SnapshotMatch {
