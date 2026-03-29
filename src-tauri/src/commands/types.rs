@@ -63,6 +63,12 @@ pub struct NodeTypeInfo {
     pub node_type: NodeType,
 }
 
+#[derive(Debug, Serialize, Type)]
+pub struct ConfirmableTool {
+    pub name: &'static str,
+    pub description: &'static str,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct EndpointConfig {
     pub base_url: String,

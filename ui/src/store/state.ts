@@ -16,6 +16,16 @@ export const DEFAULT_ENDPOINT: EndpointConfig = {
 
 export const DEFAULT_VLM_ENABLED = false;
 
+export interface ToolPermissions {
+  allowAll: boolean;
+  tools: Record<string, "ask" | "allow">;
+}
+
+export const DEFAULT_TOOL_PERMISSIONS: ToolPermissions = {
+  allowAll: false,
+  tools: {},
+};
+
 export function makeDefaultWorkflow(): Workflow {
   return {
     id: crypto.randomUUID(),

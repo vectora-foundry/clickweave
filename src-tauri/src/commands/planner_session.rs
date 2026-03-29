@@ -5,8 +5,10 @@ use clickweave_llm::planner::tool_use::{
 };
 use clickweave_mcp::McpClient;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_store::StoreExt;
 use tokio::sync::{Mutex, oneshot};
 use tracing::info;
 use uuid::Uuid;
@@ -373,7 +375,18 @@ impl PlannerToolExecutor for PlannerSession {
         if !is_planning_tool(name) {
             return ToolPermission::Blocked;
         }
-        planning_tool_permission(name)
+        let base = planning_tool_permission(name);
+        if base != ToolPermission::RequiresConfirmation {
+            return base;
+        }
+        // Re-read live from the store so "Always allow" takes effect
+        // immediately (even within the same planning session). The Tauri
+        // store is cached in memory, so this is a cheap HashMap lookup.
+        let (allow_all, allowed) = load_tool_permissions(&self.app);
+        if allow_all || allowed.contains(name) {
+            return ToolPermission::Allowed;
+        }
+        ToolPermission::RequiresConfirmation
     }
 
     async fn request_confirmation(&self, message: &str, tool_name: &str) -> anyhow::Result<bool> {
@@ -414,6 +427,43 @@ impl PlannerToolExecutor for PlannerSession {
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
+}
+
+/// Read tool permissions from persisted settings.json via the Tauri store plugin.
+/// Returns (allow_all, set_of_individually_allowed_tool_names).
+fn load_tool_permissions(app: &AppHandle) -> (bool, HashSet<String>) {
+    let store = match app.store("settings.json") {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("Failed to open settings store for permissions: {}", e);
+            return (false, HashSet::new());
+        }
+    };
+
+    let perms = match store.get("toolPermissions") {
+        Some(v) => v,
+        None => return (false, HashSet::new()),
+    };
+
+    let allow_all = perms
+        .get("allowAll")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let mut allowed = HashSet::new();
+    if let Some(tools) = perms.get("tools").and_then(|v| v.as_object()) {
+        for (name, level) in tools {
+            if level.as_str() == Some("allow") {
+                allowed.insert(name.clone());
+            }
+        }
+    }
+
+    info!(
+        "Loaded tool permissions: allow_all={}, allowed={:?}",
+        allow_all, allowed
+    );
+    (allow_all, allowed)
 }
 
 /// Managed state that owns the PlannerSession for the current assistant conversation.

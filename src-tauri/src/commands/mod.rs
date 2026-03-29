@@ -25,9 +25,9 @@ pub use planner_session::{
     AssistantSessionHandle, PlannerHandle, clear_assistant_session, planner_confirmation_respond,
 };
 pub use project::{
-    generate_auto_id, get_mcp_status, import_asset, load_conversation, node_type_defaults,
-    open_project, pick_save_file, pick_workflow_file, ping, save_conversation, save_project,
-    validate,
+    confirmable_tools, generate_auto_id, get_mcp_status, import_asset, load_conversation,
+    node_type_defaults, open_project, pick_save_file, pick_workflow_file, ping, save_conversation,
+    save_project, validate,
 };
 pub use resolution_listener::{ResolutionState, resolution_respond};
 pub use runs::{list_runs, load_run_events, read_artifact_base64};

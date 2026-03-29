@@ -76,6 +76,16 @@ const ALWAYS_ALLOWED: &[&str] = &["probe_app", "take_ax_snapshot"];
 /// Tools that require user confirmation (side effects).
 const REQUIRES_CONFIRMATION: &[&str] = &["quit_app", "launch_app", "cdp_connect"];
 
+/// Confirmable tool metadata for the permissions UI.
+pub const CONFIRMABLE_TOOLS: &[(&str, &str)] = &[
+    ("quit_app", "Closes a running application"),
+    ("launch_app", "Opens an application"),
+    (
+        "cdp_connect",
+        "Connects to app via Chrome DevTools Protocol",
+    ),
+];
+
 /// Tools allowed only after CDP is connected (read-only).
 const CDP_READ_ONLY: &[&str] = &[
     "cdp_take_snapshot",

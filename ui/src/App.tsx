@@ -78,7 +78,7 @@ function App() {
     })),
   );
 
-  const { plannerConfig, agentConfig, vlmConfig, vlmEnabled, maxRepairAttempts, hoverDwellThreshold } = useStore(
+  const { plannerConfig, agentConfig, vlmConfig, vlmEnabled, maxRepairAttempts, hoverDwellThreshold, toolPermissions } = useStore(
     useShallow((s) => ({
       plannerConfig: s.plannerConfig,
       agentConfig: s.agentConfig,
@@ -86,6 +86,7 @@ function App() {
       vlmEnabled: s.vlmEnabled,
       maxRepairAttempts: s.maxRepairAttempts,
       hoverDwellThreshold: s.hoverDwellThreshold,
+      toolPermissions: s.toolPermissions,
     })),
   );
 
@@ -117,6 +118,8 @@ function App() {
   const setVlmEnabled = useStore((s) => s.setVlmEnabled);
   const setMaxRepairAttempts = useStore((s) => s.setMaxRepairAttempts);
   const setHoverDwellThreshold = useStore((s) => s.setHoverDwellThreshold);
+  const setToolPermissions = useStore((s) => s.setToolPermissions);
+  const setToolPermission = useStore((s) => s.setToolPermission);
   const setExecutionMode = useStore((s) => s.setExecutionMode);
   const supervisionRespond = useStore((s) => s.supervisionRespond);
   const resolveResolution = useStore((s) => s.resolveResolution);
@@ -314,6 +317,7 @@ function App() {
         vlmEnabled={vlmEnabled}
         maxRepairAttempts={maxRepairAttempts}
         hoverDwellThreshold={hoverDwellThreshold}
+        toolPermissions={toolPermissions}
         onClose={() => setShowSettings(false)}
         onPlannerConfigChange={setPlannerConfig}
         onAgentConfigChange={setAgentConfig}
@@ -321,6 +325,8 @@ function App() {
         onVlmEnabledChange={setVlmEnabled}
         onMaxRepairAttemptsChange={setMaxRepairAttempts}
         onHoverDwellThresholdChange={setHoverDwellThreshold}
+        onToolPermissionsChange={setToolPermissions}
+        onToolPermissionChange={setToolPermission}
       />
 
       <VerdictModal />

@@ -2,7 +2,11 @@ import { useEffect, useState } from "react";
 import type { ChromeProfile } from "../bindings";
 import { commands } from "../bindings";
 import type { EndpointConfig } from "../store/useAppStore";
+import type { ToolPermissions } from "../store/state";
 import { Modal } from "./Modal";
+import { PermissionsTab } from "./PermissionsTab";
+
+type SettingsTab = "general" | "permissions";
 
 interface SettingsModalProps {
   open: boolean;
@@ -12,6 +16,7 @@ interface SettingsModalProps {
   vlmEnabled: boolean;
   maxRepairAttempts: number;
   hoverDwellThreshold: number;
+  toolPermissions: ToolPermissions;
   onClose: () => void;
   onPlannerConfigChange: (config: EndpointConfig) => void;
   onAgentConfigChange: (config: EndpointConfig) => void;
@@ -19,6 +24,8 @@ interface SettingsModalProps {
   onVlmEnabledChange: (enabled: boolean) => void;
   onMaxRepairAttemptsChange: (n: number) => void;
   onHoverDwellThresholdChange: (ms: number) => void;
+  onToolPermissionsChange: (perms: ToolPermissions) => void;
+  onToolPermissionChange: (toolName: string, level: "ask" | "allow") => void;
 }
 
 const inputClass =
@@ -198,6 +205,7 @@ export function SettingsModal({
   vlmEnabled,
   maxRepairAttempts,
   hoverDwellThreshold,
+  toolPermissions,
   onClose,
   onPlannerConfigChange,
   onAgentConfigChange,
@@ -205,7 +213,11 @@ export function SettingsModal({
   onVlmEnabledChange,
   onMaxRepairAttemptsChange,
   onHoverDwellThresholdChange,
+  onToolPermissionsChange,
+  onToolPermissionChange,
 }: SettingsModalProps) {
+  const [tab, setTab] = useState<SettingsTab>("general");
+
   return (
     <Modal open={open} onClose={onClose} className="w-[480px] max-h-[90vh] overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] shadow-xl">
         <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
@@ -220,6 +232,30 @@ export function SettingsModal({
           </button>
         </div>
 
+        {/* Tab bar */}
+        <div className="flex border-b border-[var(--border)]">
+          {(["general", "permissions"] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`px-5 py-2.5 text-xs capitalize ${
+                tab === t
+                  ? "border-b-2 border-[var(--accent-coral)] font-semibold text-[var(--text-primary)]"
+                  : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+              }`}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+
+        {tab === "permissions" ? (
+          <PermissionsTab
+            toolPermissions={toolPermissions}
+            onToolPermissionsChange={onToolPermissionsChange}
+            onToolPermissionChange={onToolPermissionChange}
+          />
+        ) : (
         <div className="space-y-4 p-4">
           <ConfigSection
             title="Planner"
@@ -325,6 +361,7 @@ export function SettingsModal({
             </div>
           </div>
         </div>
+        )}
 
         <div className="flex justify-end border-t border-[var(--border)] px-4 py-3">
           <button

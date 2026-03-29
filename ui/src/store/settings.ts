@@ -1,6 +1,6 @@
 import { load } from "@tauri-apps/plugin-store";
-import type { EndpointConfig } from "./state";
-import { DEFAULT_ENDPOINT, DEFAULT_VLM_ENABLED } from "./state";
+import type { EndpointConfig, ToolPermissions } from "./state";
+import { DEFAULT_ENDPOINT, DEFAULT_TOOL_PERMISSIONS, DEFAULT_VLM_ENABLED } from "./state";
 
 export interface PersistedSettings {
   plannerConfig: EndpointConfig;
@@ -9,6 +9,7 @@ export interface PersistedSettings {
   vlmEnabled: boolean;
   maxRepairAttempts: number;
   hoverDwellThreshold: number;
+  toolPermissions: ToolPermissions;
 }
 
 const SETTINGS_DEFAULTS: PersistedSettings = {
@@ -18,6 +19,7 @@ const SETTINGS_DEFAULTS: PersistedSettings = {
   vlmEnabled: DEFAULT_VLM_ENABLED,
   maxRepairAttempts: 3,
   hoverDwellThreshold: 2000,
+  toolPermissions: DEFAULT_TOOL_PERMISSIONS,
 };
 
 export async function loadSettings(): Promise<PersistedSettings> {
@@ -33,6 +35,7 @@ export async function loadSettings(): Promise<PersistedSettings> {
   const vlmEnabled = await store.get<boolean>("vlmEnabled");
   const maxRepairAttempts = await store.get<number>("maxRepairAttempts");
   const hoverDwellThreshold = await store.get<number>("hoverDwellThreshold");
+  const toolPermissions = await store.get<ToolPermissions>("toolPermissions");
   return {
     plannerConfig: plannerConfig ?? fallback,
     agentConfig: agentConfig ?? fallback,
@@ -40,6 +43,7 @@ export async function loadSettings(): Promise<PersistedSettings> {
     vlmEnabled: vlmEnabled ?? SETTINGS_DEFAULTS.vlmEnabled,
     maxRepairAttempts: maxRepairAttempts ?? SETTINGS_DEFAULTS.maxRepairAttempts,
     hoverDwellThreshold: hoverDwellThreshold ?? SETTINGS_DEFAULTS.hoverDwellThreshold,
+    toolPermissions: toolPermissions ?? SETTINGS_DEFAULTS.toolPermissions,
   };
 }
 

@@ -127,6 +127,7 @@ fn main() {
         launch_chrome_for_setup,
         planner_confirmation_respond,
         resolution_respond,
+        confirmable_tools,
     ]);
 
     #[cfg(debug_assertions)]

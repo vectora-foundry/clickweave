@@ -2,6 +2,7 @@ use super::error::CommandError;
 use super::types::*;
 use clickweave_core::{NodeType, Workflow, validate_workflow};
 use clickweave_llm::planner::conversation::ConversationSession;
+use clickweave_llm::planner::tool_use::CONFIRMABLE_TOOLS;
 use std::path::PathBuf;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
@@ -110,6 +111,15 @@ pub fn node_type_defaults() -> Vec<NodeTypeInfo> {
             icon: nt.icon(),
             node_type: nt,
         })
+        .collect()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn confirmable_tools() -> Vec<ConfirmableTool> {
+    CONFIRMABLE_TOOLS
+        .iter()
+        .map(|(name, description)| ConfirmableTool { name, description })
         .collect()
 }
 

@@ -323,6 +323,9 @@ async resolutionRespond(approved: boolean) : Promise<Result<null, CommandError>>
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async confirmableTools() : Promise<ConfirmableTool[]> {
+    return await TAURI_INVOKE("confirmable_tools");
 }
 }
 
@@ -389,6 +392,7 @@ export type Condition = { left: OutputRef; operator: Operator; right: ConditionV
  * Right-hand side of a condition: either a literal or a reference to an upstream output.
  */
 export type ConditionValue = { type: "Literal"; value: LiteralValue } | ({ type: "Ref" } & OutputRef)
+export type ConfirmableTool = { name: string; description: string }
 /**
  * A running app detected as Electron or Chrome, returned to the frontend for CDP selection.
  */
