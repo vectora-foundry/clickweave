@@ -89,6 +89,22 @@ async cancelAssistantChat() : Promise<Result<null, CommandError>> {
     else return { status: "error", error: e  as any };
 }
 },
+async getAssistantSessionId() : Promise<Result<string | null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_assistant_session_id") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async rewindConversation(toIndex: number) : Promise<Result<ChatEntry[], CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("rewind_conversation", { toIndex }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async clearAssistantSession() : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("clear_assistant_session") };
@@ -296,6 +312,17 @@ async plannerConfirmationRespond(approved: boolean) : Promise<Result<null, Comma
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Tauri command: user responds to a resolution proposal (approve/reject).
+ */
+async resolutionRespond(approved: boolean) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resolution_respond", { approved }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -362,10 +389,6 @@ export type Condition = { left: OutputRef; operator: Operator; right: ConditionV
  * Right-hand side of a condition: either a literal or a reference to an upstream output.
  */
 export type ConditionValue = { type: "Literal"; value: LiteralValue } | ({ type: "Ref" } & OutputRef)
-/**
- * Persistent conversation session for a workflow.
- */
-export type ConversationSession = { messages: ChatEntry[]; summary?: string | null; summary_cutoff?: number }
 /**
  * A running app detected as Electron or Chrome, returned to the frontend for CDP selection.
  */
@@ -466,7 +489,7 @@ export type RunRequest = { workflow: Workflow; project_path: string | null; agen
  * Planner LLM used for supervision in Test mode.
  */
 planner: EndpointConfig | null; execution_mode: ExecutionMode }
-export type RunStatus = "Ok" | "Failed" | "Stopped"
+export type RunStatus = "Ok" | "Failed" | "Stopped" | "Cancelled"
 export type RunsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string }
 /**
  * Screenshot coordinate metadata for mapping screen coordinates to image pixels.
