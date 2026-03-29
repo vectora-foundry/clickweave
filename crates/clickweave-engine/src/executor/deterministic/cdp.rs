@@ -2,7 +2,7 @@ use std::path::Path;
 
 use super::super::{ExecutorError, ExecutorResult, Mcp, WorkflowExecutor};
 use clickweave_core::NodeRun;
-use clickweave_core::cdp::{SnapshotMatch, find_elements_in_snapshot};
+use clickweave_core::cdp::{SnapshotMatch, build_element_inventory, find_elements_in_snapshot};
 use clickweave_llm::ChatBackend;
 use uuid::Uuid;
 
@@ -59,10 +59,35 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         if matches.is_empty() {
             self.log(format!(
-                "CDP: no exact match for '{}', trying LLM resolution",
+                "CDP: no exact match for '{}', resolving via element inventory",
                 target
             ));
-            self.resolve_cdp_element_name(target, &snapshot_text).await
+            let mut resolved = self.resolve_via_inventory(target, &snapshot_text).await?;
+            clickweave_core::cdp::narrow_matches(&mut resolved, expected.role, expected.href);
+            clickweave_core::cdp::narrow_by_parent(
+                &mut resolved,
+                expected.parent_role,
+                expected.parent_name,
+            );
+            if resolved.is_empty() {
+                return Err(ExecutorError::Cdp(format!(
+                    "No matching elements for '{}' after inventory resolution",
+                    target
+                )));
+            } else if resolved.len() == 1 {
+                self.log(format!(
+                    "CDP: inventory resolved '{}' -> uid='{}'",
+                    target, resolved[0].uid
+                ));
+                Ok(resolved[0].uid.clone())
+            } else {
+                self.log(format!(
+                    "CDP: inventory found {} matches for '{}', disambiguating",
+                    resolved.len(),
+                    target
+                ));
+                self.disambiguate_cdp_elements(target, &resolved).await
+            }
         } else if matches.len() == 1 {
             Ok(matches[0].uid.clone())
         } else {
@@ -137,28 +162,42 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .await
     }
 
-    /// Ask the LLM to find the best matching element in the CDP snapshot.
-    async fn resolve_cdp_element_name(
+    /// Resolve a target with no direct matches by showing the LLM a compact
+    /// element inventory and asking it to pick the best label, then searching
+    /// the snapshot for that label to get structured matches with ancestors.
+    async fn resolve_via_inventory(
         &self,
         target: &str,
         snapshot_text: &str,
-    ) -> ExecutorResult<String> {
-        // Extract a focused window around matching lines instead of blindly
-        // truncating. This ensures the target element (which may be deep in a
-        // large DOM) is visible to the LLM.
-        let context = extract_snapshot_context(target, snapshot_text, 4000);
+    ) -> ExecutorResult<Vec<SnapshotMatch>> {
+        let inventory = build_element_inventory(snapshot_text, 10);
+        if inventory.groups.is_empty() {
+            return Err(ExecutorError::Cdp(format!(
+                "No interactive elements found in CDP snapshot for '{}'",
+                target
+            )));
+        }
+
+        // Format a compact inventory: "textbox (2): Search, Message\nbutton (27): ..."
+        let inventory_text: String = inventory
+            .groups
+            .iter()
+            .map(|g| format!("{} ({}): {}", g.role, g.count, g.sample_labels.join(", ")))
+            .collect::<Vec<_>>()
+            .join("\n");
 
         let prompt = format!(
-            "Find the element in this page snapshot that best matches the target '{target}'.\n\
-             Return ONLY the uid value, nothing else.\n\n\
-             Page snapshot:\n{context}"
+            "The target element is '{target}', but no element with that exact name exists on this page.\n\n\
+             Here are all interactive elements grouped by role:\n{inventory_text}\n\n\
+             Which element label is the best match for '{target}'?\n\
+             Return ONLY the exact label text, nothing else."
         );
 
         let response = self
             .reasoning_backend()
             .chat(vec![clickweave_llm::Message::user(prompt)], None)
             .await
-            .map_err(|e| ExecutorError::Cdp(format!("LLM resolution failed: {e}")))?;
+            .map_err(|e| ExecutorError::Cdp(format!("LLM inventory resolution failed: {e}")))?;
 
         let raw_text = response
             .choices
@@ -166,27 +205,28 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .and_then(|c| c.message.content_text())
             .ok_or_else(|| ExecutorError::Cdp("LLM returned empty content".to_string()))?;
 
-        let uid = raw_text.trim().trim_matches('"').to_string();
-        if uid.is_empty() {
+        let resolved_label = raw_text.trim().trim_matches('"').to_string();
+        if resolved_label.is_empty() {
             return Err(ExecutorError::Cdp(format!(
-                "LLM could not resolve '{}' in CDP snapshot",
+                "LLM could not resolve '{}' from element inventory",
                 target
             )));
         }
 
-        // Validate that the UID actually appears in the snapshot.
-        let uid_exists = snapshot_text.contains(&format!("uid=\"{}\"", uid))
-            || snapshot_text.contains(&format!("uid={} ", uid))
-            || snapshot_text.ends_with(&format!("uid={}", uid));
-        if !uid_exists {
+        self.log(format!(
+            "CDP: inventory resolved '{}' -> '{}'",
+            target, resolved_label
+        ));
+
+        let matches = find_elements_in_snapshot(snapshot_text, &resolved_label);
+        if matches.is_empty() {
             return Err(ExecutorError::Cdp(format!(
-                "LLM returned uid '{}' which does not exist in the CDP snapshot",
-                uid
+                "LLM suggested '{}' for target '{}' but no elements matched",
+                resolved_label, target
             )));
         }
 
-        self.log(format!("CDP: LLM resolved '{}' -> uid='{}'", target, uid));
-        Ok(uid)
+        Ok(matches)
     }
 
     /// Disambiguate between multiple CDP element matches using the LLM.
@@ -644,34 +684,6 @@ async fn existing_debug_port(app_name: &str) -> Option<u16> {
             }
         }
         None
-    }
-}
-
-/// Extract a focused context window from a CDP snapshot around lines matching
-/// the target text. If matches are found, returns lines around the first match.
-/// If no matches, falls back to the first `max_chars` of the snapshot.
-fn extract_snapshot_context(target: &str, snapshot: &str, max_chars: usize) -> String {
-    let target_lower = target.to_lowercase();
-    let lines: Vec<&str> = snapshot.lines().collect();
-
-    // Find the first line containing the target text (case-insensitive)
-    let match_idx = lines
-        .iter()
-        .position(|l| l.to_lowercase().contains(&target_lower));
-
-    if let Some(idx) = match_idx {
-        // Include surrounding context: 20 lines before, 20 lines after
-        let start = idx.saturating_sub(20);
-        let end = (idx + 20).min(lines.len());
-        let context: String = lines[start..end].join("\n");
-        if context.len() <= max_chars {
-            return context;
-        }
-        // If still too large, truncate from the context window
-        context[..context.floor_char_boundary(max_chars)].to_string()
-    } else {
-        // No match — fall back to truncated start of snapshot
-        snapshot[..snapshot.floor_char_boundary(max_chars)].to_string()
     }
 }
 
