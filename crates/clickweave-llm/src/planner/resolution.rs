@@ -37,7 +37,7 @@ Return a JSON object with optional fields:
 Available tool names: click, press_key, type_text, move_mouse, focus_window, scroll, find_text, launch_app, cdp_click, cdp_type_text, cdp_press_key, cdp_hover, cdp_fill, cdp_select_page, cdp_navigate, cdp_new_page, cdp_close_page, cdp_wait_for, cdp_handle_dialog
 
 ### Insert (new steps before the failing node)
-- Allowed types: Click, PressKey, TypeText, Hover, FocusWindow, Scroll, FindText
+- Use any tool from the Available tool names list above
 - Use `insert_before` with the failing node's ID — do NOT emit edges
 - NOT allowed: Loop, EndLoop, If, Switch, AiStep
 
