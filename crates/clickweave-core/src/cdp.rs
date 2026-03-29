@@ -19,6 +19,9 @@ pub struct SnapshotMatch {
     pub url: Option<String>,
     pub parent_role: Option<String>,
     pub parent_name: Option<String>,
+    /// Ancestor chain from root to immediate parent: (role, name) pairs.
+    /// Name is empty string for unnamed containers.
+    pub ancestors: Vec<(String, String)>,
 }
 
 /// Parse a CDP snapshot and find interactive elements whose text contains the target.
@@ -104,6 +107,16 @@ fn find_matches_split(
                 .map(|(_, r, n)| (Some(r.clone()), n.clone()))
                 .unwrap_or((None, None));
 
+            let ancestors: Vec<(String, String)> = parent_stack
+                .iter()
+                .rev()
+                .skip(1) // skip the element itself (just pushed)
+                .map(|(_, role, name)| (role.clone(), name.clone().unwrap_or_default()))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+
             let m = SnapshotMatch {
                 uid,
                 label: label.clone(),
@@ -111,6 +124,7 @@ fn find_matches_split(
                 url: extract_url(line),
                 parent_role,
                 parent_name,
+                ancestors,
             };
             if is_exact {
                 exact.push(m);
@@ -902,5 +916,41 @@ uid=1_0 RootWebArea "App"
     fn inventory_empty_snapshot() {
         let inv = build_element_inventory("", 5);
         assert!(inv.groups.is_empty());
+    }
+
+    #[test]
+    fn find_matches_populates_ancestors() {
+        let snapshot = "\
+uid=\"1\" RootWebArea \"Signal\"
+  uid=\"2\" navigation \"sidebar\"
+    uid=\"3\" region \"Search\"
+      uid=\"60\" textbox \"Search\"
+  uid=\"4\" main
+    uid=\"5\" region \"Conversation\"
+      uid=\"6\" region \"Message composition\"
+        uid=\"120\" textbox \"Type a message\"";
+
+        let matches = find_elements_in_snapshot(snapshot, "Type a message");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].uid, "120");
+
+        let ancestors = &matches[0].ancestors;
+        assert!(
+            ancestors.len() >= 3,
+            "Expected at least 3 ancestors, got {}",
+            ancestors.len()
+        );
+
+        // Check the chain contains key structural parents
+        assert!(
+            ancestors.iter().any(|(role, _)| role == "RootWebArea"),
+            "ancestors should include RootWebArea"
+        );
+        assert!(
+            ancestors
+                .iter()
+                .any(|(role, name)| role == "region" && name == "Message composition"),
+            "ancestors should include region 'Message composition'"
+        );
     }
 }
