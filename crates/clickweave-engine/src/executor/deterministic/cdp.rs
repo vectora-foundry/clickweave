@@ -77,10 +77,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 expected.parent_name,
             );
             if resolved.is_empty() {
-                return Err(ExecutorError::Cdp(format!(
+                Err(ExecutorError::Cdp(format!(
                     "No matching elements for '{}' after inventory resolution",
                     target
-                )));
+                )))
             } else if resolved.len() == 1 {
                 self.log(format!(
                     "CDP: inventory resolved '{}' -> uid='{}'",
@@ -275,8 +275,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             target, resolved_label
         ));
 
-        resolve_inventory_response(target, &raw_text, snapshot_text)
-            .map_err(|e| ExecutorError::Cdp(e))
+        resolve_inventory_response(target, raw_text, snapshot_text).map_err(ExecutorError::Cdp)
     }
 
     /// Disambiguate between multiple CDP element matches using the LLM.
@@ -286,7 +285,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         matches: &[SnapshotMatch],
     ) -> ExecutorResult<String> {
         let hint = self.supervision_hint.as_deref();
-        let tried = self.read_tried_cdp_uids();
+        let tried: Vec<String> = self.read_tried_cdp_uids().clone();
         let prompt = build_disambiguation_prompt(target, matches, hint, &tried);
 
         let response = self
@@ -301,7 +300,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .and_then(|c| c.message.content_text())
             .unwrap_or_default();
 
-        let uid = resolve_disambiguation_response(&raw_text, matches);
+        let uid = resolve_disambiguation_response(raw_text, matches);
         if raw_text.trim().trim_matches('"') != uid || uid == matches[0].uid.as_str() {
             // LLM returned invalid uid — we fell back to first match
             if raw_text.trim().trim_matches('"') != uid {
