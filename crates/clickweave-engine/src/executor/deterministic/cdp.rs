@@ -201,7 +201,32 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let options: Vec<String> = matches
             .iter()
             .enumerate()
-            .map(|(i, m)| format!("{}: uid={} — {}", i + 1, m.uid, m.label))
+            .map(|(i, m)| {
+                let ancestor_path = if m.ancestors.is_empty() {
+                    String::new()
+                } else {
+                    let path: Vec<String> = m
+                        .ancestors
+                        .iter()
+                        .map(|(role, name)| {
+                            if name.is_empty() {
+                                role.clone()
+                            } else {
+                                format!("{role} \"{name}\"")
+                            }
+                        })
+                        .collect();
+                    format!("\n   ancestors: {}", path.join(" > "))
+                };
+                format!(
+                    "{}: uid={} role={} \"{}\"{}",
+                    i + 1,
+                    m.uid,
+                    m.role,
+                    m.label,
+                    ancestor_path,
+                )
+            })
             .collect();
 
         let hint_context = self.format_supervision_hint("A previous click attempt failed. ");
