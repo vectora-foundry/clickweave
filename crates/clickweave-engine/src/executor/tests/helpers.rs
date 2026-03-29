@@ -236,6 +236,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 std::env::temp_dir().join("clickweave_test_profiles"),
             ),
             chrome_profiles: Vec::new(),
+            resolution_tx: None,
+            completed_node_ids: Vec::new(),
+            rejected_resolutions: std::collections::HashSet::new(),
         }
     }
 }

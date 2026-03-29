@@ -2,8 +2,8 @@ use super::helpers::*;
 use crate::planner::prompt::patcher_system_prompt;
 use crate::planner::*;
 use clickweave_core::{
-    ClickParams, ClickTarget, FindTextParams, FocusMethod, FocusWindowParams, MouseButton,
-    NodeType, Position, ScreenshotMode, TakeScreenshotParams,
+    CdpClickParams, CdpPressKeyParams, ClickParams, ClickTarget, FindTextParams, FocusMethod,
+    FocusWindowParams, MouseButton, NodeType, Position, ScreenshotMode, TakeScreenshotParams,
 };
 
 #[test]
@@ -403,5 +403,74 @@ async fn test_malformed_patcher_update_skipped() {
         result.warnings.iter().any(|w| w.contains("malformed")),
         "Expected malformed update warning, got: {:?}",
         result.warnings
+    );
+}
+
+/// Regression test: a resolution update that changes tool_name from
+/// cdp_press_key to cdp_click must produce NodeType::CdpClick, not
+/// silently drop the change. This was the root cause of the Signal
+/// "Press Enter" bug where the LLM renamed the node but the action
+/// stayed as PressKey because the prompt forbade tool changes.
+#[test]
+fn update_tool_name_changes_cdp_press_key_to_cdp_click() {
+    let mut workflow = Workflow::new("test-resolution");
+    let node_id = workflow.add_node(
+        NodeType::CdpPressKey(CdpPressKeyParams {
+            key: "Enter".to_string(),
+            ..Default::default()
+        }),
+        Position { x: 0.0, y: 0.0 },
+    );
+
+    let patcher_output = serde_json::from_value::<PatcherOutput>(serde_json::json!({
+        "update": [{
+            "node_id": node_id.to_string(),
+            "name": "Click Note to Self",
+            "tool_name": "cdp_click",
+            "arguments": { "target": "Note to Self" }
+        }]
+    }))
+    .unwrap();
+
+    let result = build_patch_from_output(&patcher_output, &workflow, &sample_tools(), false, false);
+
+    assert!(
+        result.warnings.is_empty(),
+        "Expected no warnings, got: {:?}",
+        result.warnings
+    );
+    assert_eq!(result.updated_nodes.len(), 1);
+
+    let updated = &result.updated_nodes[0];
+    assert_eq!(updated.name, "Click Note to Self");
+    assert!(
+        matches!(&updated.node_type, NodeType::CdpClick(CdpClickParams { uid, .. }) if uid == "Note to Self"),
+        "Expected CdpClick with uid 'Note to Self', got {:?}",
+        updated.node_type
+    );
+}
+
+/// Verify the resolution prompt contains tool change guidance and the
+/// available tool_name list.
+#[test]
+fn resolution_prompt_allows_tool_changes() {
+    let wf = Workflow::default();
+    let prompt = crate::planner::resolution::resolution_system_prompt(&wf);
+
+    assert!(
+        prompt.contains("tool_name"),
+        "Resolution prompt must mention tool_name for node type changes"
+    );
+    assert!(
+        prompt.contains("cdp_click"),
+        "Resolution prompt must list cdp_click as an available tool"
+    );
+    assert!(
+        prompt.contains("cdp_press_key"),
+        "Resolution prompt must list cdp_press_key as an available tool"
+    );
+    assert!(
+        !prompt.contains("MUST stay the same"),
+        "Resolution prompt must NOT forbid node type changes"
     );
 }
