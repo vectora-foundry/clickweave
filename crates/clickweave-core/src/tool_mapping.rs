@@ -447,8 +447,13 @@ pub fn tool_invocation_to_node_type(
             // cdp_find_elements"). Intent is only constructed programmatically
             // for runtime-resolution paths, never from planner output.
             let label = if !uid.is_empty() { uid } else { target_str };
+            let target = if label.is_empty() {
+                CdpTarget::default()
+            } else {
+                CdpTarget::ExactLabel(label)
+            };
             Ok(NodeType::CdpClick(CdpClickParams {
-                target: CdpTarget::ExactLabel(label),
+                target,
                 ..Default::default()
             }))
         }
@@ -461,8 +466,13 @@ pub fn tool_invocation_to_node_type(
                 .unwrap_or("")
                 .to_string();
             let label = if !uid.is_empty() { uid } else { target_str };
+            let target = if label.is_empty() {
+                CdpTarget::default()
+            } else {
+                CdpTarget::ExactLabel(label)
+            };
             Ok(NodeType::CdpHover(CdpHoverParams {
-                target: CdpTarget::ExactLabel(label),
+                target,
                 ..Default::default()
             }))
         }
