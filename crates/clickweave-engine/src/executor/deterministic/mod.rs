@@ -5,7 +5,8 @@ mod window;
 
 use std::borrow::Cow;
 
-use super::{ExecutorError, ExecutorResult, WorkflowExecutor};
+use super::retry_context::RetryContext;
+use super::{ExecutorError, ExecutorResult, Mcp, WorkflowExecutor};
 use clickweave_core::AppKind;
 use clickweave_core::output_schema::NodeContext;
 use clickweave_core::{
@@ -14,7 +15,7 @@ use clickweave_core::{
     TakeScreenshotParams, TypeTextParams, tool_mapping,
 };
 use clickweave_llm::ChatBackend;
-use clickweave_mcp::{McpClient, ToolCallResult};
+use clickweave_mcp::ToolCallResult;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -265,8 +266,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &mut self,
         node_id: Uuid,
         node_type: &NodeType,
-        mcp: &McpClient,
+        mcp: &(impl Mcp + ?Sized),
         mut node_run: Option<&mut NodeRun>,
+        retry_ctx: &mut RetryContext,
     ) -> ExecutorResult<Value> {
         // Resolve OutputRef parameters before execution.
         let resolved = self.resolve_output_refs(node_type)?;
@@ -289,7 +291,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             {
                 // Store the text so the subsequent press_key return knows to wait
                 // for Chrome to visually start loading before supervision fires.
-                self.last_typed_url = Some(p.text.clone());
+                retry_ctx.last_typed_url = Some(p.text.clone());
 
                 // Make URL typing idempotent on retries/reruns: bring Chrome to
                 // front and focus/select the omnibox before typing.
@@ -315,7 +317,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     )
                     .await;
             } else {
-                self.last_typed_url = None;
+                retry_ctx.last_typed_url = None;
             }
         } else if let NodeType::PressKey(p) = node_type {
             let app_kind = self.focused_app_kind();
@@ -323,7 +325,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 && self.cdp_connected_to_focused_app()
                 && is_return_key(&p.key)
                 && p.modifiers.is_empty()
-                && self.last_typed_url.is_some()
+                && retry_ctx.last_typed_url.is_some()
             {
                 // Re-focus the target app before sending Enter. In Test mode,
                 // per-step screenshot/supervision can occasionally leave key
@@ -441,9 +443,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
                 return Ok(Self::parse_result_text(&result_text));
             }
-            self.last_typed_url = None;
+            retry_ctx.last_typed_url = None;
         } else {
-            self.last_typed_url = None;
+            retry_ctx.last_typed_url = None;
         }
 
         // --- Hover: CDP path + native fallback + dwell ---
@@ -459,7 +461,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             {
                 let expected = cdp::CdpExpected::default();
                 match self
-                    .resolve_and_hover_cdp(target.text(), &expected, mcp, node_run.as_deref())
+                    .resolve_and_hover_cdp(
+                        target.text(),
+                        &expected,
+                        mcp,
+                        node_run.as_deref(),
+                        retry_ctx,
+                    )
                     .await
                 {
                     Ok(result_text) => {
@@ -486,7 +494,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let effective = if matches!(&p.target, Some(clickweave_core::ClickTarget::Text { .. }))
             {
                 resolved_hover = self
-                    .resolve_hover_target(node_id, mcp, p, &mut node_run)
+                    .resolve_hover_target(node_id, mcp, p, &mut node_run, retry_ctx)
                     .await?;
                 &resolved_hover
             } else {
@@ -541,7 +549,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         if let NodeType::CdpClick(p) = node_type {
             let expected = cdp::CdpExpected::default();
             let result_text = self
-                .resolve_and_click_cdp(p.target.as_str(), &expected, mcp, node_run.as_deref())
+                .resolve_and_click_cdp(
+                    p.target.as_str(),
+                    &expected,
+                    mcp,
+                    node_run.as_deref(),
+                    retry_ctx,
+                )
                 .await?;
             return Ok(Self::parse_result_text(&result_text));
         }
@@ -550,7 +564,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         if let NodeType::CdpHover(p) = node_type {
             let expected = cdp::CdpExpected::default();
             let result_text = self
-                .resolve_and_hover_cdp(p.target.as_str(), &expected, mcp, node_run.as_deref())
+                .resolve_and_hover_cdp(
+                    p.target.as_str(),
+                    &expected,
+                    mcp,
+                    node_run.as_deref(),
+                    retry_ctx,
+                )
                 .await?;
             return Ok(Self::parse_result_text(&result_text));
         }
@@ -656,7 +676,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             if app_kind.uses_cdp() && self.cdp_connected_to_focused_app() {
                 let expected = cdp::CdpExpected::default();
                 match self
-                    .resolve_and_click_cdp(target, &expected, mcp, node_run.as_deref())
+                    .resolve_and_click_cdp(target, &expected, mcp, node_run.as_deref(), retry_ctx)
                     .await
                 {
                     Ok(result_text) => {
@@ -678,7 +698,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
 
             resolved_click = self
-                .resolve_click_target(node_id, mcp, p, &mut node_run)
+                .resolve_click_target(node_id, mcp, p, &mut node_run, retry_ctx)
                 .await?;
             &resolved_click
         } else {

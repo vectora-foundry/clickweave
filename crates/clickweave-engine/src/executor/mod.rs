@@ -9,6 +9,7 @@ pub mod error;
 mod find_app;
 mod graph_nav;
 mod output_ref;
+pub(crate) mod retry_context;
 mod run_loop;
 mod supervision;
 mod trace;
@@ -26,7 +27,7 @@ use clickweave_core::decision_cache::DecisionCache;
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
 use clickweave_core::{ExecutionMode, NodeRun, NodeVerdict, RuntimeResolution, Workflow};
-use clickweave_llm::{ChatBackend, LlmClient, LlmConfig, Message};
+use clickweave_llm::{ChatBackend, LlmClient, LlmConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
@@ -50,13 +51,19 @@ pub struct RuntimeQuery {
     pub response_tx: tokio::sync::oneshot::Sender<RuntimeResolution>,
 }
 
-/// Minimal trait for MCP tool invocation, used to enable test stubs.
+/// Trait abstracting MCP tool operations, used to enable test stubs.
 pub(crate) trait Mcp: Send + Sync {
     fn call_tool(
         &self,
         name: &str,
         arguments: Option<serde_json::Value>,
     ) -> impl Future<Output = anyhow::Result<clickweave_mcp::ToolCallResult>> + Send;
+
+    /// Check whether a tool with the given name is available.
+    fn has_tool(&self, name: &str) -> bool;
+
+    /// Convert available tools to the OpenAI-compatible function-call format.
+    fn tools_as_openai(&self) -> Vec<serde_json::Value>;
 }
 
 impl Mcp for clickweave_mcp::McpClient {
@@ -66,6 +73,14 @@ impl Mcp for clickweave_mcp::McpClient {
         arguments: Option<serde_json::Value>,
     ) -> impl Future<Output = anyhow::Result<clickweave_mcp::ToolCallResult>> + Send {
         clickweave_mcp::McpClient::call_tool(self, name, arguments)
+    }
+
+    fn has_tool(&self, name: &str) -> bool {
+        clickweave_mcp::McpClient::has_tool(self, name)
+    }
+
+    fn tools_as_openai(&self) -> Vec<serde_json::Value> {
+        clickweave_mcp::McpClient::tools_as_openai(self)
     }
 }
 
@@ -133,40 +148,15 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     element_cache: RwLock<HashMap<(String, Option<String>), String>>,
     context: RuntimeContext,
     decision_cache: RwLock<DecisionCache>,
-    /// Persistent conversation history for supervision across the entire run.
-    supervision_history: RwLock<Vec<Message>>,
-    /// Verdicts from Verification-role nodes, accumulated during execution.
-    runtime_verdicts: Vec<NodeVerdict>,
-    /// Set by eval_control_flow when a loop exits; consumed by the main loop
-    /// to run a deferred visual verification after the loop completes.
-    pending_loop_exit: Option<PendingLoopExit>,
     /// The app name for which a CDP connection is active (via cdp_connect).
     cdp_connected_app: Option<String>,
     cancel_token: CancellationToken,
-    /// Hint from a previous supervision failure, threaded into disambiguation
-    /// prompts on retry so the LLM picks a different match.
-    supervision_hint: Option<String>,
-    /// Native click disambiguation indices already tried during supervision retries.
-    tried_click_indices: RwLock<Vec<usize>>,
-    /// CDP element UIDs already tried during supervision retries.
-    tried_cdp_uids: RwLock<Vec<String>>,
-    /// Text from the most recent TypeText node on a Chrome/CDP app when it
-    /// looks like a URL (e.g. `gmail.com`, `https://...`).
-    /// Arms the following `press_key return` intercept: fires the native
-    /// keypress (Chrome handles Omnibox navigation), then polls
-    /// `cdp_list_pages` until the URL moves away from NTP/blank so that
-    /// supervision fires when Chrome is already loading the destination page.
-    last_typed_url: Option<String>,
     /// Store for Chrome user-data-dir profiles (resolves profile names to paths).
     chrome_profile_store: ChromeProfileStore,
     /// Cached profile list, loaded once at construction.
     chrome_profiles: Vec<ChromeProfile>,
     /// Channel to send resolution queries to the Tauri listener (Test mode only).
     resolution_tx: Option<tokio::sync::mpsc::Sender<RuntimeQuery>>,
-    /// Node IDs the executor has completed in this run (for patch validation).
-    completed_node_ids: Vec<Uuid>,
-    /// Rejected resolutions keyed by (node_id, target) — skip callback on retry.
-    rejected_resolutions: std::collections::HashSet<(Uuid, String)>,
 }
 
 pub(crate) struct PendingLoopExit {
@@ -234,20 +224,11 @@ impl WorkflowExecutor {
             element_cache: RwLock::new(HashMap::new()),
             context: RuntimeContext::new(),
             decision_cache: RwLock::new(decision_cache),
-            supervision_history: RwLock::new(Vec::new()),
-            runtime_verdicts: Vec::new(),
-            pending_loop_exit: None,
             cdp_connected_app: None,
             cancel_token,
-            supervision_hint: None,
-            tried_click_indices: RwLock::new(Vec::new()),
-            tried_cdp_uids: RwLock::new(Vec::new()),
-            last_typed_url: None,
             chrome_profile_store,
             chrome_profiles,
             resolution_tx,
-            completed_node_ids: Vec::new(),
-            rejected_resolutions: std::collections::HashSet::new(),
         }
     }
 }
@@ -303,45 +284,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
     pub(crate) fn write_decision_cache(&self) -> std::sync::RwLockWriteGuard<'_, DecisionCache> {
         self.decision_cache
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-    }
-
-    #[allow(dead_code)] // Kept for API symmetry with write_supervision_history
-    pub(crate) fn read_supervision_history(&self) -> std::sync::RwLockReadGuard<'_, Vec<Message>> {
-        self.supervision_history
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-    }
-
-    pub(crate) fn write_supervision_history(
-        &self,
-    ) -> std::sync::RwLockWriteGuard<'_, Vec<Message>> {
-        self.supervision_history
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-    }
-
-    pub(crate) fn read_tried_click_indices(&self) -> std::sync::RwLockReadGuard<'_, Vec<usize>> {
-        self.tried_click_indices
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-    }
-
-    pub(crate) fn write_tried_click_indices(&self) -> std::sync::RwLockWriteGuard<'_, Vec<usize>> {
-        self.tried_click_indices
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-    }
-
-    pub(crate) fn read_tried_cdp_uids(&self) -> std::sync::RwLockReadGuard<'_, Vec<String>> {
-        self.tried_cdp_uids
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-    }
-
-    pub(crate) fn write_tried_cdp_uids(&self) -> std::sync::RwLockWriteGuard<'_, Vec<String>> {
-        self.tried_cdp_uids
             .write()
             .unwrap_or_else(|e| e.into_inner())
     }
@@ -416,8 +358,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     /// Format the supervision hint (if any) as a prompt suffix for disambiguation.
-    pub(crate) fn format_supervision_hint(&self, context: &str) -> String {
-        self.supervision_hint
+    pub(crate) fn format_supervision_hint(
+        retry_ctx: &retry_context::RetryContext,
+        context: &str,
+    ) -> String {
+        retry_ctx
+            .supervision_hint
             .as_deref()
             .map(|hint| {
                 format!(
@@ -444,8 +390,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Send a runtime resolution query and wait for the response.
     /// Returns None if no resolution_tx is available (Run mode) or
     /// if this (node_id, target) was previously rejected.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn request_resolution(
         &self,
+        retry_ctx: &retry_context::RetryContext,
         node_id: Uuid,
         node_name: &str,
         action_description: &str,
@@ -456,7 +404,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let tx = self.resolution_tx.as_ref()?;
 
         // Skip if previously rejected for this (node, target)
-        if self
+        if retry_ctx
             .rejected_resolutions
             .contains(&(node_id, target.to_string()))
         {
@@ -472,7 +420,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             screenshot,
             element_inventory: element_inventory.to_string(),
             current_node_id: node_id,
-            completed_node_ids: self.completed_node_ids.clone(),
+            completed_node_ids: retry_ctx.completed_node_ids.clone(),
             response_tx,
         };
 

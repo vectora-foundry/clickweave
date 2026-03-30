@@ -12,9 +12,7 @@ pub(super) fn get_store(app: &tauri::AppHandle) -> ChromeProfileStore {
 #[specta::specta]
 pub fn list_chrome_profiles(app: tauri::AppHandle) -> Result<Vec<ChromeProfile>, CommandError> {
     let store = get_store(&app);
-    store
-        .ensure_profiles()
-        .map_err(|e| CommandError::io(e.to_string()))
+    Ok(store.ensure_profiles()?)
 }
 
 #[tauri::command]
@@ -24,9 +22,7 @@ pub fn create_chrome_profile(
     name: String,
 ) -> Result<ChromeProfile, CommandError> {
     let store = get_store(&app);
-    store
-        .create_profile(&name)
-        .map_err(|e| CommandError::io(e.to_string()))
+    Ok(store.create_profile(&name)?)
 }
 
 #[tauri::command]
@@ -60,7 +56,7 @@ pub async fn launch_chrome_for_setup(
 ) -> Result<(), CommandError> {
     let store = get_store(&app);
     let profile_path = store.profile_path(&profile_id);
-    std::fs::create_dir_all(&profile_path).map_err(|e| CommandError::io(e.to_string()))?;
+    std::fs::create_dir_all(&profile_path)?;
 
     let dir_str = profile_path.to_string_lossy().to_string();
     let args = [

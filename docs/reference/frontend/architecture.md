@@ -64,6 +64,17 @@ ui/src/
 │   ├── useEdgeSync.ts
 │   ├── useWorkflowActions.ts
 │   ├── useExecutorEvents.ts
+│   ├── useWalkthrough.ts
+│   ├── events/
+│   │   ├── useExecutorNodeEvents.ts
+│   │   ├── useSupervisionEvents.ts
+│   │   ├── useAssistantEvents.ts
+│   │   ├── useWalkthroughEvents.ts
+│   │   └── useMenuEvents.ts
+│   ├── node-sync/
+│   │   ├── nodeBuilders.ts
+│   │   ├── useRfNodeBuilder.ts
+│   │   └── useNodeChangeHandler.ts
 │   └── test-helpers.ts
 ├── constants/
 │   └── nodeMetadata.ts
@@ -95,7 +106,7 @@ ui/src/
 
 ## State Model
 
-`StoreState` is the intersection of 9 slices:
+`StoreState` is the intersection of 10 slices:
 
 - `ProjectSlice`
 - `ExecutionSlice`
@@ -105,8 +116,7 @@ ui/src/
 - `LogSlice`
 - `VerdictSlice`
 - `WalkthroughSlice`
-- `WalkthroughRecordingSlice`
-- `WalkthroughReviewSlice`
+- `PlannerSlice`
 - `UiSlice`
 
 Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/src/store/useAppStore.ts`.
@@ -158,24 +168,15 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 
 **WalkthroughSlice** (`walkthroughSlice.ts`)
 
-- `walkthroughStatus`, `walkthroughPanelOpen`, `walkthroughError`, `walkthroughEvents`, `walkthroughActions`, `walkthroughDraft`, `walkthroughWarnings`, `walkthroughCdpModalOpen`, `walkthroughCdpProgress`
-- actions: `startWalkthrough(cdpApps?)`, `pauseWalkthrough`, `resumeWalkthrough`, `stopWalkthrough`, `cancelWalkthrough`, `fetchWalkthroughDraft`, `discardDraft`, `openCdpModal`, `closeCdpModal`, `pushCdpProgress`
+- `walkthroughStatus`, `walkthroughPanelOpen`, `walkthroughError`, `walkthroughEvents`, `walkthroughActions`, `walkthroughDraft`, `walkthroughWarnings`, `walkthroughCdpModalOpen`, `walkthroughCdpProgress`, `walkthroughAnnotations`, `walkthroughActionNodeMap`
+- recording actions: `startWalkthrough(cdpApps?)`, `pauseWalkthrough`, `resumeWalkthrough`, `stopWalkthrough`, `cancelWalkthrough`
+- review actions: annotation editing (`deleteNode`, `restoreNode`, `renameNode`, `overrideTarget`, `promoteToVariable`, etc.), `applyDraftToCanvas`
 - manages recording bar overlay window lifecycle and CDP app selection modal
-
-**WalkthroughRecordingSlice** (`walkthroughRecordingSlice.ts`)
-
-- Recording-specific state split from WalkthroughSlice
-- Manages recording lifecycle, event capture, and CDP setup progress
-
-**WalkthroughReviewSlice** (`walkthroughReviewSlice.ts`)
-
-- Review/annotation state split from WalkthroughSlice
-- `walkthroughAnnotations`, `walkthroughActionNodeMap`
-- actions: annotation editing (`deleteNode`, `restoreNode`, `renameNode`, `overrideTarget`, `promoteToVariable`, etc.), `applyDraftToCanvas`
+- `useWalkthrough` hook provides a focused selector for WalkthroughPanel
 
 ## App Event Wiring
 
-`ui/src/hooks/useExecutorEvents.ts` subscribes to all backend events (mounted by `App.tsx`):
+`ui/src/hooks/useExecutorEvents.ts` is a thin composer mounted by `App.tsx` that delegates to 5 domain-specific hooks in `ui/src/hooks/events/`:
 
 - `executor://log`, `executor://state`, `executor://node_started`, `executor://node_completed`, `executor://node_failed`
 - `executor://checks_completed`, `executor://workflow_completed`
@@ -184,7 +185,7 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 - `assistant://repairing`, `assistant://message`, `assistant://session_started`
 - `walkthrough://state`, `walkthrough://event`, `walkthrough://draft_ready`, `walkthrough://cdp-setup`
 - `recording-bar://action`
-- `menu://new`, `menu://open`, `menu://save`, `menu://save-as`, `menu://run-workflow`, `menu://stop-workflow`, `menu://toggle-logs`, `menu://toggle-assistant`
+- `menu://new`, `menu://open`, `menu://save`, `menu://toggle-sidebar`, `menu://toggle-logs`, `menu://run-workflow`, `menu://stop-workflow`, `menu://toggle-assistant`
 
 ## Graph Editor (`GraphCanvas`)
 
@@ -276,8 +277,7 @@ Do not edit manually.
 | `ui/src/store/useWorkflowMutations.ts` | node/edge mutation helpers with history push (`removeEdgesOnly` for silent edge removal) |
 | `ui/src/store/slices/types.ts` | `StoreState` composition |
 | `ui/src/store/slices/walkthroughSlice.ts` | walkthrough lifecycle state and CDP modal |
-| `ui/src/store/slices/walkthroughRecordingSlice.ts` | recording-specific state and event capture |
-| `ui/src/store/slices/walkthroughReviewSlice.ts` | review annotations and draft application |
+| `ui/src/hooks/useWalkthrough.ts` | focused walkthrough selector hook for WalkthroughPanel |
 | `ui/src/store/slices/historySlice.ts` | undo/redo state and actions |
 | `ui/src/store/settings.ts` | persisted settings I/O |
 | `ui/src/components/SupervisionModal.tsx` | supervision pause modal (retry / skip / abort) |
@@ -289,7 +289,8 @@ Do not edit manually.
 | `ui/src/hooks/useWorkflowActions.ts` | workflow mutation dispatchers (wraps `useWorkflowMutations`) |
 | `ui/src/hooks/useEscapeKey.ts` | global Escape key handler that closes panels in priority order |
 | `ui/src/hooks/useHorizontalResize.ts` | horizontal panel resize drag handle |
-| `ui/src/hooks/useExecutorEvents.ts` | Backend event subscriptions (executor, walkthrough, assistant) |
+| `ui/src/hooks/useExecutorEvents.ts` | Thin event composer (delegates to `events/*.ts` hooks) |
+| `ui/src/hooks/events/*.ts` | Domain-specific event hooks (executor, supervision, assistant, walkthrough, menu) |
 | `ui/src/hooks/useUndoRedoKeyboard.ts` | Ctrl+Z / Ctrl+Shift+Z keyboard binding |
 | `ui/src/components/CdpAppSelectModal.tsx` | CDP app selection modal for walkthrough recording |
 | `ui/src/utils/appKind.ts` | App kind classification helpers |

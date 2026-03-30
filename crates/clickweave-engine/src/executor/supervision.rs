@@ -1,4 +1,5 @@
 use super::Mcp;
+use super::retry_context::RetryContext;
 use super::{LoopExitReason, PendingLoopExit, WorkflowExecutor};
 use clickweave_core::NodeType;
 use clickweave_llm::{ChatBackend, Message};
@@ -34,6 +35,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         node_name: &str,
         node_type: &NodeType,
         mcp: &(impl Mcp + ?Sized),
+        retry_ctx: &RetryContext,
     ) -> VerificationResult {
         // Skip verification for read-only nodes (find_text, find_image,
         // take_screenshot, list_windows). These produce their own definitive
@@ -75,7 +77,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             "Step label (may be stale): \"{}\"\nExecuted action: {}\nApp: {}\n\nVisual observation: {}",
             node_name, action, app_name, observation
         );
-        let (passed, reasoning) = self.judge_with_history(&step_message, node_name).await;
+        let (passed, reasoning) = self
+            .judge_with_history(&step_message, node_name, retry_ctx)
+            .await;
 
         VerificationResult {
             passed,
@@ -90,6 +94,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &self,
         loop_exit: &PendingLoopExit,
         mcp: &(impl Mcp + ?Sized),
+        retry_ctx: &RetryContext,
     ) -> VerificationResult {
         debug!(
             loop_name = loop_exit.loop_name.as_str(),
@@ -141,7 +146,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             loop_exit.loop_name, exit_description, app_name, observation
         );
         let log_label = format!("Loop '{}'", loop_exit.loop_name);
-        let (passed, reasoning) = self.judge_with_history(&step_message, &log_label).await;
+        let (passed, reasoning) = self
+            .judge_with_history(&step_message, &log_label, retry_ctx)
+            .await;
 
         VerificationResult {
             passed,
@@ -211,7 +218,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Push a user message into the supervision history, call the supervision
     /// LLM, store the assistant response, and parse the verdict.
     /// `log_label` is used for the log line (e.g. node name or "Loop '...'").
-    async fn judge_with_history(&self, step_message: &str, log_label: &str) -> (bool, String) {
+    async fn judge_with_history(
+        &self,
+        step_message: &str,
+        log_label: &str,
+        retry_ctx: &RetryContext,
+    ) -> (bool, String) {
         let backend = self
             .supervision
             .as_ref()
@@ -219,7 +231,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .unwrap_or(&self.agent);
 
         let messages = {
-            let mut history = self.write_supervision_history();
+            let mut history = retry_ctx.write_supervision_history();
 
             if history.is_empty() {
                 history.push(Message::system(SUPERVISION_SYSTEM_PROMPT));
@@ -238,7 +250,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     .unwrap_or("");
 
                 {
-                    let mut history = self.write_supervision_history();
+                    let mut history = retry_ctx.write_supervision_history();
                     history.push(Message::assistant(raw));
                 }
 
@@ -247,7 +259,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             Err(e) => {
                 self.log(format!("Supervision: verification failed: {}", e));
                 {
-                    let mut history = self.write_supervision_history();
+                    let mut history = retry_ctx.write_supervision_history();
                     history.push(Message::assistant(format!(
                         "{{\"passed\": true, \"reasoning\": \"verification error: {}\"}}",
                         e

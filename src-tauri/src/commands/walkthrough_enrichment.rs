@@ -1,26 +1,15 @@
 use base64::Engine;
+use clickweave_core::walkthrough::enrichment::{self, AccessibilityData};
 use clickweave_core::walkthrough::{
     ScreenshotKind, ScreenshotMeta, WalkthroughAction, WalkthroughEvent, WalkthroughEventKind,
 };
 use clickweave_mcp::McpClient;
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::walkthrough::VLM_CALL_TIMEOUT;
 
-/// A single frame from continuous screen recording (returned by `stop_recording`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct RecordedFrame {
-    pub timestamp_ms: u64,
-    pub path: String,
-    pub app_name: String,
-    pub window_id: u32,
-    pub origin_x: f64,
-    pub origin_y: f64,
-    pub scale: f64,
-    pub pixel_width: u32,
-    pub pixel_height: u32,
-}
+// Re-export core types used by sibling modules.
+pub(super) use clickweave_core::walkthrough::enrichment::RecordedFrame;
 
 /// Parse the `stop_recording` MCP response into a sorted list of frames.
 pub(super) fn parse_recording_frames(
@@ -37,10 +26,6 @@ pub(super) fn parse_recording_frames(
     frames.sort_by_key(|f| f.timestamp_ms);
     frames
 }
-
-/// Maximum length of a VLM-resolved label to accept. Longer responses
-/// are likely full sentences rather than a concise element name.
-const VLM_LABEL_MAX_LEN: usize = 80;
 
 /// Half-size of the click crop in screen points (32pt radius → 64pt square →
 /// 128px on Retina). On macOS this re-exports the platform constant; on other
@@ -160,55 +145,26 @@ pub(super) fn find_json_in_content(
     })
 }
 
-/// Parsed accessibility data from `element_at_point`.
-pub(super) struct AccessibilityData {
-    pub label: String,
-    pub role: Option<String>,
-    pub subrole: Option<String>,
-}
-
 /// Parse the `element_at_point` MCP response into accessibility data.
 ///
-/// Picks the best display text from the response fields:
-/// `name` (AXTitle) > `value` (AXValue) > `label` (AXDescription).
-///
-/// Returns `None` only if no display text AND no subrole are present.
-/// Window control buttons (close/minimize/zoom) may lack text labels
-/// but always have a subrole set by the macOS window server.
+/// Thin wrapper around `enrichment::parse_accessibility_json` that first
+/// extracts JSON from MCP tool content.
 pub(super) fn parse_accessibility_result(
     content: &[clickweave_mcp::ToolContent],
 ) -> Option<AccessibilityData> {
     let obj = find_json_in_content(content)?;
-    let label = obj["name"]
-        .as_str()
-        .or_else(|| obj["value"].as_str())
-        .or_else(|| obj["label"].as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
-    let role = obj["role"].as_str().map(|s| s.to_string());
-    let subrole = obj["subrole"].as_str().map(|s| s.to_string());
-
-    if label.is_some() || subrole.is_some() {
-        Some(AccessibilityData {
-            label: label.unwrap_or_default(),
-            role,
-            subrole,
-        })
-    } else {
-        None
-    }
+    enrichment::parse_accessibility_json(&obj)
 }
 
 /// Parse screenshot metadata (origin, scale) from the MCP take_screenshot response.
+///
+/// Thin wrapper around `enrichment::parse_screenshot_metadata_json` that first
+/// extracts JSON from MCP tool content.
 pub(super) fn parse_screenshot_metadata(
     content: &[clickweave_mcp::ToolContent],
 ) -> Option<ScreenshotMeta> {
     let obj = find_json_in_content(content)?;
-    Some(ScreenshotMeta {
-        origin_x: obj["screenshot_origin_x"].as_f64()?,
-        origin_y: obj["screenshot_origin_y"].as_f64()?,
-        scale: obj["screenshot_scale"].as_f64()?,
-    })
+    enrichment::parse_screenshot_metadata_json(&obj)
 }
 
 /// Data needed to fire a VLM request for a single click.
@@ -241,39 +197,8 @@ pub(super) fn prepare_vlm_click_request(
 
     let image_b64 = mark_click_point(&image_bytes, px, py)?;
 
-    // Build context-aware prompt with hints from captured data.
-    let mut prompt = String::from(
-        "This is a screenshot of an application window with a red \
-         crosshair marking where the user clicked. What UI element is at \
-         the crosshair?",
-    );
-
-    let mut hints = Vec::new();
-    if let Some(app) = app_name {
-        hints.push(format!("Application: {app}"));
-    }
-    if let Some((label, role)) = ax_label {
-        let role_str = role.unwrap_or("unknown");
-        hints.push(format!(
-            "Accessibility element: \"{label}\" (role: {role_str})"
-        ));
-    }
-    if let Some(text) = ocr_text {
-        hints.push(format!("Nearby text (OCR): \"{text}\""));
-    }
-    if !hints.is_empty() {
-        prompt.push_str("\n\nContext hints (may be incomplete):\n");
-        for hint in &hints {
-            prompt.push_str(&format!("- {hint}\n"));
-        }
-    }
-
-    prompt.push_str(
-        "\nReturn ONLY the text label or name of the element \
-         (e.g., \"Send\", \"Note to Self\", \"Search\"). If there's no text \
-         label, describe the element briefly (e.g., \"message input field\"). \
-         Return just the label, nothing else.",
-    );
+    // Delegate prompt construction to the library crate.
+    let prompt = enrichment::build_vlm_click_prompt(ax_label, ocr_text, app_name);
 
     Some(VlmClickRequest { image_b64, prompt })
 }
@@ -314,122 +239,20 @@ pub(super) async fn execute_vlm_click_request(
             .choices
             .first()
             .and_then(|c| c.message.content_text())
-            .map(|label| label.trim().trim_matches('"').to_string())
-            .filter(|label| !label.is_empty() && label.len() <= VLM_LABEL_MAX_LEN),
+            .and_then(enrichment::clean_vlm_label),
         Err(_) => None,
     }
 }
 
-/// Find the frames immediately before and after the given timestamp.
-///
-/// Returns `(before, after)` where:
-/// - `before` is the last frame with `timestamp_ms < timestamp`
-/// - `after` is the first frame with `timestamp_ms >= timestamp`
-///
-/// Frames must be sorted by `timestamp_ms` (guaranteed by `parse_recording_frames`).
-/// Uses binary search for O(log n) lookup.
-fn find_surrounding_frames(
-    frames: &[RecordedFrame],
-    timestamp_ms: u64,
-) -> (Option<&RecordedFrame>, Option<&RecordedFrame>) {
-    if frames.is_empty() {
-        return (None, None);
-    }
-    let idx = frames.partition_point(|f| f.timestamp_ms < timestamp_ms);
-    let before = if idx > 0 {
-        Some(&frames[idx - 1])
-    } else {
-        None
-    };
-    let after = frames.get(idx);
-    (before, after)
-}
-
 /// Attach before/after recording frames to hover actions.
 ///
-/// For each Hover action, computes the hover start time (`timestamp - dwell_ms`)
-/// and finds the frames immediately before and after that point. The before
-/// frame (element unobscured) is used by VLM for target identification; both
-/// frames appear in the review panel so the user can see the hover's visual
-/// effect (tooltips, highlights, etc.).
-///
-/// `artifact_paths` is set to `[before_path, after_path]` when both exist,
-/// or a single path when only one is available. Click actions are skipped.
+/// Delegates to `enrichment::attach_recording_frames` in the library crate.
 pub(super) fn attach_recording_frames(
     actions: &mut [WalkthroughAction],
     frames: &[RecordedFrame],
-    events: &[clickweave_core::walkthrough::WalkthroughEvent],
+    events: &[WalkthroughEvent],
 ) {
-    use clickweave_core::walkthrough::WalkthroughActionKind;
-
-    if frames.is_empty() {
-        return;
-    }
-
-    for action in actions.iter_mut() {
-        if !matches!(action.kind, WalkthroughActionKind::Hover { .. }) {
-            continue;
-        }
-        if !action.artifact_paths.is_empty() {
-            continue;
-        }
-
-        // The event timestamp is when the hover started (cursor arrived at
-        // the element) for both native and CDP hovers:
-        // - Native: MCP fires a transition event with timestamp_ms = arrival time
-        // - CDP: JS listener stores ts = Date.now() at element enter
-        let hover_start_ts = action
-            .source_event_ids
-            .first()
-            .and_then(|id| events.iter().find(|e| e.id == *id))
-            .map(|e| e.timestamp)
-            .unwrap_or(0);
-
-        // Prefer frames from the same app (recording captures per-app
-        // windows). Fall back to all frames if no app-specific match.
-        let app_frames: Vec<RecordedFrame> = if let Some(app) = &action.app_name {
-            frames
-                .iter()
-                .filter(|f| f.app_name == *app)
-                .cloned()
-                .collect()
-        } else {
-            vec![]
-        };
-        let search_frames = if app_frames.is_empty() {
-            frames
-        } else {
-            &app_frames
-        };
-        let (before, after) = find_surrounding_frames(search_frames, hover_start_ts);
-
-        // Use the before frame's metadata for coordinate mapping — VLM and
-        // crosshair drawing operate on artifact_paths[0] (the before frame).
-        // Fall back to the after frame if no before exists.
-        let meta_frame = before.or(after);
-        if let Some(f) = meta_frame
-            && f.scale > 0.0
-        {
-            action.screenshot_meta = Some(ScreenshotMeta {
-                origin_x: f.origin_x,
-                origin_y: f.origin_y,
-                scale: f.scale,
-            });
-        }
-
-        match (before, after) {
-            (Some(b), Some(a)) => {
-                action.artifact_paths = vec![b.path.clone(), a.path.clone()];
-            }
-            (Some(b), None) => {
-                action.artifact_paths = vec![b.path.clone()];
-            }
-            (None, Some(a)) => {
-                action.artifact_paths = vec![a.path.clone()];
-            }
-            (None, None) => {}
-        }
-    }
+    enrichment::attach_recording_frames(actions, frames, events);
 }
 
 /// Use a VLM to identify click/hover targets (in parallel).
@@ -835,338 +658,6 @@ pub(super) async fn generate_hover_screenshots(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use clickweave_core::walkthrough::{
-        ActionConfidence, WalkthroughAction, WalkthroughActionKind, WalkthroughEvent,
-        WalkthroughEventKind,
-    };
-    use uuid::Uuid;
-
-    fn frame(ts: u64) -> RecordedFrame {
-        frame_for_app(ts, "TestApp")
-    }
-
-    fn frame_for_app(ts: u64, app: &str) -> RecordedFrame {
-        RecordedFrame {
-            timestamp_ms: ts,
-            path: format!("/frames/frame_{ts}.png"),
-            app_name: app.to_string(),
-            window_id: 1,
-            origin_x: 10.0,
-            origin_y: 20.0,
-            scale: 2.0,
-            pixel_width: 1920,
-            pixel_height: 1080,
-        }
-    }
-
-    // --- find_surrounding_frames tests ---
-
-    #[test]
-    fn surrounding_frames_between_two() {
-        let frames = vec![frame(1000), frame(2000), frame(3000)];
-        let (before, after) = find_surrounding_frames(&frames, 1500);
-        assert_eq!(before.unwrap().timestamp_ms, 1000);
-        assert_eq!(after.unwrap().timestamp_ms, 2000);
-    }
-
-    #[test]
-    fn surrounding_frames_exact_match_goes_to_after() {
-        let frames = vec![frame(1000), frame(2000), frame(3000)];
-        // partition_point(< 2000) → idx=1, before=frame(1000), after=frame(2000)
-        let (before, after) = find_surrounding_frames(&frames, 2000);
-        assert_eq!(before.unwrap().timestamp_ms, 1000);
-        assert_eq!(after.unwrap().timestamp_ms, 2000);
-    }
-
-    #[test]
-    fn surrounding_frames_before_first() {
-        let frames = vec![frame(1000), frame(2000)];
-        let (before, after) = find_surrounding_frames(&frames, 500);
-        assert!(before.is_none());
-        assert_eq!(after.unwrap().timestamp_ms, 1000);
-    }
-
-    #[test]
-    fn surrounding_frames_after_last() {
-        let frames = vec![frame(1000), frame(2000)];
-        let (before, after) = find_surrounding_frames(&frames, 5000);
-        assert_eq!(before.unwrap().timestamp_ms, 2000);
-        assert!(after.is_none());
-    }
-
-    #[test]
-    fn surrounding_frames_empty() {
-        let frames: Vec<RecordedFrame> = vec![];
-        let (before, after) = find_surrounding_frames(&frames, 1000);
-        assert!(before.is_none());
-        assert!(after.is_none());
-    }
-
-    #[test]
-    fn surrounding_frames_single_element_before() {
-        let frames = vec![frame(1000)];
-        let (before, after) = find_surrounding_frames(&frames, 2000);
-        assert_eq!(before.unwrap().timestamp_ms, 1000);
-        assert!(after.is_none());
-    }
-
-    #[test]
-    fn surrounding_frames_single_element_after() {
-        let frames = vec![frame(5000)];
-        let (before, after) = find_surrounding_frames(&frames, 1000);
-        assert!(before.is_none());
-        assert_eq!(after.unwrap().timestamp_ms, 5000);
-    }
-
-    // --- attach_recording_frames tests ---
-
-    fn hover_action(event_id: Uuid) -> WalkthroughAction {
-        WalkthroughAction {
-            id: Uuid::new_v4(),
-            kind: WalkthroughActionKind::Hover {
-                x: 100.0,
-                y: 200.0,
-                dwell_ms: 2000,
-            },
-            app_name: Some("TestApp".to_string()),
-            window_title: None,
-            target_candidates: vec![],
-            artifact_paths: vec![],
-            source_event_ids: vec![event_id],
-            confidence: ActionConfidence::Medium,
-            warnings: vec![],
-            screenshot_meta: None,
-            candidate: true,
-        }
-    }
-
-    fn click_action(event_id: Uuid) -> WalkthroughAction {
-        WalkthroughAction {
-            id: Uuid::new_v4(),
-            kind: WalkthroughActionKind::Click {
-                x: 300.0,
-                y: 400.0,
-                button: clickweave_core::MouseButton::Left,
-                click_count: 1,
-            },
-            app_name: Some("TestApp".to_string()),
-            window_title: None,
-            target_candidates: vec![],
-            artifact_paths: vec!["/screenshots/click.png".to_string()],
-            source_event_ids: vec![event_id],
-            confidence: ActionConfidence::High,
-            warnings: vec![],
-            screenshot_meta: Some(ScreenshotMeta {
-                origin_x: 0.0,
-                origin_y: 0.0,
-                scale: 2.0,
-            }),
-            candidate: false,
-        }
-    }
-
-    /// Native hover event: timestamp = exit time (cursor left).
-    /// dwell_ms = 2000, so hover start = ts - 2000.
-    fn hover_event(id: Uuid, ts: u64) -> WalkthroughEvent {
-        WalkthroughEvent {
-            id,
-            timestamp: ts,
-            kind: WalkthroughEventKind::HoverDetected {
-                x: 100.0,
-                y: 200.0,
-                element_name: "Button".to_string(),
-                element_role: Some("AXButton".to_string()),
-                dwell_ms: 2000,
-                app_name: None,
-            },
-        }
-    }
-
-    /// CDP hover event: timestamp = enter time (hover start).
-    /// dwell_ms = 2000, but no subtraction needed for start time.
-    fn cdp_hover_event(id: Uuid, ts: u64) -> WalkthroughEvent {
-        WalkthroughEvent {
-            id,
-            timestamp: ts,
-            kind: WalkthroughEventKind::HoverDetected {
-                x: 100.0,
-                y: 200.0,
-                element_name: "Submit".to_string(),
-                element_role: Some("button".to_string()),
-                dwell_ms: 2000,
-                app_name: Some("Chrome".to_string()),
-            },
-        }
-    }
-
-    #[test]
-    fn attach_recording_frames_before_after_pair() {
-        let hover_id = Uuid::new_v4();
-        // Hover ts=3000 (arrival time). Frames: 1000, 2000, 3000, 4000.
-        // Before start(3000): frame(2000). After start(3000): frame(3000).
-        let events = vec![hover_event(hover_id, 3000)];
-        let frames = vec![frame(1000), frame(2000), frame(3000), frame(4000)];
-        let mut actions = vec![hover_action(hover_id)];
-
-        attach_recording_frames(&mut actions, &frames, &events);
-
-        assert_eq!(actions[0].artifact_paths.len(), 2);
-        assert_eq!(actions[0].artifact_paths[0], "/frames/frame_2000.png");
-        assert_eq!(actions[0].artifact_paths[1], "/frames/frame_3000.png");
-        let meta = actions[0].screenshot_meta.unwrap();
-        assert_eq!(meta.scale, 2.0);
-    }
-
-    #[test]
-    fn attach_recording_frames_skips_clicks() {
-        let click_id = Uuid::new_v4();
-        let events = vec![hover_event(click_id, 5000)];
-        let frames = vec![frame(1000), frame(2000), frame(3000)];
-        let mut actions = vec![click_action(click_id)];
-
-        attach_recording_frames(&mut actions, &frames, &events);
-
-        // Click already has a screenshot — should be unchanged.
-        assert_eq!(actions[0].artifact_paths.len(), 1);
-        assert_eq!(actions[0].artifact_paths[0], "/screenshots/click.png");
-    }
-
-    #[test]
-    fn attach_recording_frames_skips_hovers_with_existing_screenshot() {
-        let hover_id = Uuid::new_v4();
-        let events = vec![hover_event(hover_id, 5000)];
-        let frames = vec![frame(1000), frame(2000)];
-        let mut actions = vec![{
-            let mut a = hover_action(hover_id);
-            a.artifact_paths = vec!["/existing/screenshot.png".to_string()];
-            a
-        }];
-
-        attach_recording_frames(&mut actions, &frames, &events);
-
-        assert_eq!(actions[0].artifact_paths[0], "/existing/screenshot.png");
-    }
-
-    #[test]
-    fn attach_recording_frames_empty_frames_is_noop() {
-        let hover_id = Uuid::new_v4();
-        let events = vec![hover_event(hover_id, 5000)];
-        let mut actions = vec![hover_action(hover_id)];
-
-        attach_recording_frames(&mut actions, &[], &events);
-
-        assert!(actions[0].artifact_paths.is_empty());
-    }
-
-    #[test]
-    fn attach_recording_frames_only_before_when_hover_starts_after_last_frame() {
-        let hover_id = Uuid::new_v4();
-        // Hover ts=8000, all frames before that.
-        let events = vec![hover_event(hover_id, 8000)];
-        let frames = vec![frame(1000), frame(2000)];
-        let mut actions = vec![hover_action(hover_id)];
-
-        attach_recording_frames(&mut actions, &frames, &events);
-
-        assert_eq!(actions[0].artifact_paths.len(), 1);
-        assert_eq!(actions[0].artifact_paths[0], "/frames/frame_2000.png");
-    }
-
-    #[test]
-    fn attach_recording_frames_only_after_when_hover_starts_before_first_frame() {
-        let hover_id = Uuid::new_v4();
-        // Hover ts=500, all frames after that.
-        let events = vec![hover_event(hover_id, 500)];
-        let frames = vec![frame(1000), frame(2000)];
-        let mut actions = vec![hover_action(hover_id)];
-
-        attach_recording_frames(&mut actions, &frames, &events);
-
-        assert_eq!(actions[0].artifact_paths.len(), 1);
-        assert_eq!(actions[0].artifact_paths[0], "/frames/frame_1000.png");
-    }
-
-    #[test]
-    fn attach_recording_frames_native_and_cdp_both_use_timestamp_directly() {
-        // Both native and CDP hovers use the event timestamp as hover start.
-        // Native: MCP fires transition event with timestamp_ms = arrival time.
-        // CDP: JS listener stores ts = Date.now() at element enter.
-        let native_id = Uuid::new_v4();
-        let cdp_id = Uuid::new_v4();
-        let events = vec![hover_event(native_id, 3000), cdp_hover_event(cdp_id, 3000)];
-        let frames = vec![frame(1000), frame(2000), frame(3000), frame(4000)];
-        let mut native_actions = vec![hover_action(native_id)];
-        let mut cdp_actions = vec![hover_action(cdp_id)];
-
-        attach_recording_frames(&mut native_actions, &frames, &events);
-        attach_recording_frames(&mut cdp_actions, &frames, &events);
-
-        // Both should get the same frame pair around ts=3000.
-        assert_eq!(
-            native_actions[0].artifact_paths,
-            cdp_actions[0].artifact_paths
-        );
-        assert_eq!(
-            native_actions[0].artifact_paths[0],
-            "/frames/frame_2000.png"
-        );
-        assert_eq!(
-            native_actions[0].artifact_paths[1],
-            "/frames/frame_3000.png"
-        );
-    }
-
-    #[test]
-    fn attach_recording_frames_prefers_same_app_frames() {
-        let hover_id = Uuid::new_v4();
-        // Hover on TestApp at ts=3000. Frames from two apps interleaved.
-        let events = vec![hover_event(hover_id, 3000)];
-        let frames = vec![
-            frame_for_app(1000, "OtherApp"),
-            frame_for_app(2000, "TestApp"),
-            frame_for_app(2500, "OtherApp"),
-            frame_for_app(3000, "TestApp"),
-            frame_for_app(3500, "OtherApp"),
-        ];
-        let mut actions = vec![hover_action(hover_id)];
-
-        attach_recording_frames(&mut actions, &frames, &events);
-
-        // Should pick TestApp frames: before=2000, after=3000 (not OtherApp's 2500/3500).
-        assert_eq!(actions[0].artifact_paths.len(), 2);
-        assert_eq!(actions[0].artifact_paths[0], "/frames/frame_2000.png");
-        assert_eq!(actions[0].artifact_paths[1], "/frames/frame_3000.png");
-    }
-
-    #[test]
-    fn attach_recording_frames_falls_back_to_all_frames_when_no_app_match() {
-        let hover_id = Uuid::new_v4();
-        // Hover has app_name=None (can happen for native hovers without focus resolution).
-        let events = vec![{
-            let e = hover_event(hover_id, 3000);
-            if let WalkthroughEventKind::HoverDetected { .. } = &e.kind {
-                // hover_event already has app_name: None
-            }
-            e
-        }];
-        let frames = vec![
-            frame_for_app(2000, "SomeApp"),
-            frame_for_app(4000, "SomeApp"),
-        ];
-        let mut actions = vec![{
-            let mut a = hover_action(hover_id);
-            a.app_name = None; // No app resolved
-            a
-        }];
-
-        attach_recording_frames(&mut actions, &frames, &events);
-
-        // Falls back to all frames since no app name to filter on.
-        assert_eq!(actions[0].artifact_paths.len(), 2);
-        assert_eq!(actions[0].artifact_paths[0], "/frames/frame_2000.png");
-        assert_eq!(actions[0].artifact_paths[1], "/frames/frame_4000.png");
-    }
-}
+// Tests for enrichment logic (find_surrounding_frames, attach_recording_frames,
+// parse_accessibility_json, etc.) have been moved to
+// crates/clickweave-core/src/walkthrough/enrichment.rs

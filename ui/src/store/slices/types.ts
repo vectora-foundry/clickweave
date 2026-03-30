@@ -8,8 +8,6 @@ import type { SettingsSlice } from "./settingsSlice";
 import type { UiSlice } from "./uiSlice";
 import type { VerdictSlice } from "./verdictSlice";
 import type { WalkthroughSlice } from "./walkthroughSlice";
-import type { WalkthroughRecordingSlice } from "./walkthroughRecordingSlice";
-import type { WalkthroughReviewSlice } from "./walkthroughReviewSlice";
 
 export type StoreState = AssistantSlice &
   ExecutionSlice &
@@ -20,6 +18,4 @@ export type StoreState = AssistantSlice &
   SettingsSlice &
   UiSlice &
   VerdictSlice &
-  WalkthroughSlice &
-  WalkthroughRecordingSlice &
-  WalkthroughReviewSlice;
+  WalkthroughSlice;

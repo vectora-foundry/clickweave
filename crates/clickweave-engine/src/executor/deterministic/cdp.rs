@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use super::super::retry_context::RetryContext;
 use super::super::{ExecutorError, ExecutorResult, Mcp, WorkflowExecutor};
 use clickweave_core::NodeRun;
 use clickweave_core::cdp::{
@@ -27,6 +28,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         target: &str,
         expected: &CdpExpected<'_>,
         mcp: &(impl Mcp + ?Sized),
+        retry_ctx: &RetryContext,
     ) -> ExecutorResult<String> {
         // Refresh page list to verify CDP connection is healthy.
         let _ = mcp
@@ -93,7 +95,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     resolved.len(),
                     target
                 ));
-                self.disambiguate_cdp_elements(target, &resolved).await
+                self.disambiguate_cdp_elements(target, &resolved, retry_ctx)
+                    .await
             }
         } else if matches.len() == 1 {
             Ok(matches[0].uid.clone())
@@ -103,7 +106,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 matches.len(),
                 target
             ));
-            self.disambiguate_cdp_elements(target, &matches).await
+            self.disambiguate_cdp_elements(target, &matches, retry_ctx)
+                .await
         }
     }
 
@@ -116,8 +120,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         expected: &CdpExpected<'_>,
         mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
+        retry_ctx: &RetryContext,
     ) -> ExecutorResult<String> {
-        let uid = self.resolve_cdp_element_uid(target, expected, mcp).await?;
+        let uid = self
+            .resolve_cdp_element_uid(target, expected, mcp, retry_ctx)
+            .await?;
 
         self.log(format!("CDP: {} element uid='{}'", action, uid));
         let result = mcp
@@ -152,8 +159,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         expected: &CdpExpected<'_>,
         mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
+        retry_ctx: &RetryContext,
     ) -> ExecutorResult<String> {
-        self.execute_cdp_action("click", target, expected, mcp, node_run)
+        self.execute_cdp_action("click", target, expected, mcp, node_run, retry_ctx)
             .await
     }
 
@@ -164,8 +172,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         expected: &CdpExpected<'_>,
         mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
+        retry_ctx: &RetryContext,
     ) -> ExecutorResult<String> {
-        self.execute_cdp_action("hover", target, expected, mcp, node_run)
+        self.execute_cdp_action("hover", target, expected, mcp, node_run, retry_ctx)
             .await
     }
 
@@ -283,9 +292,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &self,
         target: &str,
         matches: &[SnapshotMatch],
+        retry_ctx: &RetryContext,
     ) -> ExecutorResult<String> {
-        let hint = self.supervision_hint.as_deref();
-        let tried: Vec<String> = self.read_tried_cdp_uids().clone();
+        let hint = retry_ctx.supervision_hint.as_deref();
+        let tried: Vec<String> = retry_ctx.read_tried_cdp_uids().clone();
         let prompt = build_disambiguation_prompt(target, matches, hint, &tried);
 
         let response = self
@@ -310,7 +320,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 ));
             }
         }
-        self.write_tried_cdp_uids().push(uid.clone());
+        retry_ctx.write_tried_cdp_uids().push(uid.clone());
         Ok(uid)
     }
 

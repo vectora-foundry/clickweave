@@ -101,6 +101,10 @@ impl ChatBackend for ScriptedBackend {
 pub(super) struct StubToolProvider {
     responses: Mutex<Vec<ToolCallResult>>,
     calls: Mutex<Vec<(String, Option<Value>)>>,
+    /// Tool names that `has_tool` reports as available.
+    available_tools: Vec<String>,
+    /// Schemas returned by `tools_as_openai`.
+    openai_schemas: Vec<Value>,
 }
 
 impl StubToolProvider {
@@ -109,7 +113,23 @@ impl StubToolProvider {
         Self {
             responses: Mutex::new(Vec::new()),
             calls: Mutex::new(Vec::new()),
+            available_tools: Vec::new(),
+            openai_schemas: Vec::new(),
         }
+    }
+
+    /// Set the tool names that `has_tool` will recognise.
+    #[allow(dead_code)]
+    pub(super) fn with_tools(mut self, tools: Vec<&str>) -> Self {
+        self.available_tools = tools.into_iter().map(String::from).collect();
+        self
+    }
+
+    /// Set the schemas returned by `tools_as_openai`.
+    #[allow(dead_code)]
+    pub(super) fn with_openai_schemas(mut self, schemas: Vec<Value>) -> Self {
+        self.openai_schemas = schemas;
+        self
     }
 
     /// Queue a successful text response.
@@ -151,6 +171,14 @@ impl Mcp for StubToolProvider {
             panic!("StubToolProvider: no queued response for '{}'", name);
         }
         Ok(queue.remove(0))
+    }
+
+    fn has_tool(&self, name: &str) -> bool {
+        self.available_tools.iter().any(|t| t == name)
+    }
+
+    fn tools_as_openai(&self) -> Vec<Value> {
+        self.openai_schemas.clone()
     }
 }
 
@@ -222,22 +250,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             element_cache: RwLock::new(HashMap::new()),
             context: RuntimeContext::new(),
             decision_cache: RwLock::new(decision_cache),
-            supervision_history: RwLock::new(Vec::new()),
-            runtime_verdicts: Vec::new(),
-            pending_loop_exit: None,
             cdp_connected_app: None,
             cancel_token,
-            supervision_hint: None,
-            tried_click_indices: RwLock::new(Vec::new()),
-            tried_cdp_uids: RwLock::new(Vec::new()),
-            last_typed_url: None,
             chrome_profile_store: clickweave_core::chrome_profiles::ChromeProfileStore::new(
                 std::env::temp_dir().join("clickweave_test_profiles"),
             ),
             chrome_profiles: Vec::new(),
             resolution_tx: None,
-            completed_node_ids: Vec::new(),
-            rejected_resolutions: std::collections::HashSet::new(),
         }
     }
 }

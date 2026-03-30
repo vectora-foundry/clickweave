@@ -1,3 +1,4 @@
+use super::retry_context::RetryContext;
 use super::{LoopExitReason, PendingLoopExit, WorkflowExecutor};
 use clickweave_core::{EdgeOutput, NodeType};
 use clickweave_llm::ChatBackend;
@@ -10,6 +11,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         node_id: Uuid,
         node_name: &str,
         node_type: &NodeType,
+        retry_ctx: &mut RetryContext,
     ) -> Option<Uuid> {
         match node_type {
             NodeType::If(params) => {
@@ -130,7 +132,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 };
 
                 if let Some(reason) = exit_reason {
-                    self.pending_loop_exit = Some(PendingLoopExit {
+                    retry_ctx.pending_loop_exit = Some(PendingLoopExit {
                         node_id,
                         loop_name: node_name.to_string(),
                         reason,

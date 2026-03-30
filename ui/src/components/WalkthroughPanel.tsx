@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useStore } from "../store/useAppStore";
+import { useWalkthrough } from "../hooks/useWalkthrough";
 import { useHorizontalResize } from "../hooks/useHorizontalResize";
 import type { AppKind, WalkthroughAction } from "../bindings";
 import { APP_KIND_LABELS, usesCdp } from "../utils/appKind";
@@ -28,30 +29,7 @@ function groupBorderStyle(group: AppGroup): React.CSSProperties {
 }
 
 export function WalkthroughPanel() {
-  const walkthroughStatus = useStore((s) => s.walkthroughStatus);
-  const walkthroughError = useStore((s) => s.walkthroughError);
-  const walkthroughActions = useStore((s) => s.walkthroughActions);
-  const walkthroughAnnotations = useStore((s) => s.walkthroughAnnotations);
-  const walkthroughExpandedAction = useStore((s) => s.walkthroughExpandedAction);
-  const walkthroughWarnings = useStore((s) => s.walkthroughWarnings);
-  const setWalkthroughExpandedAction = useStore((s) => s.setWalkthroughExpandedAction);
-  const walkthroughDraft = useStore((s) => s.walkthroughDraft);
-  const walkthroughActionNodeMap = useStore((s) => s.walkthroughActionNodeMap);
-  const walkthroughNodeOrder = useStore((s) => s.walkthroughNodeOrder);
-  const keepCandidate = useStore((s) => s.keepCandidate);
-  const dismissCandidate = useStore((s) => s.dismissCandidate);
-  const deleteNode = useStore((s) => s.deleteNode);
-  const restoreNode = useStore((s) => s.restoreNode);
-  const renameNode = useStore((s) => s.renameNode);
-  const overrideTarget = useStore((s) => s.overrideTarget);
-  const promoteToVariable = useStore((s) => s.promoteToVariable);
-  const removeVariablePromotion = useStore((s) => s.removeVariablePromotion);
-  const applyDraftToCanvas = useStore((s) => s.applyDraftToCanvas);
-  const discardDraft = useStore((s) => s.discardDraft);
-  const reorderNode = useStore((s) => s.reorderNode);
-  const reorderGroup = useStore((s) => s.reorderGroup);
-  const walkthroughPanelOpen = useStore((s) => s.walkthroughPanelOpen);
-  const setWalkthroughPanelOpen = useStore((s) => s.setWalkthroughPanelOpen);
+  const walkthrough = useWalkthrough();
   const assistantOpen = useStore((s) => s.assistantOpen);
 
   const [lightboxActionId, setLightboxActionId] = useState<string | null>(null);
@@ -121,15 +99,15 @@ export function WalkthroughPanel() {
     const onPointerUp = () => {
       const drag = itemDragRef.current;
       if (drag && drag.hoverIndex !== drag.originalIndex) {
-        // Map group-local indices to walkthroughNodeOrder indices
+        // Map group-local indices to walkthrough.nodeOrder indices
         const group = groups[drag.groupIndex];
         const nodeItems = group.items.filter((i) => i.type === "node");
         const fromId = nodeItems[drag.originalIndex]?.id;
         const toId = nodeItems[drag.hoverIndex]?.id;
         if (fromId && toId) {
-          const fromIdx = walkthroughNodeOrder.indexOf(fromId);
-          const toIdx = walkthroughNodeOrder.indexOf(toId);
-          if (fromIdx >= 0 && toIdx >= 0) reorderNode(fromIdx, toIdx);
+          const fromIdx = walkthrough.nodeOrder.indexOf(fromId);
+          const toIdx = walkthrough.nodeOrder.indexOf(toId);
+          if (fromIdx >= 0 && toIdx >= 0) walkthrough.reorderNode(fromIdx, toIdx);
         }
       }
       itemDragRef.current = null;
@@ -145,35 +123,35 @@ export function WalkthroughPanel() {
   }, [itemDrag !== null]);
 
   // Recording/Paused/Processing states are now handled by RecordingBar overlay
-  if (walkthroughStatus !== "Review") return null;
+  if (walkthrough.status !== "Review") return null;
 
   // Hide while assistant panel is open to avoid rendering both side panels.
   if (assistantOpen) return null;
 
   // Hide when user closed the panel via X. State is preserved; can reopen from toolbar.
-  if (!walkthroughPanelOpen) return null;
+  if (!walkthrough.panelOpen) return null;
 
   // Build app_kind map from LaunchApp/FocusWindow actions so Click nodes can
   // know whether they're targeting an Electron/Chrome app.
   const appKindMap = new Map<string, AppKind>();
-  for (const a of walkthroughActions) {
+  for (const a of walkthrough.actions) {
     if (a.kind.type === "LaunchApp" || a.kind.type === "FocusWindow") {
       appKindMap.set(a.kind.app_name, a.kind.app_kind);
     }
   }
 
-  const draftNodes = walkthroughDraft?.nodes ?? [];
-  const deletedSet = new Set(walkthroughAnnotations.deleted_node_ids);
-  const renameMap = new Map(walkthroughAnnotations.renamed_nodes.map((r) => [r.node_id, r]));
-  const targetMap = new Map(walkthroughAnnotations.target_overrides.map((o) => [o.node_id, o]));
-  const varPromoMap = new Map(walkthroughAnnotations.variable_promotions.map((p) => [p.node_id, p]));
+  const draftNodes = walkthrough.draft?.nodes ?? [];
+  const deletedSet = new Set(walkthrough.annotations.deleted_node_ids);
+  const renameMap = new Map(walkthrough.annotations.renamed_nodes.map((r) => [r.node_id, r]));
+  const targetMap = new Map(walkthrough.annotations.target_overrides.map((o) => [o.node_id, o]));
+  const varPromoMap = new Map(walkthrough.annotations.variable_promotions.map((p) => [p.node_id, p]));
 
-  const warningCount = walkthroughActions.reduce((sum, a) => sum + a.warnings.length, 0) + walkthroughWarnings.length;
+  const warningCount = walkthrough.actions.reduce((sum, a) => sum + a.warnings.length, 0) + walkthrough.warnings.length;
 
   // Compute groups from the ordered list
   const groups = computeAppGroups(
-    walkthroughNodeOrder, draftNodes, walkthroughActions,
-    walkthroughActionNodeMap,
+    walkthrough.nodeOrder, draftNodes, walkthrough.actions,
+    walkthrough.actionNodeMap,
   );
 
   // Precompute step numbers from the flat group items (only for non-deleted nodes)
@@ -193,7 +171,7 @@ export function WalkthroughPanel() {
   // Precompute lightbox image if one is open
   const lightboxImage: LightboxImage | null = (() => {
     if (!lightboxActionId) return null;
-    const action = walkthroughActions.find((a) => a.id === lightboxActionId);
+    const action = walkthrough.actions.find((a) => a.id === lightboxActionId);
     if (!action || action.artifact_paths.length === 0) return null;
     return {
       src: convertFileSrc(action.artifact_paths[0]),
@@ -230,7 +208,7 @@ export function WalkthroughPanel() {
   function renderCandidateItem(item: Extract<RenderItem, { type: "candidate" }>, group: AppGroup) {
     const { action } = item;
     const { icon, color } = actionIcon(action.kind);
-    const isCandidateExpanded = walkthroughExpandedAction === action.id;
+    const isCandidateExpanded = walkthrough.expandedAction === action.id;
 
     return (
       <div key={item.id}>
@@ -239,7 +217,7 @@ export function WalkthroughPanel() {
             isCandidateExpanded ? "bg-[var(--bg-hover)]" : ""
           }`}
           style={groupBorderStyle(group)}
-          onClick={() => setWalkthroughExpandedAction(action.id)}
+          onClick={() => walkthrough.setExpandedAction(action.id)}
         >
           {/* Empty drag handle spacer */}
           <span className="w-5 shrink-0" />
@@ -248,8 +226,8 @@ export function WalkthroughPanel() {
           <span className={`w-4 text-center text-sm ${color}`}>{icon}</span>
           <span className="truncate text-xs text-[var(--text-secondary)]">{actionLabel(action)}</span>
           <div className="flex gap-0.5 ml-auto shrink-0 text-[10px]">
-            <button onClick={(e) => { e.stopPropagation(); keepCandidate(action.id); }} className="rounded bg-green-700 px-1.5 py-0.5 text-white hover:bg-green-600">Keep</button>
-            <button onClick={(e) => { e.stopPropagation(); dismissCandidate(action.id); }} className="rounded bg-[var(--bg-input)] px-1.5 py-0.5 text-[var(--text-muted)] hover:bg-red-500/20">Dismiss</button>
+            <button onClick={(e) => { e.stopPropagation(); walkthrough.keepCandidate(action.id); }} className="rounded bg-green-700 px-1.5 py-0.5 text-white hover:bg-green-600">Keep</button>
+            <button onClick={(e) => { e.stopPropagation(); walkthrough.dismissCandidate(action.id); }} className="rounded bg-[var(--bg-input)] px-1.5 py-0.5 text-[var(--text-muted)] hover:bg-red-500/20">Dismiss</button>
           </div>
         </div>
         {isCandidateExpanded && (
@@ -282,7 +260,7 @@ export function WalkthroughPanel() {
 
     const { node, action } = item;
     const isDeleted = deletedSet.has(node.id);
-    const isExpanded = walkthroughExpandedAction === node.id;
+    const isExpanded = walkthrough.expandedAction === node.id;
     const currentStep = stepNumbers.get(node.id) ?? null;
     const { icon, color } = action ? actionIcon(action.kind) : nodeTypeIcon(node.node_type);
 
@@ -337,7 +315,7 @@ export function WalkthroughPanel() {
           {/* Collapsed row */}
           <div
             className="group flex cursor-pointer items-center gap-2 px-3 py-2"
-            onClick={() => setWalkthroughExpandedAction(node.id)}
+            onClick={() => walkthrough.setExpandedAction(node.id)}
           >
             {/* Drag handle */}
             {isDeleted ? (
@@ -406,7 +384,7 @@ export function WalkthroughPanel() {
             {/* Delete / Restore */}
             {isDeleted ? (
               <button
-                onClick={(e) => { e.stopPropagation(); restoreNode(node.id); }}
+                onClick={(e) => { e.stopPropagation(); walkthrough.restoreNode(node.id); }}
                 className="rounded px-1.5 py-0.5 text-[10px] text-[var(--text-muted)] hover:text-green-400"
                 title="Restore"
               >
@@ -414,7 +392,7 @@ export function WalkthroughPanel() {
               </button>
             ) : (
               <button
-                onClick={(e) => { e.stopPropagation(); deleteNode(node.id); }}
+                onClick={(e) => { e.stopPropagation(); walkthrough.deleteNode(node.id); }}
                 className="rounded px-1 py-0.5 text-[var(--text-muted)] hover:text-red-400"
                 title="Delete step"
               >
@@ -432,7 +410,7 @@ export function WalkthroughPanel() {
                 <input
                   type="text"
                   value={renameEntry?.new_name ?? defaultLabel}
-                  onChange={(e) => renameNode(node.id, e.target.value)}
+                  onChange={(e) => walkthrough.renameNode(node.id, e.target.value)}
                   className="w-full rounded border border-[var(--border)] bg-[var(--bg-input)] px-2 py-1 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent-coral)]"
                 />
               </div>
@@ -465,7 +443,7 @@ export function WalkthroughPanel() {
                             type="radio"
                             name={`target-${node.id}`}
                             checked={originalIndex === chosenTargetIdx}
-                            onChange={() => overrideTarget(node.id, originalIndex)}
+                            onChange={() => walkthrough.overrideTarget(node.id, originalIndex)}
                             className="accent-[var(--accent-coral)]"
                           />
                           <span>{targetCandidateIcon(candidate)}</span>
@@ -511,9 +489,9 @@ export function WalkthroughPanel() {
                       checked={!!variablePromo}
                       onChange={(e) => {
                         if (e.target.checked) {
-                          promoteToVariable(node.id, "");
+                          walkthrough.promoteToVariable(node.id, "");
                         } else {
-                          removeVariablePromotion(node.id);
+                          walkthrough.removeVariablePromotion(node.id);
                         }
                       }}
                       className="accent-[var(--accent-coral)]"
@@ -524,7 +502,7 @@ export function WalkthroughPanel() {
                     <input
                       type="text"
                       value={variablePromo.variable_name}
-                      onChange={(e) => promoteToVariable(node.id, e.target.value)}
+                      onChange={(e) => walkthrough.promoteToVariable(node.id, e.target.value)}
                       placeholder="variable_name"
                       className="mt-1 w-full rounded border border-[var(--border)] bg-[var(--bg-input)] px-2 py-1 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent-coral)]"
                     />
@@ -571,7 +549,7 @@ export function WalkthroughPanel() {
           )}
         </div>
         <button
-          onClick={() => setWalkthroughPanelOpen(false)}
+          onClick={() => walkthrough.setPanelOpen(false)}
           className="rounded px-1.5 py-0.5 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
           title="Close panel"
         >
@@ -580,9 +558,9 @@ export function WalkthroughPanel() {
       </div>
 
       {/* Global warnings */}
-      {walkthroughWarnings.length > 0 && (
+      {walkthrough.warnings.length > 0 && (
         <div className="border-b border-[var(--border)] px-3 py-2 space-y-1">
-          {walkthroughWarnings.map((w, i) => (
+          {walkthrough.warnings.map((w, i) => (
             <div key={i} className="rounded bg-yellow-500/10 px-2 py-1 text-[11px] text-yellow-400">
               {w}
             </div>
@@ -591,10 +569,10 @@ export function WalkthroughPanel() {
       )}
 
       {/* Error banner */}
-      {walkthroughError && (
+      {walkthrough.error && (
         <div className="border-b border-[var(--border)] px-3 py-2">
           <div className="rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-400">
-            {walkthroughError}
+            {walkthrough.error}
           </div>
         </div>
       )}
@@ -660,7 +638,7 @@ export function WalkthroughPanel() {
                 const groupIdxStr = e.dataTransfer.getData(DND_GROUP_INDEX);
                 if (groupIdxStr) {
                   const fromGroupIdx = parseInt(groupIdxStr, 10);
-                  if (!isNaN(fromGroupIdx)) reorderGroup(fromGroupIdx, groups.length);
+                  if (!isNaN(fromGroupIdx)) walkthrough.reorderGroup(fromGroupIdx, groups.length);
                 }
               }}
             >
@@ -675,7 +653,7 @@ export function WalkthroughPanel() {
       {/* Footer */}
       <div className="flex items-center gap-2 border-t border-[var(--border)] px-3 py-2.5">
         <button
-          onClick={discardDraft}
+          onClick={walkthrough.discardDraft}
           className="rounded-lg border border-red-500/40 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10"
         >
           Cancel
@@ -684,7 +662,7 @@ export function WalkthroughPanel() {
           <span className="text-[10px] text-[var(--text-muted)]">All steps deleted</span>
         )}
         <button
-          onClick={applyDraftToCanvas}
+          onClick={walkthrough.applyDraftToCanvas}
           disabled={allDeleted || draftNodes.length === 0}
           className="ml-auto rounded-lg bg-[var(--accent-coral)] px-4 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
         >

@@ -3,6 +3,11 @@ use std::sync::{Arc, Mutex};
 
 use clickweave_core::AppKind;
 use clickweave_core::app_detection::{bundle_path_from_pid, classify_app, classify_app_by_pid};
+use clickweave_core::walkthrough::enrichment::parse_cdp_click_data;
+use clickweave_core::walkthrough::session::{
+    self as session_lib, CDP_CHECK_AND_REINJECT_JS, CDP_CLICK_LISTENER_JS, CDP_HOVER_LISTENER_JS,
+    CDP_RETRIEVE_CLICK_JS, CDP_RETRIEVE_HOVERS_JS, CDP_STOP_HOVER_JS, CachedApp,
+};
 use clickweave_core::walkthrough::{
     ScreenshotKind, WalkthroughEvent, WalkthroughEventKind, WalkthroughSession, WalkthroughStatus,
     WalkthroughStorage,
@@ -20,334 +25,9 @@ use super::walkthrough_enrichment::{
 };
 use crate::platform::{CaptureCommand, CaptureEvent, CaptureEventKind};
 
-/// JavaScript click listener injected into CDP-enabled apps.
-/// Captures the semantic target element on each click (capture phase,
-/// fires before navigation/DOM mutation).
-///
-/// All state is stored on `document` (not `window`) because
-/// chrome-devtools-mcp evaluates scripts in Puppeteer's utility world,
-/// which has a separate `window` from the main world.  `document` is
-/// shared across all JS execution contexts, so the listener, handler,
-/// and click queue remain accessible regardless of which world runs the
-/// injection or retrieval.
-const CDP_CLICK_LISTENER_JS: &str = r#"() => {
-  const d = document;
-  d.__cw_clicks = [];
-  const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
-  const INTERACTIVE = '[role="button"],[role="link"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="tab"],[role="treeitem"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="textbox"],[role="combobox"],[role="searchbox"],[role="slider"],[role="spinbutton"],a,button,select,textarea,input,[tabindex]:not([tabindex="-1"])';
-  function accessibleText(node) {
-    const a = node.ariaLabel || node.getAttribute('aria-label');
-    if (a) return a;
-    const lb = node.getAttribute('aria-labelledby');
-    if (lb) {
-      const t = lb.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
-      if (t) return t.substring(0, 200);
-    }
-    if (node.title) return node.title;
-    if (node.alt) return node.alt;
-    if (node.placeholder) return node.placeholder;
-    if ((node.tagName === 'svg' || node.tagName === 'SVG') || (node.namespaceURI === 'http://www.w3.org/2000/svg' && node.tagName === 'svg')) {
-      const st = node.querySelector('title');
-      if (st?.textContent) return st.textContent.trim().substring(0, 200);
-    }
-    let t = '';
-    for (const ch of node.childNodes) {
-      if (ch.nodeType === 3) { t += ch.textContent; continue; }
-      if (ch.nodeType === 1 && ch.getAttribute('aria-hidden') !== 'true') {
-        const sub = accessibleText(ch);
-        if (sub && t) t += ' ';
-        t += sub;
-      }
-    }
-    return t.trim().substring(0, 200);
-  }
-  d.__cw_handler = (e) => {
-    const el = e.target.closest(INTERACTIVE) || e.target.closest('[aria-label]') || e.target;
-    let text = accessibleText(el);
-    if (!text) {
-      let p = el.parentElement;
-      while (p && p !== d.documentElement) {
-        const la = p.ariaLabel || p.getAttribute('aria-label');
-        if (la) { text = la; break; }
-        const lb = p.getAttribute('aria-labelledby');
-        if (lb) {
-          const r = lb.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
-          if (r) { text = r; break; }
-        }
-        if (p.title) { text = p.title; break; }
-        p = p.parentElement;
-      }
-    }
-    let parentRole = null;
-    let parentName = null;
-    {
-      let p = el.parentElement;
-      while (p && p !== d.documentElement) {
-        const r = p.getAttribute('role');
-        const a = p.ariaLabel || p.getAttribute('aria-label');
-        if (r || a) {
-          parentRole = r || null;
-          parentName = a || accessibleText(p).substring(0, 200) || null;
-          break;
-        }
-        p = p.parentElement;
-      }
-    }
-    d.__cw_clicks.push({
-      ts: Date.now(),
-      tagName: el.tagName,
-      role: el.getAttribute('role') || TAG_ROLES[el.tagName] || null,
-      ariaLabel: el.ariaLabel || el.getAttribute('aria-label') || null,
-      textContent: text || null,
-      title: el.title || el.closest('[title]')?.title || null,
-      value: el.value || null,
-      href: el.closest('a')?.href || null,
-      id: el.id || null,
-      className: el.className || null,
-      parentRole: parentRole,
-      parentName: parentName,
-    });
-  };
-  if (d.__cw_listener) {
-    d.removeEventListener('click', d.__cw_listener, true);
-  }
-  d.__cw_listener = (e) => d.__cw_handler(e);
-  d.addEventListener('click', d.__cw_listener, true);
-}"#;
-
-/// JavaScript to retrieve and remove the oldest click from the queue.
-const CDP_RETRIEVE_CLICK_JS: &str = r#"() => {
-  if (!Array.isArray(document.__cw_clicks)) return null;
-  return document.__cw_clicks.shift() || null;
-}"#;
-
-/// JavaScript to check if the click listener is still alive; re-inject if lost.
-/// Returns `"reinjected"` if it was re-injected, `"alive"` otherwise.
-const CDP_CHECK_AND_REINJECT_JS: &str = r#"() => {
-  const d = document;
-  if (d.__cw_listener) return 'alive';
-  d.__cw_clicks = [];
-  const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
-  const INTERACTIVE = '[role="button"],[role="link"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="tab"],[role="treeitem"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="textbox"],[role="combobox"],[role="searchbox"],[role="slider"],[role="spinbutton"],a,button,select,textarea,input,[tabindex]:not([tabindex="-1"])';
-  function accessibleText(node) {
-    const a = node.ariaLabel || node.getAttribute('aria-label');
-    if (a) return a;
-    const lb = node.getAttribute('aria-labelledby');
-    if (lb) {
-      const t = lb.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
-      if (t) return t.substring(0, 200);
-    }
-    if (node.title) return node.title;
-    if (node.alt) return node.alt;
-    if (node.placeholder) return node.placeholder;
-    if ((node.tagName === 'svg' || node.tagName === 'SVG') || (node.namespaceURI === 'http://www.w3.org/2000/svg' && node.tagName === 'svg')) {
-      const st = node.querySelector('title');
-      if (st?.textContent) return st.textContent.trim().substring(0, 200);
-    }
-    let t = '';
-    for (const ch of node.childNodes) {
-      if (ch.nodeType === 3) { t += ch.textContent; continue; }
-      if (ch.nodeType === 1 && ch.getAttribute('aria-hidden') !== 'true') {
-        const sub = accessibleText(ch);
-        if (sub && t) t += ' ';
-        t += sub;
-      }
-    }
-    return t.trim().substring(0, 200);
-  }
-  d.__cw_handler = (e) => {
-    const el = e.target.closest(INTERACTIVE) || e.target.closest('[aria-label]') || e.target;
-    let text = accessibleText(el);
-    if (!text) {
-      let p = el.parentElement;
-      while (p && p !== d.documentElement) {
-        const la = p.ariaLabel || p.getAttribute('aria-label');
-        if (la) { text = la; break; }
-        const lb = p.getAttribute('aria-labelledby');
-        if (lb) {
-          const r = lb.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
-          if (r) { text = r; break; }
-        }
-        if (p.title) { text = p.title; break; }
-        p = p.parentElement;
-      }
-    }
-    let parentRole = null;
-    let parentName = null;
-    {
-      let p = el.parentElement;
-      while (p && p !== d.documentElement) {
-        const r = p.getAttribute('role');
-        const a = p.ariaLabel || p.getAttribute('aria-label');
-        if (r || a) {
-          parentRole = r || null;
-          parentName = a || accessibleText(p).substring(0, 200) || null;
-          break;
-        }
-        p = p.parentElement;
-      }
-    }
-    d.__cw_clicks.push({
-      ts: Date.now(),
-      tagName: el.tagName,
-      role: el.getAttribute('role') || TAG_ROLES[el.tagName] || null,
-      ariaLabel: el.ariaLabel || el.getAttribute('aria-label') || null,
-      textContent: text || null,
-      title: el.title || el.closest('[title]')?.title || null,
-      value: el.value || null,
-      href: el.closest('a')?.href || null,
-      id: el.id || null,
-      className: el.className || null,
-      parentRole: parentRole,
-      parentName: parentName,
-    });
-  };
-  d.__cw_listener = (e) => d.__cw_handler(e);
-  d.addEventListener('click', d.__cw_listener, true);
-  return 'reinjected';
-}"#;
-
-/// JavaScript hover listener injected into CDP-enabled apps.
-/// Tracks which interactive element the cursor is over using a polling
-/// approach: `mousemove` updates the last-known cursor position, and a
-/// 100ms `setInterval` calls `elementFromPoint` to detect element
-/// transitions with dwell timing.
-///
-/// Uses the same `accessibleText()`, `INTERACTIVE` selector, and parent
-/// traversal logic as the click listener so hover and click results are
-/// directly comparable.  Pushes to `document.__cw_hovers` only when the
-/// resolved element changes, recording the dwell time on the previous
-/// element.
-const CDP_HOVER_LISTENER_JS: &str = r#"() => {
-  const d = document;
-  d.__cw_hovers = [];
-  d.__cw_hover_cx = 0;
-  d.__cw_hover_cy = 0;
-  d.__cw_hover_enter_sx = 0;
-  d.__cw_hover_enter_sy = 0;
-  const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
-  const INTERACTIVE = '[role="button"],[role="link"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="tab"],[role="treeitem"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="textbox"],[role="combobox"],[role="searchbox"],[role="slider"],[role="spinbutton"],a,button,select,textarea,input,[tabindex]:not([tabindex="-1"])';
-  function accessibleText(node) {
-    const a = node.ariaLabel || node.getAttribute('aria-label');
-    if (a) return a;
-    const lb = node.getAttribute('aria-labelledby');
-    if (lb) {
-      const t = lb.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
-      if (t) return t.substring(0, 200);
-    }
-    if (node.title) return node.title;
-    if (node.alt) return node.alt;
-    if (node.placeholder) return node.placeholder;
-    if ((node.tagName === 'svg' || node.tagName === 'SVG') || (node.namespaceURI === 'http://www.w3.org/2000/svg' && node.tagName === 'svg')) {
-      const st = node.querySelector('title');
-      if (st?.textContent) return st.textContent.trim().substring(0, 200);
-    }
-    let t = '';
-    for (const ch of node.childNodes) {
-      if (ch.nodeType === 3) { t += ch.textContent; continue; }
-      if (ch.nodeType === 1 && ch.getAttribute('aria-hidden') !== 'true') {
-        const sub = accessibleText(ch);
-        if (sub && t) t += ' ';
-        t += sub;
-      }
-    }
-    return t.trim().substring(0, 200);
-  }
-  d.__cw_hover_lastEl = null;
-  d.__cw_hover_enterTime = 0;
-  const MIN_DWELL = __CW_MIN_DWELL__;
-  if (d.__cw_hover_mousemove) {
-    d.removeEventListener('mousemove', d.__cw_hover_mousemove, true);
-  }
-  d.__cw_hover_mousemove = (e) => {
-    d.__cw_hover_cx = e.clientX;
-    d.__cw_hover_cy = e.clientY;
-  };
-  d.addEventListener('mousemove', d.__cw_hover_mousemove, true);
-  d.__cw_hover_flush = () => {
-    const el = d.__cw_hover_lastEl;
-    const enter = d.__cw_hover_enterTime;
-    if (!el || !enter) return;
-    const now = Date.now();
-    if ((now - enter) < MIN_DWELL) return;
-    let text = accessibleText(el);
-    if (!text) {
-      let p = el.parentElement;
-      while (p && p !== d.documentElement) {
-        const la = p.ariaLabel || p.getAttribute('aria-label');
-        if (la) { text = la; break; }
-        const lb = p.getAttribute('aria-labelledby');
-        if (lb) {
-          const r = lb.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
-          if (r) { text = r; break; }
-        }
-        if (p.title) { text = p.title; break; }
-        p = p.parentElement;
-      }
-    }
-    let parentRole = null;
-    let parentName = null;
-    {
-      let p = el.parentElement;
-      while (p && p !== d.documentElement) {
-        const r = p.getAttribute('role');
-        const a = p.ariaLabel || p.getAttribute('aria-label');
-        if (r || a) {
-          parentRole = r || null;
-          parentName = a || accessibleText(p).substring(0, 200) || null;
-          break;
-        }
-        p = p.parentElement;
-      }
-    }
-    d.__cw_hovers.push({
-      ts: enter,
-      dwellMs: now - enter,
-      x: d.__cw_hover_enter_sx,
-      y: d.__cw_hover_enter_sy,
-      tagName: el.tagName,
-      role: el.getAttribute('role') || TAG_ROLES[el.tagName] || null,
-      ariaLabel: el.ariaLabel || el.getAttribute('aria-label') || null,
-      textContent: text || null,
-      href: el.closest('a')?.href || null,
-      parentRole: parentRole,
-      parentName: parentName,
-    });
-    d.__cw_hover_lastEl = null;
-    d.__cw_hover_enterTime = 0;
-  };
-  if (d.__cw_hover_interval) clearInterval(d.__cw_hover_interval);
-  d.__cw_hover_interval = setInterval(() => {
-    const raw = d.elementFromPoint(d.__cw_hover_cx, d.__cw_hover_cy);
-    if (!raw) { d.__cw_hover_lastEl = null; d.__cw_hover_enterTime = 0; return; }
-    const el = raw.closest(INTERACTIVE) || raw.closest('[aria-label]') || raw;
-    if (el === d.__cw_hover_lastEl) return;
-    d.__cw_hover_flush();
-    d.__cw_hover_lastEl = el;
-    d.__cw_hover_enterTime = Date.now();
-    d.__cw_hover_enter_sx = d.__cw_hover_cx + window.screenX;
-    d.__cw_hover_enter_sy = d.__cw_hover_cy + window.screenY;
-  }, 100);
-}"#;
-
-/// JavaScript to retrieve and clear all collected hover data from the
-/// injected hover listener.  Returns the full array and resets it.
-const CDP_RETRIEVE_HOVERS_JS: &str = r#"() => {
-  if (!Array.isArray(document.__cw_hovers)) return [];
-  const h = document.__cw_hovers;
-  document.__cw_hovers = [];
-  return h;
-}"#;
-
-/// JavaScript to stop the hover listener's polling interval and remove
-/// the mousemove handler, flushing any pending dwell that exceeds the
-/// minimum threshold.
-const CDP_STOP_HOVER_JS: &str = r#"() => {
-  const d = document;
-  if (d.__cw_hover_interval) { clearInterval(d.__cw_hover_interval); d.__cw_hover_interval = null; }
-  if (d.__cw_hover_flush) { d.__cw_hover_flush(); d.__cw_hover_flush = null; }
-  if (d.__cw_hover_mousemove) { d.removeEventListener('mousemove', d.__cw_hover_mousemove, true); d.__cw_hover_mousemove = null; }
-}"#;
+// CDP JavaScript constants (CDP_CLICK_LISTENER_JS, CDP_RETRIEVE_CLICK_JS,
+// CDP_CHECK_AND_REINJECT_JS, CDP_HOVER_LISTENER_JS, CDP_RETRIEVE_HOVERS_JS,
+// CDP_STOP_HOVER_JS) are imported from clickweave_core::walkthrough::session.
 
 use crate::platform::CursorRegionCapture;
 
@@ -368,11 +48,7 @@ use std::sync::RwLock;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 type ScreenshotBuffer = Arc<RwLock<Option<Arc<CursorRegionCapture>>>>;
 
-/// Cached info about a running app, populated from MCP's `list_apps` response.
-pub(super) struct CachedApp {
-    pub(super) name: String,
-    pub(super) bundle_id: Option<String>,
-}
+// CachedApp is imported from clickweave_core::walkthrough::session.
 
 /// Manages the walkthrough recording lifecycle.
 pub struct WalkthroughHandle {
@@ -1101,30 +777,12 @@ pub(super) fn get_recording_bar_rect(app: &tauri::AppHandle) -> Option<(f64, f64
 
 /// Strip the last click event if it lands inside the recording bar window.
 ///
-/// When the user clicks Stop, the event tap captures that click before shutting
-/// down. This function removes that click and any events sharing its timestamp
-/// (enrichment data for the stop-button click), preserving all other events
-/// (e.g. VLM results for earlier clicks that were appended later).
+/// Delegates to `session_lib::strip_recording_bar_click` in the library crate.
 pub(super) fn strip_recording_bar_click(
     events: &mut Vec<WalkthroughEvent>,
     bar_rect: (f64, f64, f64, f64),
 ) {
-    let (bar_x, bar_y, bar_w, bar_h) = bar_rect;
-
-    let last_click_pos = events
-        .iter()
-        .rposition(|e| matches!(&e.kind, WalkthroughEventKind::MouseClicked { .. }));
-
-    if let Some(idx) = last_click_pos
-        && let WalkthroughEventKind::MouseClicked { x, y, .. } = &events[idx].kind
-        && *x >= bar_x
-        && *x <= bar_x + bar_w
-        && *y >= bar_y
-        && *y <= bar_y + bar_h
-    {
-        let click_ts = events[idx].timestamp;
-        events.retain(|e| e.timestamp != click_ts);
-    }
+    session_lib::strip_recording_bar_click(events, bar_rect);
 }
 
 pub(super) fn persist_and_emit(
@@ -1568,44 +1226,23 @@ async fn cdp_retrieve_click(
         }
     };
 
-    // Build name from ariaLabel, textContent, value, or title.
-    let text_name = parsed["ariaLabel"]
+    // Delegate element name/role extraction to the library crate.
+    let Some((name, role, href, parent_role, parent_name)) = parse_cdp_click_data(&parsed) else {
+        tracing::debug!("CDP click data empty for {click_event_id}");
+        return;
+    };
+
+    // Log fallback usage for debugging.
+    let has_text_name = parsed["ariaLabel"]
         .as_str()
         .filter(|s| !s.is_empty())
         .or_else(|| parsed["textContent"].as_str().filter(|s| !s.is_empty()))
         .or_else(|| parsed["value"].as_str().filter(|s| !s.is_empty()))
-        .or_else(|| parsed["title"].as_str().filter(|s| !s.is_empty()));
-
-    // Synthesize a structural fallback when no text-based name is available.
-    // These won't help at execution time but make the click visible in the
-    // review panel so the user can pick a different target candidate.
-    let fallback;
-    let name = match text_name {
-        Some(n) => n,
-        None => {
-            if let Some(id) = parsed["id"].as_str().filter(|s| !s.is_empty()) {
-                fallback = format!("#{id}");
-            } else {
-                let tag = parsed["tagName"]
-                    .as_str()
-                    .unwrap_or("element")
-                    .to_lowercase();
-                fallback = match parsed["role"].as_str().filter(|s| !s.is_empty()) {
-                    Some(role) => format!("{tag}[{role}]"),
-                    None => tag,
-                };
-            }
-            tracing::debug!(
-                "CDP click has no text name for {click_event_id}, using fallback: {fallback}"
-            );
-            &fallback
-        }
-    };
-
-    let role = parsed["role"].as_str().map(|s| s.to_string());
-    let href = parsed["href"].as_str().map(|s| s.to_string());
-    let parent_role = parsed["parentRole"].as_str().map(|s| s.to_string());
-    let parent_name = parsed["parentName"].as_str().map(|s| s.to_string());
+        .or_else(|| parsed["title"].as_str().filter(|s| !s.is_empty()))
+        .is_some();
+    if !has_text_name {
+        tracing::debug!("CDP click has no text name for {click_event_id}, using fallback: {name}");
+    }
 
     tracing::info!(
         "CDP resolved click {click_event_id} → name={:?} role={:?}",
@@ -1617,7 +1254,7 @@ async fn cdp_retrieve_click(
         id: Uuid::new_v4(),
         timestamp: click_timestamp,
         kind: WalkthroughEventKind::CdpClickResolved {
-            name: name.to_string(),
+            name,
             role,
             href,
             parent_role,
@@ -1661,22 +1298,8 @@ pub(super) async fn populate_app_cache(mcp: &McpClient, cache: &mut HashMap<i32,
     if let Ok(result) = result {
         for content in &result.content {
             if let Some(text) = content.as_text() {
-                // list_apps returns JSON with apps array.
-                if let Ok(apps) = serde_json::from_str::<serde_json::Value>(text)
-                    && let Some(arr) = apps.as_array()
-                {
-                    for app in arr {
-                        if let (Some(name), Some(pid)) = (app["name"].as_str(), app["pid"].as_i64())
-                        {
-                            cache.insert(
-                                pid as i32,
-                                CachedApp {
-                                    name: name.to_string(),
-                                    bundle_id: app["bundle_id"].as_str().map(|s| s.to_string()),
-                                },
-                            );
-                        }
-                    }
+                for (pid, name, bundle_id) in session_lib::parse_app_list(text) {
+                    cache.insert(pid, CachedApp { name, bundle_id });
                 }
             }
         }
