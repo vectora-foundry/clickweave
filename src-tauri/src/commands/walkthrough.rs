@@ -684,7 +684,8 @@ pub async fn seed_walkthrough_cache(
     let cache_path = storage.cache_path();
 
     // Load existing cache or create new one.
-    let mut cache = DecisionCache::load(&cache_path, wf_id).unwrap_or_else(|| DecisionCache::new(wf_id));
+    let mut cache =
+        DecisionCache::load(&cache_path, wf_id).unwrap_or_else(|| DecisionCache::new(wf_id));
 
     for entry in &app_entries {
         let node_id = parse_uuid(&entry.node_id, "node")?;

@@ -189,11 +189,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         );
 
                         // Update executor focus state for focus-changing tools.
+                        // PID is not resolvable inline in the AI step; use 0 as placeholder.
                         match tool_call.function.name.as_str() {
                             "focus_window" | "launch_app" => {
                                 if let Some(ref app) = tool_app_name {
                                     *self.write_focused_app() =
-                                        Some((app.clone(), AppKind::Native));
+                                        Some((app.clone(), AppKind::Native, 0));
                                     retry_ctx.focus_dirty = true;
                                 }
                             }
@@ -203,7 +204,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                         *self.write_focused_app() = None;
                                         retry_ctx.focus_dirty = true;
                                     }
-                                    if self.cdp_connected_app.as_deref() == Some(app.as_str()) {
+                                    if self
+                                        .cdp_connected_app
+                                        .as_ref()
+                                        .is_some_and(|(name, _)| name == app)
+                                    {
                                         self.cdp_connected_app = None;
                                     }
                                 }

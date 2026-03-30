@@ -144,12 +144,13 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     event_tx: Sender<ExecutorEvent>,
     storage: RunStorage,
     app_cache: RwLock<HashMap<String, ResolvedApp>>,
-    focused_app: RwLock<Option<(String, AppKind)>>,
+    focused_app: RwLock<Option<(String, AppKind, i32)>>,
     element_cache: RwLock<HashMap<(String, Option<String>), String>>,
     context: RuntimeContext,
     decision_cache: RwLock<DecisionCache>,
-    /// The app name for which a CDP connection is active (via cdp_connect).
-    cdp_connected_app: Option<String>,
+    /// The app name and PID for which a CDP connection is active (via cdp_connect).
+    /// PID is used to distinguish same-name app instances within a single execution.
+    cdp_connected_app: Option<(String, i32)>,
     cancel_token: CancellationToken,
     /// Store for Chrome user-data-dir profiles (resolves profile names to paths).
     chrome_profile_store: ChromeProfileStore,
@@ -252,13 +253,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
     pub(crate) fn read_focused_app(
         &self,
-    ) -> std::sync::RwLockReadGuard<'_, Option<(String, AppKind)>> {
+    ) -> std::sync::RwLockReadGuard<'_, Option<(String, AppKind, i32)>> {
         self.focused_app.read().unwrap_or_else(|e| e.into_inner())
     }
 
     pub(crate) fn write_focused_app(
         &self,
-    ) -> std::sync::RwLockWriteGuard<'_, Option<(String, AppKind)>> {
+    ) -> std::sync::RwLockWriteGuard<'_, Option<(String, AppKind, i32)>> {
         self.focused_app.write().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -329,22 +330,28 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(crate) fn focused_app_name(&self) -> Option<String> {
         self.read_focused_app()
             .as_ref()
-            .map(|(name, _)| name.clone())
-    }
-
-    /// Check whether a CDP connection is active for the currently focused app.
-    pub(crate) fn cdp_connected_to_focused_app(&self) -> bool {
-        let Some(app_name) = self.focused_app_name() else {
-            return false;
-        };
-        self.cdp_connected_app.as_deref() == Some(app_name.as_str())
+            .map(|(name, _, _)| name.clone())
     }
 
     pub(crate) fn focused_app_kind(&self) -> AppKind {
         self.read_focused_app()
             .as_ref()
-            .map(|(_, kind)| *kind)
+            .map(|(_, kind, _)| *kind)
             .unwrap_or(AppKind::Native)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn focused_app_pid(&self) -> Option<i32> {
+        self.read_focused_app().as_ref().map(|(_, _, pid)| *pid)
+    }
+
+    /// Check whether a CDP connection is active for the currently focused app.
+    /// Uses PID to distinguish same-name instances within a single execution.
+    pub(crate) fn cdp_connected_to_focused_app(&self) -> bool {
+        match (&self.cdp_connected_app, &*self.read_focused_app()) {
+            (Some((_, cdp_pid)), Some((_, _, focus_pid))) => cdp_pid == focus_pid,
+            _ => false,
+        }
     }
 
     /// Format a "previously tried" list as a prompt suffix for disambiguation.

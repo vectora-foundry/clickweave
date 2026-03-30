@@ -161,7 +161,7 @@ async fn prepare_find_text_retry_preserves_extra_fields() {
 #[tokio::test]
 async fn prepare_find_text_retry_falls_back_to_focused_app() {
     let exec = make_scripted_executor(vec![r#"{"name": "Multiply"}"#]);
-    *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native));
+    *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native, 0));
 
     let args = exec
         .prepare_find_text_retry(

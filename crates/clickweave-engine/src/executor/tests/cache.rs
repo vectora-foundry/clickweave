@@ -146,7 +146,7 @@ fn evict_element_cache_for_click_node() {
         .insert(cache_key.clone(), "Multiply".to_string());
 
     // Set focused_app so eviction uses the right cache key
-    *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native));
+    *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native, 0));
 
     let node = NodeType::Click(ClickParams {
         target: Some(ClickTarget::Text {
@@ -210,7 +210,7 @@ fn evict_element_cache_for_mcp_find_text_node() {
         .unwrap()
         .insert(cache_key.clone(), "Multiply".to_string());
 
-    *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native));
+    *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native, 0));
 
     let node = NodeType::McpToolCall(McpToolCallParams {
         tool_name: "find_text".to_string(),
@@ -233,7 +233,7 @@ fn evict_element_cache_for_mcp_find_text_with_explicit_app_name() {
         .unwrap()
         .insert(cache_key.clone(), "AXLink".to_string());
 
-    *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native));
+    *exec.focused_app.write().unwrap() = Some(("Calculator".to_string(), AppKind::Native, 0));
 
     let node = NodeType::McpToolCall(McpToolCallParams {
         tool_name: "find_text".to_string(),

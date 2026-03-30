@@ -120,7 +120,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         } else {
             screenshot_args["mode"] = serde_json::Value::String("screen".to_string());
         }
-        let screenshot_result = mcp.call_tool("take_screenshot", Some(screenshot_args)).await;
+        let screenshot_result = mcp
+            .call_tool("take_screenshot", Some(screenshot_args))
+            .await;
 
         let image_b64 = match screenshot_result {
             Ok(result) => {

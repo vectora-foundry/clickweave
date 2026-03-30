@@ -330,10 +330,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// - Test mode: quit the app, relaunch with --remote-debugging-port, connect
     ///   via cdp_connect, poll until ready, store port in cache.
     /// - Run mode: read port from decision cache, try connecting, relaunch if needed.
+    ///
+    /// `pid` identifies the specific app instance within this execution. Pass `0`
+    /// when the PID is not yet known (e.g. immediately after launch).
     pub(in crate::executor) async fn ensure_cdp_connected(
         &mut self,
         _node_id: Uuid,
         app_name: &str,
+        pid: i32,
         mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
         chrome_profile_path: Option<&Path>,
@@ -341,8 +345,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         use clickweave_core::ExecutionMode;
         use clickweave_core::decision_cache::CdpPort;
 
-        // Already have a CDP connection for this app -- nothing to do.
-        if self.cdp_connected_app.as_deref() == Some(app_name) {
+        // Already have a CDP connection for this exact app instance -- nothing to do.
+        // Note: the CdpPort decision cache key is app-name-only for cross-run stability;
+        // PIDs change between launches and cannot be used as a persistent cache key.
+        if let Some((ref connected_name, connected_pid)) = self.cdp_connected_app
+            && connected_name == app_name
+            && connected_pid == pid
+        {
             return Ok(());
         }
 
@@ -439,7 +448,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }),
         );
 
-        self.cdp_connected_app = Some(app_name.to_string());
+        self.cdp_connected_app = Some((app_name.to_string(), pid));
         Ok(())
     }
 

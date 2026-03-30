@@ -741,6 +741,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 self.ensure_cdp_connected(
                     node_id,
                     &app.name,
+                    app.pid,
                     mcp,
                     node_run.as_deref(),
                     profile_path.as_deref(),
@@ -756,9 +757,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         retry_ctx.force_resolve,
                     )
                     .await?;
+                // Sync the CDP connection PID to the freshly resolved PID.
+                if let Some((ref name, ref mut cdp_pid)) = self.cdp_connected_app
+                    && name == &app.name
+                {
+                    *cdp_pid = app.pid;
+                }
             }
 
-            *self.write_focused_app() = Some((app.name.clone(), app_kind));
+            *self.write_focused_app() = Some((app.name.clone(), app_kind, app.pid));
 
             resolved_fw = NodeType::FocusWindow(FocusWindowParams {
                 method: FocusMethod::Pid,
@@ -908,7 +915,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             );
 
             if let Some(name) = &launch_app_name {
-                *self.write_focused_app() = Some((name.clone(), launch_app_kind));
+                // PID is not yet available immediately after launch; use 0 as placeholder.
+                *self.write_focused_app() = Some((name.clone(), launch_app_kind, 0));
                 if use_cdp {
                     // Force-disconnect any existing CDP session: a new profile
                     // launch kills the previous Chrome instance, so any old CDP
@@ -922,6 +930,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     self.ensure_cdp_connected(
                         node_id,
                         name,
+                        0,
                         mcp,
                         node_run.as_deref(),
                         Some(profile_path.as_path()),
@@ -958,7 +967,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Auto-detect app kind from the running process, since the planner
         // may not include app_kind in the launch_app arguments.
         if let Some(name) = &launch_app_name {
-            let detected_kind = if launch_app_kind == AppKind::Native {
+            let (detected_kind, detected_pid) = if launch_app_kind == AppKind::Native {
                 // Try to detect actual app kind from the running process
                 match self.lookup_app_pid(name, mcp).await {
                     Ok(pid) => {
@@ -969,9 +978,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                 name, detected, pid
                             ));
                         }
-                        detected
+                        (detected, pid)
                     }
-                    Err(_) => AppKind::Native,
+                    Err(_) => (AppKind::Native, 0),
                 }
             } else {
                 if launch_app_kind != AppKind::Native {
@@ -980,10 +989,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         name, launch_app_kind
                     ));
                 }
-                launch_app_kind
+                // PID lookup not needed when app_kind is already known.
+                (launch_app_kind, 0)
             };
 
-            *self.write_focused_app() = Some((name.clone(), detected_kind));
+            *self.write_focused_app() = Some((name.clone(), detected_kind, detected_pid));
 
             // Lazy CDP connection for Electron/Chrome apps (same as FocusWindow path).
             if detected_kind.uses_cdp() && mcp.has_tool("cdp_connect") {
@@ -991,6 +1001,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 self.ensure_cdp_connected(
                     node_id,
                     name,
+                    detected_pid,
                     mcp,
                     node_run.as_deref(),
                     profile_path.as_deref(),
@@ -1004,8 +1015,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // these tools are called via a generic tool-call node.
         // McpToolCall generic dispatch: update focused_app for focus_window so
         // executor state stays consistent when called via a generic tool-call node.
+        // PID is not available for generic McpToolCall focus_window; use 0 as placeholder.
         if let Some(ref app_name) = mcp_focus_window_app {
-            *self.write_focused_app() = Some((app_name.clone(), AppKind::Native));
+            *self.write_focused_app() = Some((app_name.clone(), AppKind::Native, 0));
         }
 
         // quit_app clears focused_app and cdp_connected_app when the app being quit
@@ -1016,7 +1028,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             {
                 *self.write_focused_app() = None;
             }
-            if self.cdp_connected_app.as_deref() == Some(app_name.as_str()) {
+            if self
+                .cdp_connected_app
+                .as_ref()
+                .is_some_and(|(name, _)| name == app_name)
+            {
                 self.cdp_connected_app = None;
             }
             self.write_app_cache().remove(app_name.as_str());

@@ -55,7 +55,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 return Ok(updated);
             }
             // App is no longer running — evict stale entry and fall through to full resolution
-            debug!(user_input, "app_cache hit but app no longer running, evicting");
+            debug!(
+                user_input,
+                "app_cache hit but app no longer running, evicting"
+            );
             self.write_app_cache().remove(user_input);
         }
 
@@ -189,9 +192,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .filter_map(|v| v["name"].as_str().map(|s| s.to_string()))
             .collect();
         let name_lower = name.to_lowercase();
-        let validated = app_names
-            .iter()
-            .any(|n| n.to_lowercase() == name_lower);
+        let validated = app_names.iter().any(|n| n.to_lowercase() == name_lower);
         if !validated {
             return Err(ExecutorError::AppResolution(format!(
                 "App \"{}\" is not running (resolved name \"{}\" not found in app list). \
