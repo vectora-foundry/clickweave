@@ -27,6 +27,16 @@ pub(crate) struct VerificationResult {
     pub screenshot: Option<String>,
 }
 
+/// Screenshot image data with capture metadata needed for coordinate conversion.
+pub(crate) struct ScreenshotWithMetadata {
+    pub image_base64: String,
+    pub origin_x: f64,
+    pub origin_y: f64,
+    pub scale: f64,
+    pub pixel_width: u32,
+    pub pixel_height: u32,
+}
+
 impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Take a screenshot, ask the VLM to describe it, then ask the planner
     /// (with full conversation history) whether the step succeeded.
@@ -307,6 +317,81 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
         }
 
+        None
+    }
+
+    /// Capture a screenshot with full metadata (origin, scale, dimensions).
+    /// Used by VLM resolution for coordinate conversion.
+    pub(crate) async fn capture_screenshot_with_metadata(
+        &self,
+        mcp: &(impl Mcp + ?Sized),
+    ) -> Option<ScreenshotWithMetadata> {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let app_name = self.focused_app_name();
+        let mut args = serde_json::json!({ "mode": "window" });
+        if let Some(ref name) = app_name {
+            args["app_name"] = Value::String(name.clone());
+        }
+
+        for attempt in 0..3 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            let result = mcp
+                .call_tool("take_screenshot", Some(args.clone()))
+                .await
+                .ok()?;
+            if result.is_error == Some(true) {
+                continue;
+            }
+
+            let mut image_base64 = None;
+            let mut origin_x = 0.0_f64;
+            let mut origin_y = 0.0_f64;
+            let mut scale = 1.0_f64;
+            let mut pixel_width = 0_u32;
+            let mut pixel_height = 0_u32;
+
+            for content in &result.content {
+                match content {
+                    ToolContent::Image { data, .. } => {
+                        image_base64 = Some(data.clone());
+                    }
+                    ToolContent::Text { text } => {
+                        if let Ok(meta) = serde_json::from_str::<Value>(text) {
+                            if let Some(v) = meta["screenshot_origin_x"].as_f64() {
+                                origin_x = v;
+                            }
+                            if let Some(v) = meta["screenshot_origin_y"].as_f64() {
+                                origin_y = v;
+                            }
+                            if let Some(v) = meta["screenshot_scale"].as_f64() {
+                                scale = v;
+                            }
+                            if let Some(v) = meta["screenshot_pixel_width"].as_u64() {
+                                pixel_width = v as u32;
+                            }
+                            if let Some(v) = meta["screenshot_pixel_height"].as_u64() {
+                                pixel_height = v as u32;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if let Some(image) = image_base64 {
+                return Some(ScreenshotWithMetadata {
+                    image_base64: image,
+                    origin_x,
+                    origin_y,
+                    scale,
+                    pixel_width,
+                    pixel_height,
+                });
+            }
+        }
         None
     }
 
