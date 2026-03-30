@@ -25,6 +25,24 @@ impl std::fmt::Display for CommandError {
     }
 }
 
+impl From<std::io::Error> for CommandError {
+    fn from(e: std::io::Error) -> Self {
+        Self::io(e)
+    }
+}
+
+impl From<serde_json::Error> for CommandError {
+    fn from(e: serde_json::Error) -> Self {
+        Self::internal(e)
+    }
+}
+
+impl From<anyhow::Error> for CommandError {
+    fn from(e: anyhow::Error) -> Self {
+        Self::internal(e)
+    }
+}
+
 impl CommandError {
     pub fn validation(msg: impl std::fmt::Display) -> Self {
         Self {
