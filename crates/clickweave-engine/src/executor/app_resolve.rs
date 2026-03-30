@@ -297,6 +297,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // still contains the correct app name.
         let (element_target, explicit_app) = match node_type {
             NodeType::Click(p) => (p.target.as_ref().map(|t| t.text()), None),
+            NodeType::CdpClick(p) => (Some(p.target.as_str()), None),
+            NodeType::CdpHover(p) => (Some(p.target.as_str()), None),
             NodeType::FindText(p) => (Some(p.search_text.as_str()), p.scope.as_deref()),
             NodeType::McpToolCall(p) if p.tool_name == "find_text" => (
                 p.arguments.get("text").and_then(|v| v.as_str()),
