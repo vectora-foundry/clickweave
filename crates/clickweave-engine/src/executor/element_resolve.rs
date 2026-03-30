@@ -1,3 +1,4 @@
+use super::retry_context::RetryContext;
 use super::{ExecutorError, ExecutorResult, WorkflowExecutor};
 use clickweave_core::decision_cache::{self, ClickDisambiguation, ElementResolution};
 use clickweave_core::{ExecutionMode, NodeRun};
@@ -206,6 +207,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         matches: &[Value],
         app_name: Option<&str>,
         node_run: Option<&NodeRun>,
+        retry_ctx: &RetryContext,
     ) -> ExecutorResult<usize> {
         let app_context = match app_name {
             Some(name) => format!(" in app \"{}\"", name),
@@ -234,13 +236,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             "disambiguating click matches"
         );
 
-        let hint_context = self.format_supervision_hint(&format!(
-            "A previous attempt to click '{}' failed. ",
-            target
-        ));
+        let hint_context = Self::format_supervision_hint(
+            retry_ctx,
+            &format!("A previous attempt to click '{}' failed. ", target),
+        );
 
         let tried_context = {
-            let tried = self.read_tried_click_indices();
+            let tried = retry_ctx.read_tried_click_indices();
             Self::format_tried_context(&tried, "indices")
         };
 
@@ -312,7 +314,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             )));
         }
 
-        self.write_tried_click_indices().push(index);
+        retry_ctx.write_tried_click_indices().push(index);
 
         let chosen = &matches[index];
         let chosen_text = chosen["text"].as_str().unwrap_or("?");

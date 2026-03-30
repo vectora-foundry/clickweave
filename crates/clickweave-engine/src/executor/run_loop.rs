@@ -1,9 +1,9 @@
 use super::Mcp;
 use super::error::ExecutorError;
+use super::retry_context::RetryContext;
 use super::{ExecutorCommand, ExecutorEvent, ExecutorResult, ExecutorState, WorkflowExecutor};
 use clickweave_core::{ExecutionMode, NodeRole, NodeRun, NodeType, RunStatus};
 use clickweave_llm::ChatBackend;
-use clickweave_mcp::McpClient;
 use serde_json::Value;
 use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
@@ -14,6 +14,20 @@ enum SupervisionAction {
     Retry,
     Skip,
     Abort,
+}
+
+/// Outcome of executing a single node with its supervision retry loop.
+enum StepOutcome {
+    /// Node completed successfully (possibly after supervision retries).
+    Succeeded,
+    /// User or system aborted during supervision.
+    Aborted,
+    /// Execution or resolution triggered a rewind to a different node.
+    Rewind(Uuid),
+    /// Node failed (error already emitted/finalized inside the step).
+    Failed,
+    /// Inline verification-role node produced a failing verdict.
+    VerificationFailed,
 }
 
 async fn wait_for_supervision_command(
@@ -40,7 +54,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         &mut self,
         node_id: Uuid,
         node_type: &NodeType,
-        mcp: &McpClient,
+        mcp: &(impl Mcp + ?Sized),
+        retry_ctx: &mut RetryContext,
     ) {
         if !node_type.is_text_input() {
             return;
@@ -79,7 +94,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .click_disambiguation
             .retain(|k, _| !k.starts_with(&prefix));
         match self
-            .execute_deterministic(pred_id, &pred_type, mcp, None)
+            .execute_deterministic(pred_id, &pred_type, mcp, None, retry_ctx)
             .await
         {
             Ok(_) => {
@@ -102,10 +117,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         node_name: &str,
         node_type: &NodeType,
         tools: &[Value],
-        mcp: &McpClient,
+        mcp: &(impl Mcp + ?Sized),
         timeout_ms: Option<u64>,
         retries: u32,
         node_run: &mut Option<NodeRun>,
+        retry_ctx: &mut RetryContext,
     ) -> ExecutorResult<Value> {
         let mut attempt = 0;
 
@@ -116,7 +132,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         .await
                 }
                 other => {
-                    self.execute_deterministic(node_id, other, mcp, node_run.as_mut())
+                    self.execute_deterministic(node_id, other, mcp, node_run.as_mut(), retry_ctx)
                         .await
                 }
             };
@@ -147,7 +163,402 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
     }
 
-    pub async fn run(&mut self, mut command_rx: Receiver<ExecutorCommand>) {
+    /// Attempt runtime resolution for a failed node.
+    ///
+    /// Sends a resolution query to the Tauri layer and applies the response
+    /// (Updated, Rewind, Removed). Returns `Some(StepOutcome)` if the resolution
+    /// produced an actionable outcome, or `None` if no resolution was available
+    /// or the user rejected it.
+    #[allow(clippy::too_many_arguments)]
+    async fn attempt_runtime_resolution(
+        &mut self,
+        node_id: Uuid,
+        node_name: &str,
+        node_type: &NodeType,
+        node_run: &mut Option<NodeRun>,
+        ctx: &mut RetryContext,
+        action_desc: &str,
+        target_text: &str,
+        error_detail: &str,
+        screenshot: Option<String>,
+    ) -> Option<StepOutcome> {
+        self.resolution_tx.as_ref()?;
+
+        if let Some(resolution) = self
+            .request_resolution(
+                ctx,
+                node_id,
+                node_name,
+                action_desc,
+                target_text,
+                error_detail,
+                screenshot,
+            )
+            .await
+        {
+            use clickweave_core::RuntimeResolution;
+            match resolution {
+                RuntimeResolution::Updated(patch) => {
+                    self.log("Runtime resolution: Updated — applying patch and retrying");
+                    self.apply_resolution_patch(&patch);
+                    self.evict_caches_for_node(node_type);
+                    if let Some(run) = node_run {
+                        self.finalize_run(run, RunStatus::Cancelled);
+                    }
+                    self.emit(ExecutorEvent::NodeCancelled(node_id));
+                    Some(StepOutcome::Rewind(node_id))
+                }
+                RuntimeResolution::Rewind {
+                    patch,
+                    first_node_id,
+                } => {
+                    self.log(format!("Runtime resolution: Rewind to {}", first_node_id));
+                    self.apply_resolution_patch(&patch);
+                    if let Some(run) = node_run {
+                        self.finalize_run(run, RunStatus::Cancelled);
+                    }
+                    self.emit(ExecutorEvent::NodeCancelled(node_id));
+                    Some(StepOutcome::Rewind(first_node_id))
+                }
+                RuntimeResolution::Removed(patch) => {
+                    self.log("Runtime resolution: Removed — retrying current node");
+                    self.apply_resolution_patch(&patch);
+                    self.evict_caches_for_node(node_type);
+                    if let Some(run) = node_run {
+                        self.finalize_run(run, RunStatus::Cancelled);
+                    }
+                    self.emit(ExecutorEvent::NodeCancelled(node_id));
+                    Some(StepOutcome::Rewind(node_id))
+                }
+                RuntimeResolution::Rejected => {
+                    self.log("Runtime resolution: Rejected — falling through");
+                    ctx.rejected_resolutions
+                        .insert((node_id, target_text.to_string()));
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Handle the manual supervision pause flow: emit SupervisionPaused,
+    /// wait for user command (Resume/Skip/Abort), and return the action.
+    async fn handle_supervision_pause(
+        &self,
+        node_id: Uuid,
+        node_name: &str,
+        finding: String,
+        screenshot: Option<String>,
+        command_rx: &mut Receiver<ExecutorCommand>,
+    ) -> SupervisionAction {
+        self.emit(ExecutorEvent::SupervisionPaused {
+            node_id,
+            node_name: node_name.to_string(),
+            finding,
+            screenshot,
+        });
+
+        wait_for_supervision_command(command_rx, &self.cancel_token).await
+    }
+
+    /// Execute a single node with the full supervision retry loop.
+    ///
+    /// Wraps `execute_node_with_retries` with supervision verification,
+    /// auto-retry, runtime resolution, and manual pause/resume handling.
+    /// Returns a `StepOutcome` indicating what the main loop should do next.
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_with_supervision(
+        &mut self,
+        node_id: Uuid,
+        node_name: &str,
+        node_auto_id: &str,
+        node_type: &NodeType,
+        node_role: NodeRole,
+        expected_outcome: Option<&str>,
+        tools: &[Value],
+        mcp: &(impl Mcp + ?Sized),
+        timeout_ms: Option<u64>,
+        retries: u32,
+        supervision_retries: u32,
+        node_run: &mut Option<NodeRun>,
+        ctx: &mut RetryContext,
+        command_rx: &mut Receiver<ExecutorCommand>,
+    ) -> StepOutcome {
+        let mut supervision_attempts: u32 = 0;
+
+        loop {
+            match self
+                .execute_node_with_retries(
+                    node_id, node_name, node_type, tools, mcp, timeout_ms, retries, node_run, ctx,
+                )
+                .await
+            {
+                Ok(node_result) => {
+                    self.extract_and_store_variables(
+                        node_auto_id,
+                        &node_result,
+                        node_type,
+                        node_run.as_ref(),
+                    );
+
+                    // Run action verification if configured
+                    if let Some((method, assertion)) =
+                        super::action_verification::extract_verification_config(node_type)
+                        && let Err(e) = self
+                            .run_action_verification(
+                                node_auto_id,
+                                &method,
+                                &assertion,
+                                mcp,
+                                node_run.as_ref(),
+                            )
+                            .await
+                    {
+                        self.log(format!(
+                            "Action verification failed for {}: {}",
+                            node_auto_id, e
+                        ));
+                    }
+
+                    // Inline verdict for Verification-role nodes
+                    if node_role == NodeRole::Verification
+                        && let Some(v) = self
+                            .evaluate_verification(
+                                node_id,
+                                node_name,
+                                node_type,
+                                expected_outcome,
+                                &node_result,
+                                mcp,
+                            )
+                            .await
+                    {
+                        let failed = v
+                            .check_results
+                            .iter()
+                            .any(|r| r.verdict == clickweave_core::CheckVerdict::Fail);
+                        self.log(format!(
+                            "Verification '{}': {}",
+                            node_name,
+                            if failed { "FAIL" } else { "PASS" },
+                        ));
+                        ctx.runtime_verdicts.push(v);
+                        if failed {
+                            self.emit_error(format!("Verification failed: '{}'", node_name));
+                            return StepOutcome::VerificationFailed;
+                        }
+                    }
+
+                    // Supervision (Test mode only)
+                    if self.execution_mode == ExecutionMode::Test {
+                        // Skip per-step supervision for nodes inside loops —
+                        // individual steps (clicks, keypresses, condition
+                        // checks) are verified in aggregate by
+                        // verify_loop_exit when the loop completes.
+                        let inside_loop = !self.context.loop_counters.is_empty();
+                        if inside_loop {
+                            self.log(format!(
+                                "Skipping supervision for '{}' (inside loop)",
+                                node_name
+                            ));
+                            return StepOutcome::Succeeded;
+                        }
+
+                        let verification = self.verify_step(node_name, node_type, mcp, ctx).await;
+                        if verification.passed {
+                            ctx.supervision_hint = None;
+                            // Consume the URL navigation intent now that
+                            // supervision confirmed the step succeeded.
+                            ctx.last_typed_url = None;
+                            self.emit(ExecutorEvent::SupervisionPassed {
+                                node_id,
+                                node_name: node_name.to_string(),
+                                summary: verification.reasoning,
+                            });
+                            return StepOutcome::Succeeded;
+                        } else if supervision_attempts < supervision_retries {
+                            // Auto-retry: evict caches and re-execute with hint
+                            supervision_attempts += 1;
+                            self.log(format!(
+                                "Supervision auto-retry {}/{} for '{}': {}",
+                                supervision_attempts,
+                                supervision_retries,
+                                node_name,
+                                verification.reasoning,
+                            ));
+                            ctx.supervision_hint = Some(verification.reasoning.clone());
+                            self.evict_caches_for_node(node_type);
+                            self.record_event(
+                                node_run.as_ref(),
+                                "supervision_retry",
+                                serde_json::json!({
+                                    "attempt": supervision_attempts,
+                                    "reason": verification.reasoning,
+                                }),
+                            );
+                            self.re_execute_preceding_click(node_id, node_type, mcp, ctx)
+                                .await;
+                            continue;
+                        } else {
+                            // Exhausted auto-retries — try runtime resolution
+                            // before falling through to the manual supervision dialog.
+                            ctx.supervision_hint = None;
+
+                            let target_text =
+                                node_type.target_text().unwrap_or_default().to_string();
+                            let action_desc = format!(
+                                "{} (supervision failed: {})",
+                                node_type.action_description(),
+                                &verification.reasoning,
+                            );
+
+                            self.log(format!(
+                                "Supervision exhausted for '{}'. Trying runtime resolution...",
+                                node_name
+                            ));
+
+                            // Use the supervision screenshot if available,
+                            // otherwise take a fresh one.
+                            let screenshot = verification.screenshot.clone().or_else(|| {
+                                let mut args = serde_json::json!({ "format": "png" });
+                                if let Some(ref name) = self.focused_app_name() {
+                                    args["app_name"] = serde_json::Value::String(name.clone());
+                                }
+                                // extract_screenshot_image is async but we
+                                // need it sync here — skip if unavailable.
+                                None
+                            });
+
+                            if let Some(outcome) = self
+                                .attempt_runtime_resolution(
+                                    node_id,
+                                    node_name,
+                                    node_type,
+                                    node_run,
+                                    ctx,
+                                    &action_desc,
+                                    &target_text,
+                                    &verification.reasoning,
+                                    screenshot,
+                                )
+                                .await
+                            {
+                                return outcome;
+                            }
+
+                            match self
+                                .handle_supervision_pause(
+                                    node_id,
+                                    node_name,
+                                    verification.reasoning,
+                                    verification.screenshot,
+                                    command_rx,
+                                )
+                                .await
+                            {
+                                SupervisionAction::Retry => {
+                                    self.log("Supervision: user chose Retry");
+                                    self.re_execute_preceding_click(node_id, node_type, mcp, ctx)
+                                        .await;
+                                    continue;
+                                }
+                                SupervisionAction::Skip => {
+                                    self.log("Supervision: user chose Skip");
+                                    return StepOutcome::Succeeded;
+                                }
+                                SupervisionAction::Abort => {
+                                    self.log("Supervision: user chose Abort");
+                                    return StepOutcome::Aborted;
+                                }
+                            }
+                        }
+                    } else {
+                        return StepOutcome::Succeeded;
+                    }
+                }
+                Err(ExecutorError::Rewind(target)) => {
+                    self.log(format!(
+                        "Resolution rewind: cancelling '{}', rewinding to {}",
+                        node_name, target
+                    ));
+                    if let Some(run) = node_run {
+                        self.finalize_run(run, RunStatus::Cancelled);
+                    }
+                    self.emit(ExecutorEvent::NodeCancelled(node_id));
+                    return StepOutcome::Rewind(target);
+                }
+                Err(ref e)
+                    if self.execution_mode == ExecutionMode::Test
+                        && matches!(
+                            e,
+                            ExecutorError::ElementResolution(_)
+                                | ExecutorError::ClickTarget(_)
+                                | ExecutorError::Cdp(_)
+                        ) =>
+                {
+                    let target_text = node_type.target_text().unwrap_or_default().to_string();
+                    let action_desc = node_type.action_description();
+                    let err_detail = e.to_string();
+
+                    self.log(format!(
+                        "Element/target resolution failed for '{}': {}. Trying runtime resolution...",
+                        node_name, err_detail
+                    ));
+
+                    // Take a screenshot for the resolution dialog
+                    let screenshot = {
+                        let mut args = serde_json::json!({ "format": "png" });
+                        if let Some(ref name) = self.focused_app_name() {
+                            args["app_name"] = serde_json::Value::String(name.clone());
+                        }
+                        self.extract_screenshot_image(mcp, args).await
+                    };
+
+                    if let Some(outcome) = self
+                        .attempt_runtime_resolution(
+                            node_id,
+                            node_name,
+                            node_type,
+                            node_run,
+                            ctx,
+                            &action_desc,
+                            &target_text,
+                            &err_detail,
+                            screenshot,
+                        )
+                        .await
+                    {
+                        return outcome;
+                    }
+
+                    // No resolution or rejected — fail the node
+                    let msg = err_detail;
+                    self.emit_error(format!("Node {} failed: {}", node_name, msg));
+                    if let Some(run) = node_run {
+                        self.finalize_run(run, RunStatus::Failed);
+                    }
+                    self.emit(ExecutorEvent::NodeFailed(node_id, msg));
+                    return StepOutcome::Failed;
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    self.emit_error(format!("Node {} failed: {}", node_name, msg));
+                    if let Some(run) = node_run {
+                        self.finalize_run(run, RunStatus::Failed);
+                    }
+                    self.emit(ExecutorEvent::NodeFailed(node_id, msg));
+                    return StepOutcome::Failed;
+                }
+            }
+        }
+    }
+
+    /// Spawn an MCP client from the configured binary path and run the workflow.
+    ///
+    /// This is the main entry point used by the Tauri command layer. It spawns
+    /// the MCP server process, then delegates to [`run_with_mcp`](Self::run_with_mcp).
+    pub async fn run(&mut self, command_rx: Receiver<ExecutorCommand>) {
         self.emit(ExecutorEvent::StateChanged(ExecutorState::Running));
         self.log("Starting workflow execution");
 
@@ -164,7 +575,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             self.log("VLM not configured — images sent directly to agent");
         }
 
-        let mcp_result = McpClient::spawn(&self.mcp_binary_path, &[]).await;
+        let mcp_result = clickweave_mcp::McpClient::spawn(&self.mcp_binary_path, &[]).await;
 
         let mcp = match mcp_result {
             Ok(m) => m,
@@ -175,7 +586,22 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
         };
 
-        self.log(format!("MCP ready: {} tools", mcp.tools().len()));
+        self.run_with_mcp(command_rx, &mcp).await;
+    }
+
+    /// Execute the workflow using an already-connected MCP client.
+    ///
+    /// Separated from [`run`](Self::run) so that callers (including tests) can
+    /// inject a pre-constructed or stub MCP implementation.
+    pub(crate) async fn run_with_mcp(
+        &mut self,
+        mut command_rx: Receiver<ExecutorCommand>,
+        mcp: &(impl Mcp + ?Sized),
+    ) {
+        self.emit(ExecutorEvent::StateChanged(ExecutorState::Running));
+
+        let tools = mcp.tools_as_openai();
+        self.log(format!("MCP ready: {} tools", tools.len()));
 
         match self.storage.begin_execution() {
             Ok(exec_dir) => self.log(format!("Execution dir: {}", exec_dir)),
@@ -196,10 +622,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         self.log("Starting graph walk from entry point");
 
-        let tools = mcp.tools_as_openai();
-
         let mut user_cancelled = false;
-        let mut verification_failed = false;
+        let mut ctx = RetryContext::new();
 
         while let Some(node_id) = current {
             if self.is_cancelled() {
@@ -230,7 +654,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 node_type,
                 NodeType::If(_) | NodeType::Switch(_) | NodeType::Loop(_) | NodeType::EndLoop(_)
             ) {
-                current = self.eval_control_flow(node_id, &node_name, &node_type);
+                current = self.eval_control_flow(node_id, &node_name, &node_type, &mut ctx);
 
                 // Deferred loop-exit verification (Test mode only).
                 // Read-only nodes inside loops skip supervision during
@@ -239,9 +663,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 // the inner loop's pending exit before `eval_control_flow`
                 // on the outer loop can set its own.
                 if self.execution_mode == ExecutionMode::Test
-                    && let Some(loop_exit) = self.pending_loop_exit.take()
+                    && let Some(loop_exit) = ctx.pending_loop_exit.take()
                 {
-                    let verification = self.verify_loop_exit(&loop_exit, &mcp).await;
+                    let verification = self.verify_loop_exit(&loop_exit, mcp, &ctx).await;
                     if verification.passed {
                         self.emit(ExecutorEvent::SupervisionPassed {
                             node_id: loop_exit.node_id,
@@ -279,9 +703,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             // Regular execution nodes
             self.emit(ExecutorEvent::NodeStarted(node_id));
-            self.supervision_hint = None;
-            self.write_tried_click_indices().clear();
-            self.write_tried_cdp_uids().clear();
+            ctx.supervision_hint = None;
+            ctx.write_tried_click_indices().clear();
+            ctx.write_tried_cdp_uids().clear();
             self.log(format!(
                 "Executing node: {} ({})",
                 node_name,
@@ -311,418 +735,51 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 }),
             );
 
-            // Inner loop: re-executes on supervision Retry.
-            // Returns (succeeded, was_abort) to distinguish supervision
-            // aborts from execution errors (which handle their own
-            // finalization inside the Err arm).
-            let mut supervision_attempts: u32 = 0;
-            let (node_succeeded, was_supervision_abort, rewind_target) = loop {
-                match self
-                    .execute_node_with_retries(
-                        node_id,
-                        &node_name,
-                        &node_type,
-                        &tools,
-                        &mcp,
-                        timeout_ms,
-                        retries,
-                        &mut node_run,
-                    )
-                    .await
-                {
-                    Ok(node_result) => {
-                        self.extract_and_store_variables(
-                            &node_auto_id,
-                            &node_result,
-                            &node_type,
-                            node_run.as_ref(),
-                        );
-
-                        // Run action verification if configured
-                        if let Some((method, assertion)) =
-                            super::action_verification::extract_verification_config(&node_type)
-                            && let Err(e) = self
-                                .run_action_verification(
-                                    &node_auto_id,
-                                    &method,
-                                    &assertion,
-                                    &mcp,
-                                    node_run.as_ref(),
-                                )
-                                .await
-                        {
-                            self.log(format!(
-                                "Action verification failed for {}: {}",
-                                node_auto_id, e
-                            ));
-                        }
-
-                        // Inline verdict for Verification-role nodes
-                        if node_role == NodeRole::Verification
-                            && let Some(v) = self
-                                .evaluate_verification(
-                                    node_id,
-                                    &node_name,
-                                    &node_type,
-                                    expected_outcome.as_deref(),
-                                    &node_result,
-                                    &mcp,
-                                )
-                                .await
-                        {
-                            let failed = v
-                                .check_results
-                                .iter()
-                                .any(|r| r.verdict == clickweave_core::CheckVerdict::Fail);
-                            self.log(format!(
-                                "Verification '{}': {}",
-                                node_name,
-                                if failed { "FAIL" } else { "PASS" },
-                            ));
-                            self.runtime_verdicts.push(v);
-                            if failed {
-                                self.emit_error(format!("Verification failed: '{}'", node_name,));
-                                verification_failed = true;
-                                break (false, false, None);
-                            }
-                        }
-
-                        // Supervision (Test mode only)
-                        if self.execution_mode == ExecutionMode::Test {
-                            // Skip per-step supervision for nodes inside loops —
-                            // individual steps (clicks, keypresses, condition
-                            // checks) are verified in aggregate by
-                            // verify_loop_exit when the loop completes.
-                            let inside_loop = !self.context.loop_counters.is_empty();
-                            if inside_loop {
-                                self.log(format!(
-                                    "Skipping supervision for '{}' (inside loop)",
-                                    node_name
-                                ));
-                                break (true, false, None);
-                            }
-
-                            let verification = self.verify_step(&node_name, &node_type, &mcp).await;
-                            if verification.passed {
-                                self.supervision_hint = None;
-                                // Consume the URL navigation intent now that
-                                // supervision confirmed the step succeeded.
-                                self.last_typed_url = None;
-                                self.emit(ExecutorEvent::SupervisionPassed {
-                                    node_id,
-                                    node_name: node_name.clone(),
-                                    summary: verification.reasoning,
-                                });
-                                break (true, false, None);
-                            } else if supervision_attempts < supervision_retries {
-                                // Auto-retry: evict caches and re-execute with hint
-                                supervision_attempts += 1;
-                                self.log(format!(
-                                    "Supervision auto-retry {}/{} for '{}': {}",
-                                    supervision_attempts,
-                                    supervision_retries,
-                                    node_name,
-                                    verification.reasoning,
-                                ));
-                                self.supervision_hint = Some(verification.reasoning.clone());
-                                self.evict_caches_for_node(&node_type);
-                                self.record_event(
-                                    node_run.as_ref(),
-                                    "supervision_retry",
-                                    serde_json::json!({
-                                        "attempt": supervision_attempts,
-                                        "reason": verification.reasoning,
-                                    }),
-                                );
-                                self.re_execute_preceding_click(node_id, &node_type, &mcp)
-                                    .await;
-                                continue;
-                            } else {
-                                // Exhausted auto-retries — try runtime resolution
-                                // before falling through to the manual supervision dialog.
-                                self.supervision_hint = None;
-
-                                if self.resolution_tx.is_some() {
-                                    let target_text =
-                                        node_type.target_text().unwrap_or_default().to_string();
-                                    let action_desc = format!(
-                                        "{} (supervision failed: {})",
-                                        node_type.action_description(),
-                                        &verification.reasoning,
-                                    );
-
-                                    self.log(format!(
-                                        "Supervision exhausted for '{}'. Trying runtime resolution...",
-                                        node_name
-                                    ));
-
-                                    // Use the supervision screenshot if available,
-                                    // otherwise take a fresh one.
-                                    let screenshot =
-                                        verification.screenshot.clone().or_else(|| {
-                                            let mut args = serde_json::json!({ "format": "png" });
-                                            if let Some(ref name) = self.focused_app_name() {
-                                                args["app_name"] =
-                                                    serde_json::Value::String(name.clone());
-                                            }
-                                            // extract_screenshot_image is async but we
-                                            // need it sync here — skip if unavailable.
-                                            None
-                                        });
-
-                                    if let Some(resolution) = self
-                                        .request_resolution(
-                                            node_id,
-                                            &node_name,
-                                            &action_desc,
-                                            &target_text,
-                                            &verification.reasoning,
-                                            screenshot,
-                                        )
-                                        .await
-                                    {
-                                        use clickweave_core::RuntimeResolution;
-                                        match resolution {
-                                            RuntimeResolution::Updated(patch) => {
-                                                self.log("Supervision resolution: Updated — applying patch and retrying");
-                                                self.apply_resolution_patch(&patch);
-                                                self.evict_caches_for_node(&node_type);
-                                                if let Some(ref mut run) = node_run {
-                                                    self.finalize_run(run, RunStatus::Cancelled);
-                                                }
-                                                self.emit(ExecutorEvent::NodeCancelled(node_id));
-                                                break (false, false, Some(node_id));
-                                            }
-                                            RuntimeResolution::Rewind {
-                                                patch,
-                                                first_node_id,
-                                            } => {
-                                                self.log(format!(
-                                                    "Supervision resolution: Rewind to {}",
-                                                    first_node_id
-                                                ));
-                                                self.apply_resolution_patch(&patch);
-                                                if let Some(ref mut run) = node_run {
-                                                    self.finalize_run(run, RunStatus::Cancelled);
-                                                }
-                                                self.emit(ExecutorEvent::NodeCancelled(node_id));
-                                                break (false, false, Some(first_node_id));
-                                            }
-                                            RuntimeResolution::Removed(patch) => {
-                                                self.log("Supervision resolution: Removed — retrying current node");
-                                                self.apply_resolution_patch(&patch);
-                                                self.evict_caches_for_node(&node_type);
-                                                if let Some(ref mut run) = node_run {
-                                                    self.finalize_run(run, RunStatus::Cancelled);
-                                                }
-                                                self.emit(ExecutorEvent::NodeCancelled(node_id));
-                                                break (false, false, Some(node_id));
-                                            }
-                                            RuntimeResolution::Rejected => {
-                                                self.log("Supervision resolution: Rejected — showing supervision dialog");
-                                                // Fall through to manual supervision below
-                                            }
-                                        }
-                                    }
-                                }
-
-                                self.emit(ExecutorEvent::SupervisionPaused {
-                                    node_id,
-                                    node_name: node_name.clone(),
-                                    finding: verification.reasoning,
-                                    screenshot: verification.screenshot,
-                                });
-
-                                match wait_for_supervision_command(
-                                    &mut command_rx,
-                                    &self.cancel_token,
-                                )
-                                .await
-                                {
-                                    SupervisionAction::Retry => {
-                                        self.log("Supervision: user chose Retry");
-                                        self.re_execute_preceding_click(node_id, &node_type, &mcp)
-                                            .await;
-                                        continue;
-                                    }
-                                    SupervisionAction::Skip => {
-                                        self.log("Supervision: user chose Skip");
-                                        break (true, false, None);
-                                    }
-                                    SupervisionAction::Abort => {
-                                        self.log("Supervision: user chose Abort");
-                                        break (false, true, None);
-                                    }
-                                }
-                            }
-                        } else {
-                            break (true, false, None);
-                        }
-                    }
-                    Err(ExecutorError::Rewind(target)) => {
-                        self.log(format!(
-                            "Resolution rewind: cancelling '{}', rewinding to {}",
-                            node_name, target
-                        ));
-                        if let Some(ref mut run) = node_run {
-                            self.finalize_run(run, RunStatus::Cancelled);
-                        }
-                        self.emit(ExecutorEvent::NodeCancelled(node_id));
-                        break (false, false, Some(target));
-                    }
-                    Err(ref e)
-                        if self.execution_mode == ExecutionMode::Test
-                            && matches!(
-                                e,
-                                ExecutorError::ElementResolution(_)
-                                    | ExecutorError::ClickTarget(_)
-                                    | ExecutorError::Cdp(_)
-                            ) =>
-                    {
-                        // Attempt runtime resolution: ask the Tauri resolution
-                        // listener to fix the workflow (e.g. rename a target,
-                        // rewind to an earlier node, or remove the failing node).
-                        let target_text = node_type.target_text().unwrap_or_default().to_string();
-                        let action_desc = node_type.action_description();
-                        let err_detail = e.to_string();
-
-                        self.log(format!(
-                            "Element/target resolution failed for '{}': {}. Trying runtime resolution...",
-                            node_name, err_detail
-                        ));
-
-                        // Take a screenshot for the resolution dialog
-                        let screenshot = {
-                            let mut args = serde_json::json!({ "format": "png" });
-                            if let Some(ref name) = self.focused_app_name() {
-                                args["app_name"] = serde_json::Value::String(name.clone());
-                            }
-                            self.extract_screenshot_image(&mcp, args).await
-                        };
-
-                        let element_inventory = err_detail.clone();
-
-                        if let Some(resolution) = self
-                            .request_resolution(
-                                node_id,
-                                &node_name,
-                                &action_desc,
-                                &target_text,
-                                &element_inventory,
-                                screenshot,
-                            )
-                            .await
-                        {
-                            use clickweave_core::RuntimeResolution;
-                            match resolution {
-                                RuntimeResolution::Updated(patch) => {
-                                    self.log("Runtime resolution: Updated — applying patch and retrying node");
-                                    self.apply_resolution_patch(&patch);
-                                    self.evict_caches_for_node(&node_type);
-                                    // `node_type` is bound outside the inner loop
-                                    // and still holds the pre-patch value. Break
-                                    // out and re-enter the same node via the outer
-                                    // loop so it re-reads the updated workflow.
-                                    if let Some(ref mut run) = node_run {
-                                        self.finalize_run(run, RunStatus::Cancelled);
-                                    }
-                                    self.emit(ExecutorEvent::NodeCancelled(node_id));
-                                    break (false, false, Some(node_id));
-                                }
-                                RuntimeResolution::Rewind {
-                                    patch,
-                                    first_node_id,
-                                } => {
-                                    self.log(format!(
-                                        "Runtime resolution: Rewind to {} — applying patch",
-                                        first_node_id
-                                    ));
-                                    self.apply_resolution_patch(&patch);
-                                    if let Some(ref mut run) = node_run {
-                                        self.finalize_run(run, RunStatus::Cancelled);
-                                    }
-                                    self.emit(ExecutorEvent::NodeCancelled(node_id));
-                                    break (false, false, Some(first_node_id));
-                                }
-                                RuntimeResolution::Removed(patch) => {
-                                    self.log(
-                                        "Runtime resolution: Removed — removing ahead nodes, retrying current",
-                                    );
-                                    self.apply_resolution_patch(&patch);
-                                    self.evict_caches_for_node(&node_type);
-                                    // The removed nodes were ahead of the failing
-                                    // node (per the resolution prompt contract).
-                                    // Retry the same node with the updated graph.
-                                    if let Some(ref mut run) = node_run {
-                                        self.finalize_run(run, RunStatus::Cancelled);
-                                    }
-                                    self.emit(ExecutorEvent::NodeCancelled(node_id));
-                                    break (false, false, Some(node_id));
-                                }
-                                RuntimeResolution::Rejected => {
-                                    self.log(
-                                        "Runtime resolution: Rejected — falling through to error",
-                                    );
-                                    self.rejected_resolutions.insert((node_id, target_text));
-                                    // Fall through to normal error handling
-                                    let msg = err_detail;
-                                    self.emit_error(format!("Node {} failed: {}", node_name, msg));
-                                    if let Some(ref mut run) = node_run {
-                                        self.finalize_run(run, RunStatus::Failed);
-                                    }
-                                    self.emit(ExecutorEvent::NodeFailed(node_id, msg));
-                                    break (false, false, None);
-                                }
-                            }
-                        } else {
-                            // No resolution channel or previously rejected —
-                            // fall through to normal error handling.
-                            let msg = err_detail;
-                            self.emit_error(format!("Node {} failed: {}", node_name, msg));
-                            if let Some(ref mut run) = node_run {
-                                self.finalize_run(run, RunStatus::Failed);
-                            }
-                            self.emit(ExecutorEvent::NodeFailed(node_id, msg));
-                            break (false, false, None);
-                        }
-                    }
-                    Err(e) => {
-                        let msg = e.to_string();
-                        self.emit_error(format!("Node {} failed: {}", node_name, msg));
-                        if let Some(ref mut run) = node_run {
-                            self.finalize_run(run, RunStatus::Failed);
-                        }
-                        self.emit(ExecutorEvent::NodeFailed(node_id, msg));
-                        break (false, false, None);
-                    }
-                }
-            };
+            let outcome = self
+                .execute_with_supervision(
+                    node_id,
+                    &node_name,
+                    &node_auto_id,
+                    &node_type,
+                    node_role,
+                    expected_outcome.as_deref(),
+                    &tools,
+                    mcp,
+                    timeout_ms,
+                    retries,
+                    supervision_retries,
+                    &mut node_run,
+                    &mut ctx,
+                    &mut command_rx,
+                )
+                .await;
 
             // URL-enter intent is only meaningful for the current PressKey node.
             // Clear it when we leave this node so it cannot leak into a later,
             // unrelated PressKey step after Skip/Retry paths.
             if matches!(node_type, NodeType::PressKey(_)) {
-                self.last_typed_url = None;
+                ctx.last_typed_url = None;
             }
 
-            // Handle rewind: skip follow_single_edge, jump to target
-            if let Some(target) = rewind_target {
-                current = Some(target);
-                continue;
-            }
-
-            if !node_succeeded {
-                if verification_failed {
-                    if let Some(ref mut run) = node_run {
-                        self.finalize_run(run, RunStatus::Failed);
+            match outcome {
+                StepOutcome::Succeeded => {
+                    if let Some(ms) = settle_ms.filter(|&ms| ms > 0) {
+                        self.log(format!("Settling for {}ms", ms));
+                        tokio::time::sleep(Duration::from_millis(ms)).await;
                     }
-                    self.emit(ExecutorEvent::NodeFailed(
-                        node_id,
-                        "Verification failed".to_string(),
-                    ));
-                } else if was_supervision_abort {
-                    // Only finalize + emit for supervision aborts; execution
-                    // errors already handle this in the Err arm above.
+
+                    if let Some(ref mut run) = node_run {
+                        self.finalize_run(run, RunStatus::Ok);
+                    }
+                    self.emit(ExecutorEvent::NodeCompleted(node_id));
+                    ctx.completed_node_ids.push(node_id);
+
+                    current = self.follow_single_edge(node_id);
+                }
+                StepOutcome::Rewind(target) => {
+                    current = Some(target);
+                }
+                StepOutcome::Aborted => {
                     if let Some(ref mut run) = node_run {
                         self.finalize_run(run, RunStatus::Failed);
                     }
@@ -730,32 +787,33 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         node_id,
                         "Aborted by user during supervision".to_string(),
                     ));
+                    break;
                 }
-                break;
+                StepOutcome::Failed => {
+                    // Error already emitted/finalized inside execute_with_supervision
+                    break;
+                }
+                StepOutcome::VerificationFailed => {
+                    if let Some(ref mut run) = node_run {
+                        self.finalize_run(run, RunStatus::Failed);
+                    }
+                    self.emit(ExecutorEvent::NodeFailed(
+                        node_id,
+                        "Verification failed".to_string(),
+                    ));
+                    break;
+                }
             }
-
-            if let Some(ms) = settle_ms.filter(|&ms| ms > 0) {
-                self.log(format!("Settling for {}ms", ms));
-                tokio::time::sleep(Duration::from_millis(ms)).await;
-            }
-
-            if let Some(ref mut run) = node_run {
-                self.finalize_run(run, RunStatus::Ok);
-            }
-            self.emit(ExecutorEvent::NodeCompleted(node_id));
-            self.completed_node_ids.push(node_id);
-
-            current = self.follow_single_edge(node_id);
         }
 
         // Emit accumulated runtime verdicts
-        if !self.runtime_verdicts.is_empty() {
-            for v in &self.runtime_verdicts {
+        if !ctx.runtime_verdicts.is_empty() {
+            for v in &ctx.runtime_verdicts {
                 if let Err(e) = self.storage.save_node_verdict(v) {
                     tracing::warn!("Failed to persist verdict for '{}': {}", v.node_name, e);
                 }
             }
-            let verdicts: Vec<_> = self.runtime_verdicts.drain(..).collect();
+            let verdicts: Vec<_> = ctx.runtime_verdicts.drain(..).collect();
             self.emit(ExecutorEvent::ChecksCompleted(verdicts));
         }
 

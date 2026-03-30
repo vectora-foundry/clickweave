@@ -1,4 +1,5 @@
 use super::helpers::*;
+use crate::executor::retry_context::RetryContext;
 use clickweave_core::AppKind;
 use uuid::Uuid;
 
@@ -201,8 +202,16 @@ async fn prepare_find_text_retry_none_when_llm_finds_no_match() {
 async fn disambiguate_click_matches_picks_llm_choice() {
     let exec = make_scripted_executor(vec![r#"{"index": 1}"#]);
     let matches = make_find_text_matches(&[("2×", "AXStaticText"), ("2", "AXButton")]);
+    let ctx = RetryContext::new();
     let idx = exec
-        .disambiguate_click_matches(Uuid::new_v4(), "2", &matches, Some("Calculator"), None)
+        .disambiguate_click_matches(
+            Uuid::new_v4(),
+            "2",
+            &matches,
+            Some("Calculator"),
+            None,
+            &ctx,
+        )
         .await
         .unwrap();
     assert_eq!(idx, 1);
@@ -212,8 +221,9 @@ async fn disambiguate_click_matches_picks_llm_choice() {
 async fn disambiguate_click_matches_out_of_bounds() {
     let exec = make_scripted_executor(vec![r#"{"index": 5}"#]);
     let matches = make_find_text_matches(&[("2×", "AXStaticText"), ("2", "AXButton")]);
+    let ctx = RetryContext::new();
     let err = exec
-        .disambiguate_click_matches(Uuid::new_v4(), "2", &matches, None, None)
+        .disambiguate_click_matches(Uuid::new_v4(), "2", &matches, None, None, &ctx)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("out-of-bounds"));
@@ -223,8 +233,9 @@ async fn disambiguate_click_matches_out_of_bounds() {
 async fn disambiguate_click_matches_missing_index_key() {
     let exec = make_scripted_executor(vec![r#"{"choice": 0}"#]);
     let matches = make_find_text_matches(&[("Save", "AXButton"), ("Save as...", "AXMenuItem")]);
+    let ctx = RetryContext::new();
     let err = exec
-        .disambiguate_click_matches(Uuid::new_v4(), "Save", &matches, None, None)
+        .disambiguate_click_matches(Uuid::new_v4(), "Save", &matches, None, None, &ctx)
         .await
         .unwrap_err();
     assert!(err.to_string().contains("no valid index"));
@@ -234,8 +245,9 @@ async fn disambiguate_click_matches_missing_index_key() {
 async fn disambiguate_click_matches_code_block_wrapped() {
     let exec = make_scripted_executor(vec!["```json\n{\"index\": 0}\n```"]);
     let matches = make_find_text_matches(&[("OK", "AXButton"), ("OK", "AXStaticText")]);
+    let ctx = RetryContext::new();
     let idx = exec
-        .disambiguate_click_matches(Uuid::new_v4(), "OK", &matches, Some("MyApp"), None)
+        .disambiguate_click_matches(Uuid::new_v4(), "OK", &matches, Some("MyApp"), None, &ctx)
         .await
         .unwrap();
     assert_eq!(idx, 0);
@@ -243,8 +255,9 @@ async fn disambiguate_click_matches_code_block_wrapped() {
 
 #[tokio::test]
 async fn disambiguate_click_matches_includes_supervision_hint() {
-    let mut exec = make_scripted_executor(vec![r#"{"index": 1}"#]);
-    exec.supervision_hint =
+    let exec = make_scripted_executor(vec![r#"{"index": 1}"#]);
+    let mut ctx = RetryContext::new();
+    ctx.supervision_hint =
         Some("Previous click hit the wrong element. The Friends tab is still active.".to_string());
     let matches = make_find_text_matches(&[
         ("Direct Messages", "AXStaticText"),
@@ -257,6 +270,7 @@ async fn disambiguate_click_matches_includes_supervision_hint() {
             &matches,
             Some("Discord"),
             None,
+            &ctx,
         )
         .await
         .unwrap();
@@ -273,18 +287,19 @@ async fn disambiguate_click_matches_records_tried_indices() {
         ("Save", "AXMenuItem"),
     ]);
     let node_id = Uuid::new_v4();
+    let ctx = RetryContext::new();
 
     let idx0 = exec
-        .disambiguate_click_matches(node_id, "Save", &matches, None, None)
+        .disambiguate_click_matches(node_id, "Save", &matches, None, None, &ctx)
         .await
         .unwrap();
     assert_eq!(idx0, 0);
-    assert_eq!(*exec.tried_click_indices.read().unwrap(), vec![0]);
+    assert_eq!(*ctx.tried_click_indices.read().unwrap(), vec![0]);
 
     let idx1 = exec
-        .disambiguate_click_matches(node_id, "Save", &matches, None, None)
+        .disambiguate_click_matches(node_id, "Save", &matches, None, None, &ctx)
         .await
         .unwrap();
     assert_eq!(idx1, 1);
-    assert_eq!(*exec.tried_click_indices.read().unwrap(), vec![0, 1]);
+    assert_eq!(*ctx.tried_click_indices.read().unwrap(), vec![0, 1]);
 }

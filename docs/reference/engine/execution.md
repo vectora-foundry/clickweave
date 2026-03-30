@@ -17,15 +17,12 @@ Execution starts at Tauri command `run_workflow` (`src-tauri/src/commands/execut
 | `supervision` | `Option<C>` | Planner-class LLM for supervision verification (Test mode) |
 | `execution_mode` | `ExecutionMode` | `Test` (interactive supervision, records decisions) or `Run` (replays cached decisions) |
 | `decision_cache` | `RwLock<DecisionCache>` | Persisted LLM decisions from Test mode, replayed in Run mode |
-| `supervision_history` | `RwLock<Vec<Message>>` | Persistent conversation history for supervision across the entire run |
-| `runtime_verdicts` | `Vec<NodeVerdict>` | Accumulated inline verification verdicts from Verification-role nodes |
-| `pending_loop_exit` | `Option<PendingLoopExit>` | Set when a loop exits; consumed by the main loop to run deferred verification |
 | `verdict_vlm` | `Option<LlmClient>` | Dedicated VLM for screenshot verification with low max_tokens and thinking disabled |
 | `cdp_connected_app` | `Option<String>` | The app currently connected via CDP (one connection at a time) |
 | `cancel_token` | `CancellationToken` | Graceful cancellation signal (replaces the removed `ExecutorCommand::Stop`) |
 | `resolution_tx` | `Option<mpsc::Sender<RuntimeQuery>>` | Channel to send resolution queries to Tauri listener (Test mode only) |
-| `completed_node_ids` | `Vec<Uuid>` | Node IDs completed in this run, included in resolution queries for patch validation |
-| `rejected_resolutions` | `HashSet<(Uuid, String)>` | Rejected (node_id, target) pairs to skip on retry |
+
+Per-run transient state (supervision hints, retry tracking, loop exits, verdicts, completed nodes, rejected resolutions) lives in `RetryContext` (`executor/retry_context.rs`), created fresh for each `run_with_mcp()` call and threaded through execution methods.
 
 High-level flow in `run()`:
 

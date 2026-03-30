@@ -1,4 +1,5 @@
 use super::helpers::*;
+use crate::executor::retry_context::RetryContext;
 use clickweave_core::{
     CdpClickParams, CdpPressKeyParams, CdpTarget, Node, NodeType, Position, RuntimeResolution,
     Workflow, WorkflowPatchCompact,
@@ -123,10 +124,12 @@ fn apply_resolution_patch_preserves_edges() {
 async fn request_resolution_returns_none_without_channel() {
     let (wf, a_id, _) = make_press_then_type_workflow();
     let exec = make_executor_with_workflow(wf);
+    let ctx = RetryContext::new();
 
     // No resolution_tx set — should return None
     let result = exec
         .request_resolution(
+            &ctx,
             a_id,
             "Press Enter",
             "press_key",
@@ -148,12 +151,13 @@ async fn request_resolution_skips_rejected_target() {
     exec.resolution_tx = Some(tx);
 
     // Mark this (node, target) as rejected
-    exec.rejected_resolutions
-        .insert((a_id, "Enter".to_string()));
+    let mut ctx = RetryContext::new();
+    ctx.rejected_resolutions.insert((a_id, "Enter".to_string()));
 
     // Should return None because the pair was previously rejected
     let result = exec
         .request_resolution(
+            &ctx,
             a_id,
             "Press Enter",
             "press_key",
@@ -209,8 +213,10 @@ async fn request_resolution_sends_query_and_receives_response() {
             }));
     });
 
+    let ctx = RetryContext::new();
     let result = exec
         .request_resolution(
+            &ctx,
             a_id,
             "Press Enter",
             "press_key",
@@ -271,8 +277,17 @@ async fn resolution_updated_changes_executor_workflow() {
             }));
     });
 
+    let ctx = RetryContext::new();
     let resolution = exec
-        .request_resolution(a_id, "Press Enter", "press_key", "Enter", "inventory", None)
+        .request_resolution(
+            &ctx,
+            a_id,
+            "Press Enter",
+            "press_key",
+            "Enter",
+            "inventory",
+            None,
+        )
         .await
         .expect("should get resolution");
 

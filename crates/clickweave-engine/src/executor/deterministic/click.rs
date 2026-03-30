@@ -1,4 +1,5 @@
 use super::super::Mcp;
+use super::super::retry_context::RetryContext;
 use super::super::{ExecutorError, ExecutorResult, WorkflowExecutor};
 use super::truncate_for_error;
 use clickweave_core::decision_cache::cache_key;
@@ -14,12 +15,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         mcp: &(impl Mcp + ?Sized),
         params: &ClickParams,
         node_run: &mut Option<&mut NodeRun>,
+        retry_ctx: &RetryContext,
     ) -> ExecutorResult<NodeType> {
         let target = params.target.as_ref().map(|t| t.text()).ok_or_else(|| {
             ExecutorError::ClickTarget("resolve_click_target called with no target".to_string())
         })?;
         let (x, y) = self
-            .resolve_target_by_text(node_id, target, mcp, node_run)
+            .resolve_target_by_text(node_id, target, mcp, node_run, retry_ctx)
             .await?;
         Ok(NodeType::Click(ClickParams {
             target: Some(ClickTarget::Coordinates { x, y }),
@@ -38,6 +40,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         target: &str,
         mcp: &(impl Mcp + ?Sized),
         node_run: &mut Option<&mut NodeRun>,
+        retry_ctx: &RetryContext,
     ) -> ExecutorResult<(f64, f64)> {
         let scoped_app = self.focused_app_name();
 
@@ -113,6 +116,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     &matches,
                     scoped_app.as_deref(),
                     node_run.as_deref(),
+                    retry_ctx,
                 )
                 .await?
             };
