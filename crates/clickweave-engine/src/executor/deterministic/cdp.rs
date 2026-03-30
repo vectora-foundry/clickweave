@@ -67,61 +67,76 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         if matches.is_empty() {
             // Tier 2: VLM visual resolution (Test mode only, requires vision backend).
             if self.execution_mode == clickweave_core::ExecutionMode::Test {
-                if let Some((screen_x, screen_y)) = self.vlm_locate_element(target, mcp).await {
-                    self.log(format!(
-                        "CDP: VLM located '{}', trying cdp_element_at_point at ({:.0}, {:.0})",
-                        target, screen_x, screen_y
-                    ));
-                    let eap_result = mcp
-                        .call_tool(
-                            "cdp_element_at_point",
-                            Some(serde_json::json!({ "x": screen_x, "y": screen_y })),
-                        )
-                        .await;
+                self.log(format!("CDP: attempting VLM resolution for '{}'", target));
+                match self.vlm_identify_and_locate(target, mcp).await {
+                    None => {
+                        self.log(format!(
+                            "CDP: VLM resolution returned None for '{}'",
+                            target
+                        ));
+                    }
+                    Some((screen_x, screen_y)) => {
+                        self.log(format!(
+                            "CDP: VLM located '{}', trying cdp_element_at_point at ({:.0}, {:.0})",
+                            target, screen_x, screen_y
+                        ));
+                        let eap_result = mcp
+                            .call_tool(
+                                "cdp_element_at_point",
+                                Some(serde_json::json!({ "x": screen_x, "y": screen_y })),
+                            )
+                            .await;
 
-                    if let Ok(ref result) = eap_result {
-                        if result.is_error != Some(true) {
-                            let text = Self::extract_result_text(result);
-                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
-                                if let Some(uid) = parsed["uid"].as_str() {
-                                    let name = parsed["name"].as_str().unwrap_or("");
-                                    self.log(format!(
-                                        "CDP: VLM resolved '{}' -> uid='{}' name='{}'",
-                                        target, uid, name
-                                    ));
+                        if let Ok(ref result) = eap_result {
+                            if result.is_error != Some(true) {
+                                let text = Self::extract_result_text(result);
+                                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text)
+                                {
+                                    if let Some(uid) = parsed["uid"].as_str() {
+                                        let name = parsed["name"].as_str().unwrap_or("");
+                                        self.log(format!(
+                                            "CDP: VLM resolved '{}' -> uid='{}' name='{}'",
+                                            target, uid, name
+                                        ));
 
-                                    // Cache the resolved name for Run mode replay.
-                                    if !name.is_empty() {
-                                        let app = self.focused_app_name();
-                                        let key = clickweave_core::decision_cache::cache_key(
-                                            node_id,
-                                            target,
-                                            app.as_deref(),
-                                        );
-                                        self.write_decision_cache().element_resolution.insert(
+                                        // Cache the resolved name for Run mode replay.
+                                        if !name.is_empty() {
+                                            let app = self.focused_app_name();
+                                            let key = clickweave_core::decision_cache::cache_key(
+                                                node_id,
+                                                target,
+                                                app.as_deref(),
+                                            );
+                                            self.write_decision_cache().element_resolution.insert(
                                             key,
                                             clickweave_core::decision_cache::ElementResolution {
                                                 target: target.to_string(),
                                                 resolved_name: name.to_string(),
                                             },
                                         );
-                                    }
+                                        }
 
-                                    return Ok(uid.to_string());
+                                        return Ok(uid.to_string());
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    // cdp_element_at_point failed — fall through to inventory resolution.
-                    // Don't return CdpNativeClickFallback here because this resolver
-                    // is shared by click and hover; native-click fallback only makes
-                    // sense for click and is handled at the call site.
-                    self.log(format!(
-                        "CDP: cdp_element_at_point failed for '{}', trying inventory",
-                        target
-                    ));
+                        // cdp_element_at_point failed — fall through to inventory resolution.
+                        // Don't return CdpNativeClickFallback here because this resolver
+                        // is shared by click and hover; native-click fallback only makes
+                        // sense for click and is handled at the call site.
+                        self.log(format!(
+                            "CDP: cdp_element_at_point failed for '{}', trying inventory",
+                            target
+                        ));
+                    }
                 }
+            } else {
+                self.log(format!(
+                    "CDP: skipping VLM (execution_mode={:?}, not Test)",
+                    self.execution_mode
+                ));
             }
 
             // Check decision cache for VLM-resolved name from a prior Test run.
@@ -436,36 +451,53 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         Ok(uid)
     }
 
-    /// Ask the VLM to identify the target element's coordinates in a screenshot.
-    /// Returns screen coordinates (points) if the VLM can locate the element.
-    async fn vlm_locate_element(
+    /// Use VLM to identify what text the target element shows, then use
+    /// `find_text` to get precise screen coordinates via OCR.
+    ///
+    /// The VLM is good at semantic understanding ("what does the message input
+    /// say?") but bad at pixel coordinates. OCR is precise at locating known
+    /// text. This combines both strengths.
+    async fn vlm_identify_and_locate(
         &self,
         target: &str,
         mcp: &(impl Mcp + ?Sized),
     ) -> Option<(f64, f64)> {
-        let vlm = self.vision_backend()?;
-
-        let screenshot = self.capture_screenshot_with_metadata(mcp).await?;
-
-        let (prepared_b64, mime) = clickweave_llm::prepare_base64_image_for_vlm(
-            &screenshot.image_base64,
-            clickweave_llm::DEFAULT_MAX_DIMENSION,
-        )?;
-
-        // Calculate scale factor from VLM image back to original screenshot.
-        let downscaled_max = clickweave_llm::DEFAULT_MAX_DIMENSION as f64;
-        let original_max = screenshot.pixel_width.max(screenshot.pixel_height) as f64;
-        let vlm_to_original = if original_max > downscaled_max {
-            original_max / downscaled_max
-        } else {
-            1.0
+        let vlm = match self.vision_backend() {
+            Some(v) => v,
+            None => {
+                self.log("VLM identify: no vision backend available".to_string());
+                return None;
+            }
         };
 
+        // Take screenshot for VLM analysis.
+        let screenshot = match self.capture_screenshot_with_metadata(mcp).await {
+            Some(s) => s,
+            None => {
+                self.log("VLM identify: screenshot capture failed".to_string());
+                return None;
+            }
+        };
+
+        let (prepared_b64, mime) = match clickweave_llm::prepare_base64_image_for_vlm(
+            &screenshot.image_base64,
+            clickweave_llm::DEFAULT_MAX_DIMENSION,
+        ) {
+            Some(pair) => pair,
+            None => {
+                self.log("VLM identify: image preparation failed".to_string());
+                return None;
+            }
+        };
+
+        // Ask VLM to read the actual visible text on the target element.
         let prompt = format!(
-            "Find the UI element described as \"{}\" in this screenshot.\n\
-             Return ONLY a JSON object: {{\"x\": <number>, \"y\": <number>}}\n\
-             where x and y are pixel coordinates in this image pointing to the center of the element.\n\
-             If the element is not visible, return: {{\"x\": null, \"y\": null}}",
+            "The user wants to interact with a UI element described as \"{}\".\n\
+             Look at this screenshot and find that element.\n\
+             What exact text is currently visible on or inside that element?\n\
+             This could be placeholder text, a label, or a button caption.\n\
+             Return ONLY a JSON object: {{\"text\": \"<the exact visible text>\"}}\n\
+             If the element is not visible or has no text, return: {{\"text\": null}}",
             target
         );
 
@@ -474,30 +506,103 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             vec![(prepared_b64, mime)],
         )];
 
-        let response = vlm.chat(messages, None).await.ok()?;
-        let raw = response
+        let response = match vlm.chat(messages, None).await {
+            Ok(r) => r,
+            Err(e) => {
+                self.log(format!("VLM identify: chat failed: {}", e));
+                return None;
+            }
+        };
+        let raw = match response
             .choices
             .first()
-            .and_then(|c| c.message.content_text())?;
+            .and_then(|c| c.message.content_text())
+        {
+            Some(t) => t,
+            None => {
+                self.log("VLM identify: empty response".to_string());
+                return None;
+            }
+        };
 
-        let json_text = crate::executor::app_resolve::parse_llm_json_response(raw)?;
-        let parsed: serde_json::Value = serde_json::from_str(json_text).ok()?;
+        self.log(format!("VLM identify: raw response: {}", raw));
 
-        let vlm_x = parsed["x"].as_f64()?;
-        let vlm_y = parsed["y"].as_f64()?;
-
-        // Convert VLM image pixels → original screenshot pixels → screen points.
-        let orig_px_x = vlm_x * vlm_to_original;
-        let orig_px_y = vlm_y * vlm_to_original;
-        let screen_x = screenshot.origin_x + orig_px_x / screenshot.scale;
-        let screen_y = screenshot.origin_y + orig_px_y / screenshot.scale;
-
+        // Extract the text the VLM identified.
+        let visible_text = Self::parse_vlm_text_response(raw)?;
         self.log(format!(
-            "VLM located '{}' at screen ({:.0}, {:.0}) (vlm pixel: {:.0}, {:.0})",
-            target, screen_x, screen_y, vlm_x, vlm_y
+            "VLM identify: element '{}' shows text '{}'",
+            target, visible_text
         ));
 
-        Some((screen_x, screen_y))
+        // Use find_text to get precise screen coordinates via OCR.
+        let app_name = self.focused_app_name();
+        let mut args = serde_json::json!({ "text": visible_text });
+        if let Some(ref name) = app_name {
+            args["app_name"] = serde_json::Value::String(name.clone());
+        }
+
+        let result = match mcp.call_tool("find_text", Some(args)).await {
+            Ok(r) => r,
+            Err(e) => {
+                self.log(format!("VLM identify: find_text failed: {}", e));
+                return None;
+            }
+        };
+
+        if result.is_error == Some(true) {
+            self.log(format!(
+                "VLM identify: find_text error: {}",
+                Self::extract_result_text(&result)
+            ));
+            return None;
+        }
+
+        // Parse find_text result to get coordinates of the first match.
+        let result_text = Self::extract_result_text(&result);
+        let matches: Vec<serde_json::Value> = match serde_json::from_str(&result_text) {
+            Ok(m) => m,
+            Err(_) => {
+                self.log(format!(
+                    "VLM identify: could not parse find_text result: {}",
+                    &result_text[..result_text.len().min(200)]
+                ));
+                return None;
+            }
+        };
+
+        let first = matches.first()?;
+        let x = first["x"].as_f64()?;
+        let y = first["y"].as_f64()?;
+
+        self.log(format!(
+            "VLM identify: find_text located '{}' at ({:.0}, {:.0})",
+            visible_text, x, y
+        ));
+
+        Some((x, y))
+    }
+
+    /// Parse the VLM's text identification response. Extracts the `text` field
+    /// from a JSON response like `{"text": "Message"}`.
+    fn parse_vlm_text_response(raw: &str) -> Option<String> {
+        // Try JSON first.
+        if let Some(json_text) = crate::executor::app_resolve::parse_llm_json_response(raw) {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_text) {
+                if let Some(text) = parsed["text"].as_str() {
+                    if !text.is_empty() && text != "null" {
+                        return Some(text.to_string());
+                    }
+                }
+            }
+        }
+
+        // Fallback: if the response is just a quoted string, use it.
+        let trimmed = raw.trim().trim_matches('"').trim();
+        if !trimmed.is_empty() && !trimmed.contains('{') && !trimmed.eq_ignore_ascii_case("null") {
+            return Some(trimmed.to_string());
+        }
+
+        None
     }
 
     /// Ensure a CDP connection is available for the given Electron/Chrome app.
