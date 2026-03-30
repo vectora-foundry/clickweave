@@ -52,11 +52,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let mut last_assistant_text = String::new();
 
         loop {
-            if tool_call_count >= max_tool_calls {
-                self.log("Max tool calls reached");
-                break;
-            }
-
             if let Some(timeout) = timeout_ms
                 && step_start.elapsed().as_millis() as u64 > timeout
             {
@@ -112,6 +107,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let mut last_image_tool = String::new();
 
             for tool_call in tool_calls {
+                if tool_call_count >= max_tool_calls {
+                    self.log("Max tool calls reached mid-response, skipping remaining");
+                    break;
+                }
                 tool_call_count += 1;
                 self.log(format!("Tool call: {}", tool_call.function.name));
                 debug!(
@@ -120,7 +119,21 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     "Tool call arguments"
                 );
 
-                let args: Option<Value> = serde_json::from_str(&tool_call.function.arguments).ok();
+                let args: Option<Value> = match serde_json::from_str(&tool_call.function.arguments)
+                {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        self.log(format!(
+                            "Malformed tool call arguments for {}: {} — skipping",
+                            tool_call.function.name, e
+                        ));
+                        messages.push(Message::tool_result(
+                            &tool_call.id,
+                            format!("Error: invalid arguments — {}", e),
+                        ));
+                        continue;
+                    }
+                };
                 let args = self.resolve_image_paths(args);
 
                 self.record_event(
@@ -174,6 +187,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     }
                 }
             }
+
+            let budget_exhausted = tool_call_count >= max_tool_calls;
 
             if !pending_images.is_empty() {
                 let image_count = pending_images.len();
@@ -229,6 +244,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         prepared_images,
                     ));
                 }
+            }
+
+            if budget_exhausted {
+                self.log("Max tool calls reached");
+                break;
             }
         }
 
