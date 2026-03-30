@@ -324,6 +324,70 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         Ok(uid)
     }
 
+    /// Ask the VLM to identify the target element's coordinates in a screenshot.
+    /// Returns screen coordinates (points) if the VLM can locate the element.
+    async fn vlm_locate_element(
+        &self,
+        target: &str,
+        mcp: &(impl Mcp + ?Sized),
+    ) -> Option<(f64, f64)> {
+        let vlm = self.vision_backend()?;
+
+        let screenshot = self.capture_screenshot_with_metadata(mcp).await?;
+
+        let (prepared_b64, mime) = clickweave_llm::prepare_base64_image_for_vlm(
+            &screenshot.image_base64,
+            clickweave_llm::DEFAULT_MAX_DIMENSION,
+        )?;
+
+        // Calculate scale factor from VLM image back to original screenshot.
+        let downscaled_max = clickweave_llm::DEFAULT_MAX_DIMENSION as f64;
+        let original_max = screenshot.pixel_width.max(screenshot.pixel_height) as f64;
+        let vlm_to_original = if original_max > downscaled_max {
+            original_max / downscaled_max
+        } else {
+            1.0
+        };
+
+        let prompt = format!(
+            "Find the UI element described as \"{}\" in this screenshot.\n\
+             Return ONLY a JSON object: {{\"x\": <number>, \"y\": <number>}}\n\
+             where x and y are pixel coordinates in this image pointing to the center of the element.\n\
+             If the element is not visible, return: {{\"x\": null, \"y\": null}}",
+            target
+        );
+
+        let messages = vec![clickweave_llm::Message::user_with_images(
+            prompt,
+            vec![(prepared_b64, mime)],
+        )];
+
+        let response = vlm.chat(messages, None).await.ok()?;
+        let raw = response
+            .choices
+            .first()
+            .and_then(|c| c.message.content_text())?;
+
+        let json_text = crate::executor::app_resolve::parse_llm_json_response(raw)?;
+        let parsed: serde_json::Value = serde_json::from_str(json_text).ok()?;
+
+        let vlm_x = parsed["x"].as_f64()?;
+        let vlm_y = parsed["y"].as_f64()?;
+
+        // Convert VLM image pixels → original screenshot pixels → screen points.
+        let orig_px_x = vlm_x * vlm_to_original;
+        let orig_px_y = vlm_y * vlm_to_original;
+        let screen_x = screenshot.origin_x + orig_px_x / screenshot.scale;
+        let screen_y = screenshot.origin_y + orig_px_y / screenshot.scale;
+
+        self.log(format!(
+            "VLM located '{}' at screen ({:.0}, {:.0}) (vlm pixel: {:.0}, {:.0})",
+            target, screen_x, screen_y, vlm_x, vlm_y
+        ));
+
+        Some((screen_x, screen_y))
+    }
+
     /// Ensure a CDP connection is available for the given Electron/Chrome app.
     ///
     /// If no CDP connection is active for this app:
