@@ -127,36 +127,39 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
 
             // Check decision cache for VLM-resolved name from a prior Test run.
-            let app = self.focused_app_name();
-            let ck = clickweave_core::decision_cache::cache_key(node_id, target, app.as_deref());
-            let cached_resolution = {
-                self.read_decision_cache()
-                    .element_resolution
-                    .get(&ck)
-                    .cloned()
-            };
-            if let Some(cached) = cached_resolution {
-                self.log(format!(
-                    "CDP: trying cached VLM resolution '{}' -> '{}'",
-                    target, cached.resolved_name
-                ));
-                let cached_matches =
-                    find_interactive_in_snapshot(&snapshot_text, &cached.resolved_name);
-                if cached_matches.len() == 1 {
-                    return Ok(cached_matches[0].uid.clone());
-                } else if cached_matches.len() > 1 {
-                    return self
-                        .disambiguate_cdp_elements(
-                            &cached.resolved_name,
-                            &cached_matches,
-                            retry_ctx,
-                        )
-                        .await;
+            // Skip when force_resolve is set (retry after eviction).
+            if !retry_ctx.force_resolve {
+                let app = self.focused_app_name();
+                let ck =
+                    clickweave_core::decision_cache::cache_key(node_id, target, app.as_deref());
+                let cached_resolution = {
+                    self.read_decision_cache()
+                        .element_resolution
+                        .get(&ck)
+                        .cloned()
+                };
+                if let Some(cached) = cached_resolution {
+                    self.log(format!(
+                        "CDP: trying cached VLM resolution '{}' -> '{}'",
+                        target, cached.resolved_name
+                    ));
+                    // Use exact-only matching for cached replay to prevent
+                    // substring false positives (e.g. "Reply" matching "Reply all").
+                    let cached_matches: Vec<_> =
+                        find_interactive_in_snapshot(&snapshot_text, &cached.resolved_name)
+                            .into_iter()
+                            .filter(|m| m.label.eq_ignore_ascii_case(&cached.resolved_name))
+                            .collect();
+                    if cached_matches.len() == 1 {
+                        return Ok(cached_matches[0].uid.clone());
+                    }
+                    // 0 or 2+ exact matches — stale or ambiguous cache, fall through.
+                    self.log(format!(
+                        "CDP: cached name '{}' had {} exact matches, falling through",
+                        cached.resolved_name,
+                        cached_matches.len()
+                    ));
                 }
-                self.log(format!(
-                    "CDP: cached name '{}' not found in snapshot, falling through",
-                    cached.resolved_name
-                ));
             }
 
             // Existing inventory resolution fallback.
