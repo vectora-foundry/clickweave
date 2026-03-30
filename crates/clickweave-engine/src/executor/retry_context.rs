@@ -39,7 +39,9 @@ pub(crate) struct RetryContext {
     pub runtime_verdicts: Vec<NodeVerdict>,
 
     /// Node IDs the executor has completed in this run (for patch validation).
-    pub completed_node_ids: Vec<Uuid>,
+    /// Each entry is (node_id, sanitized auto_id prefix) so rollback can remove
+    /// the corresponding variables.
+    pub completed_node_ids: Vec<(Uuid, String)>,
 
     /// Rejected resolutions keyed by (node_id, target) -- skip callback on retry.
     pub rejected_resolutions: HashSet<(Uuid, String)>,

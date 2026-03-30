@@ -427,7 +427,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             screenshot,
             element_inventory: element_inventory.to_string(),
             current_node_id: node_id,
-            completed_node_ids: retry_ctx.completed_node_ids.clone(),
+            completed_node_ids: retry_ctx
+                .completed_node_ids
+                .iter()
+                .map(|(id, _)| *id)
+                .collect(),
             response_tx,
         };
 
@@ -436,6 +440,33 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         response_rx.await.ok()
+    }
+
+    /// Roll back execution state to just after the given target node.
+    ///
+    /// Removes all completed nodes after `target` from `ctx.completed_node_ids`,
+    /// strips the corresponding variables from `self.context`, clears loop
+    /// counters, and removes verdicts for invalidated nodes.
+    fn rollback_to(&mut self, target: Uuid, ctx: &mut retry_context::RetryContext) {
+        let rollback_from = ctx
+            .completed_node_ids
+            .iter()
+            .position(|(id, _)| *id == target)
+            .map(|pos| pos + 1)
+            .unwrap_or(ctx.completed_node_ids.len());
+
+        let invalidated: Vec<(Uuid, String)> =
+            ctx.completed_node_ids.drain(rollback_from..).collect();
+
+        for (_, prefix) in &invalidated {
+            self.context.remove_variables_with_prefix(prefix);
+        }
+
+        self.context.loop_counters.clear();
+
+        let inv_ids: Vec<Uuid> = invalidated.iter().map(|(id, _)| *id).collect();
+        ctx.runtime_verdicts
+            .retain(|v| !inv_ids.contains(&v.node_id));
     }
 
     /// Apply a resolution patch to the in-memory workflow.

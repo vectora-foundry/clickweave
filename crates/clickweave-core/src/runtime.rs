@@ -32,6 +32,13 @@ impl RuntimeContext {
         self.variables.insert(name.into(), value);
     }
 
+    /// Remove all variables whose key starts with the given prefix.
+    pub fn remove_variables_with_prefix(&mut self, prefix: &str) {
+        let dot_prefix = format!("{}.", prefix);
+        self.variables
+            .retain(|k, _| !k.starts_with(&dot_prefix) && k != prefix);
+    }
+
     /// Look up a variable by name.
     pub fn get_variable(&self, name: &str) -> Option<&Value> {
         self.variables.get(name)

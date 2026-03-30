@@ -242,14 +242,30 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     Some(StepOutcome::Rewind(first_node_id))
                 }
                 RuntimeResolution::Removed(patch) => {
-                    self.log("Runtime resolution: Removed — retrying current node");
+                    self.log("Runtime resolution: Removed — applying patch");
                     self.apply_resolution_patch(&patch);
                     self.evict_caches_for_node(node_type);
                     if let Some(run) = node_run {
                         self.finalize_run(run, RunStatus::Cancelled);
                     }
                     self.emit(ExecutorEvent::NodeCancelled(node_id));
-                    Some(StepOutcome::Rewind(node_id))
+
+                    if self.workflow.find_node(node_id).is_some() {
+                        // Node still exists — retry it (redundant steps ahead were removed)
+                        Some(StepOutcome::Rewind(node_id))
+                    } else {
+                        // Current node was removed — follow updated edges
+                        let next = self
+                            .follow_single_edge(node_id)
+                            .or_else(|| self.entry_points().first().copied());
+                        match next {
+                            Some(next_id) => Some(StepOutcome::Rewind(next_id)),
+                            None => {
+                                self.log("No successor after node removal — workflow complete");
+                                Some(StepOutcome::Succeeded)
+                            }
+                        }
+                    }
                 }
                 RuntimeResolution::Rejected => {
                     self.log("Runtime resolution: Rejected — falling through");
@@ -824,11 +840,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         self.finalize_run(run, RunStatus::Ok);
                     }
                     self.emit(ExecutorEvent::NodeCompleted(node_id));
-                    ctx.completed_node_ids.push(node_id);
+                    ctx.completed_node_ids.push((
+                        node_id,
+                        clickweave_core::storage::sanitize_name(&node_auto_id),
+                    ));
 
                     current = self.follow_single_edge(node_id);
                 }
                 StepOutcome::Rewind(target) => {
+                    self.rollback_to(target, &mut ctx);
                     current = Some(target);
                 }
                 StepOutcome::Aborted => {
