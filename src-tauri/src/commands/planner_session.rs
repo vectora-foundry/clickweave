@@ -13,6 +13,16 @@ use tokio::sync::{Mutex, oneshot};
 use tracing::info;
 use uuid::Uuid;
 
+/// Extract the text content from an MCP tool call result.
+fn extract_result_text(result: &clickweave_mcp::ToolCallResult) -> String {
+    result
+        .content
+        .first()
+        .and_then(|c| c.as_text())
+        .unwrap_or("")
+        .to_string()
+}
+
 /// Synthetic OpenAI function definition for `cdp_find_elements`.
 /// This tool is not an MCP tool — it's intercepted by PlannerSession.
 fn cdp_find_elements_tool_def() -> Value {
@@ -140,10 +150,7 @@ impl PlannerSession {
         mcp_tools
             .iter()
             .filter(|tool| {
-                tool.get("function")
-                    .and_then(|f| f.get("name"))
-                    .and_then(|n| n.as_str())
-                    .is_some_and(is_planning_tool)
+                clickweave_llm::planner::tool_use::tool_name(tool).is_some_and(is_planning_tool)
             })
             .cloned()
             .collect()
@@ -178,7 +185,7 @@ impl PlannerSession {
     /// After cdp_connect succeeds, re-fetch the tool list from the MCP server
     /// so newly available CDP tools appear in subsequent LLM turns.
     /// Also injects the synthetic `cdp_find_elements` definition.
-    async fn refresh_planning_tools(&self) {
+    pub(crate) async fn refresh_planning_tools(&self) {
         let mut mcp = self.mcp.lock().await;
         if let Err(e) = mcp.refresh_tools().await {
             tracing::warn!("Failed to refresh MCP tools after cdp_connect: {}", e);
@@ -321,6 +328,56 @@ impl PlannerSession {
 
         Ok(output)
     }
+
+    /// Call an MCP tool directly (for pre-gather use).
+    /// Does NOT emit planner://tool_call events — pre-gather has its own eventing.
+    pub async fn call_mcp_tool(
+        &self,
+        name: &str,
+        args: Option<serde_json::Value>,
+    ) -> anyhow::Result<String> {
+        let mcp = self.mcp.lock().await;
+        let result = mcp
+            .call_tool(name, args)
+            .await
+            .map_err(|e| anyhow::anyhow!("MCP tool call failed: {}", e))?;
+        let text = extract_result_text(&result);
+        if result.is_error == Some(true) {
+            return Err(anyhow::anyhow!("{}", text));
+        }
+        Ok(text)
+    }
+
+    /// Build an element inventory from a CDP snapshot for pre-gather injection.
+    pub async fn build_pre_gather_inventory(&self) -> anyhow::Result<String> {
+        let snapshot_text = self
+            .call_mcp_tool("cdp_take_snapshot", Some(serde_json::json!({})))
+            .await?;
+        let inventory = clickweave_core::cdp::build_element_inventory(&snapshot_text, 50);
+
+        let mut output = String::new();
+        use std::fmt::Write as _;
+        writeln!(output, "Interactive elements:").unwrap();
+        for g in &inventory.groups {
+            let labels: Vec<String> = g
+                .sample_labels
+                .iter()
+                .map(|l| format!("\"{}\"", l))
+                .collect();
+            let label_text = if labels.len() > 50 {
+                let shown = labels[..50].join(", ");
+                format!("{}, ...+{} more", shown, labels.len() - 50)
+            } else {
+                labels.join(", ")
+            };
+            if label_text.is_empty() {
+                writeln!(output, "  {} ({})", g.role, g.count).unwrap();
+            } else {
+                writeln!(output, "  {} ({}): {}", g.role, g.count, label_text).unwrap();
+            }
+        }
+        Ok(output)
+    }
 }
 
 impl PlannerToolExecutor for PlannerSession {
@@ -347,12 +404,7 @@ impl PlannerToolExecutor for PlannerSession {
                 .map_err(|e| anyhow::anyhow!("MCP tool call failed: {}", e))?
         };
 
-        let text = result
-            .content
-            .first()
-            .and_then(|c| c.as_text())
-            .unwrap_or("")
-            .to_string();
+        let text = extract_result_text(&result);
 
         let _ = self.app.emit(
             "planner://tool_call",
