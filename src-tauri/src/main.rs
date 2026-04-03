@@ -128,6 +128,7 @@ fn main() {
         planner_confirmation_respond,
         resolution_respond,
         confirmable_tools,
+        check_endpoint,
     ]);
 
     #[cfg(debug_assertions)]

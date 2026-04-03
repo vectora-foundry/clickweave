@@ -4,6 +4,7 @@ pub mod error;
 mod executor;
 mod planner;
 mod planner_session;
+pub mod pre_gather;
 mod project;
 mod resolution_listener;
 mod runs;
@@ -37,3 +38,15 @@ pub use walkthrough::{
     get_walkthrough_draft, pause_walkthrough, resume_walkthrough, seed_walkthrough_cache,
     start_walkthrough, stop_walkthrough, validate_app_path,
 };
+
+#[tauri::command]
+#[specta::specta]
+pub async fn check_endpoint(
+    base_url: String,
+    api_key: Option<String>,
+    model: Option<String>,
+) -> Result<(), error::CommandError> {
+    clickweave_llm::check_endpoint(&base_url, api_key.as_deref(), model.as_deref())
+        .await
+        .map_err(error::CommandError::validation)
+}

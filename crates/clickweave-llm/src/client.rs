@@ -319,6 +319,79 @@ impl ChatBackend for LlmClient {
     }
 }
 
+/// Check if an LLM endpoint is reachable and the model is available.
+/// Hits GET {base_url}/models and, when `model` is provided, verifies
+/// it appears in the response. Returns Ok(()) on success.
+pub async fn check_endpoint(
+    base_url: &str,
+    api_key: Option<&str>,
+    model: Option<&str>,
+) -> Result<(), String> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+
+    let mut req = client.get(&url);
+    if let Some(key) = api_key {
+        req = req.bearer_auth(key);
+    }
+
+    let resp = match req.send().await {
+        Ok(resp) if resp.status().is_success() => resp,
+        Ok(resp) => {
+            return Err(format!(
+                "Endpoint responded with status {} at {}",
+                resp.status(),
+                url
+            ));
+        }
+        Err(e) if e.is_timeout() => return Err(format!("Endpoint timed out after 5s at {}", url)),
+        Err(e) => return Err(format!("Cannot reach endpoint at {}: {}", url, e)),
+    };
+
+    // If a model name is provided, verify it exists in the response
+    let model = match model {
+        Some(m) if !m.is_empty() => m,
+        _ => return Ok(()),
+    };
+
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+    let json: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|_| "Endpoint did not return valid JSON".to_string())?;
+
+    // Fuzzy match: server may report a prefixed or suffixed ID
+    // (e.g. "/models/Qwen3-27B" or "Qwen3-27B.gguf") vs bare config name.
+    fn strip_model_ext(s: &str) -> &str {
+        s.strip_suffix(".gguf")
+            .or_else(|| s.strip_suffix(".bin"))
+            .unwrap_or(s)
+    }
+    let model_bare = strip_model_ext(model);
+    let has_model = json["data"]
+        .as_array()
+        .map(|arr| {
+            arr.iter().any(|m| {
+                let id = m["id"].as_str().unwrap_or("");
+                let id_bare = strip_model_ext(id);
+                id_bare == model_bare
+                    || id_bare.ends_with(model_bare)
+                    || model_bare.ends_with(id_bare)
+            })
+        })
+        .unwrap_or(false);
+
+    if has_model {
+        Ok(())
+    } else {
+        Err(format!("Model '{}' not found on endpoint", model))
+    }
+}
+
 /// System prompt for the agent (text-only, no images).
 pub fn workflow_system_prompt() -> String {
     r#"You are a UI automation assistant executing an AI Step node within a workflow.
