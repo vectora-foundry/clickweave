@@ -70,6 +70,74 @@ pub const PLANNING_ONLY_TOOL_NAMES: &[&str] = &[
     "cdp_find_elements",
 ];
 
+/// Extract the tool name from an OpenAI-compatible tool definition.
+pub fn tool_name(tool: &serde_json::Value) -> Option<&str> {
+    tool.get("function")
+        .and_then(|f| f.get("name"))
+        .and_then(|n| n.as_str())
+}
+
+/// Native action tools — remove from workflow catalog when all apps are Electron/Chrome.
+pub const NATIVE_ACTION_TOOLS: &[&str] = &[
+    "click",
+    "type_text",
+    "press_key",
+    "scroll",
+    "drag",
+    "move_mouse",
+];
+
+/// CDP action tools — remove from workflow catalog when all apps are Native.
+/// Includes both MCP schema names (cdp_-prefixed) and legacy aliases.
+pub const CDP_ACTION_TOOLS: &[&str] = &[
+    "cdp_click",
+    "cdp_type_text",
+    "cdp_press_key",
+    "cdp_hover",
+    "cdp_fill",
+    "cdp_navigate",
+    "cdp_new_page",
+    "cdp_close_page",
+    "cdp_select_page",
+    "cdp_handle_dialog",
+    "cdp_wait_for",
+    // Legacy aliases (planner prompt may use unprefixed names):
+    "wait_for",
+    "fill",
+    "navigate_page",
+    "new_page",
+    "close_page",
+    "select_page",
+    "handle_dialog",
+];
+
+/// Filter a tool list by app type. Returns tools appropriate for the given app kinds.
+/// If both flags are false (mixed or unknown), returns all tools.
+pub fn filter_tools_by_app_type(
+    tools: &[serde_json::Value],
+    all_cdp: bool,
+    all_native: bool,
+) -> Vec<serde_json::Value> {
+    if !all_cdp && !all_native {
+        return tools.to_vec();
+    }
+
+    let deny_list: &[&str] = if all_cdp {
+        NATIVE_ACTION_TOOLS
+    } else {
+        CDP_ACTION_TOOLS
+    };
+
+    tools
+        .iter()
+        .filter(|tool| {
+            let name = tool_name(tool).unwrap_or("");
+            !deny_list.contains(&name)
+        })
+        .cloned()
+        .collect()
+}
+
 /// Tools that are always allowed (read-only observation).
 const ALWAYS_ALLOWED: &[&str] = &["probe_app", "take_ax_snapshot"];
 
@@ -182,5 +250,29 @@ mod tests {
             planning_tool_permission("cdp_find_elements"),
             ToolPermission::Allowed
         );
+    }
+
+    /// Every tool in CDP_ACTION_TOOLS must be hardcoded in
+    /// tool_invocation_to_node_type so it resolves without the known_tools
+    /// fallback. This catches drift between the filter constant and the
+    /// mapping — add a tool to CDP_ACTION_TOOLS, forget the match arm,
+    /// and this test fails.
+    #[test]
+    fn cdp_action_tools_all_resolve_without_known_tools() {
+        let empty: Vec<serde_json::Value> = vec![];
+        for name in CDP_ACTION_TOOLS {
+            let result = clickweave_core::tool_mapping::tool_invocation_to_node_type(
+                name,
+                &serde_json::json!({}),
+                &empty,
+            );
+            assert!(
+                result.is_ok(),
+                "CDP_ACTION_TOOLS entry '{}' is not hardcoded in \
+                 tool_invocation_to_node_type — add a match arm in \
+                 clickweave-core/src/tool_mapping.rs",
+                name
+            );
+        }
     }
 }

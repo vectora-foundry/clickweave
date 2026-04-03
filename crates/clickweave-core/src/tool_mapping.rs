@@ -535,6 +535,11 @@ pub fn tool_invocation_to_node_type(
                 ..Default::default()
             }))
         }
+        // CDP inspection tools — available after cdp_connect, not always in known_tools
+        "cdp_take_snapshot" | "cdp_list_pages" => Ok(NodeType::McpToolCall(McpToolCallParams {
+            tool_name: name.to_string(),
+            arguments: args.clone(),
+        })),
         _ if known_tools
             .iter()
             .any(|t| t["function"]["name"].as_str() == Some(name)) =>
@@ -920,6 +925,23 @@ mod tests {
                 assert_eq!(p.app_kind, AppKind::Native);
             }
             _ => panic!("expected FocusWindow"),
+        }
+    }
+
+    /// CDP inspection tools that appear after cdp_connect must resolve
+    /// without known_tools. The full CDP_ACTION_TOOLS list is tested in
+    /// clickweave-llm (which owns the constant and depends on this crate).
+    #[test]
+    fn cdp_inspection_tools_resolve_without_known_tools() {
+        let empty: Vec<Value> = vec![];
+        for name in ["cdp_take_snapshot", "cdp_list_pages"] {
+            let result = tool_invocation_to_node_type(name, &serde_json::json!({}), &empty);
+            assert!(
+                result.is_ok(),
+                "'{}' must be hardcoded — it appears after cdp_connect \
+                 and known_tools may be stale",
+                name
+            );
         }
     }
 }
