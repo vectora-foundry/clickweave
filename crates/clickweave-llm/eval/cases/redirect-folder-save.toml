@@ -6,3 +6,4 @@ prompt = "Open Finder. Navigate to the Documents folder, then to the Downloads f
 min_nodes = 6
 max_nodes = 14
 required_tools = ["launch_app", "click"]
+forbidden_tools = ["cdp_click", "cdp_type_text", "cdp_press_key", "cdp_hover", "cdp_fill", "cdp_navigate", "cdp_new_page", "cdp_close_page", "cdp_select_page", "cdp_handle_dialog", "cdp_wait_for", "fill", "navigate_page", "new_page", "close_page", "select_page", "handle_dialog", "wait_for"]

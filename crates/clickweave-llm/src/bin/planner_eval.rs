@@ -174,6 +174,8 @@ struct CaseExpectations {
     #[serde(default)]
     required_tools: Vec<String>,
     #[serde(default)]
+    forbidden_tools: Vec<String>,
+    #[serde(default)]
     required_patterns: Vec<String>,
 }
 
@@ -263,6 +265,10 @@ fn score_run(workflow: &Workflow, expect: &CaseExpectations) -> bool {
 
     let tools = extract_tools(workflow);
     if !expect.required_tools.iter().all(|t| tools.contains(t)) {
+        return false;
+    }
+
+    if expect.forbidden_tools.iter().any(|t| tools.contains(t)) {
         return false;
     }
 
@@ -739,6 +745,24 @@ async fn main() -> Result<()> {
                             .all(|p| r.turn_results[0].patterns_found.contains(p))
                     })
             });
+            let forbidden_ok = expect.is_none_or(|exp| {
+                exp.forbidden_tools.is_empty()
+                    || runs.iter().all(|r| {
+                        !exp.forbidden_tools
+                            .iter()
+                            .any(|t| r.turn_results[0].tools_found.contains(t))
+                    })
+            });
+            let forbidden_status = match expect {
+                Some(exp) if !exp.forbidden_tools.is_empty() => {
+                    if forbidden_ok {
+                        "ok"
+                    } else {
+                        "VIOLATED"
+                    }
+                }
+                _ => "-",
+            };
             let patterns_status = match expect {
                 Some(exp) if !exp.required_patterns.is_empty() => {
                     if patterns_ok {
@@ -750,12 +774,13 @@ async fn main() -> Result<()> {
                 _ => "-",
             };
             println!(
-                "  {:<35} {}/{} pass  nodes: {}  tools: {}  patterns: {}",
+                "  {:<35} {}/{} pass  nodes: {}  tools: {}  forbidden: {}  patterns: {}",
                 case.name,
                 case_passed,
                 runs_per_case,
                 node_counts.join(","),
                 if tools_ok { "ok" } else { "MISSING" },
+                forbidden_status,
                 patterns_status,
             );
         } else {

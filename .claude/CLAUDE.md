@@ -73,7 +73,6 @@ cargo run
 ```
 
 ### Preferred Patterns
-- Use the builder pattern for complex object construction
 - Use traits for polymorphism
 - Leverage Rust's ownership system for memory safety
 - Use iterators and closures for data transformation

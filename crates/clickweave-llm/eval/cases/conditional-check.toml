@@ -6,4 +6,5 @@ prompt = "Open Calculator, click 5, click +, click 3, click =. If the result sho
 min_nodes = 6
 max_nodes = 10
 required_tools = ["click"]
+forbidden_tools = ["cdp_click", "cdp_type_text", "cdp_press_key", "cdp_hover", "cdp_fill", "cdp_navigate", "cdp_new_page", "cdp_close_page", "cdp_select_page", "cdp_handle_dialog", "cdp_wait_for", "fill", "navigate_page", "new_page", "close_page", "select_page", "handle_dialog", "wait_for"]
 required_patterns = ["conditional"]

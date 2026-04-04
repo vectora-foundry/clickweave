@@ -1,0 +1,9 @@
+name = "CDP: Chrome browser navigate and click"
+
+[[turns]]
+prompt = "Open Chrome, navigate to example.com, and click the 'More information...' link"
+[turns.expect]
+min_nodes = 4
+max_nodes = 8
+required_tools = ["launch_app", "cdp_type_text", "cdp_press_key", "cdp_click"]
+forbidden_tools = ["click", "type_text", "press_key", "scroll", "drag", "move_mouse"]

@@ -275,4 +275,95 @@ mod tests {
             );
         }
     }
+
+    /// Every forbidden_tools entry in eval TOML cases must be a member of
+    /// NATIVE_ACTION_TOOLS or CDP_ACTION_TOOLS. Additionally, if a case
+    /// forbids any tool from a family, it must forbid the entire family.
+    /// This catches both directions of drift: unknown entries AND missing
+    /// entries when a new tool is added to a canonical constant.
+    ///
+    /// Requires `--features eval` (for toml_edit serde support).
+    #[test]
+    #[cfg(feature = "eval")]
+    fn forbidden_tools_match_canonical_constants() {
+        use std::collections::HashSet;
+
+        #[derive(serde::Deserialize)]
+        struct Case {
+            turns: Vec<Turn>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Turn {
+            #[serde(default)]
+            expect: Option<Expect>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Expect {
+            #[serde(default)]
+            forbidden_tools: Vec<String>,
+        }
+
+        let native: HashSet<&str> = NATIVE_ACTION_TOOLS.iter().copied().collect();
+        let cdp: HashSet<&str> = CDP_ACTION_TOOLS.iter().copied().collect();
+        let all_known: HashSet<&str> = native.union(&cdp).copied().collect();
+
+        let cases_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("eval/cases");
+        for entry in std::fs::read_dir(&cases_dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().map_or(true, |e| e != "toml") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).unwrap();
+            let case: Case = toml_edit::de::from_str(&content).unwrap_or_else(|e| {
+                panic!("Failed to parse {}: {}", path.display(), e);
+            });
+            for turn in &case.turns {
+                if let Some(expect) = &turn.expect {
+                    let forbidden: HashSet<&str> =
+                        expect.forbidden_tools.iter().map(|s| s.as_str()).collect();
+
+                    // Check 1: no unknown entries
+                    for tool in &forbidden {
+                        assert!(
+                            all_known.contains(tool),
+                            "Unknown forbidden tool '{}' in {} \
+                             — not in NATIVE_ACTION_TOOLS or CDP_ACTION_TOOLS",
+                            tool,
+                            path.display()
+                        );
+                    }
+
+                    // Check 2: if any tool from a family is forbidden,
+                    // the entire family must be forbidden
+                    let has_any_native = forbidden.iter().any(|t| native.contains(t));
+                    let has_any_cdp = forbidden.iter().any(|t| cdp.contains(t));
+
+                    if has_any_native {
+                        for tool in &native {
+                            assert!(
+                                forbidden.contains(tool),
+                                "Incomplete native deny-list in {}: missing '{}' \
+                                 — if any NATIVE_ACTION_TOOLS entry is forbidden, \
+                                 all must be",
+                                path.display(),
+                                tool
+                            );
+                        }
+                    }
+                    if has_any_cdp {
+                        for tool in &cdp {
+                            assert!(
+                                forbidden.contains(tool),
+                                "Incomplete CDP deny-list in {}: missing '{}' \
+                                 — if any CDP_ACTION_TOOLS entry is forbidden, \
+                                 all must be",
+                                path.display(),
+                                tool
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

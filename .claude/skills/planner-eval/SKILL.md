@@ -45,7 +45,7 @@ Flags: `--case <substring>`, `--runs N`, `--model <name>`, `--concurrency N`
 
 ### 2. Semantic verification (CRITICAL — do not skip)
 
-Pass/fail scores only check node count, required tools, and patterns. They do NOT verify:
+Pass/fail scores check node count, required tools, forbidden tools, and patterns. They do NOT verify:
 - **Node ordering** — are steps in the right sequence?
 - **Argument correctness** — do click targets, text values, app names make sense?
 - **Edge wiring** — do conditionals branch correctly? Do loops contain the right body?
@@ -102,6 +102,7 @@ prompt = "Open Calculator, calculate 5 times 6"
 min_nodes = 4
 max_nodes = 8
 required_tools = ["launch_app", "click"]
+forbidden_tools = ["cdp_click", "cdp_type_text", "cdp_press_key", "cdp_hover", "cdp_fill", "cdp_navigate", "cdp_new_page", "cdp_close_page", "cdp_select_page", "cdp_handle_dialog", "cdp_wait_for", "fill", "navigate_page", "new_page", "close_page", "select_page", "handle_dialog", "wait_for"]
 
 [[turns]]
 prompt = "Also take a screenshot"
@@ -109,7 +110,12 @@ prompt = "Also take a screenshot"
 min_nodes = 5
 max_nodes = 9
 required_tools = ["launch_app", "click", "take_screenshot"]
+forbidden_tools = ["cdp_click", "cdp_type_text", "cdp_press_key", "cdp_hover", "cdp_fill", "cdp_navigate", "cdp_new_page", "cdp_close_page", "cdp_select_page", "cdp_handle_dialog", "cdp_wait_for", "fill", "navigate_page", "new_page", "close_page", "select_page", "handle_dialog", "wait_for"]
 ```
+
+- `forbidden_tools` — tools that must NOT appear in the workflow (enforces CDP vs native tool selection)
+- Native cases forbid all `CDP_ACTION_TOOLS`; CDP cases forbid all `NATIVE_ACTION_TOOLS` (see `tool_use.rs`)
+- A drift test ensures forbidden_tools entries stay in sync with the canonical constants
 
 Turn 1 = plan from scratch. Turn 2+ = patch existing workflow.
 

@@ -56,9 +56,11 @@ Before outputting, verify: count nodes with zero incoming edges. If more than 1,
 - **Context selection — Native vs CDP:**
   - For **Chrome-family browsers** (Chrome, Brave, Edge, Arc, Chromium): add `"app_kind": "ChromeBrowser"` to focus_window arguments. Use **CDP tools** (`cdp_click`, `cdp_type_text`, `cdp_press_key`, `fill`, `navigate_page`, `wait_for`) for browser interactions. The executor detects app kind automatically for launch_app, so do NOT add `app_kind` to launch_app.
   - For **Electron apps** (VS Code, Slack, Discord, Signal, Notion, etc.): add `"app_kind": "ElectronApp"` to focus_window. Use **CDP tools** for in-app interactions. The executor detects app kind automatically for launch_app.
-  - For **all other desktop apps**: omit app_kind (defaults to Native). Use **native tools** (`click`, `type_text`, `find_text`, etc.) which use OCR and screen coordinates.
+  - For **all other desktop apps** (Safari, Finder, Calculator, TextEdit, Notes, Preview, Terminal, etc.): omit app_kind (defaults to Native). Use **native tools** (`click`, `type_text`, `find_text`, etc.) which use OCR and screen coordinates. **Safari is NOT Chrome-family** — it is a native WebKit app, use native tools.
   - **Native vs CDP tool names:** `click` and `cdp_click` are different tools. Use `click` for native apps, `cdp_click` for Electron/Chrome. Same for `type_text`/`cdp_type_text` and `press_key`/`cdp_press_key`.
-  - **Mixed workflows are fine** — native query tools (find_text, take_screenshot) work anywhere for screen-level verification, even between CDP tools.
+  - **Mixed workflows must be a single chain** — when a workflow involves both CDP and native apps, connect all nodes with edges into one linear sequence. Do NOT create separate disconnected subgraphs for each app. Example: Slack (CDP) → launch_app TextEdit (native) → type_text.
+  - Native query tools (find_text, take_screenshot) work anywhere for screen-level verification, even between CDP tools.
+  - For **waiting/polling in Electron or Chrome apps**, use `cdp_wait_for` (not `find_text`) — it checks the DOM directly. For **native apps** (Safari, Calculator, etc.), use `find_text` — `cdp_wait_for` is NOT available for native apps.
   - After `probe_app` confirms an app is ElectronApp or ChromeBrowser, always use CDP tools — do not fall back to native.
 - For Chrome navigation: after launch_app, use `cdp_type_text` to type the URL, then `cdp_press_key` to press Return. Do NOT use press_key shortcuts (e.g. Cmd+N, Cmd+T) to open new windows or tabs — the launch_app node already provides a usable window.
 {{chrome_profiles}}
@@ -158,6 +160,27 @@ Signal is an Electron app (probe_app returns `kind: "ElectronApp"`), so use CDP 
 ```
 
 Note: `launch_app` auto-detects Electron and connects CDP. Use `cdp_click` with the **exact element name** from `cdp_find_elements` as the target (the executor matches this text against a fresh DOM snapshot at runtime). Do not paraphrase — use the label exactly as returned. Use `cdp_type_text` to type into the currently focused element. Use `fill` when you need to set an input field's value — it requires a UID from `cdp_find_elements` (e.g. search for the input by name/role during planning, then use `{"uid": "<uid>", "value": "<text>"}` in the workflow). Do NOT bake UIDs into `cdp_click` — always use text targets.
+
+## Mixed-app workflow example
+
+User: "Open Slack, copy the latest message from #general, then paste it into TextEdit"
+
+Slack is Electron (CDP tools), TextEdit is native. All nodes form a single connected chain — do NOT create separate subgraphs per app:
+
+```json
+{
+  "steps": [
+    {"step_type": "Tool", "tool_name": "launch_app", "arguments": {"app_name": "Slack"}, "name": "Launch Slack"},
+    {"step_type": "Tool", "tool_name": "cdp_click", "arguments": {"target": "#general"}, "name": "Click #general"},
+    {"step_type": "Tool", "tool_name": "cdp_click", "arguments": {"target": "latest message"}, "name": "Click latest message"},
+    {"step_type": "Tool", "tool_name": "press_key", "arguments": {"key": "c", "modifiers": ["command"]}, "name": "Copy text"},
+    {"step_type": "Tool", "tool_name": "launch_app", "arguments": {"app_name": "TextEdit"}, "name": "Launch TextEdit"},
+    {"step_type": "Tool", "tool_name": "press_key", "arguments": {"key": "v", "modifiers": ["command"]}, "name": "Paste text"}
+  ]
+}
+```
+
+Note: CDP tools for Slack interactions, then `launch_app` switches to TextEdit and native tools take over. The second `launch_app` bridges the two app contexts. All nodes connect sequentially — never split into parallel subgraphs.
 
 ## Conditional example
 
