@@ -1,0 +1,8 @@
+name = "Mixed: CDP app + native app in one workflow"
+
+[[turns]]
+prompt = "Open Slack, click on the #general channel, copy the latest message text, then open TextEdit and paste it"
+[turns.expect]
+min_nodes = 6
+max_nodes = 12
+required_tools = ["launch_app", "cdp_click", "press_key"]
