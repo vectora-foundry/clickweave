@@ -5,5 +5,5 @@ prompt = "Open Signal and send the message 'hello' to Alice"
 [turns.expect]
 min_nodes = 5
 max_nodes = 10
-required_tools = ["launch_app", "cdp_click", "cdp_type_text"]
+required_tools = ["launch_app", "cdp_click", "cdp_type_text", "cdp_press_key"]
 forbidden_tools = ["click", "type_text", "press_key", "scroll", "drag", "move_mouse"]
