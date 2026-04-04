@@ -5,5 +5,5 @@ prompt = "Open Slack, click on the #general channel, type 'standup update: all g
 [turns.expect]
 min_nodes = 4
 max_nodes = 8
-required_tools = ["launch_app", "cdp_click", "cdp_type_text"]
+required_tools = ["launch_app", "cdp_click", "cdp_type_text", "cdp_press_key"]
 forbidden_tools = ["click", "type_text", "press_key", "scroll", "drag", "move_mouse"]

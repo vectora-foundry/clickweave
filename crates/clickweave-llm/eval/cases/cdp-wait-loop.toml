@@ -5,6 +5,6 @@ prompt = "Open Discord, click on the #announcements channel, then keep checking 
 [turns.expect]
 min_nodes = 5
 max_nodes = 10
-required_tools = ["launch_app", "cdp_click"]
+required_tools = ["launch_app", "cdp_click", "cdp_wait_for"]
 forbidden_tools = ["click", "type_text", "press_key", "scroll", "drag", "move_mouse"]
 required_patterns = ["loop"]
