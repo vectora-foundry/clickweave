@@ -6,6 +6,7 @@ prompt = "Open Calculator, calculate 5 times 6"
 min_nodes = 4
 max_nodes = 8
 required_tools = ["launch_app", "click"]
+forbidden_tools = ["cdp_click", "cdp_type_text", "cdp_press_key", "cdp_hover", "cdp_fill", "cdp_navigate", "cdp_new_page", "cdp_close_page", "cdp_select_page", "cdp_handle_dialog", "cdp_wait_for", "fill", "navigate_page", "new_page", "close_page", "select_page", "handle_dialog", "wait_for"]
 
 [[turns]]
 prompt = "Also take a screenshot of the result"
@@ -13,6 +14,7 @@ prompt = "Also take a screenshot of the result"
 min_nodes = 5
 max_nodes = 9
 required_tools = ["launch_app", "click", "take_screenshot"]
+forbidden_tools = ["cdp_click", "cdp_type_text", "cdp_press_key", "cdp_hover", "cdp_fill", "cdp_navigate", "cdp_new_page", "cdp_close_page", "cdp_select_page", "cdp_handle_dialog", "cdp_wait_for", "fill", "navigate_page", "new_page", "close_page", "select_page", "handle_dialog", "wait_for"]
 
 [[turns]]
 prompt = "Before the screenshot, type the result into TextEdit"
@@ -20,3 +22,4 @@ prompt = "Before the screenshot, type the result into TextEdit"
 min_nodes = 7
 max_nodes = 12
 required_tools = ["launch_app", "click", "type_text", "take_screenshot"]
+forbidden_tools = ["cdp_click", "cdp_type_text", "cdp_press_key", "cdp_hover", "cdp_fill", "cdp_navigate", "cdp_new_page", "cdp_close_page", "cdp_select_page", "cdp_handle_dialog", "cdp_wait_for", "fill", "navigate_page", "new_page", "close_page", "select_page", "handle_dialog", "wait_for"]

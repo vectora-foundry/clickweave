@@ -6,6 +6,7 @@ prompt = "Open Signal, click on Alice's chat, type 'hello' and send it"
 min_nodes = 4
 max_nodes = 8
 required_tools = ["launch_app", "cdp_click", "cdp_type_text"]
+forbidden_tools = ["click", "type_text", "press_key", "scroll", "drag", "move_mouse"]
 
 [[turns]]
 prompt = "After that click on Bob's chat, type 'yo' and send it"
@@ -13,6 +14,7 @@ prompt = "After that click on Bob's chat, type 'yo' and send it"
 min_nodes = 7
 max_nodes = 14
 required_tools = ["launch_app", "cdp_click", "cdp_type_text"]
+forbidden_tools = ["click", "type_text", "press_key", "scroll", "drag", "move_mouse"]
 
 [[turns]]
 prompt = "Wait, don't send to Alice, send to Michael instead"
@@ -20,3 +22,4 @@ prompt = "Wait, don't send to Alice, send to Michael instead"
 min_nodes = 7
 max_nodes = 14
 required_tools = ["cdp_click", "cdp_type_text"]
+forbidden_tools = ["click", "type_text", "press_key", "scroll", "drag", "move_mouse"]

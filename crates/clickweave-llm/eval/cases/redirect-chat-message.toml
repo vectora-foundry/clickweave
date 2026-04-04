@@ -6,3 +6,4 @@ prompt = "Open Signal. Click on the chat with Alice, then click on the chat with
 min_nodes = 6
 max_nodes = 16
 required_tools = ["launch_app", "cdp_click", "cdp_type_text"]
+forbidden_tools = ["click", "type_text", "press_key", "scroll", "drag", "move_mouse"]
