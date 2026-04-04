@@ -275,4 +275,47 @@ mod tests {
             );
         }
     }
+
+    /// Every forbidden_tools entry in eval TOML cases must be a member of
+    /// NATIVE_ACTION_TOOLS or CDP_ACTION_TOOLS. Catches silent desync when
+    /// tool families change.
+    #[test]
+    #[cfg(feature = "eval")]
+    fn forbidden_tools_match_canonical_constants() {
+        use std::collections::HashSet;
+
+        let native: HashSet<&str> = NATIVE_ACTION_TOOLS.iter().copied().collect();
+        let cdp: HashSet<&str> = CDP_ACTION_TOOLS.iter().copied().collect();
+        let all_known: HashSet<&str> = native.union(&cdp).copied().collect();
+
+        let cases_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("eval/cases");
+        for entry in std::fs::read_dir(&cases_dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().map_or(true, |e| e != "toml") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).unwrap();
+            let case: toml_edit::DocumentMut = content.parse().unwrap();
+            if let Some(turns) = case.get("turns").and_then(|t| t.as_array_of_tables()) {
+                for turn in turns.iter() {
+                    if let Some(expect) = turn.get("expect") {
+                        if let Some(forbidden) =
+                            expect.get("forbidden_tools").and_then(|f| f.as_array())
+                        {
+                            for tool in forbidden.iter() {
+                                let name = tool.as_str().unwrap();
+                                assert!(
+                                    all_known.contains(name),
+                                    "Unknown forbidden tool '{}' in {} \
+                                     — not in NATIVE_ACTION_TOOLS or CDP_ACTION_TOOLS",
+                                    name,
+                                    path.display()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
