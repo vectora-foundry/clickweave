@@ -479,5 +479,207 @@
         }
       }
     }
-  }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "cdp_click",
+      "description": "Click a DOM element by text label. Use the exact element name from the page. The executor resolves the text to a live element at runtime.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "Exact text label of the element to click (from cdp_find_elements or visible element name)"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "cdp_hover",
+      "description": "Hover over a DOM element by text label.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "Exact text label of the element to hover"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "cdp_fill",
+      "description": "Set an input field's value. Requires a UID from cdp_find_elements.",
+      "parameters": {
+        "type": "object",
+        "required": ["uid", "value"],
+        "properties": {
+          "uid": {
+            "type": "string",
+            "description": "Element UID from cdp_find_elements"
+          },
+          "value": {
+            "type": "string",
+            "description": "The value to fill in"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "cdp_type_text",
+      "description": "Type text using keyboard into the currently focused input.",
+      "parameters": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "The text to type"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "cdp_press_key",
+      "description": "Press a key or key combination (e.g., 'Enter', 'Control+A').",
+      "parameters": {
+        "type": "object",
+        "required": ["key"],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Key or combination (e.g., 'Enter', 'Return', 'Control+A')"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "cdp_navigate",
+      "description": "Navigate the currently selected page to a URL.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "Target URL"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "cdp_new_page",
+      "description": "Create a new page (tab) and navigate to the given URL.",
+      "parameters": {
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "URL to load in the new page"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "cdp_close_page",
+      "description": "Close a page (tab) by its index.",
+      "parameters": {
+        "type": "object",
+        "required": ["page_index"],
+        "properties": {
+          "page_index": {
+            "type": "integer",
+            "description": "The index of the page to close"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "cdp_select_page",
+      "description": "Select a browser page (tab) by index for subsequent CDP operations.",
+      "parameters": {
+        "type": "object",
+        "required": ["page_index"],
+        "properties": {
+          "page_index": {
+            "type": "integer",
+            "description": "Page index"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "cdp_handle_dialog",
+      "description": "Handle a browser dialog (accept or dismiss).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "accept": {
+            "type": "boolean",
+            "description": "True to accept, false to dismiss (default: true)"
+          },
+          "prompt_text": {
+            "type": "string",
+            "description": "Text to enter into a prompt dialog before accepting"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "cdp_wait_for",
+      "description": "Wait for the specified text to appear on the selected page.",
+      "parameters": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Text to wait for on the page"
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "description": "Maximum wait time in milliseconds (default: 10000)"
+          }
+        }
+      }
+    }
+  },
+  {"type": "function", "function": {"name": "fill", "description": "Set an input field's value (legacy alias for cdp_fill).", "parameters": {"type": "object", "required": ["uid", "value"], "properties": {"uid": {"type": "string"}, "value": {"type": "string"}}}}},
+  {"type": "function", "function": {"name": "wait_for", "description": "Wait for text to appear (legacy alias for cdp_wait_for).", "parameters": {"type": "object", "required": ["text"], "properties": {"text": {"type": "string"}, "timeout_ms": {"type": "integer"}}}}},
+  {"type": "function", "function": {"name": "navigate_page", "description": "Navigate to a URL (legacy alias for cdp_navigate).", "parameters": {"type": "object", "properties": {"url": {"type": "string"}}}}},
+  {"type": "function", "function": {"name": "new_page", "description": "Create a new tab (legacy alias for cdp_new_page).", "parameters": {"type": "object", "required": ["url"], "properties": {"url": {"type": "string"}}}}},
+  {"type": "function", "function": {"name": "close_page", "description": "Close a tab (legacy alias for cdp_close_page).", "parameters": {"type": "object", "required": ["page_index"], "properties": {"page_index": {"type": "integer"}}}}},
+  {"type": "function", "function": {"name": "select_page", "description": "Select a tab (legacy alias for cdp_select_page).", "parameters": {"type": "object", "required": ["page_index"], "properties": {"page_index": {"type": "integer"}}}}},
+  {"type": "function", "function": {"name": "handle_dialog", "description": "Handle a browser dialog (legacy alias for cdp_handle_dialog).", "parameters": {"type": "object", "properties": {"accept": {"type": "boolean"}, "prompt_text": {"type": "string"}}}}}
 ]
