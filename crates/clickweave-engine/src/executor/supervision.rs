@@ -14,6 +14,10 @@ from a vision model describing the current screen state.
 
 Your job is to determine whether each step achieved its intended effect. \
 Consider the full history of prior steps to understand the workflow's progress. \
+Interpret the current screen state in context of what came before — for example, \
+if text was typed and then Enter was pressed, an empty input field means the text \
+was submitted, not that the action failed.
+
 IMPORTANT: Step labels are user-editable and can be stale after workflow edits; \
 use the EXECUTED ACTION as the source of truth for intent, not the label text.
 
@@ -183,9 +187,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         app_name: &str,
     ) -> String {
         let prompt = format!(
-            "Describe what you see on the screen. Focus on the app '{}' and whether \
-             the action '{}' — {} appears to have taken effect. \
-             Be concise (1-2 sentences).",
+            "Describe the current state of the app '{}'. \
+             The action '{}' — {} was just executed. \
+             Describe what changed on screen and whether the action \
+             appears to have taken effect. Be concise (1-2 sentences).",
             app_name, node_name, action
         );
         self.describe_screenshot_with_prompt(image_base64, &prompt)
