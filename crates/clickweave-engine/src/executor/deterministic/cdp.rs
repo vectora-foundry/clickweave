@@ -10,6 +10,17 @@ use clickweave_core::cdp::{
 use clickweave_llm::ChatBackend;
 use uuid::Uuid;
 
+/// A contenteditable or input element discovered via DOM query.
+#[derive(Debug)]
+struct ContenteditableElement {
+    label: String,
+    role: String,
+    /// Center X coordinate in viewport pixels.
+    cx: f64,
+    /// Center Y coordinate in viewport pixels.
+    cy: f64,
+}
+
 /// Expected CDP element attributes for matching during snapshot search.
 #[derive(Debug, Default)]
 pub(crate) struct CdpExpected<'a> {
@@ -53,6 +64,122 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         let snapshot_text = Self::extract_result_text(&snapshot_result);
+
+        // Tier 0: contenteditable/input elements discovered via DOM query.
+        // These are often invisible to the accessibility tree (generic with no
+        // label) but have placeholder/aria-label attributes. Run this BEFORE
+        // fuzzy snapshot matching to avoid false positives like "React to Message"
+        // when the target is "Message" (the input placeholder).
+        //
+        // Strategy: ask the LLM which contenteditable matches the target,
+        // then use cdp_element_at_point with that element's center coordinates
+        // to get the exact uid (bypasses broken snapshot text search entirely).
+        let ce_elements = self.query_contenteditable_elements_raw(mcp).await;
+        if !ce_elements.is_empty() {
+            self.log(format!(
+                "CDP: checking {} contenteditable inputs for '{}'",
+                ce_elements.len(),
+                target
+            ));
+
+            // Ask the LLM which contenteditable matches the target.
+            // Even with a single element, the LLM must confirm relevance —
+            // e.g. "Search" input should not match target "Vesna".
+            let matched_ce = {
+                let options: Vec<String> = ce_elements
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| format!("{}. {} ({})", i + 1, e.label, e.role))
+                    .collect();
+                let prompt = format!(
+                    "The user wants to interact with: \"{}\"\n\n\
+                     Which of these input fields is the correct target? \
+                     Reply with ONLY the label if one matches, or \"NONE\" \
+                     if none of them match.\n\n{}",
+                    target,
+                    options.join("\n")
+                );
+                let response = self
+                    .reasoning_backend()
+                    .chat(vec![clickweave_llm::Message::user(prompt)], None)
+                    .await;
+                match response {
+                    Ok(resp) => {
+                        let text = resp
+                            .choices
+                            .first()
+                            .and_then(|c| c.message.content_text())
+                            .unwrap_or_default()
+                            .trim()
+                            .trim_matches('"')
+                            .to_string();
+                        // Strip role suffix if present (e.g. "Message (contenteditable)" → "Message")
+                        let label = text.rfind(" (").map(|i| &text[..i]).unwrap_or(&text);
+                        self.log(format!("CDP: LLM picked contenteditable '{}'", label));
+                        ce_elements
+                            .iter()
+                            .find(|e| e.label.eq_ignore_ascii_case(label))
+                    }
+                    Err(_) => None,
+                }
+            };
+
+            if let Some(ce) = matched_ce {
+                if ce.cx > 0.0 && ce.cy > 0.0 {
+                    self.log(format!(
+                        "CDP: contenteditable '{}' at ({:.0}, {:.0}), resolving via element_at_point",
+                        ce.label, ce.cx, ce.cy
+                    ));
+                    let eap_result = mcp
+                        .call_tool(
+                            "cdp_element_at_point",
+                            Some(serde_json::json!({ "x": ce.cx, "y": ce.cy })),
+                        )
+                        .await;
+                    if let Ok(ref result) = eap_result {
+                        if result.is_error != Some(true) {
+                            let text = Self::extract_result_text(result);
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
+                                if let Some(uid) = parsed["uid"].as_str() {
+                                    let name = parsed["name"].as_str().unwrap_or("");
+                                    let role = parsed["role"].as_str().unwrap_or("");
+                                    if name.is_empty() && role == "generic" {
+                                        // Nameless generic = container wrapping the
+                                        // actual input. Focus it via JS and find the
+                                        // focused element in a fresh snapshot.
+                                        self.log(format!(
+                                            "CDP: element_at_point returned nameless generic for '{}', focusing via JS",
+                                            ce.label
+                                        ));
+                                        if let Some(focused_uid) =
+                                            self.focus_contenteditable_via_js(&ce.label, mcp).await
+                                        {
+                                            return Ok(focused_uid);
+                                        }
+                                    } else {
+                                        self.log(format!(
+                                            "CDP: contenteditable resolved '{}' -> uid='{}'",
+                                            target, uid
+                                        ));
+                                        return Ok(uid.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    self.log(format!(
+                        "CDP: cdp_element_at_point failed for contenteditable '{}', continuing",
+                        ce.label
+                    ));
+                }
+            } else {
+                self.log("CDP: no contenteditable matched target, continuing");
+            }
+        }
+        let contenteditable_inputs: Vec<String> = ce_elements
+            .iter()
+            .map(|e| format!("{} ({})", e.label, e.role))
+            .collect();
 
         // Find matching elements, preferring interactive roles (buttons, textboxes, etc.)
         // over non-interactive ones (images, headings) when both match.
@@ -187,14 +314,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 }
             }
 
-            // Existing inventory resolution fallback.
+            // Existing inventory resolution fallback (reuses contenteditable
+            // inputs already queried above).
             self.log(format!(
                 "CDP: no exact match for '{}', resolving via element inventory",
                 target
             ));
-            let extra_inputs = self.query_contenteditable_elements(mcp).await;
             let mut resolved = self
-                .resolve_via_inventory(target, &snapshot_text, &extra_inputs)
+                .resolve_via_inventory(target, &snapshot_text, &contenteditable_inputs)
                 .await?;
             clickweave_core::cdp::narrow_matches(&mut resolved, expected.role, expected.href);
             clickweave_core::cdp::narrow_by_parent(
@@ -235,6 +362,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
     }
 
+    /// Sentinel UID returned when a contenteditable element was focused
+    /// directly via JS — the caller should skip the `cdp_click` because the
+    /// element already has DOM focus.
+    const FOCUSED_VIA_JS: &'static str = "__focused_via_js__";
+
     /// Resolve a CDP element and perform an action (click or hover) on it.
     /// Returns the action result text.
     pub(in crate::executor) async fn execute_cdp_action(
@@ -250,6 +382,21 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let uid = self
             .resolve_cdp_element_uid(node_id, target, expected, mcp, retry_ctx)
             .await?;
+
+        // Contenteditable elements focused via JS don't have a clickable
+        // UID — skip the action to avoid stealing focus.
+        if uid == Self::FOCUSED_VIA_JS {
+            self.log(format!(
+                "CDP: '{}' already focused via JS, skipping {}",
+                target, action
+            ));
+            self.record_event(
+                node_run,
+                &format!("cdp_{}", action),
+                serde_json::json!({ "target": target, "uid": uid }),
+            );
+            return Ok(format!("Focused '{}' via JS", target));
+        }
 
         self.log(format!("CDP: {} element uid='{}'", action, uid));
         let result = mcp
@@ -305,16 +452,64 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .await
     }
 
-    /// Query the DOM for contenteditable elements that the accessibility tree
-    /// might represent as `generic` instead of `textbox`. Returns a list of
-    /// labels suitable for appending to the inventory prompt.
-    async fn query_contenteditable_elements(&self, mcp: &(impl Mcp + ?Sized)) -> Vec<String> {
+    /// Focus a contenteditable element by label via JS.
+    ///
+    /// Contenteditable elements are often invisible in the accessibility tree
+    /// (nameless generic containers all the way up). Instead of trying to
+    /// resolve a UID, we focus the element directly via JS and return the
+    /// `FOCUSED_VIA_JS` sentinel so the caller skips `cdp_click`.
+    async fn focus_contenteditable_via_js(
+        &self,
+        label: &str,
+        mcp: &(impl Mcp + ?Sized),
+    ) -> Option<String> {
+        let focus_js = format!(
+            r#"() => {{
+                const all = document.querySelectorAll('*');
+                for (const el of all) {{
+                    if (!el.isContentEditable || !el.parentElement || el.parentElement.isContentEditable) continue;
+                    const lbl = el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.getAttribute('data-placeholder') || '';
+                    if (lbl === '{}') {{ el.focus(); el.click(); return true; }}
+                }}
+                return false;
+            }}"#,
+            label.replace('\\', "\\\\").replace('\'', "\\'")
+        );
+        let focus_result = mcp
+            .call_tool(
+                "cdp_evaluate_script",
+                Some(serde_json::json!({ "function": focus_js })),
+            )
+            .await;
+        match focus_result {
+            Ok(ref r) if r.is_error != Some(true) => {
+                let text = Self::extract_result_text(r);
+                if text.contains("true") {
+                    self.log(format!("CDP: focused contenteditable '{}' via JS", label));
+                    return Some(Self::FOCUSED_VIA_JS.to_string());
+                }
+            }
+            _ => {}
+        }
+        self.log("CDP: JS focus call failed for contenteditable");
+        None
+    }
+
+    /// Query the DOM for contenteditable elements, returning full metadata
+    /// including bounding rect center for coordinate-based resolution.
+    async fn query_contenteditable_elements_raw(
+        &self,
+        mcp: &(impl Mcp + ?Sized),
+    ) -> Vec<ContenteditableElement> {
         // Walk all DOM elements and find editable ones (contenteditable,
         // textarea, text inputs). CSS selectors miss inherited contenteditable
         // (e.g. Quill editors), so we check isContentEditable on each element
         // and skip children of editable parents to avoid duplicates.
         let js = r#"() => {
             const results = [];
+            // cdp_element_at_point expects screen coordinates (points), so
+            // convert getBoundingClientRect viewport coords to screen coords.
+            const chromeH = window.outerHeight - window.innerHeight;
             const all = document.querySelectorAll('*');
             for (const el of all) {
                 const isInput = el.tagName === 'TEXTAREA' ||
@@ -323,7 +518,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 if (!isInput && !isEditable) continue;
                 const label = el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.getAttribute('data-placeholder') || '';
                 if (!label) continue;
-                results.push({ label, role: isEditable ? 'contenteditable' : el.tagName.toLowerCase() });
+                const rect = el.getBoundingClientRect();
+                results.push({
+                    label,
+                    role: isEditable ? 'contenteditable' : el.tagName.toLowerCase(),
+                    cx: Math.round(window.screenX + rect.left + rect.width / 2),
+                    cy: Math.round(window.screenY + chromeH + rect.top + rect.height / 2)
+                });
             }
             return results;
         }"#;
@@ -349,25 +550,36 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     .trim();
 
                 if let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(json_text) {
-                    let labels: Vec<String> = entries
+                    let elements: Vec<ContenteditableElement> = entries
                         .iter()
                         .filter_map(|e| {
-                            let label = e.get("label")?.as_str()?;
-                            let role = e.get("role")?.as_str().unwrap_or("input");
+                            let label = e.get("label")?.as_str()?.to_string();
+                            let role = e.get("role")?.as_str().unwrap_or("input").to_string();
                             if label.is_empty() {
                                 return None;
                             }
-                            Some(format!("{} ({})", label, role))
+                            let cx = e.get("cx").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            let cy = e.get("cy").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            Some(ContenteditableElement {
+                                label,
+                                role,
+                                cx,
+                                cy,
+                            })
                         })
                         .collect();
-                    if !labels.is_empty() {
+                    if !elements.is_empty() {
+                        let display: Vec<String> = elements
+                            .iter()
+                            .map(|e| format!("{} ({})", e.label, e.role))
+                            .collect();
                         self.log(format!(
                             "CDP: found {} contenteditable elements via JS: {}",
-                            labels.len(),
-                            labels.join(", ")
+                            elements.len(),
+                            display.join(", ")
                         ));
                     }
-                    labels
+                    elements
                 } else {
                     Vec::new()
                 }
@@ -965,9 +1177,18 @@ async fn existing_debug_port(app_name: &str) -> Option<u16> {
             .await
             .ok()?;
         if !output.status.success() {
+            tracing::info!(
+                "existing_debug_port: pgrep -x '{}' found no processes",
+                app_name
+            );
             return None;
         }
         let pids = String::from_utf8_lossy(&output.stdout);
+        tracing::info!(
+            "existing_debug_port: pgrep -x '{}' found pids: {}",
+            app_name,
+            pids.trim()
+        );
         for pid_str in pids.split_whitespace() {
             // The PID may have exited between pgrep and ps (TOCTOU); skip it
             // rather than returning None from the whole function.
@@ -979,15 +1200,25 @@ async fn existing_debug_port(app_name: &str) -> Option<u16> {
                 continue;
             };
             let args = String::from_utf8_lossy(&args_output.stdout);
+            tracing::info!("existing_debug_port: pid {} args: {}", pid_str, args.trim());
             if let Some(flag) = args
                 .split_whitespace()
                 .find(|a| a.starts_with("--remote-debugging-port="))
                 && let Some(port_str) = flag.strip_prefix("--remote-debugging-port=")
                 && let Ok(port) = port_str.parse::<u16>()
             {
+                tracing::info!(
+                    "existing_debug_port: found port {} for '{}'",
+                    port,
+                    app_name
+                );
                 return Some(port);
             }
         }
+        tracing::info!(
+            "existing_debug_port: no debug port found for '{}'",
+            app_name
+        );
         None
     }
 }

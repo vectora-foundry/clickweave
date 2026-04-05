@@ -542,14 +542,28 @@ pub fn resolve_inventory_response(
     }
 
     let matches = find_elements_in_snapshot(snapshot_text, resolved_label);
-    if matches.is_empty() {
-        return Err(format!(
-            "LLM suggested '{}' for target '{}' but no elements matched",
-            resolved_label, target
-        ));
+    if !matches.is_empty() {
+        return Ok(matches);
     }
 
-    Ok(matches)
+    // The LLM may have returned a label with a role annotation suffix from
+    // the contenteditable discovery (e.g. "Message (contenteditable)").
+    // Strip it and retry the search with just the label portion.
+    let stripped = resolved_label
+        .rfind(" (")
+        .map(|i| &resolved_label[..i])
+        .unwrap_or(resolved_label);
+    if stripped != resolved_label {
+        let retry_matches = find_elements_in_snapshot(snapshot_text, stripped);
+        if !retry_matches.is_empty() {
+            return Ok(retry_matches);
+        }
+    }
+
+    Err(format!(
+        "LLM suggested '{}' for target '{}' but no elements matched",
+        resolved_label, target
+    ))
 }
 
 /// Build an LLM prompt for disambiguating between multiple element matches.
