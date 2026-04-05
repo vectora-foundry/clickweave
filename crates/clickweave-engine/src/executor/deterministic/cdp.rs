@@ -82,12 +82,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 target
             ));
 
-            // If there's only one contenteditable with a plausible label match,
-            // skip the LLM call entirely.
-            let matched_ce = if ce_elements.len() == 1 {
-                Some(&ce_elements[0])
-            } else {
-                // Ask the LLM: "which of these input fields matches the target?"
+            // Ask the LLM which contenteditable matches the target.
+            // Even with a single element, the LLM must confirm relevance —
+            // e.g. "Search" input should not match target "Vesna".
+            let matched_ce = {
                 let options: Vec<String> = ce_elements
                     .iter()
                     .enumerate()
@@ -96,7 +94,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 let prompt = format!(
                     "The user wants to interact with: \"{}\"\n\n\
                      Which of these input fields is the correct target? \
-                     Reply with ONLY the label, nothing else.\n\n{}",
+                     Reply with ONLY the label if one matches, or \"NONE\" \
+                     if none of them match.\n\n{}",
                     target,
                     options.join("\n")
                 );
@@ -1095,9 +1094,18 @@ async fn existing_debug_port(app_name: &str) -> Option<u16> {
             .await
             .ok()?;
         if !output.status.success() {
+            tracing::info!(
+                "existing_debug_port: pgrep -x '{}' found no processes",
+                app_name
+            );
             return None;
         }
         let pids = String::from_utf8_lossy(&output.stdout);
+        tracing::info!(
+            "existing_debug_port: pgrep -x '{}' found pids: {}",
+            app_name,
+            pids.trim()
+        );
         for pid_str in pids.split_whitespace() {
             // The PID may have exited between pgrep and ps (TOCTOU); skip it
             // rather than returning None from the whole function.
@@ -1109,15 +1117,25 @@ async fn existing_debug_port(app_name: &str) -> Option<u16> {
                 continue;
             };
             let args = String::from_utf8_lossy(&args_output.stdout);
+            tracing::info!("existing_debug_port: pid {} args: {}", pid_str, args.trim());
             if let Some(flag) = args
                 .split_whitespace()
                 .find(|a| a.starts_with("--remote-debugging-port="))
                 && let Some(port_str) = flag.strip_prefix("--remote-debugging-port=")
                 && let Ok(port) = port_str.parse::<u16>()
             {
+                tracing::info!(
+                    "existing_debug_port: found port {} for '{}'",
+                    port,
+                    app_name
+                );
                 return Some(port);
             }
         }
+        tracing::info!(
+            "existing_debug_port: no debug port found for '{}'",
+            app_name
+        );
         None
     }
 }
