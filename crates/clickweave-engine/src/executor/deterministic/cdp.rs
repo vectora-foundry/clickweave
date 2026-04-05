@@ -249,13 +249,20 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             }
                         }
 
-                        // cdp_element_at_point failed — fall through to inventory resolution.
-                        // Don't return CdpNativeClickFallback here because this resolver
-                        // is shared by click and hover; native-click fallback only makes
-                        // sense for click and is handled at the call site.
+                        // cdp_element_at_point failed — the element is visible on
+                        // screen (VLM + find_text found it) but invisible in the
+                        // CDP accessibility tree. Return a native-action sentinel
+                        // with the screen coordinates so execute_cdp_action can
+                        // fall back to the native click/move_mouse tool.
                         self.log(format!(
-                            "CDP: cdp_element_at_point failed for '{}', trying inventory",
-                            target
+                            "CDP: element_at_point failed for '{}', falling back to native action at ({:.0}, {:.0})",
+                            target, screen_x, screen_y
+                        ));
+                        return Ok(format!(
+                            "{}{}:{}",
+                            Self::NATIVE_AT_PREFIX,
+                            screen_x as i32,
+                            screen_y as i32
                         ));
                     }
                 }
@@ -367,6 +374,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// element already has DOM focus.
     const FOCUSED_VIA_JS: &'static str = "__focused_via_js__";
 
+    /// Sentinel prefix for native fallback when an element is visible on
+    /// screen but invisible in the CDP accessibility tree. Format:
+    /// `__native_at__:X:Y` where X,Y are screen coordinates.
+    const NATIVE_AT_PREFIX: &'static str = "__native_at__:";
+
     /// Resolve a CDP element and perform an action (click or hover) on it.
     /// Returns the action result text.
     pub(in crate::executor) async fn execute_cdp_action(
@@ -396,6 +408,36 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 serde_json::json!({ "target": target, "uid": uid }),
             );
             return Ok(format!("Focused '{}' via JS", target));
+        }
+
+        // Element visible on screen but not in CDP snapshot — use native
+        // click/move_mouse at screen coordinates instead of cdp_click/hover.
+        if let Some(coords) = uid.strip_prefix(Self::NATIVE_AT_PREFIX) {
+            if let Some((x_str, y_str)) = coords.split_once(':') {
+                if let (Ok(x), Ok(y)) = (x_str.parse::<i32>(), y_str.parse::<i32>()) {
+                    let native_tool = match action {
+                        "click" => "click",
+                        "hover" => "move_mouse",
+                        _ => "click",
+                    };
+                    self.log(format!(
+                        "CDP: native {} at ({}, {}) for '{}'",
+                        native_tool, x, y, target
+                    ));
+                    let result = mcp
+                        .call_tool(native_tool, Some(serde_json::json!({ "x": x, "y": y })))
+                        .await
+                        .map_err(|e| {
+                            ExecutorError::Cdp(format!("native {} failed: {e}", native_tool))
+                        })?;
+                    self.record_event(
+                        node_run,
+                        &format!("cdp_{}", action),
+                        serde_json::json!({ "target": target, "x": x, "y": y }),
+                    );
+                    return Ok(Self::extract_result_text(&result));
+                }
+            }
         }
 
         self.log(format!("CDP: {} element uid='{}'", action, uid));
