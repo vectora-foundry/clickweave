@@ -127,6 +127,7 @@ pub(super) fn single_node_workflow(node_type: NodeType, name: &str) -> (uuid::Uu
         edges: vec![],
         groups: vec![],
         next_id_counters: std::collections::HashMap::new(),
+        auto_approve_resolutions: false,
     };
     (id, workflow)
 }

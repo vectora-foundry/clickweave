@@ -4,10 +4,7 @@ import type { WorkflowPatch } from "../../bindings";
 import type { ResolutionProposal } from "../../store/slices/executionSlice";
 import { useStore } from "../../store/useAppStore";
 
-/**
- * Subscribe to executor supervision events:
- * supervision_passed, supervision_paused, resolution_proposed, resolution_dismissed, patch_applied.
- */
+/** Subscribe to executor supervision and resolution events. */
 export function useSupervisionEvents() {
   useEffect(() => {
     const unlisteners: (() => void)[] = [];
@@ -45,6 +42,21 @@ export function useSupervisionEvents() {
     sub(listen("executor://resolution_dismissed", () => {
       useStore.setState({ resolutionProposal: null });
     }));
+    sub(listen<{ node_id: string; node_name: string; reason: string; patch: WorkflowPatch }>(
+      "executor://resolution_auto_approved",
+      (e) => {
+        const { pushLog, incrementAutoApprovedCount } = useStore.getState();
+        const p = e.payload.patch;
+        const counts = [
+          p.added_nodes.length > 0 ? `+${p.added_nodes.length}` : null,
+          p.updated_nodes.length > 0 ? `~${p.updated_nodes.length}` : null,
+          p.removed_node_ids.length > 0 ? `-${p.removed_node_ids.length}` : null,
+        ].filter(Boolean).join("/");
+        pushLog(`Auto-approved: ${e.payload.node_name} — ${e.payload.reason} (${counts} nodes)`);
+        incrementAutoApprovedCount();
+        // NOTE: do NOT call applyRuntimePatch here — patch_applied handles that
+      },
+    ));
     sub(listen<{ patch: WorkflowPatch }>("executor://patch_applied", (e) => {
       useStore.getState().applyRuntimePatch(e.payload.patch);
       useStore.setState({ resolutionProposal: null });

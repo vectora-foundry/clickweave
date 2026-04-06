@@ -61,12 +61,14 @@ interface FloatingToolbarProps {
   walkthroughStatus: WalkthroughStatus;
   walkthroughPanelOpen: boolean;
   walkthroughEventCount: number;
+  autoApproveResolutions: boolean;
   onToggleLogs: () => void;
   onRunStop: () => void;
   onAssistant: () => void;
   onSetExecutionMode: (mode: ExecutionMode) => void;
   onOpenWalkthroughPanel: () => void;
   onRecord: () => void;
+  onToggleAutoApprove: (enabled: boolean) => void;
 }
 
 export function FloatingToolbar({
@@ -84,6 +86,8 @@ export function FloatingToolbar({
   onOpenWalkthroughPanel,
   walkthroughEventCount,
   onRecord,
+  autoApproveResolutions,
+  onToggleAutoApprove,
 }: FloatingToolbarProps) {
   const isRunning = executorState === "running";
   const [showConfirm, setShowConfirm] = useState(false);
@@ -122,7 +126,7 @@ export function FloatingToolbar({
     }
   };
 
-  const runLabel = executionMode === "Test" ? "Test Workflow" : "Run Workflow";
+  const runLabel = executionMode === "Test" ? "Test" : "Run";
   const walkthroughBusy = isWalkthroughBusy(walkthroughStatus);
 
   return (
@@ -186,6 +190,44 @@ export function FloatingToolbar({
             >
               Logs
             </button>
+            {executionMode === "Test" && (
+              <>
+                <div className="mx-1 h-4 w-px bg-[var(--border)]" />
+                <label
+                  title="Auto-approve runtime resolutions"
+                  className={`flex items-center gap-1.5 cursor-pointer ${isRunning ? "opacity-50 pointer-events-none" : ""}`}
+                >
+                  <button
+                    role="switch"
+                    aria-checked={autoApproveResolutions}
+                    onClick={() => onToggleAutoApprove(!autoApproveResolutions)}
+                    disabled={isRunning}
+                    className="relative rounded-full transition-colors"
+                    style={{
+                      width: 28,
+                      height: 16,
+                      padding: 0,
+                      backgroundColor: autoApproveResolutions ? "var(--accent-blue)" : "#525252",
+                    }}
+                  >
+                    <span
+                      className="absolute rounded-full transition-transform"
+                      style={{
+                        top: 2,
+                        left: 0,
+                        width: 12,
+                        height: 12,
+                        backgroundColor: autoApproveResolutions ? "#fff" : "#a3a3a3",
+                        transform: `translateX(${autoApproveResolutions ? 14 : 2}px)`,
+                      }}
+                    />
+                  </button>
+                  <span className={`text-[11px] ${autoApproveResolutions ? "text-[var(--accent-blue)]" : "text-[var(--text-tertiary)]"}`}>
+                    Auto
+                  </span>
+                </label>
+              </>
+            )}
             <div className="mx-1 h-4 w-px bg-[var(--border)]" />
             {hasAiNodes && !isRunning && (
               <span className="rounded bg-[var(--accent-blue)]/20 px-1.5 py-0.5 text-[10px] font-medium text-[var(--accent-blue)]">
@@ -197,7 +239,7 @@ export function FloatingToolbar({
                 <button
                   onClick={handleRunStop}
                   title={isRunning ? "Stop workflow (⌘⇧Esc works globally)" : `${runLabel} (⌘R)`}
-                  className={`rounded-l px-3 py-1.5 text-xs font-medium transition-colors ${
+                  className={`rounded-l px-2.5 py-1 text-xs font-medium transition-colors ${
                     isRunning
                       ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
                       : "bg-[var(--accent-green)]/20 text-[var(--accent-green)] hover:bg-[var(--accent-green)]/30"
@@ -209,7 +251,7 @@ export function FloatingToolbar({
                   <button
                     onClick={() => setShowModeMenu((prev) => !prev)}
                     title="Switch execution mode"
-                    className="rounded-r border-l border-[var(--border)] bg-[var(--accent-green)]/20 px-1.5 py-1.5 text-xs text-[var(--accent-green)] hover:bg-[var(--accent-green)]/30"
+                    className="rounded-r border-l border-[var(--border)] bg-[var(--accent-green)]/20 px-1 py-1 text-xs text-[var(--accent-green)] hover:bg-[var(--accent-green)]/30"
                   >
                     <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor">
                       <path d="M1 3l3 3 3-3z" />
@@ -234,7 +276,7 @@ export function FloatingToolbar({
                       <span className="text-[10px]">&#10003;</span>
                     )}
                     <span className={executionMode === "Test" ? "" : "ml-4"}>
-                      Test Workflow
+                      Test
                     </span>
                   </button>
                   <button
@@ -252,7 +294,7 @@ export function FloatingToolbar({
                       <span className="text-[10px]">&#10003;</span>
                     )}
                     <span className={executionMode === "Run" ? "" : "ml-4"}>
-                      Run Workflow
+                      Run
                     </span>
                   </button>
                 </div>

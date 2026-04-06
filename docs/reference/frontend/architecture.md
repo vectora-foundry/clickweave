@@ -130,8 +130,8 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 
 **ExecutionSlice** (`executionSlice.ts`)
 
-- `executorState: "idle" | "running"`, `executionMode: ExecutionMode`, `supervisionPause: SupervisionPause | null`, `lastRunStatus: "completed" | "failed" | null`
-- actions: `setExecutorState`, `setExecutionMode`, `setSupervisionPause`, `clearSupervisionPause`, `supervisionRespond`, `runWorkflow`, `stopWorkflow`, `setLastRunStatus`
+- `executorState: "idle" | "running"`, `executionMode: ExecutionMode`, `supervisionPause: SupervisionPause | null`, `lastRunStatus: "completed" | "failed" | null`, `autoApprovedCount: number`
+- actions: `setExecutorState`, `setExecutionMode`, `setSupervisionPause`, `clearSupervisionPause`, `supervisionRespond`, `runWorkflow`, `stopWorkflow`, `setLastRunStatus`, `setAutoApproveResolutions` (writes to `workflow.auto_approve_resolutions`), `incrementAutoApprovedCount`, `dismissAutoApproveBanner`
 
 **AssistantSlice** (`assistantSlice.ts`)
 

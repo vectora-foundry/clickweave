@@ -57,9 +57,10 @@ When element/target resolution fails in Test mode and a `resolution_tx` channel 
 1. Takes a screenshot and builds an element inventory from the error
 2. Sends a `RuntimeQuery` to the Tauri resolution listener via the mpsc channel
 3. The listener calls `resolution_chat_with_backend` with the planning conversation context
-4. If the LLM proposes a patch, emits `executor://resolution_proposed` to the frontend
-5. Waits for user approval via `resolution_respond` command
-6. Returns one of:
+4. If the LLM proposes a patch:
+   - **Auto-approve off (default):** emits `executor://resolution_proposed` to the frontend and waits for user approval via `resolution_respond` command
+   - **Auto-approve on:** emits `executor://resolution_auto_approved` (observational, for logging/counting) and `executor://patch_applied`, then returns immediately without waiting for user input. The `auto_approve` flag is snapshotted from `RunRequest.auto_approve_resolutions` at run start.
+5. Returns one of:
    - `RuntimeResolution::Updated(patch)` — apply patch, cancel current node, re-enter same node
    - `RuntimeResolution::Rewind { patch, first_node_id }` — apply patch, cancel current node, jump to inserted node
    - `RuntimeResolution::Removed(patch)` — apply patch, cancel current node, follow updated edges

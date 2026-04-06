@@ -49,6 +49,7 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       contextUsage: null,
       messages: [],
       expectedSessionId: null,
+      autoApprovedCount: 0,
     });
     get().clearHistory();
     await commands.clearAssistantSession().catch(() => {});
@@ -111,6 +112,7 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       pendingPatchWarnings: [],
       assistantError: null,
       contextUsage: null,
+      autoApprovedCount: 0,
     });
     get().clearHistory();
     pushLog("New project created");

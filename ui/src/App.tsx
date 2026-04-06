@@ -16,6 +16,7 @@ import { SupervisionModal } from "./components/SupervisionModal";
 import { PatchReviewDialog } from "./components/PatchReviewDialog";
 import { PlannerConfirmation } from "./components/PlannerConfirmation";
 import { CdpAppSelectModal } from "./components/CdpAppSelectModal";
+import { AutoApproveBanner } from "./components/AutoApproveBanner";
 import { useEffect, useMemo } from "react";
 import { useEscapeKey } from "./hooks/useEscapeKey";
 import { useUndoRedoKeyboard } from "./hooks/useUndoRedoKeyboard";
@@ -42,7 +43,7 @@ function App() {
     })),
   );
 
-  const { executorState, lastRunStatus, executionMode, supervisionPause, resolutionProposal, activeNode } = useStore(
+  const { executorState, lastRunStatus, executionMode, supervisionPause, resolutionProposal, activeNode, autoApprovedCount } = useStore(
     useShallow((s) => ({
       executorState: s.executorState,
       lastRunStatus: s.lastRunStatus,
@@ -50,8 +51,11 @@ function App() {
       supervisionPause: s.supervisionPause,
       resolutionProposal: s.resolutionProposal,
       activeNode: s.activeNode,
+      autoApprovedCount: s.autoApprovedCount,
     })),
   );
+
+  const autoApproveResolutions = useStore((s) => s.workflow.auto_approve_resolutions ?? false);
 
   const { selectedNode, sidebarCollapsed, logsDrawerOpen, nodeSearch, showSettings, detailTab, logs } = useStore(
     useShallow((s) => ({
@@ -136,6 +140,8 @@ function App() {
   const clearConversation = useStore((s) => s.clearConversation);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
+  const setAutoApproveResolutions = useStore((s) => s.setAutoApproveResolutions);
+  const dismissAutoApproveBanner = useStore((s) => s.dismissAutoApproveBanner);
 
   // ── Workflow mutations ───────────────────────────────────────────
   const {
@@ -189,6 +195,16 @@ function App() {
 
       <div className="flex flex-1 flex-col overflow-hidden">
         <VerdictBar />
+        {executorState === "idle" && lastRunStatus === "completed" && (
+          <AutoApproveBanner
+            count={autoApprovedCount}
+            onDismiss={dismissAutoApproveBanner}
+            onViewLogs={() => {
+              dismissAutoApproveBanner();
+              if (!logsDrawerOpen) toggleLogsDrawer();
+            }}
+          />
+        )}
 
         <div className="relative flex flex-1 overflow-hidden">
           {isWalkthroughBusy(walkthroughStatus) && (
@@ -263,6 +279,8 @@ function App() {
                   walkthroughEventCount={walkthroughEventCount}
                   onOpenWalkthroughPanel={() => setWalkthroughPanelOpen(true)}
                   onRecord={() => useStore.getState().openCdpModal()}
+                  autoApproveResolutions={autoApproveResolutions}
+                  onToggleAutoApprove={setAutoApproveResolutions}
                 />
               </div>
 

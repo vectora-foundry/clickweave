@@ -52,6 +52,7 @@ pub fn merge_patch_into_workflow(
         edges,
         groups: workflow.groups.clone(),
         next_id_counters: workflow.next_id_counters.clone(),
+        auto_approve_resolutions: workflow.auto_approve_resolutions,
     };
     merged.fixup_auto_ids();
     merged

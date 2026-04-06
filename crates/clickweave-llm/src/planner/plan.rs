@@ -206,6 +206,7 @@ fn parse_and_build_workflow(
         edges,
         groups: vec![],
         next_id_counters: std::collections::HashMap::new(),
+        auto_approve_resolutions: false,
     };
 
     // Assign auto-IDs and translate LLM temp IDs in OutputRefs

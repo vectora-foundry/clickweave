@@ -102,6 +102,13 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
         (None, None)
     };
 
+    // Store auto-approve flag in ResolutionState (snapshotted at run start)
+    {
+        let state = app.state::<Mutex<ResolutionState>>();
+        let mut guard = state.lock().unwrap();
+        guard.auto_approve = request.auto_approve_resolutions;
+    }
+
     // Lock execution on the assistant session and store workflow snapshot
     if resolution_rx.is_some() {
         let session_handle = app.state::<tokio::sync::Mutex<AssistantSessionHandle>>();

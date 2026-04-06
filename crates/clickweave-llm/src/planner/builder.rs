@@ -789,6 +789,7 @@ pub(crate) fn build_workflow_from_graph(
         edges,
         groups: vec![],
         next_id_counters,
+        auto_approve_resolutions: false,
     };
 
     clickweave_core::validate_workflow(&workflow)

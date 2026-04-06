@@ -21,6 +21,8 @@ pub struct Workflow {
     pub groups: Vec<NodeGroup>,
     #[serde(default)]
     pub next_id_counters: HashMap<String, u32>,
+    #[serde(default)]
+    pub auto_approve_resolutions: bool,
 }
 
 impl Default for Workflow {
@@ -32,6 +34,7 @@ impl Default for Workflow {
             edges: vec![],
             groups: vec![],
             next_id_counters: HashMap::new(),
+            auto_approve_resolutions: false,
         }
     }
 }

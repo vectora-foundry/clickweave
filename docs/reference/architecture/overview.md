@@ -222,6 +222,7 @@ Emitted from `src-tauri/src/commands/executor.rs` and `src-tauri/src/commands/as
 | `executor://supervision_paused` | `{ node_id: string, node_name: string, finding: string, screenshot: string? }` |
 | `executor://node_cancelled` | `{ node_id: string }` |
 | `executor://resolution_proposed` | `{ node_id: string, node_name: string, reason: string, patch: WorkflowPatch, screenshot: string? }` |
+| `executor://resolution_auto_approved` | `{ node_id: string, node_name: string, reason: string, patch: WorkflowPatch }` |
 | `executor://resolution_dismissed` | `()` |
 | `executor://patch_applied` | `{ patch: WorkflowPatch }` |
 | `assistant://message` | `{ session_id: string, entry: ChatEntry }` |

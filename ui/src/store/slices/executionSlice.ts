@@ -30,6 +30,7 @@ export interface ExecutionSlice {
   supervisionPause: SupervisionPause | null;
   resolutionProposal: ResolutionProposal | null;
   lastRunStatus: "completed" | "failed" | null;
+  autoApprovedCount: number;
 
   setExecutorState: (state: "idle" | "running") => void;
   setExecutionMode: (mode: ExecutionMode) => void;
@@ -42,6 +43,9 @@ export interface ExecutionSlice {
   stopWorkflow: () => Promise<void>;
   setLastRunStatus: (status: "completed" | "failed" | null) => void;
   isExecutionLocked: () => boolean;
+  setAutoApproveResolutions: (enabled: boolean) => void;
+  incrementAutoApprovedCount: () => void;
+  dismissAutoApproveBanner: () => void;
 }
 
 export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSlice> = (set, get) => ({
@@ -50,6 +54,7 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
   supervisionPause: null,
   resolutionProposal: null,
   lastRunStatus: null,
+  autoApprovedCount: 0,
 
   setExecutorState: (state) => set({ executorState: state }),
   setLastRunStatus: (status) => set({ lastRunStatus: status }),
@@ -66,6 +71,17 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
       pushLog(`Supervision response failed: ${errorMessage(result.error)}`);
     }
   },
+
+  setAutoApproveResolutions: (enabled) => {
+    const { workflow } = get();
+    set({ workflow: { ...workflow, auto_approve_resolutions: enabled } });
+  },
+
+  incrementAutoApprovedCount: () => {
+    set((s) => ({ autoApprovedCount: s.autoApprovedCount + 1 }));
+  },
+
+  dismissAutoApproveBanner: () => set({ autoApprovedCount: 0 }),
 
   resolveResolution: async (approved) => {
     set({ resolutionProposal: null });
@@ -125,6 +141,9 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
       return;
     }
 
+    // Reset counter at run start
+    set({ autoApprovedCount: 0 });
+
     const request: RunRequest = {
       workflow,
       project_path: projectPath,
@@ -132,6 +151,7 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
       fast: fastEnabled ? toEndpoint(fastConfig) : null,
       planner: toEndpoint(plannerConfig),
       execution_mode: executionMode,
+      auto_approve_resolutions: workflow.auto_approve_resolutions ?? false,
     };
     const result = await commands.runWorkflow(request);
     if (result.status === "error") {

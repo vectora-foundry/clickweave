@@ -477,7 +477,14 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     // Preserve the existing workflow's name and ID instead of clobbering
     // them with the draft's placeholder "Walkthrough Draft" title.
     const { workflow } = get();
-    const modifiedDraft: Workflow = { ...walkthroughDraft, id: workflow.id, name: workflow.name, nodes, edges };
+    const modifiedDraft: Workflow = {
+      ...walkthroughDraft,
+      id: workflow.id,
+      name: workflow.name,
+      nodes,
+      edges,
+      auto_approve_resolutions: workflow.auto_approve_resolutions,
+    };
 
     get().pushHistory("Apply Walkthrough");
     get().setWorkflow(modifiedDraft);

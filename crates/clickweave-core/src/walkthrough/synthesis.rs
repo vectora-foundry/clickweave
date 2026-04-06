@@ -394,6 +394,7 @@ pub fn synthesize_draft(
         edges: Vec::new(),
         groups: Vec::new(),
         next_id_counters: std::collections::HashMap::new(),
+        auto_approve_resolutions: false,
     };
 
     let mut node_index = 0usize;

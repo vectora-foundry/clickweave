@@ -12,10 +12,12 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-/// Managed state holding the oneshot sender for user approval of a resolution.
+/// Managed state holding the oneshot sender for user approval of a resolution
+/// and the auto-approve flag snapshotted at run start.
 #[derive(Default)]
 pub struct ResolutionState {
     pub(crate) response_tx: Option<oneshot::Sender<bool>>,
+    pub(crate) auto_approve: bool,
 }
 
 /// Spawn the resolution listener task.
@@ -194,67 +196,6 @@ async fn handle_query(
         return RuntimeResolution::Rejected;
     };
 
-    // Convert PatchResult to WorkflowPatch for the frontend
-    let frontend_patch = WorkflowPatch {
-        added_nodes: patch_result.added_nodes.clone(),
-        removed_node_ids: patch_result
-            .removed_node_ids
-            .iter()
-            .map(|id| id.to_string())
-            .collect(),
-        updated_nodes: patch_result.updated_nodes.clone(),
-        added_edges: patch_result.added_edges.clone(),
-        removed_edges: patch_result.removed_edges.clone(),
-        warnings: patch_result.warnings.clone(),
-    };
-
-    // Emit resolution_proposed event
-    let _ = app.emit(
-        "executor://resolution_proposed",
-        ResolutionProposedPayload {
-            node_id: query.node_id.to_string(),
-            node_name: query.node_name.clone(),
-            reason: assistant_result.message.clone(),
-            patch: frontend_patch,
-            screenshot: query.screenshot.clone(),
-        },
-    );
-
-    // Wait for user approval via oneshot channel
-    let (tx, rx) = oneshot::channel::<bool>();
-    {
-        let state = app.state::<Mutex<ResolutionState>>();
-        let mut guard = state.lock().unwrap();
-        guard.response_tx = Some(tx);
-    }
-
-    let approved = tokio::select! {
-        _ = cancel_token.cancelled() => {
-            info!("Resolution listener cancelled while waiting for approval");
-            return RuntimeResolution::Rejected;
-        }
-        result = rx => match result {
-            Ok(v) => v,
-            Err(_) => {
-                warn!("Resolution approval channel closed");
-                return RuntimeResolution::Rejected;
-            }
-        },
-    };
-
-    if !approved {
-        info!("User rejected resolution for node {}", query.node_name);
-        return RuntimeResolution::Rejected;
-    }
-
-    info!(
-        "User approved resolution for node {}: +{} nodes, ~{} updated, -{} removed",
-        query.node_name,
-        patch_result.added_nodes.len(),
-        patch_result.updated_nodes.len(),
-        patch_result.removed_node_ids.len(),
-    );
-
     // Build the compact patch for the executor
     let compact = WorkflowPatchCompact {
         added_nodes: patch_result.added_nodes,
@@ -264,22 +205,99 @@ async fn handle_query(
         removed_edges: patch_result.removed_edges,
     };
 
-    // Emit patch_applied event
+    // Build the frontend patch for event payloads (computed once, cloned as needed)
+    let frontend_patch = WorkflowPatch {
+        added_nodes: compact.added_nodes.clone(),
+        removed_node_ids: compact
+            .removed_node_ids
+            .iter()
+            .map(|id| id.to_string())
+            .collect(),
+        updated_nodes: compact.updated_nodes.clone(),
+        added_edges: compact.added_edges.clone(),
+        removed_edges: compact.removed_edges.clone(),
+        warnings: patch_result.warnings,
+    };
+
+    // Check auto-approve flag (snapshotted at run start)
+    let auto_approve = {
+        let state = app.state::<Mutex<ResolutionState>>();
+        state.lock().unwrap().auto_approve
+    };
+
+    if auto_approve {
+        info!(
+            "Auto-approved resolution for node {}: +{} added, ~{} updated, -{} removed",
+            query.node_name,
+            compact.added_nodes.len(),
+            compact.updated_nodes.len(),
+            compact.removed_node_ids.len(),
+        );
+
+        // Observational event for frontend counter/log (NOT for patch application)
+        let _ = app.emit(
+            "executor://resolution_auto_approved",
+            ResolutionProposedPayload {
+                node_id: query.node_id.to_string(),
+                node_name: query.node_name.clone(),
+                reason: assistant_result.message.clone(),
+                patch: frontend_patch.clone(),
+                screenshot: None,
+            },
+        );
+    } else {
+        // Manual approval flow: emit proposal, wait for user response
+        let _ = app.emit(
+            "executor://resolution_proposed",
+            ResolutionProposedPayload {
+                node_id: query.node_id.to_string(),
+                node_name: query.node_name.clone(),
+                reason: assistant_result.message.clone(),
+                patch: frontend_patch.clone(),
+                screenshot: query.screenshot.clone(),
+            },
+        );
+
+        let (tx, rx) = oneshot::channel::<bool>();
+        {
+            let state = app.state::<Mutex<ResolutionState>>();
+            let mut guard = state.lock().unwrap();
+            guard.response_tx = Some(tx);
+        }
+
+        let approved = tokio::select! {
+            _ = cancel_token.cancelled() => {
+                info!("Resolution listener cancelled while waiting for approval");
+                return RuntimeResolution::Rejected;
+            }
+            result = rx => match result {
+                Ok(v) => v,
+                Err(_) => {
+                    warn!("Resolution approval channel closed");
+                    return RuntimeResolution::Rejected;
+                }
+            },
+        };
+
+        if !approved {
+            info!("User rejected resolution for node {}", query.node_name);
+            return RuntimeResolution::Rejected;
+        }
+
+        info!(
+            "User approved resolution for node {}: +{} nodes, ~{} updated, -{} removed",
+            query.node_name,
+            compact.added_nodes.len(),
+            compact.updated_nodes.len(),
+            compact.removed_node_ids.len(),
+        );
+    }
+
+    // Emit patch_applied event (sole trigger for applyRuntimePatch in frontend)
     let _ = app.emit(
         "executor://patch_applied",
         PatchAppliedPayload {
-            patch: WorkflowPatch {
-                added_nodes: compact.added_nodes.clone(),
-                removed_node_ids: compact
-                    .removed_node_ids
-                    .iter()
-                    .map(|id| id.to_string())
-                    .collect(),
-                updated_nodes: compact.updated_nodes.clone(),
-                added_edges: compact.added_edges.clone(),
-                removed_edges: compact.removed_edges.clone(),
-                warnings: Vec::new(),
-            },
+            patch: frontend_patch,
         },
     );
 

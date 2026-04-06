@@ -102,6 +102,8 @@ pub struct RunRequest {
     /// Planner LLM used for supervision in Test mode.
     pub planner: Option<EndpointConfig>,
     pub execution_mode: ExecutionMode,
+    #[serde(default)]
+    pub auto_approve_resolutions: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
