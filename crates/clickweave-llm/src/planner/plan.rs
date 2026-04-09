@@ -211,7 +211,6 @@ fn parse_and_build_workflow(
         auto_approve_resolutions: false,
         intent: parsed_intent,
         verify_outcome: false,
-        outcome_delay_ms: clickweave_core::DEFAULT_OUTCOME_DELAY_MS,
     };
 
     // Assign auto-IDs and translate LLM temp IDs in OutputRefs

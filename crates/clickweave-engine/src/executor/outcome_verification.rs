@@ -117,7 +117,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // Allow the UI to settle after the last action before capturing the screenshot.
         // Without this delay, fast-completing actions (e.g. pressing Enter to send a message)
         // may not have visually resolved yet.
-        let delay = self.workflow.outcome_delay_ms;
+        let delay = self.outcome_delay_ms;
         if delay > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
         }

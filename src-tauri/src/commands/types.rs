@@ -104,6 +104,12 @@ pub struct RunRequest {
     pub execution_mode: ExecutionMode,
     #[serde(default)]
     pub auto_approve_resolutions: bool,
+    #[serde(default = "default_outcome_delay_ms")]
+    pub outcome_delay_ms: u64,
+}
+
+fn default_outcome_delay_ms() -> u64 {
+    1000
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

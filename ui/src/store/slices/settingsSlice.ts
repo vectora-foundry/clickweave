@@ -12,6 +12,7 @@ export interface SettingsSlice {
   fastEnabled: boolean;
   maxRepairAttempts: number;
   hoverDwellThreshold: number;
+  outcomeDelayMs: number;
   toolPermissions: ToolPermissions;
   _settingsLoaded: boolean;
 
@@ -22,6 +23,7 @@ export interface SettingsSlice {
   setFastEnabled: (enabled: boolean) => void;
   setMaxRepairAttempts: (n: number) => void;
   setHoverDwellThreshold: (ms: number) => void;
+  setOutcomeDelayMs: (ms: number) => void;
   setToolPermissions: (perms: ToolPermissions) => void;
   setToolPermission: (toolName: string, level: "ask" | "allow") => Promise<void>;
 }
@@ -50,6 +52,7 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
   fastEnabled: DEFAULT_FAST_ENABLED,
   maxRepairAttempts: 3,
   hoverDwellThreshold: 2000,
+  outcomeDelayMs: 1000,
   toolPermissions: DEFAULT_TOOL_PERMISSIONS,
   _settingsLoaded: false,
 
@@ -65,6 +68,7 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
           fastEnabled: s.fastEnabled,
           maxRepairAttempts: clampInt(s.maxRepairAttempts, 0, 10, 3),
           hoverDwellThreshold: clampInt(s.hoverDwellThreshold, 100, 10000, 2000),
+          outcomeDelayMs: clampInt(s.outcomeDelayMs, 0, 10000, 1000),
           toolPermissions: s.toolPermissions,
         });
       })
@@ -77,6 +81,7 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
   setFastEnabled: (enabled) => persistSetting("fastEnabled", enabled, set),
   setMaxRepairAttempts: (n) => persistSetting("maxRepairAttempts", clampInt(n, 0, 10, 3), set),
   setHoverDwellThreshold: (ms) => persistSetting("hoverDwellThreshold", clampInt(ms, 100, 10000, 2000), set),
+  setOutcomeDelayMs: (ms) => persistSetting("outcomeDelayMs", clampInt(ms, 0, 10000, 1000), set),
   setToolPermissions: (perms) => persistSetting("toolPermissions", perms, set),
   setToolPermission: (toolName, level) => {
     const current = get().toolPermissions;

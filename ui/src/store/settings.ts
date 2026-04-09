@@ -9,6 +9,7 @@ export interface PersistedSettings {
   fastEnabled: boolean;
   maxRepairAttempts: number;
   hoverDwellThreshold: number;
+  outcomeDelayMs: number;
   toolPermissions: ToolPermissions;
 }
 
@@ -19,6 +20,7 @@ const SETTINGS_DEFAULTS: PersistedSettings = {
   fastEnabled: DEFAULT_FAST_ENABLED,
   maxRepairAttempts: 3,
   hoverDwellThreshold: 2000,
+  outcomeDelayMs: 1000,
   toolPermissions: DEFAULT_TOOL_PERMISSIONS,
 };
 
@@ -33,6 +35,7 @@ export async function loadSettings(): Promise<PersistedSettings> {
   const agentConfig = await store.get<EndpointConfig>("agentConfig");
   const maxRepairAttempts = await store.get<number>("maxRepairAttempts");
   const hoverDwellThreshold = await store.get<number>("hoverDwellThreshold");
+  const outcomeDelayMs = await store.get<number>("outcomeDelayMs");
   const toolPermissions = await store.get<ToolPermissions>("toolPermissions");
 
   // Migration: vlmConfig → fastConfig
@@ -68,6 +71,7 @@ export async function loadSettings(): Promise<PersistedSettings> {
     fastEnabled,
     maxRepairAttempts: maxRepairAttempts ?? SETTINGS_DEFAULTS.maxRepairAttempts,
     hoverDwellThreshold: hoverDwellThreshold ?? SETTINGS_DEFAULTS.hoverDwellThreshold,
+    outcomeDelayMs: outcomeDelayMs ?? SETTINGS_DEFAULTS.outcomeDelayMs,
     toolPermissions: toolPermissions ?? SETTINGS_DEFAULTS.toolPermissions,
   };
 }

@@ -55,7 +55,6 @@ pub fn merge_patch_into_workflow(
         auto_approve_resolutions: workflow.auto_approve_resolutions,
         intent: workflow.intent.clone(),
         verify_outcome: workflow.verify_outcome,
-        outcome_delay_ms: workflow.outcome_delay_ms,
     };
     merged.fixup_auto_ids();
     merged

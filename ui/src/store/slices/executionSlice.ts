@@ -45,7 +45,6 @@ export interface ExecutionSlice {
   isExecutionLocked: () => boolean;
   setAutoApproveResolutions: (enabled: boolean) => void;
   setVerifyOutcome: (enabled: boolean) => void;
-  setOutcomeDelayMs: (ms: number) => void;
   setIntent: (intent: string | null) => void;
   incrementAutoApprovedCount: () => void;
   dismissAutoApproveBanner: () => void;
@@ -83,11 +82,6 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
   setVerifyOutcome: (enabled) => {
     const { workflow } = get();
     set({ workflow: { ...workflow, verify_outcome: enabled } });
-  },
-
-  setOutcomeDelayMs: (ms) => {
-    const { workflow } = get();
-    set({ workflow: { ...workflow, outcome_delay_ms: ms } });
   },
 
   setIntent: (intent) => {
@@ -149,7 +143,7 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
   },
 
   runWorkflow: async () => {
-    const { workflow, projectPath, agentConfig, fastConfig, fastEnabled, plannerConfig, executionMode, pushLog } = get();
+    const { workflow, projectPath, agentConfig, fastConfig, fastEnabled, plannerConfig, executionMode, outcomeDelayMs, pushLog } = get();
 
     const graphErrors = validateSingleGraph(workflow.nodes, workflow.edges);
     if (graphErrors.length > 0) {
@@ -170,6 +164,7 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
       planner: toEndpoint(plannerConfig),
       execution_mode: executionMode,
       auto_approve_resolutions: workflow.auto_approve_resolutions ?? false,
+      outcome_delay_ms: outcomeDelayMs,
     };
     const result = await commands.runWorkflow(request);
     if (result.status === "error") {

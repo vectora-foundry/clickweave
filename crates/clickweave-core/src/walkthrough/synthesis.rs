@@ -397,7 +397,6 @@ pub fn synthesize_draft(
         auto_approve_resolutions: false,
         intent: None,
         verify_outcome: false,
-        outcome_delay_ms: crate::DEFAULT_OUTCOME_DELAY_MS,
     };
 
     let mut node_index = 0usize;

@@ -794,7 +794,6 @@ pub(crate) fn build_workflow_from_graph(
         auto_approve_resolutions: false,
         intent: parsed_intent,
         verify_outcome: false,
-        outcome_delay_ms: clickweave_core::DEFAULT_OUTCOME_DELAY_MS,
     };
 
     clickweave_core::validate_workflow(&workflow)

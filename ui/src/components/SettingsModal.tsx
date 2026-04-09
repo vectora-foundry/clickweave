@@ -62,6 +62,7 @@ interface SettingsModalProps {
   fastEnabled: boolean;
   maxRepairAttempts: number;
   hoverDwellThreshold: number;
+  outcomeDelayMs: number;
   toolPermissions: ToolPermissions;
   onClose: () => void;
   onPlannerConfigChange: (config: EndpointConfig) => void;
@@ -70,6 +71,7 @@ interface SettingsModalProps {
   onFastEnabledChange: (enabled: boolean) => void;
   onMaxRepairAttemptsChange: (n: number) => void;
   onHoverDwellThresholdChange: (ms: number) => void;
+  onOutcomeDelayMsChange: (ms: number) => void;
   onToolPermissionsChange: (perms: ToolPermissions) => void;
   onToolPermissionChange: (toolName: string, level: "ask" | "allow") => void;
 }
@@ -252,6 +254,7 @@ export function SettingsModal({
   fastEnabled,
   maxRepairAttempts,
   hoverDwellThreshold,
+  outcomeDelayMs,
   toolPermissions,
   onClose,
   onPlannerConfigChange,
@@ -260,6 +263,7 @@ export function SettingsModal({
   onFastEnabledChange,
   onMaxRepairAttemptsChange,
   onHoverDwellThresholdChange,
+  onOutcomeDelayMsChange,
   onToolPermissionsChange,
   onToolPermissionChange,
 }: SettingsModalProps) {
@@ -380,6 +384,35 @@ export function SettingsModal({
           </div>
 
           <ChromeProfileSection />
+
+          <div>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+              Execution
+            </h3>
+            <p className="mb-2 text-[10px] text-[var(--text-muted)]">
+              Controls workflow execution behavior.
+            </p>
+            <div>
+              <label className="mb-1 block text-xs text-[var(--text-secondary)]">
+                Verification Screenshot Delay (ms)
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={10000}
+                step={100}
+                value={outcomeDelayMs}
+                onChange={(e) => {
+                  const clamped = Math.max(0, Math.min(10000, Math.floor(Number(e.target.value) || 0)));
+                  onOutcomeDelayMsChange(clamped);
+                }}
+                className={inputClass}
+              />
+              <p className="mt-1 text-[10px] text-[var(--text-muted)]">
+                How long to wait before capturing the outcome verification screenshot, giving the UI time to settle (0-10000ms).
+              </p>
+            </div>
+          </div>
 
           <div>
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
