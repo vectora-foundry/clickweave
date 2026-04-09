@@ -489,6 +489,29 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         ctx.runtime_verdicts
             .retain(|v| !inv_ids.contains(&v.node_id));
+
+        // Prune execution_history to match the retained completed_node_ids.
+        // Count how many NodeCompleted entries should remain (same as
+        // retained completed_node_ids length), then truncate at the position
+        // after the last retained NodeCompleted.
+        let target_completed_count = ctx.completed_node_ids.len();
+        let mut seen = 0usize;
+        let cutoff = ctx
+            .execution_history
+            .iter()
+            .position(|e| {
+                if matches!(
+                    e,
+                    retry_context::ExecutionHistoryEntry::NodeCompleted { .. }
+                ) {
+                    seen += 1;
+                    seen > target_completed_count
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(ctx.execution_history.len());
+        ctx.execution_history.truncate(cutoff);
     }
 
     /// Apply a resolution patch to the in-memory workflow.

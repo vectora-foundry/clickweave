@@ -844,6 +844,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         node_id,
                         clickweave_core::storage::sanitize_name(&node_auto_id),
                     ));
+                    ctx.execution_history.push(
+                        super::retry_context::ExecutionHistoryEntry::NodeCompleted {
+                            node_name: node_name.clone(),
+                            action_description: node_type.action_description(),
+                        },
+                    );
 
                     current = self.follow_single_edge(node_id);
                 }

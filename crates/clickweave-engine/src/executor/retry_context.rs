@@ -6,6 +6,29 @@ use uuid::Uuid;
 
 use super::PendingLoopExit;
 
+/// A recorded execution event for outcome verification summary.
+/// Maintains chronological order across both execution nodes and control-flow decisions.
+#[derive(Debug, Clone)]
+pub(crate) enum ExecutionHistoryEntry {
+    NodeCompleted {
+        node_name: String,
+        action_description: String,
+    },
+    BranchTaken {
+        node_name: String,
+        outcome: String,
+    },
+    LoopIteration {
+        node_name: String,
+        iteration: u32,
+    },
+    LoopExited {
+        node_name: String,
+        reason: String,
+        iterations: u32,
+    },
+}
+
 /// Per-run transient state that is meaningful only during a single graph walk.
 ///
 /// Created at the start of `run_with_mcp()` and threaded through methods that
@@ -61,6 +84,10 @@ pub(crate) struct RetryContext {
     /// Set by deterministic execution, read by supervision to include
     /// actual-vs-intended comparison in the step message.
     pub last_tool_result: Option<String>,
+
+    /// Ordered execution history for outcome verification summary.
+    /// Interleaves node completions and control-flow decisions chronologically.
+    pub execution_history: Vec<ExecutionHistoryEntry>,
 }
 
 impl RetryContext {
@@ -78,6 +105,7 @@ impl RetryContext {
             force_resolve: false,
             focus_dirty: false,
             last_tool_result: None,
+            execution_history: Vec::new(),
         }
     }
 

@@ -1,4 +1,4 @@
-use super::retry_context::RetryContext;
+use super::retry_context::{ExecutionHistoryEntry, RetryContext};
 use super::{LoopExitReason, PendingLoopExit, WorkflowExecutor};
 use clickweave_core::{EdgeOutput, NodeType};
 use clickweave_llm::ChatBackend;
@@ -40,6 +40,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     }),
                 );
 
+                retry_ctx
+                    .execution_history
+                    .push(ExecutionHistoryEntry::BranchTaken {
+                        node_name: node_name.to_string(),
+                        outcome: output_taken.to_string(),
+                    });
+
                 if result {
                     self.follow_edge(node_id, &EdgeOutput::IfTrue)
                 } else {
@@ -77,6 +84,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         "output_taken": output_taken,
                     }),
                 );
+
+                retry_ctx
+                    .execution_history
+                    .push(ExecutionHistoryEntry::BranchTaken {
+                        node_name: node_name.to_string(),
+                        outcome: output_taken,
+                    });
 
                 if next.is_none() {
                     self.log(format!(
@@ -132,6 +146,17 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 };
 
                 if let Some(reason) = exit_reason {
+                    let reason_str = match reason {
+                        LoopExitReason::MaxIterations => "max_iterations",
+                        LoopExitReason::ConditionMet => "condition_met",
+                    };
+                    retry_ctx
+                        .execution_history
+                        .push(ExecutionHistoryEntry::LoopExited {
+                            node_name: node_name.to_string(),
+                            reason: reason_str.to_string(),
+                            iterations: iteration,
+                        });
                     retry_ctx.pending_loop_exit = Some(PendingLoopExit {
                         node_id,
                         loop_name: node_name.to_string(),
@@ -151,6 +176,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             "iteration": iteration,
                         }),
                     );
+                    retry_ctx
+                        .execution_history
+                        .push(ExecutionHistoryEntry::LoopIteration {
+                            node_name: node_name.to_string(),
+                            iteration,
+                        });
                     *self.context.loop_counters.entry(node_id).or_insert(0) += 1;
                     self.follow_edge(node_id, &EdgeOutput::LoopBody)
                 }
