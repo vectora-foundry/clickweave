@@ -57,6 +57,7 @@ function App() {
 
   const autoApproveResolutions = useStore((s) => s.workflow.auto_approve_resolutions ?? false);
   const verifyOutcome = useStore((s) => s.workflow.verify_outcome ?? false);
+  const outcomeDelayMs = useStore((s) => s.workflow.outcome_delay_ms ?? 1000);
 
   const { selectedNode, sidebarCollapsed, logsDrawerOpen, nodeSearch, showSettings, detailTab, logs } = useStore(
     useShallow((s) => ({
@@ -143,6 +144,7 @@ function App() {
   const redo = useStore((s) => s.redo);
   const setAutoApproveResolutions = useStore((s) => s.setAutoApproveResolutions);
   const setVerifyOutcome = useStore((s) => s.setVerifyOutcome);
+  const setOutcomeDelayMs = useStore((s) => s.setOutcomeDelayMs);
   const dismissAutoApproveBanner = useStore((s) => s.dismissAutoApproveBanner);
 
   // ── Workflow mutations ───────────────────────────────────────────
@@ -283,8 +285,10 @@ function App() {
                   onRecord={() => useStore.getState().openCdpModal()}
                   autoApproveResolutions={autoApproveResolutions}
                   verifyOutcome={verifyOutcome}
+                  outcomeDelayMs={outcomeDelayMs}
                   onToggleAutoApprove={setAutoApproveResolutions}
                   onToggleVerifyOutcome={setVerifyOutcome}
+                  onOutcomeDelayMsChange={setOutcomeDelayMs}
                 />
               </div>
 

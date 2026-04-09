@@ -63,6 +63,7 @@ interface FloatingToolbarProps {
   walkthroughEventCount: number;
   autoApproveResolutions: boolean;
   verifyOutcome: boolean;
+  outcomeDelayMs: number;
   onToggleLogs: () => void;
   onRunStop: () => void;
   onAssistant: () => void;
@@ -71,6 +72,7 @@ interface FloatingToolbarProps {
   onRecord: () => void;
   onToggleAutoApprove: (enabled: boolean) => void;
   onToggleVerifyOutcome: (enabled: boolean) => void;
+  onOutcomeDelayMsChange: (ms: number) => void;
 }
 
 export function FloatingToolbar({
@@ -90,8 +92,10 @@ export function FloatingToolbar({
   onRecord,
   autoApproveResolutions,
   verifyOutcome,
+  outcomeDelayMs,
   onToggleAutoApprove,
   onToggleVerifyOutcome,
+  onOutcomeDelayMsChange,
 }: FloatingToolbarProps) {
   const isRunning = executorState === "running";
   const [showConfirm, setShowConfirm] = useState(false);
@@ -202,6 +206,22 @@ export function FloatingToolbar({
             )}
             <div className="mx-1 h-4 w-px bg-[var(--border)]" />
             <ToolbarToggle title="Run outcome verification after workflow completes" label="Verify" checked={verifyOutcome} disabled={isRunning} onChange={onToggleVerifyOutcome} />
+            {verifyOutcome && (
+              <input
+                type="number"
+                title="Delay before verification screenshot (ms)"
+                min={0}
+                max={10000}
+                step={100}
+                value={outcomeDelayMs}
+                disabled={isRunning}
+                onChange={(e) => {
+                  const v = Math.max(0, Math.min(10000, Math.floor(Number(e.target.value) || 0)));
+                  onOutcomeDelayMsChange(v);
+                }}
+                className="ml-1 w-14 rounded bg-[var(--bg-input)] px-1.5 py-0.5 text-[10px] text-[var(--text-secondary)] outline-none focus:ring-1 focus:ring-[var(--accent-coral)] disabled:opacity-50"
+              />
+            )}
             <div className="mx-1 h-4 w-px bg-[var(--border)]" />
             {hasAiNodes && !isRunning && (
               <span className="rounded bg-[var(--accent-blue)]/20 px-1.5 py-0.5 text-[10px] font-medium text-[var(--accent-blue)]">

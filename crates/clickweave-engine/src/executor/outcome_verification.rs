@@ -114,6 +114,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         self.log(format!("Outcome verification query: {}", query));
 
+        // Allow the UI to settle after the last action before capturing the screenshot.
+        // Without this delay, fast-completing actions (e.g. pressing Enter to send a message)
+        // may not have visually resolved yet.
+        let delay = self.workflow.outcome_delay_ms;
+        if delay > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        }
+
         let Some(screenshot) = self.capture_outcome_screenshot(mcp).await else {
             self.log("Outcome verification: screenshot capture failed, skipping".to_string());
             return None;

@@ -45,6 +45,7 @@ export interface ExecutionSlice {
   isExecutionLocked: () => boolean;
   setAutoApproveResolutions: (enabled: boolean) => void;
   setVerifyOutcome: (enabled: boolean) => void;
+  setOutcomeDelayMs: (ms: number) => void;
   setIntent: (intent: string | null) => void;
   incrementAutoApprovedCount: () => void;
   dismissAutoApproveBanner: () => void;
@@ -82,6 +83,11 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
   setVerifyOutcome: (enabled) => {
     const { workflow } = get();
     set({ workflow: { ...workflow, verify_outcome: enabled } });
+  },
+
+  setOutcomeDelayMs: (ms) => {
+    const { workflow } = get();
+    set({ workflow: { ...workflow, outcome_delay_ms: ms } });
   },
 
   setIntent: (intent) => {

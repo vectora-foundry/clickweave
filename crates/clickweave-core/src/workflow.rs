@@ -5,6 +5,11 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 const DEFAULT_SUPERVISION_RETRIES: u32 = 2;
+pub const DEFAULT_OUTCOME_DELAY_MS: u64 = 1000;
+
+fn default_outcome_delay_ms() -> u64 {
+    DEFAULT_OUTCOME_DELAY_MS
+}
 
 fn default_supervision_retries() -> u32 {
     DEFAULT_SUPERVISION_RETRIES
@@ -27,6 +32,8 @@ pub struct Workflow {
     pub intent: Option<String>,
     #[serde(default)]
     pub verify_outcome: bool,
+    #[serde(default = "default_outcome_delay_ms")]
+    pub outcome_delay_ms: u64,
 }
 
 impl Default for Workflow {
@@ -41,6 +48,7 @@ impl Default for Workflow {
             auto_approve_resolutions: false,
             intent: None,
             verify_outcome: false,
+            outcome_delay_ms: DEFAULT_OUTCOME_DELAY_MS,
         }
     }
 }
