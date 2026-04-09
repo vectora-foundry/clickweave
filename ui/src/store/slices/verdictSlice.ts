@@ -20,13 +20,22 @@ export interface NodeVerdict {
 
 export type VerdictStatus = "none" | "passed" | "failed" | "warned" | "completed";
 
+export interface OutcomeVerification {
+  passed: boolean;
+  query: string;
+  reasoning: string;
+  screenshot?: string;
+}
+
 export interface VerdictSlice {
   verdicts: NodeVerdict[];
   verdictStatus: VerdictStatus;
   verdictBarVisible: boolean;
   verdictModalOpen: boolean;
+  outcomeVerification: OutcomeVerification | null;
 
   setVerdicts: (verdicts: NodeVerdict[]) => void;
+  setOutcomeVerification: (result: OutcomeVerification) => void;
   dismissVerdictBar: () => void;
   clearVerdicts: () => void;
   openVerdictModal: () => void;
@@ -70,6 +79,7 @@ export const createVerdictSlice: StateCreator<StoreState, [], [], VerdictSlice> 
   verdictStatus: "none",
   verdictBarVisible: false,
   verdictModalOpen: false,
+  outcomeVerification: null,
 
   setVerdicts: (verdicts) =>
     set({
@@ -78,10 +88,12 @@ export const createVerdictSlice: StateCreator<StoreState, [], [], VerdictSlice> 
       verdictBarVisible: verdicts.length > 0,
     }),
 
+  setOutcomeVerification: (result) => set({ outcomeVerification: result }),
+
   dismissVerdictBar: () => set({ verdictBarVisible: false }),
 
   clearVerdicts: () =>
-    set({ verdicts: [], verdictStatus: "none", verdictBarVisible: false, verdictModalOpen: false }),
+    set({ verdicts: [], verdictStatus: "none", verdictBarVisible: false, verdictModalOpen: false, outcomeVerification: null }),
 
   openVerdictModal: () =>
     set((state) => ({

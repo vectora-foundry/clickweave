@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useStore } from "../../store/useAppStore";
-import type { NodeVerdict } from "../../store/slices/verdictSlice";
+import type { NodeVerdict, OutcomeVerification } from "../../store/slices/verdictSlice";
 
 /**
  * Subscribe to executor node lifecycle events:
@@ -50,6 +50,9 @@ export function useExecutorNodeEvents() {
     }));
     sub(listen<NodeVerdict[]>("executor://checks_completed", (e) => {
       useStore.getState().setVerdicts(e.payload);
+    }));
+    sub(listen<OutcomeVerification>("executor://outcome_verification", (e) => {
+      useStore.getState().setOutcomeVerification(e.payload);
     }));
     sub(listen("executor://workflow_completed", () => {
       useStore.getState().pushLog("Workflow completed");

@@ -1,6 +1,6 @@
 import { useStore } from "../store/useAppStore";
 import { countChecks } from "../store/slices/verdictSlice";
-import type { NodeVerdict, CheckResult, VerdictStatus } from "../store/slices/verdictSlice";
+import type { NodeVerdict, CheckResult, VerdictStatus, OutcomeVerification } from "../store/slices/verdictSlice";
 import { Modal } from "./Modal";
 
 const statusConfig: Record<Exclude<VerdictStatus, "none">, { heading: string; icon: string; iconCls: string; borderCls: string }> = {
@@ -27,6 +27,7 @@ export function VerdictModal() {
   const status = useStore((s) => s.verdictStatus);
   const open = useStore((s) => s.verdictModalOpen);
   const close = useStore((s) => s.closeVerdictModal);
+  const outcomeVerification = useStore((s) => s.outcomeVerification);
 
   const hasVerdicts = verdicts.length > 0;
   const config = status !== "none"
@@ -56,7 +57,11 @@ export function VerdictModal() {
           </div>
         )}
 
-        <div className={`flex justify-end ${hasVerdicts ? "border-t border-[var(--border)]" : ""} px-5 py-3`}>
+        {outcomeVerification && (
+          <OutcomeVerificationSection result={outcomeVerification} />
+        )}
+
+        <div className={`flex justify-end ${hasVerdicts || outcomeVerification ? "border-t border-[var(--border)]" : ""} px-5 py-3`}>
           <button
             onClick={close}
             className="rounded bg-[var(--bg-hover)] px-4 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:opacity-90"
@@ -65,6 +70,30 @@ export function VerdictModal() {
           </button>
         </div>
     </Modal>
+  );
+}
+
+function OutcomeVerificationSection({ result }: { result: OutcomeVerification }) {
+  const icon = result.passed ? "\u2713" : "\u2717";
+  const iconCls = result.passed
+    ? "text-green-400"
+    : "text-red-400";
+  const label = result.passed ? "Outcome: Pass" : "Outcome: Fail";
+
+  return (
+    <div className="border-t border-[var(--border)] px-5 py-3 space-y-1.5">
+      <div className="flex items-center gap-2">
+        <span className={`text-sm font-bold ${iconCls}`}>{icon}</span>
+        <span className="text-xs font-medium text-[var(--text-primary)]">{label}</span>
+      </div>
+      <p className="text-xs text-[var(--text-secondary)] ml-5">{result.reasoning}</p>
+      <details className="ml-5">
+        <summary className="text-xs text-[var(--text-secondary)] cursor-pointer hover:text-[var(--text-primary)]">
+          VLM Query
+        </summary>
+        <p className="text-xs text-[var(--text-secondary)] mt-1">{result.query}</p>
+      </details>
+    </div>
   );
 }
 
