@@ -10,6 +10,7 @@ export interface PersistedSettings {
   maxRepairAttempts: number;
   hoverDwellThreshold: number;
   outcomeDelayMs: number;
+  supervisionDelayMs: number;
   toolPermissions: ToolPermissions;
 }
 
@@ -21,6 +22,7 @@ const SETTINGS_DEFAULTS: PersistedSettings = {
   maxRepairAttempts: 3,
   hoverDwellThreshold: 2000,
   outcomeDelayMs: 1000,
+  supervisionDelayMs: 500,
   toolPermissions: DEFAULT_TOOL_PERMISSIONS,
 };
 
@@ -36,6 +38,7 @@ export async function loadSettings(): Promise<PersistedSettings> {
   const maxRepairAttempts = await store.get<number>("maxRepairAttempts");
   const hoverDwellThreshold = await store.get<number>("hoverDwellThreshold");
   const outcomeDelayMs = await store.get<number>("outcomeDelayMs");
+  const supervisionDelayMs = await store.get<number>("supervisionDelayMs");
   const toolPermissions = await store.get<ToolPermissions>("toolPermissions");
 
   // Migration: vlmConfig → fastConfig
@@ -72,6 +75,7 @@ export async function loadSettings(): Promise<PersistedSettings> {
     maxRepairAttempts: maxRepairAttempts ?? SETTINGS_DEFAULTS.maxRepairAttempts,
     hoverDwellThreshold: hoverDwellThreshold ?? SETTINGS_DEFAULTS.hoverDwellThreshold,
     outcomeDelayMs: outcomeDelayMs ?? SETTINGS_DEFAULTS.outcomeDelayMs,
+    supervisionDelayMs: supervisionDelayMs ?? SETTINGS_DEFAULTS.supervisionDelayMs,
     toolPermissions: toolPermissions ?? SETTINGS_DEFAULTS.toolPermissions,
   };
 }

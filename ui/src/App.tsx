@@ -83,7 +83,7 @@ function App() {
     })),
   );
 
-  const { plannerConfig, agentConfig, fastConfig, fastEnabled, maxRepairAttempts, hoverDwellThreshold, outcomeDelayMs, toolPermissions } = useStore(
+  const { plannerConfig, agentConfig, fastConfig, fastEnabled, maxRepairAttempts, hoverDwellThreshold, outcomeDelayMs, supervisionDelayMs, toolPermissions } = useStore(
     useShallow((s) => ({
       plannerConfig: s.plannerConfig,
       agentConfig: s.agentConfig,
@@ -92,6 +92,7 @@ function App() {
       maxRepairAttempts: s.maxRepairAttempts,
       hoverDwellThreshold: s.hoverDwellThreshold,
       outcomeDelayMs: s.outcomeDelayMs,
+      supervisionDelayMs: s.supervisionDelayMs,
       toolPermissions: s.toolPermissions,
     })),
   );
@@ -145,6 +146,7 @@ function App() {
   const setAutoApproveResolutions = useStore((s) => s.setAutoApproveResolutions);
   const setVerifyOutcome = useStore((s) => s.setVerifyOutcome);
   const setOutcomeDelayMs = useStore((s) => s.setOutcomeDelayMs);
+  const setSupervisionDelayMs = useStore((s) => s.setSupervisionDelayMs);
 
   const dismissAutoApproveBanner = useStore((s) => s.dismissAutoApproveBanner);
 
@@ -343,6 +345,7 @@ function App() {
         maxRepairAttempts={maxRepairAttempts}
         hoverDwellThreshold={hoverDwellThreshold}
         outcomeDelayMs={outcomeDelayMs}
+        supervisionDelayMs={supervisionDelayMs}
         toolPermissions={toolPermissions}
         onClose={() => setShowSettings(false)}
         onPlannerConfigChange={setPlannerConfig}
@@ -352,6 +355,7 @@ function App() {
         onMaxRepairAttemptsChange={setMaxRepairAttempts}
         onHoverDwellThresholdChange={setHoverDwellThreshold}
         onOutcomeDelayMsChange={setOutcomeDelayMs}
+        onSupervisionDelayMsChange={setSupervisionDelayMs}
         onToolPermissionsChange={setToolPermissions}
         onToolPermissionChange={setToolPermission}
       />

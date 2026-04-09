@@ -138,6 +138,7 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
             chrome_profiles_dir,
             resolution_tx,
             request.outcome_delay_ms,
+            request.supervision_delay_ms,
         );
         executor.run(cmd_rx).await;
     });

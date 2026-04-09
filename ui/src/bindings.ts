@@ -518,7 +518,7 @@ export type RunRequest = { workflow: Workflow; project_path: string | null; agen
 /**
  * Planner LLM used for supervision in Test mode.
  */
-planner: EndpointConfig | null; execution_mode: ExecutionMode; auto_approve_resolutions?: boolean; outcome_delay_ms?: number }
+planner: EndpointConfig | null; execution_mode: ExecutionMode; auto_approve_resolutions?: boolean; outcome_delay_ms?: number; supervision_delay_ms?: number }
 export type RunStatus = "Ok" | "Failed" | "Stopped" | "Cancelled"
 export type RunsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string }
 /**

@@ -314,7 +314,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         mcp: &(impl Mcp + ?Sized),
     ) -> Option<String> {
         // Let UI animations/transitions settle before capturing.
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let delay = self.supervision_delay_ms;
+        if delay > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        }
 
         let app_name = self.focused_app_name();
         let mut args = serde_json::json!({ "mode": "window" });

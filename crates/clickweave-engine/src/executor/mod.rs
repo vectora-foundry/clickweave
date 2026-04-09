@@ -167,6 +167,8 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     resolution_tx: Option<tokio::sync::mpsc::Sender<RuntimeQuery>>,
     /// Delay (ms) before capturing the outcome verification screenshot.
     outcome_delay_ms: u64,
+    /// Delay (ms) before capturing the per-step supervision screenshot.
+    supervision_delay_ms: u64,
 }
 
 pub(crate) struct PendingLoopExit {
@@ -207,6 +209,7 @@ impl WorkflowExecutor {
         chrome_profiles_dir: PathBuf,
         resolution_tx: Option<tokio::sync::mpsc::Sender<RuntimeQuery>>,
         outcome_delay_ms: u64,
+        supervision_delay_ms: u64,
     ) -> Self {
         let chrome_profile_store = ChromeProfileStore::new(chrome_profiles_dir);
         let chrome_profiles = chrome_profile_store.ensure_profiles().unwrap_or_else(|e| {
@@ -241,6 +244,7 @@ impl WorkflowExecutor {
             chrome_profiles,
             resolution_tx,
             outcome_delay_ms,
+            supervision_delay_ms,
         }
     }
 }

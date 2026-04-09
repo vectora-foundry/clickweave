@@ -13,6 +13,7 @@ export interface SettingsSlice {
   maxRepairAttempts: number;
   hoverDwellThreshold: number;
   outcomeDelayMs: number;
+  supervisionDelayMs: number;
   toolPermissions: ToolPermissions;
   _settingsLoaded: boolean;
 
@@ -24,6 +25,7 @@ export interface SettingsSlice {
   setMaxRepairAttempts: (n: number) => void;
   setHoverDwellThreshold: (ms: number) => void;
   setOutcomeDelayMs: (ms: number) => void;
+  setSupervisionDelayMs: (ms: number) => void;
   setToolPermissions: (perms: ToolPermissions) => void;
   setToolPermission: (toolName: string, level: "ask" | "allow") => Promise<void>;
 }
@@ -53,6 +55,7 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
   maxRepairAttempts: 3,
   hoverDwellThreshold: 2000,
   outcomeDelayMs: 1000,
+  supervisionDelayMs: 500,
   toolPermissions: DEFAULT_TOOL_PERMISSIONS,
   _settingsLoaded: false,
 
@@ -69,6 +72,7 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
           maxRepairAttempts: clampInt(s.maxRepairAttempts, 0, 10, 3),
           hoverDwellThreshold: clampInt(s.hoverDwellThreshold, 100, 10000, 2000),
           outcomeDelayMs: clampInt(s.outcomeDelayMs, 0, 10000, 1000),
+          supervisionDelayMs: clampInt(s.supervisionDelayMs, 0, 10000, 500),
           toolPermissions: s.toolPermissions,
         });
       })
@@ -82,6 +86,7 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
   setMaxRepairAttempts: (n) => persistSetting("maxRepairAttempts", clampInt(n, 0, 10, 3), set),
   setHoverDwellThreshold: (ms) => persistSetting("hoverDwellThreshold", clampInt(ms, 100, 10000, 2000), set),
   setOutcomeDelayMs: (ms) => persistSetting("outcomeDelayMs", clampInt(ms, 0, 10000, 1000), set),
+  setSupervisionDelayMs: (ms) => persistSetting("supervisionDelayMs", clampInt(ms, 0, 10000, 500), set),
   setToolPermissions: (perms) => persistSetting("toolPermissions", perms, set),
   setToolPermission: (toolName, level) => {
     const current = get().toolPermissions;
