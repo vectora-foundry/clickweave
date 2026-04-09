@@ -44,6 +44,7 @@ export interface ExecutionSlice {
   setLastRunStatus: (status: "completed" | "failed" | null) => void;
   isExecutionLocked: () => boolean;
   setAutoApproveResolutions: (enabled: boolean) => void;
+  setVerifyOutcome: (enabled: boolean) => void;
   incrementAutoApprovedCount: () => void;
   dismissAutoApproveBanner: () => void;
 }
@@ -75,6 +76,11 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
   setAutoApproveResolutions: (enabled) => {
     const { workflow } = get();
     set({ workflow: { ...workflow, auto_approve_resolutions: enabled } });
+  },
+
+  setVerifyOutcome: (enabled) => {
+    const { workflow } = get();
+    set({ workflow: { ...workflow, verify_outcome: enabled } });
   },
 
   incrementAutoApprovedCount: () => {

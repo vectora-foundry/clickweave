@@ -56,6 +56,7 @@ function App() {
   );
 
   const autoApproveResolutions = useStore((s) => s.workflow.auto_approve_resolutions ?? false);
+  const verifyOutcome = useStore((s) => s.workflow.verify_outcome ?? false);
 
   const { selectedNode, sidebarCollapsed, logsDrawerOpen, nodeSearch, showSettings, detailTab, logs } = useStore(
     useShallow((s) => ({
@@ -141,6 +142,7 @@ function App() {
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
   const setAutoApproveResolutions = useStore((s) => s.setAutoApproveResolutions);
+  const setVerifyOutcome = useStore((s) => s.setVerifyOutcome);
   const dismissAutoApproveBanner = useStore((s) => s.dismissAutoApproveBanner);
 
   // ── Workflow mutations ───────────────────────────────────────────
@@ -280,7 +282,9 @@ function App() {
                   onOpenWalkthroughPanel={() => setWalkthroughPanelOpen(true)}
                   onRecord={() => useStore.getState().openCdpModal()}
                   autoApproveResolutions={autoApproveResolutions}
+                  verifyOutcome={verifyOutcome}
                   onToggleAutoApprove={setAutoApproveResolutions}
+                  onToggleVerifyOutcome={setVerifyOutcome}
                 />
               </div>
 

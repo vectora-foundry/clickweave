@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import type { ChatEntry, WorkflowPatch } from "../bindings";
 import { ChatMessage } from "./ChatMessage";
 import { useHorizontalResize } from "../hooks/useHorizontalResize";
+import { useStore } from "../store/useAppStore";
 
 interface AssistantPanelProps {
   open: boolean;
@@ -78,6 +79,7 @@ export function AssistantPanel({
   );
 
   const hasMessages = messages.length > 0;
+  const intent = useStore((s) => s.workflow.intent);
 
   return (
     <div className="relative flex h-full flex-col border-l border-[var(--border)] bg-[var(--bg-panel)]" style={{ width, minWidth: width }}>
@@ -117,6 +119,14 @@ export function AssistantPanel({
           </button>
         </div>
       </div>
+
+      {/* Intent display */}
+      {intent && (
+        <div className="flex items-center gap-1.5 border-b border-[var(--border)] px-4 py-1.5">
+          <span className="text-[10px] font-medium text-[var(--text-muted)]">Intent:</span>
+          <span className="text-[11px] text-[var(--text-secondary)] truncate">{intent}</span>
+        </div>
+      )}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-3 py-3">
