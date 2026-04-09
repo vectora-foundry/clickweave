@@ -205,6 +205,7 @@ pub struct AssistantChatResponse {
     pub patch: Option<WorkflowPatch>,
     pub warnings: Vec<String>,
     pub context_usage: Option<f32>,
+    pub intent: Option<String>,
 }
 
 // --- Walkthrough event payloads ---

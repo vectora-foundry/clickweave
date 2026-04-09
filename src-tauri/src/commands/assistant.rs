@@ -280,6 +280,7 @@ pub async fn assistant_chat(
             result.warnings,
             patch,
             context_usage,
+            result.intent,
         ))
     });
 
@@ -313,7 +314,7 @@ pub async fn assistant_chat(
         }
     }
 
-    let (message, tool_entries, new_summary, warnings, patch, context_usage) = result?;
+    let (message, tool_entries, new_summary, warnings, patch, context_usage, intent) = result?;
 
     // Update backend conversation
     {
@@ -372,6 +373,7 @@ pub async fn assistant_chat(
         patch,
         warnings,
         context_usage,
+        intent,
     })
 }
 

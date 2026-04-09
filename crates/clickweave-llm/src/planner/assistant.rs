@@ -25,6 +25,8 @@ pub struct AssistantResult {
     pub tool_entries: Vec<ChatEntry>,
     /// Raw prompt token count from the LLM response.
     pub prompt_tokens: Option<u32>,
+    /// Refined intent extracted from a new plan, if any.
+    pub intent: Option<String>,
 }
 
 /// Chat with the assistant, creating an LlmClient from config.
@@ -158,15 +160,15 @@ pub async fn assistant_chat_with_backend<E: PlannerToolExecutor>(
     let process = {
         let wf = wf.clone();
         let mcp_tools = mcp_tools.to_vec();
-        move |content: &str| -> Result<(String, Option<PatchResult>, Vec<String>)> {
-            let (message, patch, warnings) = parse_assistant_response(
+        move |content: &str| -> Result<(String, Option<PatchResult>, Vec<String>, Option<String>)> {
+            let (message, patch, warnings, intent) = parse_assistant_response(
                 content,
                 &wf,
                 &mcp_tools,
                 allow_ai_transforms,
                 allow_agent_steps,
             );
-            Ok((message, patch, warnings))
+            Ok((message, patch, warnings, intent))
         }
     };
 
@@ -175,12 +177,13 @@ pub async fn assistant_chat_with_backend<E: PlannerToolExecutor>(
         (regular edge, no output label). The last body step flows into EndLoop, and EndLoop flows back to Loop. \
         EndLoop never has a forward edge to post-loop nodes — Loop's LoopDone edge handles the exit path.";
 
-    type ValidateFn =
-        Box<dyn FnMut(&(String, Option<PatchResult>, Vec<String>)) -> Result<()> + Send>;
+    type ValidateFn = Box<
+        dyn FnMut(&(String, Option<PatchResult>, Vec<String>, Option<String>)) -> Result<()> + Send,
+    >;
     let validate_closure: Option<ValidateFn> = if max_repair_attempts > 0 {
         let wf = wf.clone();
         Some(Box::new(
-            move |result: &(String, Option<PatchResult>, Vec<String>)| -> Result<()> {
+            move |result: &(String, Option<PatchResult>, Vec<String>, Option<String>)| -> Result<()> {
                 if let Some(ref p) = result.1 {
                     let candidate = clickweave_core::merge_patch_into_workflow(
                         &wf,
@@ -217,7 +220,7 @@ pub async fn assistant_chat_with_backend<E: PlannerToolExecutor>(
     )
     .await?;
 
-    let (message, patch, warnings) = output.result;
+    let (message, patch, warnings, intent) = output.result;
 
     // Build tool-call entries for the conversation history
     let mut tool_entries: Vec<ChatEntry> = Vec::new();
@@ -252,6 +255,7 @@ pub async fn assistant_chat_with_backend<E: PlannerToolExecutor>(
         warnings,
         tool_entries,
         prompt_tokens,
+        intent,
     })
 }
 
@@ -266,7 +270,7 @@ fn parse_assistant_response(
     mcp_tools: &[Value],
     allow_ai_transforms: bool,
     allow_agent_steps: bool,
-) -> (String, Option<PatchResult>, Vec<String>) {
+) -> (String, Option<PatchResult>, Vec<String>, Option<String>) {
     let json_str = extract_json(content);
 
     if !workflow.nodes.is_empty() {
@@ -279,7 +283,7 @@ fn parse_assistant_response(
                 && output.remove_node_ids.is_empty()
                 && output.update.is_empty()
             {
-                return (content.to_string(), None, Vec::new());
+                return (content.to_string(), None, Vec::new(), None);
             }
             let prose = extract_prose(content);
             let patch = super::build_patch_from_output(
@@ -291,7 +295,7 @@ fn parse_assistant_response(
             );
             let message = prose.unwrap_or_else(|| describe_patch(&patch));
             let warnings = patch.warnings.clone();
-            return (message, Some(patch), warnings);
+            return (message, Some(patch), warnings, None);
         }
     }
 
@@ -299,6 +303,7 @@ fn parse_assistant_response(
     if let Ok(graph) = serde_json::from_str::<PlannerGraphOutput>(json_str)
         && !graph.nodes.is_empty()
     {
+        let intent = graph.intent.clone();
         let prose = extract_prose(content);
         let patch = super::build_graph_plan_as_patch(
             &graph,
@@ -308,13 +313,14 @@ fn parse_assistant_response(
         );
         let message = prose.unwrap_or_else(|| describe_patch(&patch));
         let warnings = patch.warnings.clone();
-        return (message, Some(patch), warnings);
+        return (message, Some(patch), warnings, intent);
     }
 
     // Try parsing as flat PlannerOutput (for simple linear plans)
     if let Ok(output) = serde_json::from_str::<PlannerOutput>(json_str)
         && !output.steps.is_empty()
     {
+        let intent = output.intent.clone();
         let prose = extract_prose(content);
         let patch = super::build_plan_as_patch(
             &output.steps,
@@ -324,11 +330,11 @@ fn parse_assistant_response(
         );
         let message = prose.unwrap_or_else(|| describe_patch(&patch));
         let warnings = patch.warnings.clone();
-        return (message, Some(patch), warnings);
+        return (message, Some(patch), warnings, intent);
     }
 
     // Conversational response
-    (content.to_string(), None, Vec::new())
+    (content.to_string(), None, Vec::new(), None)
 }
 
 /// Extract prose text before a JSON block, if any.
@@ -404,7 +410,7 @@ pub async fn resolution_chat_with_backend(
         .ok_or_else(|| anyhow::anyhow!("No response from LLM"))?;
     let content = choice.message.content_text().unwrap_or_default();
 
-    let (message, patch, warnings) =
+    let (message, patch, warnings, _intent) =
         parse_assistant_response(content, workflow, mcp_tools, false, false);
 
     let prompt_tokens = response.usage.as_ref().map(|u| u.prompt_tokens);
@@ -416,6 +422,7 @@ pub async fn resolution_chat_with_backend(
         warnings,
         tool_entries: Vec::new(),
         prompt_tokens,
+        intent: None,
     })
 }
 
