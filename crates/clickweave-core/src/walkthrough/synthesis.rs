@@ -395,6 +395,8 @@ pub fn synthesize_draft(
         groups: Vec::new(),
         next_id_counters: std::collections::HashMap::new(),
         auto_approve_resolutions: false,
+        intent: None,
+        verify_outcome: false,
     };
 
     let mut node_index = 0usize;

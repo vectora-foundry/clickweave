@@ -53,6 +53,8 @@ pub fn merge_patch_into_workflow(
         groups: workflow.groups.clone(),
         next_id_counters: workflow.next_id_counters.clone(),
         auto_approve_resolutions: workflow.auto_approve_resolutions,
+        intent: workflow.intent.clone(),
+        verify_outcome: workflow.verify_outcome,
     };
     merged.fixup_auto_ids();
     merged
@@ -232,5 +234,22 @@ mod tests {
         assert_eq!(add[1].to, n2.id);
         assert_eq!(add[2].from, n2.id);
         assert_eq!(add[2].to, b.id);
+    }
+
+    #[test]
+    fn merge_preserves_intent_and_verify_outcome() {
+        let node = make_node("Click A");
+        let wf = Workflow {
+            nodes: vec![node.clone()],
+            intent: Some("Send a message to Alice".to_string()),
+            verify_outcome: true,
+            ..Default::default()
+        };
+        let mut updated = node.clone();
+        updated.name = "Click B".to_string();
+
+        let result = merge_patch_into_workflow(&wf, &[], &[], &[updated], &[], &[]);
+        assert_eq!(result.intent.as_deref(), Some("Send a message to Alice"));
+        assert!(result.verify_outcome);
     }
 }
