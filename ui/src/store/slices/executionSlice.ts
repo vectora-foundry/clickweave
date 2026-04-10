@@ -4,7 +4,6 @@ import { commands } from "../../bindings";
 import { invoke } from "@tauri-apps/api/core";
 import { validateSingleGraph } from "../../utils/graphValidation";
 import { errorMessage } from "../../utils/commandError";
-import { edgeOutputToHandle } from "../../utils/edgeHandles";
 import { autoDissolveGroups } from "../useWorkflowMutations";
 import { toEndpoint } from "../settings";
 import type { StoreState } from "./types";
@@ -106,8 +105,7 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
 
   applyRuntimePatch: (patch) => {
     const { workflow } = get();
-    const edgeKey = (e: Edge) =>
-      `${e.from}-${e.to}-${edgeOutputToHandle(e.output) ?? ""}`;
+    const edgeKey = (e: Edge) => `${e.from}-${e.to}`;
     const removedIds = new Set(patch.removed_node_ids);
     const removedEdgeKeys = new Set(patch.removed_edges.map(edgeKey));
     const nodes = [

@@ -13,7 +13,6 @@ import { IntentEmptyState } from "./components/IntentEmptyState";
 import { VerdictBar } from "./components/VerdictBar";
 import { VerdictModal } from "./components/VerdictModal";
 import { SupervisionModal } from "./components/SupervisionModal";
-import { PatchReviewDialog } from "./components/PatchReviewDialog";
 import { PlannerConfirmation } from "./components/PlannerConfirmation";
 import { CdpAppSelectModal } from "./components/CdpAppSelectModal";
 import { AutoApproveBanner } from "./components/AutoApproveBanner";
@@ -22,7 +21,6 @@ import { useEscapeKey } from "./hooks/useEscapeKey";
 import { useUndoRedoKeyboard } from "./hooks/useUndoRedoKeyboard";
 import { useWorkflowActions } from "./hooks/useWorkflowActions";
 import { useExecutorEvents } from "./hooks/useExecutorEvents";
-import { usePlannerEvents } from "./hooks/usePlannerEvents";
 import { buildAppKindMap } from "./hooks/useNodeSync";
 import { isWalkthroughBusy } from "./store/slices/walkthroughSlice";
 
@@ -43,13 +41,12 @@ function App() {
     })),
   );
 
-  const { executorState, lastRunStatus, executionMode, supervisionPause, resolutionProposal, activeNode, autoApprovedCount } = useStore(
+  const { executorState, lastRunStatus, executionMode, supervisionPause, activeNode, autoApprovedCount } = useStore(
     useShallow((s) => ({
       executorState: s.executorState,
       lastRunStatus: s.lastRunStatus,
       executionMode: s.executionMode,
       supervisionPause: s.supervisionPause,
-      resolutionProposal: s.resolutionProposal,
       activeNode: s.activeNode,
       autoApprovedCount: s.autoApprovedCount,
     })),
@@ -70,15 +67,13 @@ function App() {
     })),
   );
 
-  const { assistantOpen, assistantLoading, assistantRetrying, assistantError, messages, pendingPatch, pendingPatchWarnings, contextUsage } = useStore(
+  const { assistantOpen, assistantLoading, assistantRetrying, assistantError, messages, contextUsage } = useStore(
     useShallow((s) => ({
       assistantOpen: s.assistantOpen,
       assistantLoading: s.assistantLoading,
       assistantRetrying: s.assistantRetrying,
       assistantError: s.assistantError,
       messages: s.messages,
-      pendingPatch: s.pendingPatch,
-      pendingPatchWarnings: s.pendingPatchWarnings,
       contextUsage: s.contextUsage,
     })),
   );
@@ -129,7 +124,6 @@ function App() {
   const setToolPermission = useStore((s) => s.setToolPermission);
   const setExecutionMode = useStore((s) => s.setExecutionMode);
   const supervisionRespond = useStore((s) => s.supervisionRespond);
-  const resolveResolution = useStore((s) => s.resolveResolution);
   const runWorkflow = useStore((s) => s.runWorkflow);
   const stopWorkflow = useStore((s) => s.stopWorkflow);
   const setAssistantOpen = useStore((s) => s.setAssistantOpen);
@@ -138,8 +132,6 @@ function App() {
   const skipIntentEntry = useStore((s) => s.skipIntentEntry);
   const sendAssistantMessage = useStore((s) => s.sendAssistantMessage);
   const cancelAssistantChat = useStore((s) => s.cancelAssistantChat);
-  const applyApprovedPatch = useStore((s) => s.applyApprovedPatch);
-  const discardPendingPatch = useStore((s) => s.discardPendingPatch);
   const clearConversation = useStore((s) => s.clearConversation);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
@@ -184,7 +176,6 @@ function App() {
 
   // ── Tauri event listeners (use getState() to avoid stale closures) ──
   useExecutorEvents();
-  usePlannerEvents();
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-[var(--bg-dark)]">
@@ -299,13 +290,9 @@ function App() {
                 retrying={assistantRetrying}
                 error={assistantError}
                 messages={messages}
-                pendingPatch={pendingPatch}
-                pendingPatchWarnings={pendingPatchWarnings}
                 contextUsage={contextUsage}
                 onSendMessage={sendAssistantMessage}
                 onCancel={cancelAssistantChat}
-                onApplyPatch={applyApprovedPatch}
-                onDiscardPatch={discardPendingPatch}
                 onClearConversation={clearConversation}
                 onClose={() => setAssistantOpen(false)}
               />
@@ -366,25 +353,6 @@ function App() {
         <SupervisionModal
           pause={supervisionPause}
           onRespond={supervisionRespond}
-        />
-      )}
-
-      {resolutionProposal && (
-        <PatchReviewDialog
-          patch={resolutionProposal.patch}
-          reason={resolutionProposal.reason}
-          screenshot={resolutionProposal.screenshot}
-          onApprove={() => resolveResolution(true)}
-          onReject={() => resolveResolution(false)}
-        />
-      )}
-
-      {pendingPatch && !resolutionProposal && (
-        <PatchReviewDialog
-          patch={pendingPatch}
-          reason="Assistant proposed workflow changes"
-          onApprove={() => applyApprovedPatch()}
-          onReject={() => discardPendingPatch()}
         />
       )}
 

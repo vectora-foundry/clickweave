@@ -130,7 +130,7 @@ describe("useAppGrouping", () => {
       ],
       [
         edge("fw1", "loop1"),
-        edge("loop1", "c1", { type: "LoopBody" }),
+        edge("loop1", "c1"),
         edge("c1", "end1"),
         edge("end1", "loop1"),
       ],

@@ -53,8 +53,8 @@ describe("useEdgeSync", () => {
         node("done", "AiStep"),
       ],
       [
-        edge("loop1", "a", { type: "LoopBody" }),
-        edge("loop1", "done", { type: "LoopDone" }),
+        edge("loop1", "a"),
+        edge("loop1", "done"),
       ],
     );
     const { result } = renderEdgeSync({ workflow: wf });
@@ -80,8 +80,8 @@ describe("useEdgeSync", () => {
         node("b", "Click"),
       ],
       [
-        edge("if1", "a", { type: "IfTrue" }),
-        edge("if1", "b", { type: "IfFalse" }),
+        edge("if1", "a"),
+        edge("if1", "b"),
       ],
     );
     const { result } = renderEdgeSync({ workflow: wf });
@@ -96,7 +96,7 @@ describe("useEdgeSync", () => {
         node("sw1", "Switch", { cases: [{ name: "foo" }] }),
         node("a", "AiStep"),
       ],
-      [edge("sw1", "a", { type: "SwitchCase", name: "foo" })],
+      [edge("sw1", "a")],
     );
     const { result } = renderEdgeSync({ workflow: wf });
     expect(result.current.rfEdges[0].label).toBe("foo");

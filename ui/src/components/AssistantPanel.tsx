@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import type { ChatEntry, WorkflowPatch } from "../bindings";
+import type { ChatEntry } from "../bindings";
 import { ChatMessage } from "./ChatMessage";
 import { useHorizontalResize } from "../hooks/useHorizontalResize";
 import { useStore } from "../store/useAppStore";
@@ -10,13 +10,9 @@ interface AssistantPanelProps {
   retrying: boolean;
   error: string | null;
   messages: ChatEntry[];
-  pendingPatch: WorkflowPatch | null;
-  pendingPatchWarnings: string[];
   contextUsage: number | null;
   onSendMessage: (message: string) => void;
   onCancel: () => void;
-  onApplyPatch: () => void;
-  onDiscardPatch: () => void;
   onClearConversation: () => void;
   onClose: () => void;
 }
@@ -27,13 +23,9 @@ export function AssistantPanel({
   retrying,
   error,
   messages,
-  pendingPatch,
-  pendingPatchWarnings,
   contextUsage,
   onSendMessage,
   onCancel,
-  onApplyPatch,
-  onDiscardPatch,
   onClearConversation,
   onClose,
 }: AssistantPanelProps) {
@@ -153,10 +145,6 @@ export function AssistantPanel({
                 key={`${entry.timestamp}-${idx}`}
                 entry={entry}
                 isLastAssistant={idx === lastAssistantIndex}
-                pendingPatch={pendingPatch}
-                pendingPatchWarnings={pendingPatchWarnings}
-                onApplyPatch={onApplyPatch}
-                onDiscardPatch={onDiscardPatch}
               />
             );
           })}
@@ -226,7 +214,7 @@ export function AssistantPanel({
 function IntentBar() {
   const workflowIntent = useStore((s) => s.workflow.intent);
   const pendingIntent = useStore((s) => s.pendingIntent);
-  const hasPendingPatch = useStore((s) => s.pendingPatch !== null);
+  const hasPendingPatch = false;
   const hasPendingIntent = useStore((s) => s.hasPendingIntent);
   const setIntent = useStore((s) => s.setIntent);
   const isRunning = useStore((s) => s.executorState === "running");

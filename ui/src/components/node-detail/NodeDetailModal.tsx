@@ -3,8 +3,6 @@ import type { AppKind, Node } from "../../bindings";
 import type { DetailTab } from "../../store/useAppStore";
 import { RunsTab, SetupTab, TraceTab } from "./tabs";
 import { OutputsSection } from "./OutputsSection";
-import { InputsSection } from "./InputsSection";
-import { extractOutputRefs, OUTPUT_SCHEMAS } from "../../utils/outputSchema";
 
 interface NodeDetailModalProps {
   node: Node | null;
@@ -54,28 +52,15 @@ export function NodeDetailModal({
   // Build consumers map: for the selected node, which of its output fields
   // are consumed by which downstream nodes (by auto_id).
   const consumers = useMemo<Record<string, string[]>>(() => {
-    if (!node?.auto_id) return {};
-    const map: Record<string, string[]> = {};
-    for (const n of nodes) {
-      if (n.id === node.id) continue;
-      const refs = extractOutputRefs(n.node_type as unknown as Record<string, unknown>);
-      for (const { ref } of refs) {
-        if (ref.node === node.auto_id) {
-          if (!map[ref.field]) map[ref.field] = [];
-          if (n.auto_id && !map[ref.field].includes(n.auto_id)) {
-            map[ref.field].push(n.auto_id);
-          }
-        }
-      }
-    }
-    return map;
+    return {};
   }, [node?.auto_id, nodes]);
 
   const nodeTypeName = node?.node_type.type;
   const isActionNode = useMemo(() => {
     if (!nodeTypeName) return false;
-    const fields = OUTPUT_SCHEMAS[nodeTypeName];
-    return !fields || fields.length === 0;
+    // Action nodes are those without query output schemas
+    const queryTypes = ["FindText", "FindImage", "FindApp", "TakeScreenshot", "CdpWait", "AiStep", "McpToolCall", "AppDebugKitOp"];
+    return !queryTypes.includes(nodeTypeName);
   }, [nodeTypeName]);
 
   const handleEnableVerification = useCallback(() => {
@@ -143,10 +128,6 @@ export function NodeDetailModal({
                 consumers={consumers}
                 isActionNode={isActionNode}
                 onEnableVerification={isActionNode ? handleEnableVerification : undefined}
-              />
-              <InputsSection
-                nodeType={node.node_type as unknown as Record<string, unknown>}
-                nodeNames={nodeNames}
               />
             </>
           )}

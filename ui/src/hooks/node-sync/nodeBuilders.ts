@@ -3,7 +3,6 @@ import type { AppKind, Workflow } from "../../bindings";
 import { usesCdp } from "../../utils/appKind";
 import { nodeMetadata, defaultNodeMetadata } from "../../constants/nodeMetadata";
 import { buildDag, type DagGraph, isAppAnchorNode } from "../../utils/appGroupComputation";
-import { getFullOutputSchema, extractOutputRefs, fieldTypeFromAutoId, INPUT_SCHEMAS } from "../../utils/outputSchema";
 
 // Layout constants for loop group positioning
 export const LOOP_HEADER_HEIGHT = 40;
@@ -125,22 +124,13 @@ export function toRFNode(
       isActive: node.id === activeNode,
       enabled: node.enabled,
       onDelete,
-      switchCases: node.node_type.type === "Switch"
-        ? (node.node_type as { type: "Switch"; cases: { name: string }[] }).cases.map((c) => c.name)
-        : [],
+      switchCases: [],
       role: node.role,
       autoId: node.auto_id,
       subtitle: nodeSubtitle(node.node_type, appKind),
-      outputFields: getFullOutputSchema(node.node_type as unknown as Record<string, unknown>),
-      wiredInputs: extractOutputRefs(node.node_type as Record<string, unknown>).map(({ key, ref }) => ({
-        key,
-        fieldType: fieldTypeFromAutoId(ref.node, ref.field),
-      })),
-      // All ref-capable input params (for drag-to-wire drop targets)
-      availableInputs: (INPUT_SCHEMAS[node.node_type.type] ?? []).map((i) => ({
-        key: i.param,
-        fieldType: i.acceptedTypes[0] ?? "Any",
-      })),
+      outputFields: [],
+      wiredInputs: [],
+      availableInputs: [],
     },
   };
 }

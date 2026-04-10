@@ -424,11 +424,7 @@ export type ConfirmableTool = { name: string; description: string }
  */
 export type DetectedCdpApp = { name: string; pid: number; app_kind: AppKind }
 export type DragParams = { from_x: number | null; from_y: number | null; to_x: number | null; to_y: number | null; from_ref?: OutputRef | null; to_ref?: OutputRef | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
-export type Edge = { from: string; to: string; 
-/**
- * Which output port this edge connects from. None for regular single-output edges.
- */
-output: EdgeOutput | null }
+export type Edge = { from: string; to: string }
 export type EdgeOutput = { type: "IfTrue" } | { type: "IfFalse" } | { type: "SwitchCase"; name: string } | { type: "SwitchDefault" } | 
 /**
  * Edge from Loop node into the loop body.

@@ -16,8 +16,8 @@ export function node(id: string, type: string, params?: Record<string, unknown>)
   };
 }
 
-export function edge(from: string, to: string, output?: Edge["output"]): Edge {
-  return { from, to, output: output ?? null };
+export function edge(from: string, to: string): Edge {
+  return { from, to };
 }
 
 export function makeWorkflow(nodes: Node[], edges: Edge[], groups?: Workflow["groups"]): Workflow {

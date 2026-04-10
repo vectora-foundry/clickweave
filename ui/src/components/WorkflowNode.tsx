@@ -2,8 +2,13 @@ import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { NodeRole } from "../bindings";
 import { InlineRenameInput } from "./InlineRenameInput";
-import type { OutputFieldInfo } from "../utils/outputSchema";
 import { typeColor } from "../utils/typeColors";
+
+interface OutputFieldInfo {
+  name: string;
+  field_type: string;
+  description: string;
+}
 
 interface WiredInput {
   key: string;
@@ -245,7 +250,7 @@ export const WorkflowNode = memo(function WorkflowNode({
       <SourceHandles data={d} />
       {d.outputFields && d.outputFields.length > 0 && (
         <PortHandles
-          items={d.outputFields.map((f) => ({ key: f.name, color: typeColor(f.type) }))}
+          items={d.outputFields.map((f: OutputFieldInfo) => ({ key: f.name, color: typeColor(f.field_type) }))}
           type="source" position={Position.Right} idPrefix="data-" sideOffset="right"
         />
       )}

@@ -2,7 +2,6 @@ import type { StateCreator } from "zustand";
 import type { Workflow, AssistantChatRequest, WorkflowPatch, ChatEntry, Edge } from "../../bindings";
 import { commands } from "../../bindings";
 import { toEndpoint } from "../settings";
-import { edgeOutputToHandle } from "../../utils/edgeHandles";
 import { errorMessage, isCancelledError } from "../../utils/commandError";
 import { isWalkthroughActive } from "./walkthroughSlice";
 import { autoDissolveGroups } from "../useWorkflowMutations";
@@ -125,7 +124,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
     const { pendingPatch, workflow, pushLog } = get();
     if (!pendingPatch) return;
     const edgeKey = (e: Edge) =>
-      `${e.from}-${e.to}-${edgeOutputToHandle(e.output) ?? ""}`;
+      `${e.from}-${e.to}`;
     const removedEdgeKeys = new Set(
       pendingPatch.removed_edges.map(edgeKey),
     );
