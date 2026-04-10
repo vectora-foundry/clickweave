@@ -432,7 +432,6 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             self.state.workflow.edges.push(Edge {
                 from: prev_id,
                 to: node_id,
-                output: None,
             });
         }
 

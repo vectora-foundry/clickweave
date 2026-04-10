@@ -281,21 +281,6 @@ pub(super) fn make_executor_with_workflow(workflow: Workflow) -> WorkflowExecuto
     )
 }
 
-/// Helper: build a dummy condition that always evaluates to true when the
-/// variable "done.result" is set to true.
-pub(super) fn dummy_condition() -> clickweave_core::Condition {
-    clickweave_core::Condition {
-        left: clickweave_core::output_schema::OutputRef {
-            node: "done".to_string(),
-            field: "result".to_string(),
-        },
-        operator: clickweave_core::Operator::Equals,
-        right: clickweave_core::output_schema::ConditionValue::Literal {
-            value: clickweave_core::LiteralValue::Bool { value: true },
-        },
-    }
-}
-
 /// Helper to create find_text match entries for click disambiguation tests.
 pub(super) fn make_find_text_matches(entries: &[(&str, &str)]) -> Vec<Value> {
     entries

@@ -37,7 +37,7 @@ pub fn merge_patch_into_workflow(
         .filter(|e| {
             !removed_edges
                 .iter()
-                .any(|r| e.from == r.from && e.to == r.to && e.output == r.output)
+                .any(|r| e.from == r.from && e.to == r.to)
         })
         // Also remove edges pointing to/from removed nodes
         .filter(|e| !removed_ids.contains(&e.from) && !removed_ids.contains(&e.to))
@@ -86,10 +86,7 @@ pub fn splice_insert_before(
     let new_node_ids: Vec<Uuid> = insertions.iter().map(|(id, _)| *id).collect();
 
     // Find predecessor of anchor (unlabeled edge)
-    let pred_edge = workflow
-        .edges
-        .iter()
-        .find(|e| e.to == anchor_id && e.output.is_none());
+    let pred_edge = workflow.edges.iter().find(|e| e.to == anchor_id);
 
     if let Some(pred) = pred_edge {
         // Remove predecessor -> anchor
@@ -98,7 +95,6 @@ pub fn splice_insert_before(
         add_edges.push(Edge {
             from: pred.from,
             to: new_node_ids[0],
-            output: None,
         });
     }
 
@@ -107,7 +103,6 @@ pub fn splice_insert_before(
         add_edges.push(Edge {
             from: window[0],
             to: window[1],
-            output: None,
         });
     }
 
@@ -115,7 +110,6 @@ pub fn splice_insert_before(
     add_edges.push(Edge {
         from: *new_node_ids.last().unwrap(),
         to: anchor_id,
-        output: None,
     });
 
     (add_edges, remove_edges)
@@ -173,7 +167,6 @@ mod tests {
         let edge = Edge {
             from: a.id,
             to: b.id,
-            output: None,
         };
         let wf = Workflow {
             nodes: vec![a.clone(), b.clone()],
@@ -196,7 +189,6 @@ mod tests {
             edges: vec![Edge {
                 from: a.id,
                 to: b.id,
-                output: None,
             }],
             ..Default::default()
         };
@@ -222,7 +214,6 @@ mod tests {
             edges: vec![Edge {
                 from: a.id,
                 to: b.id,
-                output: None,
             }],
             ..Default::default()
         };

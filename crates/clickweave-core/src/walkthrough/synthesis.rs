@@ -610,11 +610,7 @@ pub fn synthesize_draft(
     for i in 0..workflow.nodes.len().saturating_sub(1) {
         let from = workflow.nodes[i].id;
         let to = workflow.nodes[i + 1].id;
-        workflow.edges.push(Edge {
-            from,
-            to,
-            output: None,
-        });
+        workflow.edges.push(Edge { from, to });
     }
 
     workflow

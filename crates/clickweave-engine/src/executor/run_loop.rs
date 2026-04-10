@@ -704,7 +704,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             if !node.enabled {
                 self.log(format!("Skipping disabled node: {}", node.name));
-                current = self.follow_disabled_edge(node_id, &node.node_type);
+                current = self.follow_single_edge(node_id);
                 continue;
             }
 
@@ -713,61 +713,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let node_type = node.node_type.clone();
             let node_role = node.role;
             let expected_outcome = node.expected_outcome.clone();
-
-            // Control flow nodes: evaluate condition and follow edge
-            if matches!(
-                node_type,
-                NodeType::If(_) | NodeType::Switch(_) | NodeType::Loop(_) | NodeType::EndLoop(_)
-            ) {
-                current = self.eval_control_flow(node_id, &node_name, &node_type, &mut ctx);
-
-                // Deferred loop-exit verification (Test mode only).
-                // Read-only nodes inside loops skip supervision during
-                // iterations; we verify the outcome once the loop exits.
-                // Note: for nested loops this is safe — `.take()` consumes
-                // the inner loop's pending exit before `eval_control_flow`
-                // on the outer loop can set its own.
-                if self.execution_mode == ExecutionMode::Test
-                    && let Some(loop_exit) = ctx.pending_loop_exit.take()
-                {
-                    let verification = self.verify_loop_exit(&loop_exit, mcp, &ctx).await;
-                    if verification.passed {
-                        self.emit(ExecutorEvent::SupervisionPassed {
-                            node_id: loop_exit.node_id,
-                            node_name: loop_exit.loop_name.clone(),
-                            summary: verification.reasoning,
-                        });
-                    } else {
-                        self.emit(ExecutorEvent::SupervisionPaused {
-                            node_id: loop_exit.node_id,
-                            node_name: loop_exit.loop_name.clone(),
-                            finding: verification.reasoning,
-                            screenshot: verification.screenshot,
-                        });
-
-                        match wait_for_supervision_command(&mut command_rx, &self.cancel_token)
-                            .await
-                        {
-                            SupervisionAction::Retry => {
-                                self.log("Supervision: Retry not supported for loop exit (treating as Skip)");
-                                self.emit(ExecutorEvent::Log(
-                                    "Loop cannot be re-run after exit. Continuing past loop."
-                                        .to_string(),
-                                ));
-                            }
-                            SupervisionAction::Skip => {
-                                self.log("Supervision: user chose Skip for loop exit");
-                            }
-                            SupervisionAction::Abort => {
-                                self.log("Supervision: user chose Abort after loop exit");
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                continue;
-            }
 
             // Regular execution nodes
             self.emit(ExecutorEvent::NodeStarted(node_id));

@@ -1,5 +1,5 @@
 use crate::AppKind;
-use crate::output_schema::{OutputRef, VerificationMethod};
+use crate::output_schema::VerificationMethod;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -16,8 +16,6 @@ pub struct AiStepParams {
     pub allowed_tools: Option<Vec<String>>,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt_ref: Option<OutputRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,8 +163,6 @@ impl ClickTarget {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ClickParams {
     pub target: Option<ClickTarget>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target_ref: Option<OutputRef>,
     pub button: MouseButton,
     pub click_count: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -179,7 +175,6 @@ impl Default for ClickParams {
     fn default() -> Self {
         Self {
             target: None,
-            target_ref: None,
             button: MouseButton::Left,
             click_count: 1,
             verification_method: None,
@@ -192,8 +187,6 @@ impl Default for ClickParams {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct HoverParams {
     pub target: Option<ClickTarget>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target_ref: Option<OutputRef>,
     pub dwell_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_method: Option<VerificationMethod>,
@@ -205,7 +198,6 @@ impl Default for HoverParams {
     fn default() -> Self {
         Self {
             target: None,
-            target_ref: None,
             dwell_ms: 500,
             verification_method: None,
             verification_assertion: None,
@@ -225,8 +217,6 @@ pub enum MouseButton {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct TypeTextParams {
     pub text: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text_ref: Option<OutputRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_method: Option<VerificationMethod>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -267,8 +257,6 @@ pub struct FocusWindowParams {
     #[serde(default)]
     pub chrome_profile_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub value_ref: Option<OutputRef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_method: Option<VerificationMethod>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_assertion: Option<String>,
@@ -282,7 +270,6 @@ impl Default for FocusWindowParams {
             bring_to_front: true,
             app_kind: AppKind::Native,
             chrome_profile_id: None,
-            value_ref: None,
             verification_method: None,
             verification_assertion: None,
         }
@@ -306,10 +293,6 @@ pub struct DragParams {
     pub from_y: Option<f64>,
     pub to_x: Option<f64>,
     pub to_y: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from_ref: Option<OutputRef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub to_ref: Option<OutputRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_method: Option<VerificationMethod>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -443,8 +426,6 @@ pub struct CdpFillParams {
     pub uid: String,
     pub value: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub value_ref: Option<OutputRef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_method: Option<VerificationMethod>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_assertion: Option<String>,
@@ -454,8 +435,6 @@ pub struct CdpFillParams {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct CdpTypeParams {
     pub text: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text_ref: Option<OutputRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_method: Option<VerificationMethod>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -479,8 +458,6 @@ pub struct CdpPressKeyParams {
 pub struct CdpNavigateParams {
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub url_ref: Option<OutputRef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_method: Option<VerificationMethod>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_assertion: Option<String>,
@@ -491,8 +468,6 @@ pub struct CdpNavigateParams {
 pub struct CdpNewPageParams {
     #[serde(default)]
     pub url: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub url_ref: Option<OutputRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_method: Option<VerificationMethod>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -578,104 +553,6 @@ pub struct McpToolCallParams {
 pub struct AppDebugKitParams {
     pub operation_name: String,
     pub parameters: Value,
-}
-
-// --- Control flow parameter structs ---
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct IfParams {
-    pub condition: Condition,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct SwitchParams {
-    /// Evaluated in order; first matching case wins.
-    pub cases: Vec<SwitchCase>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct SwitchCase {
-    /// Label shown on the edge, e.g. "Has error".
-    pub name: String,
-    pub condition: Condition,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct LoopParams {
-    /// Loop exits when this condition becomes true.
-    /// NOTE: Uses do-while semantics — the exit condition is NOT checked on the
-    /// first iteration (iteration 0). The loop body always runs at least once.
-    /// This is intentional for UI automation where the common pattern is
-    /// "try action, check if it worked, loop if not."
-    pub exit_condition: Condition,
-    /// Safety cap to prevent infinite loops. Default: 100.
-    /// If max_iterations is hit, the loop exits with a warning trace event
-    /// (loop_exited with reason "max_iterations"), which likely indicates
-    /// something unexpected happened.
-    pub max_iterations: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct EndLoopParams {
-    /// Explicit pairing with the Loop node. Stored as UUID rather than inferred
-    /// from graph structure for safety and simpler validation.
-    /// When EndLoop is reached during execution, the walker jumps directly to
-    /// this Loop node, which then re-evaluates its exit condition.
-    pub loop_id: Uuid,
-}
-
-// --- Condition system ---
-// Used by If, Switch, and Loop nodes to evaluate simple comparisons.
-// Conditions reference runtime variables produced by upstream nodes.
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct Condition {
-    pub left: crate::output_schema::OutputRef,
-    pub operator: Operator,
-    pub right: crate::output_schema::ConditionValue,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-#[serde(tag = "type")]
-pub enum LiteralValue {
-    String { value: String },
-    Number { value: f64 },
-    Bool { value: bool },
-}
-
-impl LiteralValue {
-    /// Convert to a serde_json::Value.
-    pub fn to_json_value(&self) -> serde_json::Value {
-        match self {
-            LiteralValue::String { value } => serde_json::Value::String(value.clone()),
-            LiteralValue::Number { value } => serde_json::Number::from_f64(*value)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null),
-            LiteralValue::Bool { value } => serde_json::Value::Bool(*value),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub enum Operator {
-    Equals,
-    NotEquals,
-    GreaterThan,
-    LessThan,
-    GreaterThanOrEqual,
-    LessThanOrEqual,
-    Contains,
-    NotContains,
-    IsEmpty,
-    IsNotEmpty,
 }
 
 // --- Execution mode ---

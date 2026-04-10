@@ -13,7 +13,6 @@ pub mod runtime_query;
 pub mod sanitize;
 pub mod storage;
 pub mod tool_mapping;
-mod validation;
 pub mod variant_index;
 pub mod walkthrough;
 mod workflow;
@@ -23,6 +22,13 @@ pub use node_params::*;
 pub use output_schema::*;
 pub use patch_merge::{merge_patch_into_workflow, splice_insert_before};
 pub use runtime_query::{RuntimeResolution, WorkflowPatchCompact};
-pub use validation::*;
 pub use walkthrough::*;
 pub use workflow::*;
+
+/// Basic workflow validation: ensures the workflow has at least one node.
+pub fn validate_workflow(workflow: &Workflow) -> Result<(), String> {
+    if workflow.nodes.is_empty() {
+        return Err("Workflow has no nodes".to_string());
+    }
+    Ok(())
+}

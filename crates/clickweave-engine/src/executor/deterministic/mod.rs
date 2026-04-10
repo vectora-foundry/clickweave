@@ -3,16 +3,13 @@ mod click;
 mod hover;
 mod window;
 
-use std::borrow::Cow;
-
 use super::retry_context::RetryContext;
 use super::{ExecutorError, ExecutorResult, Mcp, WorkflowExecutor};
 use clickweave_core::AppKind;
 use clickweave_core::output_schema::NodeContext;
 use clickweave_core::{
-    AiStepParams, CdpFillParams, CdpNavigateParams, CdpNewPageParams, CdpTypeParams, ClickParams,
-    ClickTarget, FocusMethod, FocusWindowParams, HoverParams, NodeRun, NodeType, ScreenshotMode,
-    TakeScreenshotParams, TypeTextParams, tool_mapping,
+    FocusMethod, FocusWindowParams, NodeRun, NodeType, ScreenshotMode, TakeScreenshotParams,
+    tool_mapping,
 };
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::ToolCallResult;
@@ -163,105 +160,6 @@ fn cdp_pages_show_navigation_progress(before_pages_text: &str, after_pages_text:
 }
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
-    /// Resolve `_ref` params before execution by producing a new NodeType with
-    /// resolved literal values (coordinates, text, URLs).
-    fn resolve_output_refs<'a>(
-        &self,
-        node_type: &'a NodeType,
-    ) -> ExecutorResult<Cow<'a, NodeType>> {
-        use super::output_ref::*;
-        let ctx = &self.context;
-
-        match node_type {
-            NodeType::Click(p) if p.target_ref.is_some() => {
-                let r = p.target_ref.as_ref().expect("guarded by is_some");
-                let (x, y) = extract_coordinates(&resolve_ref(ctx, r)?)?;
-                Ok(Cow::Owned(NodeType::Click(ClickParams {
-                    target: Some(ClickTarget::Coordinates { x, y }),
-                    ..p.clone()
-                })))
-            }
-            NodeType::Hover(p) if p.target_ref.is_some() => {
-                let r = p.target_ref.as_ref().expect("guarded by is_some");
-                let (x, y) = extract_coordinates(&resolve_ref(ctx, r)?)?;
-                Ok(Cow::Owned(NodeType::Hover(HoverParams {
-                    target: Some(ClickTarget::Coordinates { x, y }),
-                    ..p.clone()
-                })))
-            }
-            NodeType::Drag(p) if p.from_ref.is_some() || p.to_ref.is_some() => {
-                let mut resolved = p.clone();
-                if let Some(from_ref) = &p.from_ref {
-                    let (x, y) = extract_coordinates(&resolve_ref(ctx, from_ref)?)?;
-                    resolved.from_x = Some(x);
-                    resolved.from_y = Some(y);
-                }
-                if let Some(to_ref) = &p.to_ref {
-                    let (x, y) = extract_coordinates(&resolve_ref(ctx, to_ref)?)?;
-                    resolved.to_x = Some(x);
-                    resolved.to_y = Some(y);
-                }
-                Ok(Cow::Owned(NodeType::Drag(resolved)))
-            }
-            NodeType::TypeText(p) if p.text_ref.is_some() => {
-                let r = p.text_ref.as_ref().expect("guarded by is_some");
-                Ok(Cow::Owned(NodeType::TypeText(TypeTextParams {
-                    text: coerce_to_string(&resolve_ref(ctx, r)?),
-                    ..p.clone()
-                })))
-            }
-            NodeType::FocusWindow(p) if p.value_ref.is_some() => {
-                let r = p.value_ref.as_ref().expect("guarded by is_some");
-                Ok(Cow::Owned(NodeType::FocusWindow(FocusWindowParams {
-                    value: Some(coerce_to_string(&resolve_ref(ctx, r)?)),
-                    ..p.clone()
-                })))
-            }
-            NodeType::CdpFill(p) if p.value_ref.is_some() => {
-                let r = p.value_ref.as_ref().expect("guarded by is_some");
-                Ok(Cow::Owned(NodeType::CdpFill(CdpFillParams {
-                    value: coerce_to_string(&resolve_ref(ctx, r)?),
-                    ..p.clone()
-                })))
-            }
-            NodeType::CdpType(p) if p.text_ref.is_some() => {
-                let r = p.text_ref.as_ref().expect("guarded by is_some");
-                Ok(Cow::Owned(NodeType::CdpType(CdpTypeParams {
-                    text: coerce_to_string(&resolve_ref(ctx, r)?),
-                    ..p.clone()
-                })))
-            }
-            NodeType::CdpNavigate(p) if p.url_ref.is_some() => {
-                let r = p.url_ref.as_ref().expect("guarded by is_some");
-                Ok(Cow::Owned(NodeType::CdpNavigate(CdpNavigateParams {
-                    url: coerce_to_string(&resolve_ref(ctx, r)?),
-                    ..p.clone()
-                })))
-            }
-            NodeType::CdpNewPage(p) if p.url_ref.is_some() => {
-                let r = p.url_ref.as_ref().expect("guarded by is_some");
-                Ok(Cow::Owned(NodeType::CdpNewPage(CdpNewPageParams {
-                    url: coerce_to_string(&resolve_ref(ctx, r)?),
-                    ..p.clone()
-                })))
-            }
-            NodeType::AiStep(p) if p.prompt_ref.is_some() => {
-                let r = p.prompt_ref.as_ref().expect("guarded by is_some");
-                let val = resolve_ref(ctx, r)?;
-                let resolved_text = if p.prompt.is_empty() {
-                    coerce_to_string(&val)
-                } else {
-                    format!("{}\n\nContext: {}", p.prompt, coerce_to_string(&val))
-                };
-                Ok(Cow::Owned(NodeType::AiStep(AiStepParams {
-                    prompt: resolved_text,
-                    ..p.clone()
-                })))
-            }
-            _ => Ok(Cow::Borrowed(node_type)),
-        }
-    }
-
     pub(crate) async fn execute_deterministic(
         &mut self,
         node_id: Uuid,
@@ -271,10 +169,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         retry_ctx: &mut RetryContext,
     ) -> ExecutorResult<Value> {
         retry_ctx.last_tool_result = None;
-
-        // Resolve OutputRef parameters before execution.
-        let resolved = self.resolve_output_refs(node_type)?;
-        let node_type = resolved.as_ref();
 
         // Check CDP scope — nodes that require a CDP connection fail early
         // if no CDP-capable app has been focused.

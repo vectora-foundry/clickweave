@@ -111,7 +111,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(in crate::executor) async fn execute_cdp_action(
         &self,
         action: &str,
-        _node_id: Uuid,
+        node_id: Uuid,
         target: &str,
         mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
@@ -193,7 +193,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Resolve a CDP element and click it. Returns the click result text.
     pub(in crate::executor) async fn resolve_and_click_cdp(
         &self,
-        _node_id: Uuid,
+        node_id: Uuid,
         target: &str,
         mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
@@ -206,7 +206,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Resolve a CDP element and hover it. Returns the hover result text.
     pub(in crate::executor) async fn resolve_and_hover_cdp(
         &self,
-        _node_id: Uuid,
+        node_id: Uuid,
         target: &str,
         mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
@@ -270,7 +270,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// when the PID is not yet known (e.g. immediately after launch).
     pub(in crate::executor) async fn ensure_cdp_connected(
         &mut self,
-        _node_id: Uuid,
+        node_id: Uuid,
         app_name: &str,
         pid: i32,
         mcp: &(impl Mcp + ?Sized),
