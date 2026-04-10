@@ -14,6 +14,7 @@ pub mod sanitize;
 pub mod storage;
 pub mod tool_mapping;
 mod validation;
+pub mod variant_index;
 pub mod walkthrough;
 mod workflow;
 
