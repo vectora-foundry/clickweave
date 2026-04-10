@@ -25,6 +25,7 @@ interface WorkflowNodeData {
   onToggleCollapse?: () => void;
   subtitle?: string;
   isRenaming?: boolean;
+  isHypothetical?: boolean;
   hideSourceHandle?: boolean;
   onRenameConfirm?: (newName: string) => void;
   onRenameCancel?: () => void;
@@ -149,6 +150,7 @@ export const WorkflowNode = memo(function WorkflowNode({
     onToggleCollapse,
     subtitle,
     isRenaming,
+    isHypothetical,
     onRenameConfirm,
     onRenameCancel,
   } = d;
@@ -162,7 +164,7 @@ export const WorkflowNode = memo(function WorkflowNode({
     <div
       className={`group relative min-w-[140px] rounded-lg border-2 bg-[var(--bg-panel)] transition-shadow ${
         !enabled ? "opacity-50" : ""
-      } ${needsTallNode ? "min-h-[60px]" : ""} ${needsExtraTallNode ? "min-h-[80px]" : ""}`}
+      } ${isHypothetical ? "opacity-50 border-dashed" : ""} ${needsTallNode ? "min-h-[60px]" : ""} ${needsExtraTallNode ? "min-h-[80px]" : ""}`}
       style={{
         borderColor: selected ? color : isVerification ? "#f59e0b" : isControlFlow ? "#10b98144" : "var(--border)",
         boxShadow: selected ? `0 0 12px ${color}33` : "none",
