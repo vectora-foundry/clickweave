@@ -129,6 +129,9 @@ fn main() {
         resolution_respond,
         confirmable_tools,
         check_endpoint,
+        run_agent,
+        stop_agent,
+        steer_agent,
     ]);
 
     #[cfg(debug_assertions)]
@@ -151,6 +154,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .manage(Mutex::new(AgentHandle::default()))
         .manage(Mutex::new(ExecutorHandle::default()))
         .manage(tokio::sync::Mutex::new(AssistantSessionHandle::default()))
         .manage(Mutex::new(ResolutionState::default()))

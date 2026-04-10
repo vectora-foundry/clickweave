@@ -1,3 +1,4 @@
+mod agent;
 mod assistant;
 mod chrome_profiles;
 pub mod error;
@@ -13,6 +14,7 @@ mod walkthrough;
 mod walkthrough_enrichment;
 mod walkthrough_session;
 
+pub use agent::{AgentHandle, run_agent, steer_agent, stop_agent};
 pub use assistant::{
     assistant_chat, cancel_assistant_chat, get_assistant_session_id, rewind_conversation,
 };
