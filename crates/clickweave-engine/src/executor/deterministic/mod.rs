@@ -461,12 +461,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 && self.cdp_connected_to_focused_app()
                 && let Some(target) = &p.target
             {
-                let expected = cdp::CdpExpected::default();
                 match self
                     .resolve_and_hover_cdp(
                         node_id,
                         target.text(),
-                        &expected,
                         mcp,
                         node_run.as_deref(),
                         retry_ctx,
@@ -548,14 +546,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             return self.execute_cdp_wait(&p.text, p.timeout_ms, mcp).await;
         }
 
-        // CDP Click: resolve target via snapshot + LLM
+        // CDP Click: resolve target via snapshot
         if let NodeType::CdpClick(p) = node_type {
-            let expected = cdp::CdpExpected::default();
             let result_text = self
                 .resolve_and_click_cdp(
                     node_id,
                     p.target.as_str(),
-                    &expected,
                     mcp,
                     node_run.as_deref(),
                     retry_ctx,
@@ -566,12 +562,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         // CDP Hover: same resolve path as CdpClick
         if let NodeType::CdpHover(p) = node_type {
-            let expected = cdp::CdpExpected::default();
             let result_text = self
                 .resolve_and_hover_cdp(
                     node_id,
                     p.target.as_str(),
-                    &expected,
                     mcp,
                     node_run.as_deref(),
                     retry_ctx,
@@ -679,16 +673,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let app_kind = self.focused_app_kind();
 
             if app_kind.uses_cdp() && self.cdp_connected_to_focused_app() {
-                let expected = cdp::CdpExpected::default();
                 match self
-                    .resolve_and_click_cdp(
-                        node_id,
-                        target,
-                        &expected,
-                        mcp,
-                        node_run.as_deref(),
-                        retry_ctx,
-                    )
+                    .resolve_and_click_cdp(node_id, target, mcp, node_run.as_deref(), retry_ctx)
                     .await
                 {
                     Ok(result_text) => {
