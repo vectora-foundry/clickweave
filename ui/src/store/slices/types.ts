@@ -1,3 +1,4 @@
+import type { AgentSlice } from "./agentSlice";
 import type { AssistantSlice } from "./assistantSlice";
 import type { ExecutionSlice } from "./executionSlice";
 import type { HistorySlice } from "./historySlice";
@@ -9,7 +10,8 @@ import type { UiSlice } from "./uiSlice";
 import type { VerdictSlice } from "./verdictSlice";
 import type { WalkthroughSlice } from "./walkthroughSlice";
 
-export type StoreState = AssistantSlice &
+export type StoreState = AgentSlice &
+  AssistantSlice &
   ExecutionSlice &
   HistorySlice &
   LogSlice &

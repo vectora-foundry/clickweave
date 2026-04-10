@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { createAgentSlice } from "./slices/agentSlice";
 import { createAssistantSlice } from "./slices/assistantSlice";
 import { createExecutionSlice } from "./slices/executionSlice";
 import { createHistorySlice } from "./slices/historySlice";
@@ -16,6 +17,7 @@ export type { DetailTab, EndpointConfig } from "./state";
 // ── Zustand store ────────────────────────────────────────────────
 
 export const useStore = create<StoreState>()((...a) => ({
+  ...createAgentSlice(...a),
   ...createSettingsSlice(...a),
   ...createProjectSlice(...a),
   ...createAssistantSlice(...a),
