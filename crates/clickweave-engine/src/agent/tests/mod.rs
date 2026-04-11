@@ -194,6 +194,10 @@ impl Mcp for MockMcp {
     fn tools_as_openai(&self) -> Vec<Value> {
         self.tools.clone()
     }
+
+    async fn refresh_tools(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------

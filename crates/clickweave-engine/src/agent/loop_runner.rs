@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use clickweave_core::cdp::{CdpFindElementMatch, CdpFindElementsResponse};
 use clickweave_core::tool_mapping::tool_invocation_to_node_type;
@@ -272,6 +274,38 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 )
                 .await?;
 
+            // Auto-connect CDP for Electron/Chrome apps after the app becomes
+            // the foreground target. Covers both fresh launches and cases where
+            // the app was already running (focus_window).
+            if let AgentCommand::ToolCall {
+                tool_name,
+                arguments,
+                ..
+            } = &command
+            {
+                if (tool_name == "launch_app" || tool_name == "focus_window")
+                    && matches!(&outcome, StepOutcome::Success(_))
+                {
+                    if let Some(app_name) = arguments["app_name"].as_str() {
+                        if self.auto_connect_cdp(app_name, mcp).await {
+                            self.emit_event(AgentEvent::CdpConnected {
+                                app_name: app_name.to_string(),
+                                port: 0, // actual port is logged internally
+                            });
+                            // CDP connected — refresh the MCP tool list so newly
+                            // registered tools (cdp_click, cdp_type_text, etc.)
+                            // become available to the LLM.
+                            if let Ok(()) = mcp.refresh_tools().await {
+                                tools = mcp.tools_as_openai();
+                                tools.push(prompt::agent_done_tool());
+                                tools.push(prompt::agent_replan_tool());
+                                info!("Rebuilt tool list after CDP connect: {} tools", tools.len());
+                            }
+                        }
+                    }
+                }
+            }
+
             // Update state
             let step = AgentStep {
                 index: step_index,
@@ -341,8 +375,16 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                     self.state.consecutive_errors += 1;
                     previous_result = Some(format!("Error: {}", err));
 
-                    self.emit_event(AgentEvent::Error {
-                        message: err.clone(),
+                    let tool_name_for_event =
+                        if let AgentCommand::ToolCall { tool_name, .. } = &command {
+                            tool_name.clone()
+                        } else {
+                            "unknown".to_string()
+                        };
+                    self.emit_event(AgentEvent::StepFailed {
+                        step_index,
+                        tool_name: tool_name_for_event,
+                        error: err.clone(),
                     });
 
                     let action = recovery::recovery_strategy(
@@ -411,28 +453,158 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     }
 
     /// Fetch interactive elements from the current page via MCP.
+    ///
+    /// Calls `cdp_find_elements` unconditionally — the tool is dynamically
+    /// registered by the MCP server after `cdp_connect`, so it won't appear
+    /// in the initial tool listing. If no CDP connection is active, the call
+    /// simply fails and we return an empty list.
     async fn fetch_elements(&mut self, mcp: &(impl Mcp + ?Sized)) -> Vec<CdpFindElementMatch> {
-        // Try cdp_find_elements first (structured data)
-        if mcp.has_tool("cdp_find_elements") {
-            match mcp
-                .call_tool("cdp_find_elements", Some(serde_json::json!({})))
-                .await
-            {
-                Ok(result) => {
-                    let text = extract_result_text(&result);
-                    if let Ok(parsed) = serde_json::from_str::<CdpFindElementsResponse>(&text) {
-                        self.state.current_url = parsed.page_url;
-                        return parsed.matches;
-                    }
-                    debug!("Failed to parse cdp_find_elements response, falling back");
+        match mcp
+            .call_tool(
+                "cdp_find_elements",
+                Some(serde_json::json!({"query": "", "max_results": 300})),
+            )
+            .await
+        {
+            Ok(result) if result.is_error != Some(true) => {
+                let text = extract_result_text(&result);
+                if let Ok(parsed) = serde_json::from_str::<CdpFindElementsResponse>(&text) {
+                    self.state.current_url = parsed.page_url;
+                    return parsed.matches;
                 }
-                Err(e) => {
-                    debug!(error = %e, "cdp_find_elements failed, falling back");
-                }
+                debug!("Failed to parse cdp_find_elements response");
+            }
+            Ok(result) => {
+                let text = extract_result_text(&result);
+                debug!(error = %text, "cdp_find_elements returned error");
+            }
+            Err(e) => {
+                debug!(error = %e, "cdp_find_elements call failed");
             }
         }
 
         Vec::new()
+    }
+
+    /// After a successful `launch_app`, probe the app type and auto-connect CDP
+    /// for Electron/Chrome apps. This ensures `fetch_elements` returns structured
+    /// element data on subsequent steps. Returns `true` if CDP was connected.
+    async fn auto_connect_cdp(&self, app_name: &str, mcp: &(impl Mcp + ?Sized)) -> bool {
+        if !mcp.has_tool("probe_app") || !mcp.has_tool("cdp_connect") {
+            return false;
+        }
+
+        // 1. Probe app type
+        let probe_args = serde_json::json!({"app_name": app_name});
+        let probe_text = match mcp.call_tool("probe_app", Some(probe_args)).await {
+            Ok(r) => extract_result_text(&r),
+            Err(e) => {
+                debug!(app = app_name, error = %e, "probe_app failed, skipping CDP");
+                return false;
+            }
+        };
+
+        if !probe_text.contains("ElectronApp") && !probe_text.contains("ChromeBrowser") {
+            debug!(app = app_name, "Not an Electron/Chrome app, skipping CDP");
+            return false;
+        }
+
+        info!(
+            app = app_name,
+            "Detected Electron/Chrome app, connecting CDP"
+        );
+
+        // 2. Check if already running with --remote-debugging-port
+        if let Some(port) = crate::executor::deterministic::cdp::existing_debug_port(app_name).await
+        {
+            info!(app = app_name, port, "Reusing existing debug port");
+            if self.cdp_connect_with_retries(port, mcp).await {
+                return true;
+            }
+        }
+
+        // 3. Quit, relaunch with a debug port, then connect CDP
+        let port = clickweave_core::cdp::rand_ephemeral_port();
+
+        let quit_args = serde_json::json!({"app_name": app_name});
+        let _ = mcp.call_tool("quit_app", Some(quit_args)).await;
+
+        // Poll until the app has exited (10s graceful, then force-quit)
+        let mut quit_confirmed = false;
+        for _ in 0..20 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let list_args = serde_json::json!({"app_name": app_name, "user_apps_only": true});
+            if let Ok(r) = mcp.call_tool("list_apps", Some(list_args)).await {
+                let text = extract_result_text(&r);
+                if text.trim() == "[]" {
+                    quit_confirmed = true;
+                    break;
+                }
+            }
+        }
+        if !quit_confirmed {
+            warn!(app = app_name, "App did not quit within 10s, force-killing");
+            let force_args = serde_json::json!({"app_name": app_name, "force": true});
+            let _ = mcp.call_tool("quit_app", Some(force_args)).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+
+        // Relaunch with debug port
+        let launch_args = serde_json::json!({
+            "app_name": app_name,
+            "args": [format!("--remote-debugging-port={}", port)],
+        });
+        match mcp.call_tool("launch_app", Some(launch_args)).await {
+            Ok(r) if r.is_error != Some(true) => {}
+            Ok(r) => {
+                let err = extract_result_text(&r);
+                warn!(app = app_name, error = %err, "Relaunch with debug port failed");
+                let fallback = serde_json::json!({"app_name": app_name});
+                let _ = mcp.call_tool("launch_app", Some(fallback)).await;
+                return false;
+            }
+            Err(e) => {
+                warn!(app = app_name, error = %e, "Relaunch with debug port failed");
+                let fallback = serde_json::json!({"app_name": app_name});
+                let _ = mcp.call_tool("launch_app", Some(fallback)).await;
+                return false;
+            }
+        }
+
+        // Wait for the app to finish starting
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        if self.cdp_connect_with_retries(port, mcp).await {
+            info!(app = app_name, port, "CDP connected");
+            true
+        } else {
+            warn!(app = app_name, port, "CDP connection failed after retries");
+            false
+        }
+    }
+
+    /// Attempt `cdp_connect` with retries, returning true on success.
+    async fn cdp_connect_with_retries(&self, port: u16, mcp: &(impl Mcp + ?Sized)) -> bool {
+        let args = serde_json::json!({"port": port});
+        for attempt in 0..10 {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            match mcp.call_tool("cdp_connect", Some(args.clone())).await {
+                Ok(r) if r.is_error != Some(true) => return true,
+                Ok(r) => {
+                    debug!(
+                        attempt = attempt + 1,
+                        error = %extract_result_text(&r),
+                        "cdp_connect attempt failed"
+                    );
+                }
+                Err(e) => {
+                    debug!(attempt = attempt + 1, error = %e, "cdp_connect attempt failed");
+                }
+            }
+        }
+        false
     }
 
     /// Parse the LLM response and execute the chosen action.

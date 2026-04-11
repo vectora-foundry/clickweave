@@ -596,7 +596,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
 /// Check if an app is already running with `--remote-debugging-port=<N>`.
 /// Returns the port if found, so the caller can skip the quit/relaunch cycle.
-async fn existing_debug_port(app_name: &str) -> Option<u16> {
+pub(crate) async fn existing_debug_port(app_name: &str) -> Option<u16> {
     #[cfg(target_os = "windows")]
     return None;
 

@@ -275,6 +275,14 @@ async steerAgent(message: string) : Promise<Result<null, CommandError>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async approveAgentAction(approved: boolean) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("approve_agent_action", { approved }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -392,7 +400,7 @@ export type RunRequest = { workflow: Workflow; project_path: string | null; agen
 /**
  * Planner LLM used for supervision in Test mode.
  */
-planner: EndpointConfig | null; execution_mode: ExecutionMode; auto_approve_resolutions?: boolean; outcome_delay_ms?: number; supervision_delay_ms?: number }
+planner: EndpointConfig | null; execution_mode: ExecutionMode; supervision_delay_ms?: number }
 export type RunStatus = "Ok" | "Failed" | "Stopped" | "Cancelled"
 export type RunsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string }
 /**
@@ -457,7 +465,7 @@ export type WindowControlAction = "Close" | "Minimize" | "Maximize" |
  * macOS subrole (`AXZoomButton` vs `AXFullScreenButton`).
  */
 "Zoom"
-export type Workflow = { id: string; name: string; nodes: Node[]; edges: Edge[]; groups?: NodeGroup[]; next_id_counters?: Partial<{ [key in string]: number }>; auto_approve_resolutions?: boolean; intent?: string | null; verify_outcome?: boolean }
+export type Workflow = { id: string; name: string; nodes: Node[]; edges: Edge[]; groups?: NodeGroup[]; next_id_counters?: Partial<{ [key in string]: number }>; intent?: string | null }
 
 /** tauri-specta globals **/
 

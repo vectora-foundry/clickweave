@@ -13,8 +13,19 @@ interface AgentPlanPayload {
   horizon: string[];
 }
 
+interface CdpConnectedPayload {
+  app_name: string;
+  port: number;
+}
+
 interface AgentErrorPayload {
   message: string;
+}
+
+interface StepFailedPayload {
+  step_number: number;
+  tool_name: string;
+  error: string;
 }
 
 interface ApprovalRequiredPayload {
@@ -92,6 +103,33 @@ export function useAgentEvents() {
         useStore.getState().pushLog(
           `Agent awaiting approval: ${e.payload.tool_name}`,
         );
+      }),
+    );
+
+    sub(
+      listen<CdpConnectedPayload>("agent://cdp_connected", (e) => {
+        useStore
+          .getState()
+          .pushLog(
+            `CDP connected to '${e.payload.app_name}' (port ${e.payload.port})`,
+          );
+      }),
+    );
+
+    sub(
+      listen<StepFailedPayload>("agent://step_failed", (e) => {
+        useStore.getState().addAgentStep({
+          summary: `Error: ${e.payload.error}`,
+          toolName: e.payload.tool_name,
+          toolArgs: null,
+          toolResult: e.payload.error,
+          pageTransitioned: false,
+        });
+        useStore
+          .getState()
+          .pushLog(
+            `Agent step ${e.payload.step_number} failed: ${e.payload.tool_name} — ${e.payload.error}`,
+          );
       }),
     );
 

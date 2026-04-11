@@ -15,7 +15,9 @@ pub struct McpClient {
     /// callers cannot interleave and misattribute responses.
     io_lock: Mutex<()>,
     request_id: AtomicU64,
-    tools: Vec<Tool>,
+    /// Tool list — behind an `RwLock` so it can be refreshed after state-changing
+    /// operations (e.g. `cdp_connect` exposes new tools) without requiring `&mut self`.
+    tools: std::sync::RwLock<Vec<Tool>>,
 }
 
 impl McpClient {
@@ -40,11 +42,11 @@ impl McpClient {
             stdout: Mutex::new(BufReader::new(stdout)),
             io_lock: Mutex::new(()),
             request_id: AtomicU64::new(1),
-            tools: Vec::new(),
+            tools: std::sync::RwLock::new(Vec::new()),
         };
 
         client.initialize().await?;
-        client.fetch_tools().await?;
+        client.refresh_tools().await?;
 
         Ok(client)
     }
@@ -148,33 +150,36 @@ impl McpClient {
     /// Re-fetch the tool list from the MCP server.
     /// Call after operations that change the server's available tools
     /// (e.g., `cdp_connect` exposes new CDP inspection tools).
-    pub async fn refresh_tools(&mut self) -> Result<()> {
-        self.fetch_tools().await
-    }
-
-    async fn fetch_tools(&mut self) -> Result<()> {
+    pub async fn refresh_tools(&self) -> Result<()> {
         let response = self.send_request("tools/list", None).await?;
 
         if let Some(result) = response.result {
             let tools_result: ToolsListResult = serde_json::from_value(result)?;
-            info!("Loaded {} MCP tools", tools_result.tools.len());
+            info!(
+                "Refreshed MCP tools: {} available",
+                tools_result.tools.len()
+            );
             for tool in &tools_result.tools {
                 debug!("  - {}: {:?}", tool.name, tool.description);
             }
-            self.tools = tools_result.tools;
+            *self.tools.write().unwrap_or_else(|e| e.into_inner()) = tools_result.tools;
         }
 
         Ok(())
     }
 
-    /// Get available tools
-    pub fn tools(&self) -> &[Tool] {
-        &self.tools
+    /// Get available tool count.
+    pub fn tool_count(&self) -> usize {
+        self.tools.read().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// Check whether a tool with the given name is available.
     pub fn has_tool(&self, name: &str) -> bool {
-        self.tools.iter().any(|t| t.name == name)
+        self.tools
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|t| t.name == name)
     }
 
     /// Call a tool by name with arguments
@@ -202,7 +207,7 @@ impl McpClient {
 
     /// Convert MCP tools to OpenAI-compatible tool format
     pub fn tools_as_openai(&self) -> Vec<Value> {
-        crate::tools_to_openai(&self.tools)
+        crate::tools_to_openai(&self.tools.read().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Check if process is still running

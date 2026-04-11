@@ -25,6 +25,15 @@ pub enum AgentEvent {
     Error {
         message: String,
     },
+    CdpConnected {
+        app_name: String,
+        port: u16,
+    },
+    StepFailed {
+        step_index: usize,
+        tool_name: String,
+        error: String,
+    },
 }
 
 /// Approval request sent to the UI before executing an action.

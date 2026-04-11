@@ -1,4 +1,4 @@
-mod cdp;
+pub(crate) mod cdp;
 mod click;
 mod hover;
 mod window;

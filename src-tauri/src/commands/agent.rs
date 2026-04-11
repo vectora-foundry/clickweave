@@ -232,6 +232,29 @@ pub async fn run_agent(
                     let _ = event_emit_handle
                         .emit("agent://error", serde_json::json!({ "message": message }));
                 }
+                AgentEvent::CdpConnected { app_name, port } => {
+                    let _ = event_emit_handle.emit(
+                        "agent://cdp_connected",
+                        serde_json::json!({
+                            "app_name": app_name,
+                            "port": port,
+                        }),
+                    );
+                }
+                AgentEvent::StepFailed {
+                    step_index,
+                    tool_name,
+                    error,
+                } => {
+                    let _ = event_emit_handle.emit(
+                        "agent://step_failed",
+                        serde_json::json!({
+                            "step_number": step_index,
+                            "tool_name": tool_name,
+                            "error": error,
+                        }),
+                    );
+                }
             }
         }
     });

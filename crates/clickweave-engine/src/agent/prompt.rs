@@ -17,15 +17,29 @@ You operate in an observe-act loop:
 
 ## Rules
 - Call exactly ONE tool per turn. Never call multiple tools.
-- Use the element UIDs from the observation to target elements precisely.
 - If the goal is complete, call the `agent_done` tool with a summary.
 - If the goal seems unreachable, call the `agent_replan` tool with a reason.
-- Do NOT guess coordinates. Use element UIDs or find_text for targeting.
 - Be concise in your reasoning. Focus on the next immediate action.
 
-## Tool Targeting
-When clicking or interacting with elements, prefer using the element's UID
-from the observation list. Pass `uid` in the tool arguments when the tool supports it."#
+## How to Interact with Elements
+When the observation includes interactive elements with UIDs (like [d1], [d2], etc.),
+use CDP tools to interact with them directly by UID:
+
+- To click: `cdp_click` with `uid` (e.g. uid="d1")
+- To type: `cdp_type_text` with `text`
+- To press a key: `cdp_press_key` with `key`
+
+Example: to click a button labeled "Submit" with uid [d5]:
+  → call cdp_click with uid="d5"
+
+If CDP tools are NOT available, use `find_text` to locate the element by label,
+then `click` at the returned coordinates.
+
+NEVER call `click` with guessed coordinates. NEVER use `take_screenshot` when
+elements are listed in the observation.
+
+When NO elements are listed, use `take_screenshot` to see the screen, then
+`find_text` to locate elements by name."#
     )
 }
 
