@@ -34,6 +34,12 @@ pub enum AgentEvent {
         tool_name: String,
         error: String,
     },
+    /// An automatic sub-action performed by the agent (e.g. CDP auto-connect
+    /// probing, quitting, relaunching). Not a user-approved step.
+    SubAction {
+        tool_name: String,
+        summary: String,
+    },
 }
 
 /// Approval request sent to the UI before executing an action.
@@ -99,6 +105,26 @@ pub enum AgentCommand {
     Replan { reason: String },
     /// The LLM returned text instead of a tool call.
     TextOnly { text: String },
+}
+
+impl AgentCommand {
+    /// Return the tool name if this is a tool call, or `"unknown"` otherwise.
+    pub fn tool_name_or_unknown(&self) -> &str {
+        match self {
+            Self::ToolCall { tool_name, .. } => tool_name,
+            _ => "unknown",
+        }
+    }
+}
+
+/// Truncate text to `max_chars`, snapping to a character boundary.
+/// Returns the original text if it fits within the limit.
+pub fn truncate_summary(text: &str, max_chars: usize) -> String {
+    if text.len() <= max_chars {
+        return text.to_string();
+    }
+    let end = text.floor_char_boundary(max_chars);
+    format!("{}...", &text[..end])
 }
 
 /// Mutable state accumulated during an agent run.

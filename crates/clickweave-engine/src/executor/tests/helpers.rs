@@ -20,8 +20,8 @@ impl ChatBackend for StubBackend {
 
     async fn chat(
         &self,
-        _messages: Vec<Message>,
-        _tools: Option<Vec<Value>>,
+        _messages: &[Message],
+        _tools: Option<&[Value]>,
     ) -> anyhow::Result<ChatResponse> {
         panic!("StubBackend::chat should not be called in this test");
     }
@@ -70,8 +70,8 @@ impl ChatBackend for ScriptedBackend {
 
     async fn chat(
         &self,
-        _messages: Vec<Message>,
-        _tools: Option<Vec<Value>>,
+        _messages: &[Message],
+        _tools: Option<&[Value]>,
     ) -> anyhow::Result<ChatResponse> {
         let text = self
             .responses

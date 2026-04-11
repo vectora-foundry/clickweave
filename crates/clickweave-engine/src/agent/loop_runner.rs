@@ -239,16 +239,10 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                                     .push(Message::tool_result(&tool_call_id, &result_text));
 
                                 // Emit live step event for cached replay
-                                let summary_text = if result_text.len() > 120 {
-                                    let end = result_text.floor_char_boundary(120);
-                                    format!("{}...", &result_text[..end])
-                                } else {
-                                    result_text.clone()
-                                };
                                 self.emit_event(AgentEvent::StepCompleted {
                                     step_index,
                                     tool_name: cached_tool.clone(),
-                                    summary: summary_text,
+                                    summary: truncate_summary(&result_text, 120),
                                 });
 
                                 let step = AgentStep {
@@ -303,7 +297,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             // 5. Call the LLM
             let response = self
                 .llm
-                .chat(self.messages.clone(), Some(tools.clone()))
+                .chat(&self.messages, Some(&tools))
                 .await
                 .context("Agent LLM call failed")?;
 
@@ -382,34 +376,19 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                     self.state.consecutive_errors = 0;
                     previous_result = Some(result_text.clone());
 
-                    let tool_name_for_event =
-                        if let AgentCommand::ToolCall { tool_name, .. } = &command {
-                            tool_name.clone()
-                        } else {
-                            "unknown".to_string()
-                        };
-
-                    // Emit live step event
-                    let summary_text = if result_text.len() > 120 {
-                        let end = result_text.floor_char_boundary(120);
-                        format!("{}...", &result_text[..end])
-                    } else {
-                        result_text.clone()
-                    };
                     self.emit_event(AgentEvent::StepCompleted {
                         step_index,
-                        tool_name: tool_name_for_event,
-                        summary: summary_text,
+                        tool_name: command.tool_name_or_unknown().to_string(),
+                        summary: truncate_summary(result_text, 120),
                     });
 
-                    // Cache the successful decision
-                    if self.config.use_cache {
-                        if let AgentCommand::ToolCall {
-                            tool_name,
-                            arguments,
-                            ..
-                        } = &command
-                        {
+                    if let AgentCommand::ToolCall {
+                        tool_name,
+                        arguments,
+                        ..
+                    } = &command
+                    {
+                        if self.config.use_cache {
                             self.cache.store(
                                 &goal,
                                 &elements,
@@ -417,16 +396,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                                 arguments.clone(),
                             );
                         }
-                    }
-
-                    // Build workflow node
-                    if self.config.build_workflow {
-                        if let AgentCommand::ToolCall {
-                            tool_name,
-                            arguments,
-                            ..
-                        } = &command
-                        {
+                        if self.config.build_workflow {
                             self.add_workflow_node(tool_name, arguments, &mcp_tools);
                         }
                     }
@@ -435,15 +405,9 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                     self.state.consecutive_errors += 1;
                     previous_result = Some(format!("Error: {}", err));
 
-                    let tool_name_for_event =
-                        if let AgentCommand::ToolCall { tool_name, .. } = &command {
-                            tool_name.clone()
-                        } else {
-                            "unknown".to_string()
-                        };
                     self.emit_event(AgentEvent::StepFailed {
                         step_index,
-                        tool_name: tool_name_for_event,
+                        tool_name: command.tool_name_or_unknown().to_string(),
                         error: err.clone(),
                     });
 
@@ -575,8 +539,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
 
         // 1. Probe app type
         let probe_args = serde_json::json!({"app_name": app_name});
-        self.emit_event(AgentEvent::StepCompleted {
-            step_index: usize::MAX,
+        self.emit_event(AgentEvent::SubAction {
             tool_name: "probe_app".to_string(),
             summary: format!("Auto: probing {} for CDP support", app_name),
         });
@@ -610,8 +573,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         // 3. Quit, relaunch with a debug port, then connect CDP
         let port = clickweave_core::cdp::rand_ephemeral_port();
 
-        self.emit_event(AgentEvent::StepCompleted {
-            step_index: usize::MAX,
+        self.emit_event(AgentEvent::SubAction {
             tool_name: "quit_app".to_string(),
             summary: format!("Auto: quitting {} for CDP relaunch", app_name),
         });
@@ -639,8 +601,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         }
 
         // Relaunch with debug port
-        self.emit_event(AgentEvent::StepCompleted {
-            step_index: usize::MAX,
+        self.emit_event(AgentEvent::SubAction {
             tool_name: "launch_app".to_string(),
             summary: format!("Auto: relaunching {} with debug port {}", app_name, port),
         });
@@ -668,8 +629,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         // Wait for the app to finish starting
         tokio::time::sleep(Duration::from_secs(3)).await;
 
-        self.emit_event(AgentEvent::StepCompleted {
-            step_index: usize::MAX,
+        self.emit_event(AgentEvent::SubAction {
             tool_name: "cdp_connect".to_string(),
             summary: format!("Auto: connecting CDP on port {}", port),
         });

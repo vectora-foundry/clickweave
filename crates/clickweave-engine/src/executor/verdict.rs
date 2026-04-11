@@ -161,7 +161,7 @@ pub(crate) async fn screenshot_verdict<C: ChatBackend>(
 
     let messages = vec![Message::system(SCREENSHOT_VERIFICATION_PROMPT), user_msg];
 
-    let (verdict, reasoning) = match backend.chat(messages, None).await {
+    let (verdict, reasoning) = match backend.chat(&messages, None).await {
         Ok(response) => {
             let text = response
                 .choices

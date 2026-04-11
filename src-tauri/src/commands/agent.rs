@@ -139,14 +139,15 @@ pub async fn run_agent(
         let llm = clickweave_llm::LlmClient::new(agent_config);
         let config = AgentConfig::default();
 
-        // Begin storage execution
+        // Begin storage execution and load cross-run state under a single lock
         let storage = task_storage;
-        let _exec_dir = storage.lock().unwrap().begin_execution();
-
-        // Load cross-run variant index and decision cache
-        let variant_index = VariantIndex::load(&storage.lock().unwrap().variant_index_path());
-        let variant_context = variant_index.as_context_text();
-        let cache = AgentCache::load_from_path(&storage.lock().unwrap().agent_cache_path());
+        let (variant_context, cache) = {
+            let mut guard = storage.lock().unwrap();
+            let _exec_dir = guard.begin_execution();
+            let variant_index = VariantIndex::load(&guard.variant_index_path());
+            let cache = AgentCache::load_from_path(&guard.agent_cache_path());
+            (variant_index.as_context_text(), cache)
+        };
 
         let channels = AgentChannels {
             event_tx,
@@ -293,6 +294,15 @@ pub async fn run_agent(
                             "step_number": step_index,
                             "tool_name": tool_name,
                             "error": error,
+                        }),
+                    );
+                }
+                AgentEvent::SubAction { tool_name, summary } => {
+                    let _ = event_emit_handle.emit(
+                        "agent://sub_action",
+                        serde_json::json!({
+                            "tool_name": tool_name,
+                            "summary": summary,
                         }),
                     );
                 }

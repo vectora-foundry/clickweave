@@ -70,7 +70,7 @@ pub fn compact_step_summaries(
     compacted.push(Message::user(summary));
 
     // Each tool step contributes 3 messages: user observation + assistant tool-call + tool result.
-    // Cache-replayed steps contribute 0 messages (they skip transcript reconstruction).
+    // Cache-replayed steps also contribute 2 messages (tool-call + tool-result).
     // Use 3 as the multiplier to avoid discarding context prematurely.
     let messages_per_step = 3;
     let recent_message_count = keep_recent * messages_per_step;

@@ -1,14 +1,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Serialize)]
-pub struct ChatRequest {
-    pub model: String,
-    pub messages: Vec<Message>,
+#[derive(Debug, Serialize)]
+pub struct ChatRequest<'a> {
+    pub model: &'a str,
+    pub messages: &'a [Message],
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<Value>>,
+    pub tools: Option<&'a [Value]>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_choice: Option<String>,
+    pub tool_choice: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -16,7 +16,7 @@ pub struct ChatRequest {
     /// Extra provider-specific fields flattened into the request body
     /// (e.g. `{"chat_template_kwargs": {"enable_thinking": false}}`).
     #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
-    pub extra_body: serde_json::Map<String, Value>,
+    pub extra_body: &'a serde_json::Map<String, Value>,
 }
 
 /// Message content can be a plain string or an array of content parts (for vision).

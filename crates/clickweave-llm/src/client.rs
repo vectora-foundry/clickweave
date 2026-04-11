@@ -9,8 +9,8 @@ use tracing::{debug, error, info, trace};
 pub trait ChatBackend: Send + Sync {
     fn chat(
         &self,
-        messages: Vec<Message>,
-        tools: Option<Vec<Value>>,
+        messages: &[Message],
+        tools: Option<&[Value]>,
     ) -> impl Future<Output = Result<ChatResponse>> + Send;
 
     fn model_name(&self) -> &str;
@@ -164,24 +164,20 @@ impl ChatBackend for LlmClient {
         &self.config.model
     }
 
-    async fn chat(
-        &self,
-        messages: Vec<Message>,
-        tools: Option<Vec<Value>>,
-    ) -> Result<ChatResponse> {
+    async fn chat(&self, messages: &[Message], tools: Option<&[Value]>) -> Result<ChatResponse> {
         let url = format!(
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
         );
 
         let request = ChatRequest {
-            model: self.config.model.clone(),
+            model: &self.config.model,
             messages,
             tools,
             tool_choice: None,
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
-            extra_body: self.config.extra_body.clone(),
+            extra_body: &self.config.extra_body,
         };
 
         debug!(
@@ -479,7 +475,7 @@ pub async fn analyze_images(
         Message::user_with_images(build_vlm_prompt(step_goal, tool_name), images),
     ];
 
-    let response = vlm.chat(messages, None).await?;
+    let response = vlm.chat(&messages, None).await?;
 
     let text = response
         .choices
@@ -550,10 +546,10 @@ mod tests {
 
         async fn chat(
             &self,
-            messages: Vec<Message>,
-            _tools: Option<Vec<Value>>,
+            messages: &[Message],
+            _tools: Option<&[Value]>,
         ) -> Result<ChatResponse> {
-            self.calls.lock().unwrap().push(messages);
+            self.calls.lock().unwrap().push(messages.to_vec());
             Ok(ChatResponse {
                 id: "mock".to_string(),
                 choices: vec![Choice {

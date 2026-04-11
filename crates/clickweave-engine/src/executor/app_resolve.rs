@@ -146,7 +146,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let messages = vec![Message::user(prompt)];
         let response = self
             .reasoning_backend()
-            .chat(messages, None)
+            .chat(&messages, None)
             .await
             .map_err(|e| ExecutorError::AppResolution(format!("LLM error: {}", e)))?;
 

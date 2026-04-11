@@ -59,11 +59,7 @@ impl ChatBackend for MockAgent {
         "mock-agent"
     }
 
-    async fn chat(
-        &self,
-        _messages: Vec<Message>,
-        _tools: Option<Vec<Value>>,
-    ) -> Result<ChatResponse> {
+    async fn chat(&self, _messages: &[Message], _tools: Option<&[Value]>) -> Result<ChatResponse> {
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             // Fallback: return agent_done so tests don't hang
@@ -668,12 +664,11 @@ impl ChatBackend for CapturingMockAgent {
         "capturing-mock-agent"
     }
 
-    async fn chat(
-        &self,
-        messages: Vec<Message>,
-        _tools: Option<Vec<Value>>,
-    ) -> Result<ChatResponse> {
-        self.captured_messages.lock().unwrap().push(messages);
+    async fn chat(&self, messages: &[Message], _tools: Option<&[Value]>) -> Result<ChatResponse> {
+        self.captured_messages
+            .lock()
+            .unwrap()
+            .push(messages.to_vec());
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             Ok(MockAgent::done_response("No more responses"))

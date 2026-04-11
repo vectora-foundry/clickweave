@@ -217,7 +217,7 @@ pub(super) async fn execute_vlm_click_request(
         )]
     };
 
-    let result = clickweave_llm::ChatBackend::chat(backend, make_messages(), None).await;
+    let result = clickweave_llm::ChatBackend::chat(backend, &make_messages(), None).await;
 
     // Retry once if the model exhausted the token budget on reasoning.
     let needs_retry = match &result {
@@ -229,7 +229,7 @@ pub(super) async fn execute_vlm_click_request(
     };
 
     let final_result = if needs_retry {
-        clickweave_llm::ChatBackend::chat(backend, make_messages(), None).await
+        clickweave_llm::ChatBackend::chat(backend, &make_messages(), None).await
     } else {
         result
     };
