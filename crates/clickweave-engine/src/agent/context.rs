@@ -209,4 +209,76 @@ mod tests {
         });
         assert!(has_summary);
     }
+
+    #[test]
+    fn compact_preserves_goal_message() {
+        // Simulate: [system, goal, obs0, asst0, tool0, obs1, asst1, tool1, ..., obs9, asst9, tool9]
+        let mut messages = vec![
+            Message::system("System prompt"),
+            Message::user("## Goal\nOpen the calculator app"),
+        ];
+        let mut steps = Vec::new();
+        for i in 0..10 {
+            messages.push(Message::user(format!("Observation {}", i)));
+            messages.push(Message::assistant(format!("Action {}", i)));
+            messages.push(Message::tool_result(&format!("call_{}", i), "ok"));
+            steps.push(make_step(i));
+        }
+
+        let result = compact_step_summaries(&messages, &steps, 10, 3);
+        assert!(result.is_some());
+        let compacted = result.unwrap();
+
+        // Goal must survive compaction
+        assert!(
+            compacted.iter().any(|m| m
+                .content_text()
+                .map_or(false, |t| t.contains("Open the calculator app"))),
+            "Goal message was dropped during compaction"
+        );
+    }
+
+    #[test]
+    fn compact_repeated_does_not_duplicate_goal_or_summary() {
+        let mut messages = vec![
+            Message::system("System prompt"),
+            Message::user("## Goal\nDo the thing"),
+        ];
+        let mut steps = Vec::new();
+        for i in 0..10 {
+            messages.push(Message::user(format!("Observation {}", i)));
+            messages.push(Message::assistant(format!("Action {}", i)));
+            messages.push(Message::tool_result(&format!("call_{}", i), "ok"));
+            steps.push(make_step(i));
+        }
+
+        // First compaction
+        let first = compact_step_summaries(&messages, &steps, 10, 3).unwrap();
+
+        // Second compaction on already-compacted transcript
+        let second = compact_step_summaries(&first, &steps, 10, 3).unwrap();
+
+        // Count goal messages — should be exactly 1
+        let goal_count = second
+            .iter()
+            .filter(|m| {
+                m.content_text()
+                    .map_or(false, |t| t.contains("Do the thing"))
+            })
+            .count();
+        assert_eq!(goal_count, 1, "Goal duplicated after repeated compaction");
+
+        // Count summary messages — should be exactly 1
+        let summary_count = second
+            .iter()
+            .filter(|m| {
+                m.content_text()
+                    .map_or(false, |t| t.contains("Previous Steps Summary"))
+            })
+            .count();
+        assert_eq!(
+            summary_count, 1,
+            "Summary duplicated after repeated compaction"
+        );
+    }
 }
