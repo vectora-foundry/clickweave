@@ -364,3 +364,148 @@ async fn agent_replan_does_not_complete() {
     assert_eq!(state.steps.len(), 2);
     assert!(matches!(state.steps[0].outcome, StepOutcome::Replan(_)));
 }
+
+#[tokio::test]
+async fn agent_state_reports_completed_reason_on_done() {
+    let agent_llm = MockAgent::new(vec![MockAgent::done_response("All done")]);
+
+    let mcp = MockMcp::with_click_tool();
+    let config = AgentConfig {
+        max_steps: 5,
+        build_workflow: false,
+        use_cache: false,
+        ..Default::default()
+    };
+
+    let mut runner = AgentRunner::new(&agent_llm, config);
+    let workflow = clickweave_core::Workflow::new("Test");
+    let mcp_tools = mcp.tools_as_openai();
+
+    let state = runner
+        .run("Do it".to_string(), workflow, &mcp, None, mcp_tools)
+        .await
+        .unwrap();
+
+    assert!(state.completed);
+    assert!(
+        matches!(
+            state.terminal_reason,
+            Some(TerminalReason::Completed { .. })
+        ),
+        "Expected Completed, got {:?}",
+        state.terminal_reason,
+    );
+}
+
+#[tokio::test]
+async fn agent_state_reports_max_steps_reason() {
+    let responses: Vec<ChatResponse> = (0..5)
+        .map(|i| {
+            MockAgent::tool_call_response("click", r#"{"x": 10, "y": 20}"#, &format!("call_{}", i))
+        })
+        .collect();
+
+    let agent_llm = MockAgent::new(responses);
+    let mcp = MockMcp::with_click_tool();
+    let config = AgentConfig {
+        max_steps: 3,
+        build_workflow: false,
+        use_cache: false,
+        ..Default::default()
+    };
+
+    let mut runner = AgentRunner::new(&agent_llm, config);
+    let workflow = clickweave_core::Workflow::new("Test");
+    let mcp_tools = mcp.tools_as_openai();
+
+    let state = runner
+        .run("Click forever".to_string(), workflow, &mcp, None, mcp_tools)
+        .await
+        .unwrap();
+
+    assert!(!state.completed);
+    assert!(
+        matches!(
+            state.terminal_reason,
+            Some(TerminalReason::MaxStepsReached { .. })
+        ),
+        "Expected MaxStepsReached, got {:?}",
+        state.terminal_reason,
+    );
+}
+
+#[tokio::test]
+async fn agent_state_reports_max_errors_reason() {
+    // LLM always chooses click, but MCP always returns errors
+    let responses: Vec<ChatResponse> = (0..10)
+        .map(|i| {
+            MockAgent::tool_call_response("click", r#"{"x": 10, "y": 20}"#, &format!("call_{}", i))
+        })
+        .collect();
+
+    let agent_llm = MockAgent::new(responses);
+
+    // MCP that returns errors for everything except cdp_find_elements
+    let error_results: Vec<ToolCallResult> = (0..30)
+        .map(|i| {
+            if i % 2 == 0 {
+                // cdp_find_elements (observation step)
+                ToolCallResult {
+                    content: vec![ToolContent::Text {
+                        text: serde_json::json!({
+                            "page_url": "https://example.com",
+                            "source": "cdp",
+                            "matches": []
+                        })
+                        .to_string(),
+                    }],
+                    is_error: None,
+                }
+            } else {
+                // click returns error
+                ToolCallResult {
+                    content: vec![ToolContent::Text {
+                        text: "Element not found".to_string(),
+                    }],
+                    is_error: Some(true),
+                }
+            }
+        })
+        .collect();
+
+    let tools = vec![serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "click",
+            "description": "Click",
+            "parameters": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}}, "required": ["x", "y"]}
+        }
+    })];
+    let mcp = MockMcp::new(error_results, tools);
+
+    let config = AgentConfig {
+        max_steps: 30,
+        max_consecutive_errors: 3,
+        build_workflow: false,
+        use_cache: false,
+    };
+
+    let mut runner = AgentRunner::new(&agent_llm, config);
+    let workflow = clickweave_core::Workflow::new("Test");
+    let mcp_tools = mcp.tools_as_openai();
+
+    let state = runner
+        .run("Click it".to_string(), workflow, &mcp, None, mcp_tools)
+        .await
+        .unwrap();
+
+    assert!(!state.completed);
+    assert!(
+        matches!(
+            state.terminal_reason,
+            Some(TerminalReason::MaxErrorsReached { .. })
+        ),
+        "Expected MaxErrorsReached, got {:?}",
+        state.terminal_reason,
+    );
+}

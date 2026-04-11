@@ -397,6 +397,9 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                                 errors = self.state.consecutive_errors,
                                 "Too many consecutive errors, aborting"
                             );
+                            self.state.terminal_reason = Some(TerminalReason::MaxErrorsReached {
+                                consecutive_errors: self.state.consecutive_errors,
+                            });
                             break;
                         }
                         RecoveryAction::Retry => {
@@ -410,6 +413,9 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 StepOutcome::Done(summary) => {
                     self.state.completed = true;
                     self.state.summary = Some(summary.clone());
+                    self.state.terminal_reason = Some(TerminalReason::Completed {
+                        summary: summary.clone(),
+                    });
                     previous_result = None;
                     info!(summary = %summary, "Agent completed goal");
                     self.emit_event(AgentEvent::GoalComplete {
@@ -437,7 +443,10 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             }
         }
 
-        if !self.state.completed {
+        if !self.state.completed && self.state.terminal_reason.is_none() {
+            self.state.terminal_reason = Some(TerminalReason::MaxStepsReached {
+                steps_executed: self.state.steps.len(),
+            });
             warn!(
                 steps = self.state.steps.len(),
                 "Agent reached max steps without completing"

@@ -116,6 +116,8 @@ pub struct AgentState {
     pub completed: bool,
     /// Final summary when the agent completes.
     pub summary: Option<String>,
+    /// Why the agent loop terminated. `None` while still running.
+    pub terminal_reason: Option<TerminalReason>,
     /// Current page URL.
     pub current_url: String,
 }
@@ -129,9 +131,24 @@ impl AgentState {
             consecutive_errors: 0,
             completed: false,
             summary: None,
+            terminal_reason: None,
             current_url: String::new(),
         }
     }
+}
+
+/// Why the agent loop terminated.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "reason", rename_all = "snake_case")]
+pub enum TerminalReason {
+    /// The agent called `agent_done`.
+    Completed { summary: String },
+    /// The loop hit the `max_steps` limit without completing.
+    MaxStepsReached { steps_executed: usize },
+    /// Too many consecutive errors triggered abort.
+    MaxErrorsReached { consecutive_errors: usize },
+    /// The approval channel is permanently unavailable (receiver dropped).
+    ApprovalUnavailable,
 }
 
 /// The result of executing a single step.
