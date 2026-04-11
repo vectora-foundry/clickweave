@@ -4,6 +4,7 @@ use clickweave_core::tool_mapping::tool_invocation_to_node_type;
 use clickweave_core::{Edge, Node, Position, Workflow};
 use clickweave_llm::{ChatBackend, Message};
 use serde_json::Value;
+use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use super::context;
@@ -26,6 +27,15 @@ fn extract_result_text(result: &clickweave_mcp::ToolCallResult) -> String {
         .join("\n")
 }
 
+/// Callback pair for requesting approval from the UI before executing a tool.
+///
+/// Each approval request uses a fresh `tokio::sync::oneshot` channel to avoid
+/// deadlocks — the runner sends an `ApprovalRequest` bundled with a oneshot
+/// `Sender<bool>`, and the UI responds exactly once.
+pub struct ApprovalGate {
+    pub request_tx: mpsc::Sender<(ApprovalRequest, tokio::sync::oneshot::Sender<bool>)>,
+}
+
 /// The main agent runner that implements the observe-act loop.
 pub struct AgentRunner<'a, B: ChatBackend> {
     llm: &'a B,
@@ -33,6 +43,8 @@ pub struct AgentRunner<'a, B: ChatBackend> {
     state: AgentState,
     messages: Vec<Message>,
     cache: AgentCache,
+    event_tx: Option<mpsc::Sender<AgentEvent>>,
+    approval_gate: Option<ApprovalGate>,
 }
 
 impl<'a, B: ChatBackend> AgentRunner<'a, B> {
@@ -43,6 +55,8 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             state: AgentState::new(Workflow::new("Agent Workflow")),
             messages: Vec::new(),
             cache: AgentCache::default(),
+            event_tx: None,
+            approval_gate: None,
         }
     }
 
@@ -54,12 +68,36 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             state: AgentState::new(Workflow::new("Agent Workflow")),
             messages: Vec::new(),
             cache,
+            event_tx: None,
+            approval_gate: None,
         }
+    }
+
+    /// Attach an event channel for live event emission.
+    pub fn with_events(mut self, tx: mpsc::Sender<AgentEvent>) -> Self {
+        self.event_tx = Some(tx);
+        self
+    }
+
+    /// Attach an approval gate for user-approved execution.
+    pub fn with_approval(
+        mut self,
+        request_tx: mpsc::Sender<(ApprovalRequest, tokio::sync::oneshot::Sender<bool>)>,
+    ) -> Self {
+        self.approval_gate = Some(ApprovalGate { request_tx });
+        self
     }
 
     /// Consume the runner and return the accumulated cache.
     pub fn into_cache(self) -> AgentCache {
         self.cache
+    }
+
+    /// Send an event through the channel (non-blocking, best-effort).
+    fn emit_event(&self, event: AgentEvent) {
+        if let Some(tx) = &self.event_tx {
+            let _ = tx.try_send(event);
+        }
     }
 
     /// Run the agent loop to completion or max steps.
@@ -148,6 +186,19 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                                     self.add_workflow_node(&cached_tool, &cached_args, &mcp_tools);
                                 }
 
+                                // Emit live step event for cached replay
+                                let summary_text = if result_text.len() > 120 {
+                                    let end = result_text.floor_char_boundary(120);
+                                    format!("{}...", &result_text[..end])
+                                } else {
+                                    result_text.clone()
+                                };
+                                self.emit_event(AgentEvent::StepCompleted {
+                                    step_index,
+                                    tool_name: cached_tool.clone(),
+                                    summary: summary_text,
+                                });
+
                                 let step = AgentStep {
                                     index: step_index,
                                     elements: elements.clone(),
@@ -212,7 +263,14 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
 
             // 6. Parse and execute the response
             let (command, outcome) = self
-                .execute_response(&choice.message, mcp, &goal, &elements, &mcp_tools)
+                .execute_response(
+                    &choice.message,
+                    mcp,
+                    &goal,
+                    &elements,
+                    &mcp_tools,
+                    step_index,
+                )
                 .await?;
 
             // Update state
@@ -230,6 +288,26 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 StepOutcome::Success(result_text) => {
                     self.state.consecutive_errors = 0;
                     previous_result = Some(result_text.clone());
+
+                    let tool_name_for_event =
+                        if let AgentCommand::ToolCall { tool_name, .. } = &command {
+                            tool_name.clone()
+                        } else {
+                            "unknown".to_string()
+                        };
+
+                    // Emit live step event
+                    let summary_text = if result_text.len() > 120 {
+                        let end = result_text.floor_char_boundary(120);
+                        format!("{}...", &result_text[..end])
+                    } else {
+                        result_text.clone()
+                    };
+                    self.emit_event(AgentEvent::StepCompleted {
+                        step_index,
+                        tool_name: tool_name_for_event,
+                        summary: summary_text,
+                    });
 
                     // Cache the successful decision
                     if self.config.use_cache {
@@ -264,6 +342,10 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                     self.state.consecutive_errors += 1;
                     previous_result = Some(format!("Error: {}", err));
 
+                    self.emit_event(AgentEvent::Error {
+                        message: err.clone(),
+                    });
+
                     let action = recovery::recovery_strategy(
                         self.state.consecutive_errors,
                         self.config.max_consecutive_errors,
@@ -289,6 +371,9 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                     self.state.summary = Some(summary.clone());
                     previous_result = None;
                     info!(summary = %summary, "Agent completed goal");
+                    self.emit_event(AgentEvent::GoalComplete {
+                        summary: summary.clone(),
+                    });
                 }
                 StepOutcome::Replan(reason) => {
                     previous_result = Some(format!("Replan requested: {}", reason));
@@ -359,6 +444,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         _goal: &str,
         _elements: &[CdpFindElementMatch],
         _mcp_tools: &[Value],
+        step_index: usize,
     ) -> Result<(AgentCommand, StepOutcome)> {
         // Check for tool calls
         if let Some(tool_calls) = &message.tool_calls {
@@ -393,6 +479,53 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                         ));
                     }
                     _ => {}
+                }
+
+                // Request user approval before executing the tool
+                if let Some(gate) = &self.approval_gate {
+                    let description = format!(
+                        "{} with {}",
+                        tc.function.name,
+                        serde_json::to_string(&args).unwrap_or_default()
+                    );
+                    let request = ApprovalRequest {
+                        step_index,
+                        tool_name: tc.function.name.clone(),
+                        arguments: args.clone(),
+                        description,
+                    };
+                    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                    if gate.request_tx.send((request, resp_tx)).await.is_ok() {
+                        match resp_rx.await {
+                            Ok(true) => {
+                                debug!(tool = %tc.function.name, "User approved action");
+                            }
+                            Ok(false) => {
+                                info!(tool = %tc.function.name, "User rejected action");
+                                let command = AgentCommand::ToolCall {
+                                    tool_name: tc.function.name.clone(),
+                                    arguments: args.clone(),
+                                    tool_call_id: tc.id.clone(),
+                                };
+                                return Ok((
+                                    command,
+                                    StepOutcome::Replan("User rejected action".to_string()),
+                                ));
+                            }
+                            Err(_) => {
+                                // Channel closed — approval system gone, treat as rejection
+                                let command = AgentCommand::ToolCall {
+                                    tool_name: tc.function.name.clone(),
+                                    arguments: args.clone(),
+                                    tool_call_id: tc.id.clone(),
+                                };
+                                return Ok((
+                                    command,
+                                    StepOutcome::Replan("Approval channel closed".to_string()),
+                                ));
+                            }
+                        }
+                    }
                 }
 
                 // Execute the MCP tool
@@ -448,14 +581,20 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         };
         let node = Node::new(node_type, position, tool_name, "");
         let node_id = node.id;
+
+        // Emit live node event before pushing (clone for the event)
+        self.emit_event(AgentEvent::NodeAdded { node: node.clone() });
+
         self.state.workflow.nodes.push(node);
 
         // Connect to previous node
         if let Some(prev_id) = self.state.last_node_id {
-            self.state.workflow.edges.push(Edge {
+            let edge = Edge {
                 from: prev_id,
                 to: node_id,
-            });
+            };
+            self.emit_event(AgentEvent::EdgeAdded { edge: edge.clone() });
+            self.state.workflow.edges.push(edge);
         }
 
         self.state.last_node_id = Some(node_id);

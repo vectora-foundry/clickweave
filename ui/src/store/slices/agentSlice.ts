@@ -1,5 +1,6 @@
 import type { StateCreator } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
+import type { Node, Edge } from "../../bindings";
 import { toEndpoint } from "../settings";
 import type { StoreState } from "./types";
 
@@ -13,6 +14,13 @@ export interface AgentStep {
 
 export type AgentStatus = "idle" | "running" | "paused" | "complete" | "error";
 
+export interface PendingApproval {
+  stepIndex: number;
+  toolName: string;
+  arguments: unknown;
+  description: string;
+}
+
 export interface AgentSlice {
   agentStatus: AgentStatus;
   agentGoal: string;
@@ -20,11 +28,17 @@ export interface AgentSlice {
   agentPlanHorizon: string[];
   agentError: string | null;
   currentAgentStep: number;
+  pendingApproval: PendingApproval | null;
   startAgent: (goal: string) => Promise<void>;
   pauseAgent: () => Promise<void>;
   resumeAgent: () => Promise<void>;
   stopAgent: () => Promise<void>;
   addAgentStep: (step: AgentStep) => void;
+  addAgentNode: (node: Node) => void;
+  addAgentEdge: (edge: Edge) => void;
+  setPendingApproval: (approval: PendingApproval | null) => void;
+  approveAction: () => Promise<void>;
+  rejectAction: () => Promise<void>;
   setAgentPlanHorizon: (horizon: string[]) => void;
   setAgentStatus: (status: AgentStatus) => void;
   setAgentError: (error: string | null) => void;
@@ -41,6 +55,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
   agentPlanHorizon: [],
   agentError: null,
   currentAgentStep: 0,
+  pendingApproval: null,
 
   startAgent: async (goal) => {
     const { pushLog, agentConfig, projectPath, workflow } = get();
@@ -51,6 +66,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       agentPlanHorizon: [],
       agentError: null,
       currentAgentStep: 0,
+      pendingApproval: null,
     });
     pushLog(`Agent started with goal: ${goal}`);
     try {
@@ -73,20 +89,27 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
   pauseAgent: async () => {
     set({ agentStatus: "paused" });
     get().pushLog("Agent paused");
-    // TODO: call Tauri steer_agent with pause message once bindings are regenerated
   },
 
   resumeAgent: async () => {
     set({ agentStatus: "running" });
     get().pushLog("Agent resumed");
-    // TODO: call Tauri steer_agent with resume message once bindings are regenerated
   },
 
   stopAgent: async () => {
     const { pushLog } = get();
-    set({ agentStatus: "idle", agentGoal: "", agentError: null });
+    try {
+      await invoke("stop_agent");
+    } catch {
+      /* ignore if not running */
+    }
+    set({
+      agentStatus: "idle",
+      agentGoal: "",
+      agentError: null,
+      pendingApproval: null,
+    });
     pushLog("Agent stopped");
-    // TODO: call Tauri stop_agent command once bindings are regenerated
   },
 
   addAgentStep: (step) => {
@@ -94,6 +117,48 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       agentSteps: [...s.agentSteps, step],
       currentAgentStep: s.agentSteps.length,
     }));
+  },
+
+  addAgentNode: (node) => {
+    const { workflow, setWorkflow } = get();
+    setWorkflow({
+      ...workflow,
+      nodes: [...workflow.nodes, node],
+    });
+  },
+
+  addAgentEdge: (edge) => {
+    const { workflow, setWorkflow } = get();
+    setWorkflow({
+      ...workflow,
+      edges: [...workflow.edges, edge],
+    });
+  },
+
+  setPendingApproval: (approval) => set({ pendingApproval: approval }),
+
+  approveAction: async () => {
+    const { pushLog, pendingApproval } = get();
+    if (!pendingApproval) return;
+    set({ pendingApproval: null });
+    try {
+      await invoke("approve_agent_action", { approved: true });
+      pushLog(`Approved: ${pendingApproval.toolName}`);
+    } catch (err) {
+      pushLog(`Approval send failed: ${err}`);
+    }
+  },
+
+  rejectAction: async () => {
+    const { pushLog, pendingApproval } = get();
+    if (!pendingApproval) return;
+    set({ pendingApproval: null });
+    try {
+      await invoke("approve_agent_action", { approved: false });
+      pushLog(`Rejected: ${pendingApproval.toolName}`);
+    } catch (err) {
+      pushLog(`Rejection send failed: ${err}`);
+    }
   },
 
   setAgentPlanHorizon: (horizon) => set({ agentPlanHorizon: horizon }),
@@ -110,5 +175,6 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       agentPlanHorizon: [],
       agentError: null,
       currentAgentStep: 0,
+      pendingApproval: null,
     }),
 });

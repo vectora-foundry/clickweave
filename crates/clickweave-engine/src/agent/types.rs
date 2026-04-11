@@ -4,6 +4,38 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+/// Events emitted by the agent loop during execution.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentEvent {
+    StepCompleted {
+        step_index: usize,
+        tool_name: String,
+        summary: String,
+    },
+    NodeAdded {
+        node: clickweave_core::Node,
+    },
+    EdgeAdded {
+        edge: clickweave_core::Edge,
+    },
+    GoalComplete {
+        summary: String,
+    },
+    Error {
+        message: String,
+    },
+}
+
+/// Approval request sent to the UI before executing an action.
+#[derive(Debug, Clone, Serialize)]
+pub struct ApprovalRequest {
+    pub step_index: usize,
+    pub tool_name: String,
+    pub arguments: serde_json::Value,
+    pub description: String,
+}
+
 /// Configuration for an agent run.
 #[derive(Debug, Clone)]
 pub struct AgentConfig {

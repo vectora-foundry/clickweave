@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
+import type { Node, Edge } from "../../bindings";
 import { useStore } from "../../store/useAppStore";
 
 interface AgentStepPayload {
@@ -16,9 +17,17 @@ interface AgentErrorPayload {
   message: string;
 }
 
+interface ApprovalRequiredPayload {
+  step_index: number;
+  tool_name: string;
+  arguments: unknown;
+  description: string;
+}
+
 /**
  * Subscribe to agent backend events:
- * agent://step, agent://plan, agent://complete, agent://error.
+ * agent://step, agent://plan, agent://complete, agent://error,
+ * agent://node_added, agent://edge_added, agent://approval_required.
  *
  * Dispatches into the Zustand AgentSlice via `getState()`.
  */
@@ -57,6 +66,32 @@ export function useAgentEvents() {
           .pushLog(
             `Agent step ${e.payload.step_number}: ${e.payload.tool_name}`,
           );
+      }),
+    );
+
+    sub(
+      listen<Node>("agent://node_added", (e) => {
+        useStore.getState().addAgentNode(e.payload);
+      }),
+    );
+
+    sub(
+      listen<Edge>("agent://edge_added", (e) => {
+        useStore.getState().addAgentEdge(e.payload);
+      }),
+    );
+
+    sub(
+      listen<ApprovalRequiredPayload>("agent://approval_required", (e) => {
+        useStore.getState().setPendingApproval({
+          stepIndex: e.payload.step_index,
+          toolName: e.payload.tool_name,
+          arguments: e.payload.arguments,
+          description: e.payload.description,
+        });
+        useStore.getState().pushLog(
+          `Agent awaiting approval: ${e.payload.tool_name}`,
+        );
       }),
     );
 

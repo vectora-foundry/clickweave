@@ -9,7 +9,7 @@ mod walkthrough;
 mod walkthrough_enrichment;
 mod walkthrough_session;
 
-pub use agent::{AgentHandle, run_agent, steer_agent, stop_agent};
+pub use agent::{AgentHandle, approve_agent_action, run_agent, steer_agent, stop_agent};
 pub use chrome_profiles::{
     create_chrome_profile, get_chrome_profile_path, is_chrome_profile_configured,
     launch_chrome_for_setup, list_chrome_profiles,

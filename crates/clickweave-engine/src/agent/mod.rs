@@ -6,11 +6,20 @@ mod recovery;
 mod transition;
 mod types;
 
-pub use loop_runner::AgentRunner;
+pub use loop_runner::{AgentRunner, ApprovalGate};
 pub use types::*;
 
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::McpClient;
+
+/// Channels that can be attached to the agent runner for live feedback.
+pub struct AgentChannels {
+    /// Live event emission channel.
+    pub event_tx: tokio::sync::mpsc::Sender<AgentEvent>,
+    /// Approval request channel (each request comes with a oneshot response sender).
+    pub approval_tx:
+        tokio::sync::mpsc::Sender<(ApprovalRequest, tokio::sync::oneshot::Sender<bool>)>,
+}
 
 /// Public entry point for running the agent loop from outside the engine crate.
 ///
@@ -19,6 +28,8 @@ use clickweave_mcp::McpClient;
 /// directly.
 ///
 /// When `cache` is `Some`, the runner is seeded with cross-run decisions.
+/// When `channels` is `Some`, the runner emits live events and waits for
+/// approval before each tool execution.
 /// Returns both the final agent state and the (possibly updated) cache.
 pub async fn run_agent_workflow(
     llm: &impl ChatBackend,
@@ -27,6 +38,7 @@ pub async fn run_agent_workflow(
     mcp: &McpClient,
     variant_context: Option<&str>,
     cache: Option<AgentCache>,
+    channels: Option<AgentChannels>,
 ) -> anyhow::Result<(AgentState, AgentCache)> {
     let tools = mcp.tools_as_openai();
     let workflow = clickweave_core::Workflow::default();
@@ -34,6 +46,11 @@ pub async fn run_agent_workflow(
         Some(c) => AgentRunner::with_cache(llm, config, c),
         None => AgentRunner::new(llm, config),
     };
+    if let Some(ch) = channels {
+        runner = runner
+            .with_events(ch.event_tx)
+            .with_approval(ch.approval_tx);
+    }
     let state = runner
         .run(goal, workflow, mcp, variant_context, tools)
         .await?;

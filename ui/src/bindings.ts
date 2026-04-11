@@ -65,70 +65,6 @@ async generateAutoId(nodeTypeName: string, countersJson: string) : Promise<Resul
     else return { status: "error", error: e  as any };
 }
 },
-async patchWorkflow(request: PatchRequest) : Promise<Result<WorkflowPatch, CommandError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("patch_workflow", { request }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async assistantChat(request: AssistantChatRequest) : Promise<Result<AssistantChatResponse, CommandError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("assistant_chat", { request }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async cancelAssistantChat() : Promise<Result<null, CommandError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("cancel_assistant_chat") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async getAssistantSessionId() : Promise<Result<string | null, CommandError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("get_assistant_session_id") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async rewindConversation(toIndex: number) : Promise<Result<ChatEntry[], CommandError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("rewind_conversation", { toIndex }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async clearAssistantSession() : Promise<Result<null, CommandError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("clear_assistant_session") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async saveConversation(path: string) : Promise<Result<null, CommandError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("save_conversation", { path }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async loadConversation(path: string) : Promise<Result<ChatEntry[], CommandError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("load_conversation", { path }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async runWorkflow(request: RunRequest) : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("run_workflow", { request }) };
@@ -305,31 +241,36 @@ async launchChromeForSetup(profileId: string) : Promise<Result<null, CommandErro
     else return { status: "error", error: e  as any };
 }
 },
-async plannerConfirmationRespond(approved: boolean) : Promise<Result<null, CommandError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("planner_confirmation_respond", { approved }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * Tauri command: user responds to a resolution proposal (approve/reject).
- */
-async resolutionRespond(approved: boolean) : Promise<Result<null, CommandError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("resolution_respond", { approved }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async confirmableTools() : Promise<ConfirmableTool[]> {
     return await TAURI_INVOKE("confirmable_tools");
 },
 async checkEndpoint(baseUrl: string, apiKey: string | null, model: string | null) : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("check_endpoint", { baseUrl, apiKey, model }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async runAgent(request: AgentRunRequest) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("run_agent", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async stopAgent() : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("stop_agent") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async steerAgent(message: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("steer_agent", { message }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -348,7 +289,8 @@ async checkEndpoint(baseUrl: string, apiKey: string | null, model: string | null
 /** user-defined types **/
 
 export type ActionConfidence = "High" | "Medium" | "Low"
-export type AiStepParams = { prompt: string; button_text: string | null; template_image: string | null; max_tool_calls: number | null; allowed_tools: string[] | null; timeout_ms?: number | null; prompt_ref?: OutputRef | null }
+export type AgentRunRequest = { goal: string; agent: EndpointConfig; project_path: string | null; workflow_name: string; workflow_id: string }
+export type AiStepParams = { prompt: string; button_text: string | null; template_image: string | null; max_tool_calls: number | null; allowed_tools: string[] | null; timeout_ms?: number | null }
 export type AppDebugKitParams = { operation_name: string; parameters: JsonValue }
 /**
  * Classification of an app's UI framework, used to decide whether
@@ -362,8 +304,6 @@ export type AppKind = "Native" | "ChromeBrowser" | "ElectronApp"
 export type AppResolutionSeedEntry = { node_id: string; app_name: string }
 export type Artifact = { artifact_id: string; kind: ArtifactKind; path: string; metadata: JsonValue; overlays: JsonValue[] }
 export type ArtifactKind = "Screenshot" | "Ocr" | "TemplateMatch" | "Log" | "Other"
-export type AssistantChatRequest = { workflow: Workflow; user_message: string; run_context: RunContext | null; planner: EndpointConfig; fast: EndpointConfig | null; allow_ai_transforms: boolean; allow_agent_steps: boolean; max_repair_attempts: number; project_path?: string | null }
-export type AssistantChatResponse = { patch: WorkflowPatch | null; warnings: string[]; context_usage: number | null; intent: string | null }
 /**
  * User-selected app for CDP during walkthrough.
  */
@@ -374,11 +314,11 @@ export type CdpAppConfig = { name: string;
 binary_path: string | null; app_kind: AppKind }
 export type CdpClickParams = { target: CdpTarget; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type CdpClosePageParams = { page_index?: number | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
-export type CdpFillParams = { uid: string; value: string; value_ref?: OutputRef | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type CdpFillParams = { uid: string; value: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type CdpHandleDialogParams = { accept: boolean; prompt_text?: string | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type CdpHoverParams = { target: CdpTarget; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
-export type CdpNavigateParams = { url: string; url_ref?: OutputRef | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
-export type CdpNewPageParams = { url?: string; url_ref?: OutputRef | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type CdpNavigateParams = { url: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type CdpNewPageParams = { url?: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type CdpPressKeyParams = { key: string; modifiers?: string[]; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type CdpSelectPageParams = { page_index: number; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 /**
@@ -399,49 +339,22 @@ export type CdpTarget =
  * Concrete DOM UID resolved at execution time (for Run mode / decision cache).
  */
 { kind: "ResolvedUid"; value: string }
-export type CdpTypeParams = { text: string; text_ref?: OutputRef | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type CdpTypeParams = { text: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type CdpWaitParams = { text: string; timeout_ms?: number }
-/**
- * A single entry in the assistant conversation.
- */
-export type ChatEntry = { role: ChatRole; content: string; timestamp: number; patch_summary?: PatchSummary | null; run_context?: RunContext | null; tool_call_id?: string | null; tool_name?: string | null }
-export type ChatRole = "user" | "assistant" | "tool_call" | "tool_result"
 export type ChromeProfile = { id: string; name: string; google_email: string | null }
-export type ClickParams = { target: ClickTarget | null; target_ref?: OutputRef | null; button: MouseButton; click_count: number; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type ClickParams = { target: ClickTarget | null; button: MouseButton; click_count: number; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type ClickTarget = { type: "Text"; text: string } | { type: "Coordinates"; x: number; y: number } | { type: "WindowControl"; action: WindowControlAction }
 /**
  * Structured error type for Tauri IPC commands.
  */
 export type CommandError = { kind: ErrorKind; message: string }
-export type Condition = { left: OutputRef; operator: Operator; right: ConditionValue }
-/**
- * Right-hand side of a condition: either a literal or a reference to an upstream output.
- */
-export type ConditionValue = { type: "Literal"; value: LiteralValue } | ({ type: "Ref" } & OutputRef)
 export type ConfirmableTool = { name: string; description: string }
 /**
  * A running app detected as Electron or Chrome, returned to the frontend for CDP selection.
  */
 export type DetectedCdpApp = { name: string; pid: number; app_kind: AppKind }
-export type DragParams = { from_x: number | null; from_y: number | null; to_x: number | null; to_y: number | null; from_ref?: OutputRef | null; to_ref?: OutputRef | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type DragParams = { from_x: number | null; from_y: number | null; to_x: number | null; to_y: number | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type Edge = { from: string; to: string }
-export type EdgeOutput = { type: "IfTrue" } | { type: "IfFalse" } | { type: "SwitchCase"; name: string } | { type: "SwitchDefault" } | 
-/**
- * Edge from Loop node into the loop body.
- */
-{ type: "LoopBody" } | 
-/**
- * Edge from Loop node when exit condition is met (or max iterations hit).
- */
-{ type: "LoopDone" }
-export type EndLoopParams = { 
-/**
- * Explicit pairing with the Loop node. Stored as UUID rather than inferred
- * from graph structure for safety and simpler validation.
- * When EndLoop is reached during execution, the walker jumps directly to
- * this Loop node, which then re-evaluates its exit condition.
- */
-loop_id: string }
 export type EndpointConfig = { base_url: string; model: string; api_key: string | null }
 export type ErrorKind = "Validation" | "Io" | "Llm" | "Mcp" | "AlreadyRunning" | "Cancelled" | "Internal"
 export type ExecutionMode = "Test" | "Run"
@@ -449,66 +362,31 @@ export type FindAppParams = { search: string }
 export type FindImageParams = { template_image: string | null; threshold: number; max_results: number }
 export type FindTextParams = { search_text: string; match_mode: MatchMode; scope: string | null; select_result: string | null }
 export type FocusMethod = "WindowId" | "AppName" | "Pid"
-export type FocusWindowParams = { method: FocusMethod; value: string | null; bring_to_front: boolean; app_kind?: AppKind; chrome_profile_id?: string | null; value_ref?: OutputRef | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
-export type HoverParams = { target: ClickTarget | null; target_ref?: OutputRef | null; dwell_ms: number; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
-export type IfParams = { condition: Condition }
+export type FocusWindowParams = { method: FocusMethod; value: string | null; bring_to_front: boolean; app_kind?: AppKind; chrome_profile_id?: string | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type HoverParams = { target: ClickTarget | null; dwell_ms: number; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type ImportedAsset = { relative_path: string; absolute_path: string }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 export type LaunchAppParams = { app_name: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
-export type LiteralValue = { type: "String"; value: string } | { type: "Number"; value: number } | { type: "Bool"; value: boolean }
-export type LoopParams = { 
-/**
- * Loop exits when this condition becomes true.
- * NOTE: Uses do-while semantics — the exit condition is NOT checked on the
- * first iteration (iteration 0). The loop body always runs at least once.
- * This is intentional for UI automation where the common pattern is
- * "try action, check if it worked, loop if not."
- */
-exit_condition: Condition; 
-/**
- * Safety cap to prevent infinite loops. Default: 100.
- * If max_iterations is hit, the loop exits with a warning trace event
- * (loop_exited with reason "max_iterations"), which likely indicates
- * something unexpected happened.
- */
-max_iterations: number }
 export type MatchMode = "Contains" | "Exact"
 export type McpToolCallParams = { tool_name: string; arguments: JsonValue }
 export type MouseButton = "Left" | "Right" | "Center"
-export type Node = { id: string; node_type: NodeType; position: Position; name: string; auto_id?: string; enabled: boolean; timeout_ms: number | null; settle_ms: number | null; retries: number; supervision_retries?: number; trace_level: TraceLevel; role?: NodeRole; expected_outcome: string | null }
+export type Node = { id: string; node_type: NodeType; position: Position; name: string; description?: string | null; auto_id?: string; enabled: boolean; timeout_ms: number | null; settle_ms: number | null; retries: number; supervision_retries?: number; trace_level: TraceLevel; role?: NodeRole; expected_outcome: string | null }
 export type NodeGroup = { id: string; name: string; color: string; node_ids: string[]; parent_group_id: string | null }
 export type NodeRename = { node_id: string; new_name: string }
-export type NodeResult = { node_name: string; status: string; error?: string | null }
 export type NodeRole = "Default" | "Verification"
 export type NodeRun = { run_id: string; node_id: string; node_name?: string; execution_dir?: string; started_at: number; ended_at: number | null; status: RunStatus; trace_level: TraceLevel; events: TraceEvent[]; artifacts: Artifact[]; observed_summary: string | null }
-export type NodeType = ({ type: "FindText" } & FindTextParams) | ({ type: "FindImage" } & FindImageParams) | ({ type: "FindApp" } & FindAppParams) | ({ type: "TakeScreenshot" } & TakeScreenshotParams) | ({ type: "Click" } & ClickParams) | ({ type: "Hover" } & HoverParams) | ({ type: "Drag" } & DragParams) | ({ type: "TypeText" } & TypeTextParams) | ({ type: "PressKey" } & PressKeyParams) | ({ type: "Scroll" } & ScrollParams) | ({ type: "FocusWindow" } & FocusWindowParams) | ({ type: "LaunchApp" } & LaunchAppParams) | ({ type: "QuitApp" } & QuitAppParams) | ({ type: "CdpWait" } & CdpWaitParams) | ({ type: "CdpClick" } & CdpClickParams) | ({ type: "CdpHover" } & CdpHoverParams) | ({ type: "CdpFill" } & CdpFillParams) | ({ type: "CdpType" } & CdpTypeParams) | ({ type: "CdpPressKey" } & CdpPressKeyParams) | ({ type: "CdpNavigate" } & CdpNavigateParams) | ({ type: "CdpNewPage" } & CdpNewPageParams) | ({ type: "CdpClosePage" } & CdpClosePageParams) | ({ type: "CdpSelectPage" } & CdpSelectPageParams) | ({ type: "CdpHandleDialog" } & CdpHandleDialogParams) | ({ type: "AiStep" } & AiStepParams) | ({ type: "If" } & IfParams) | ({ type: "Switch" } & SwitchParams) | ({ type: "Loop" } & LoopParams) | ({ type: "EndLoop" } & EndLoopParams) | ({ type: "McpToolCall" } & McpToolCallParams) | ({ type: "AppDebugKitOp" } & AppDebugKitParams)
+export type NodeType = ({ type: "FindText" } & FindTextParams) | ({ type: "FindImage" } & FindImageParams) | ({ type: "FindApp" } & FindAppParams) | ({ type: "TakeScreenshot" } & TakeScreenshotParams) | ({ type: "Click" } & ClickParams) | ({ type: "Hover" } & HoverParams) | ({ type: "Drag" } & DragParams) | ({ type: "TypeText" } & TypeTextParams) | ({ type: "PressKey" } & PressKeyParams) | ({ type: "Scroll" } & ScrollParams) | ({ type: "FocusWindow" } & FocusWindowParams) | ({ type: "LaunchApp" } & LaunchAppParams) | ({ type: "QuitApp" } & QuitAppParams) | ({ type: "CdpWait" } & CdpWaitParams) | ({ type: "CdpClick" } & CdpClickParams) | ({ type: "CdpHover" } & CdpHoverParams) | ({ type: "CdpFill" } & CdpFillParams) | ({ type: "CdpType" } & CdpTypeParams) | ({ type: "CdpPressKey" } & CdpPressKeyParams) | ({ type: "CdpNavigate" } & CdpNavigateParams) | ({ type: "CdpNewPage" } & CdpNewPageParams) | ({ type: "CdpClosePage" } & CdpClosePageParams) | ({ type: "CdpSelectPage" } & CdpSelectPageParams) | ({ type: "CdpHandleDialog" } & CdpHandleDialogParams) | ({ type: "AiStep" } & AiStepParams) | ({ type: "McpToolCall" } & McpToolCallParams) | ({ type: "AppDebugKitOp" } & AppDebugKitParams) | 
+/**
+ * Placeholder for removed or unrecognized node types. Preserved on
+ * load so that old workflows don't hard-fail; the UI can display them
+ * as disabled/unsupported.
+ */
+{ type: "Unknown" }
 export type NodeTypeInfo = { name: string; output_role: string; node_context: string; icon: string; node_type: NodeType }
-export type Operator = "Equals" | "NotEquals" | "GreaterThan" | "LessThan" | "GreaterThanOrEqual" | "LessThanOrEqual" | "Contains" | "NotContains" | "IsEmpty" | "IsNotEmpty"
-/**
- * A reference to a specific output field of an upstream node.
- */
-export type OutputRef = { 
-/**
- * auto_id of the source node (e.g. "find_text_1")
- */
-node: string; 
-/**
- * Output field name (e.g. "coordinates")
- */
-field: string }
-export type PatchRequest = { workflow: Workflow; user_prompt: string; planner: EndpointConfig; allow_ai_transforms: boolean; allow_agent_steps: boolean }
-/**
- * Compact summary of what a patch did (for conversation context, not the full patch).
- */
-export type PatchSummary = { added: number; removed: number; updated: number; added_names?: string[]; removed_names?: string[]; updated_names?: string[]; description?: string | null }
 export type Position = { x: number; y: number }
 export type PressKeyParams = { key: string; modifiers: string[]; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type ProjectData = { path: string; workflow: Workflow }
 export type QuitAppParams = { app_name: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
-/**
- * Execution results available at the time of a message.
- */
-export type RunContext = { execution_dir: string; node_results: NodeResult[] }
 export type RunEventsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string; execution_dir: string | null; run_id: string }
 export type RunRequest = { workflow: Workflow; project_path: string | null; agent: EndpointConfig; fast: EndpointConfig | null; 
 /**
@@ -526,16 +404,6 @@ export type RunsQuery = { project_path: string | null; workflow_id: string; work
 export type ScreenshotMeta = { origin_x: number; origin_y: number; scale: number }
 export type ScreenshotMode = "Screen" | "Window" | "Region"
 export type ScrollParams = { delta_y: number; x: number | null; y: number | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
-export type SwitchCase = { 
-/**
- * Label shown on the edge, e.g. "Has error".
- */
-name: string; condition: Condition }
-export type SwitchParams = { 
-/**
- * Evaluated in order; first matching case wins.
- */
-cases: SwitchCase[] }
 export type TakeScreenshotParams = { mode: ScreenshotMode; target: string | null; include_ocr: boolean }
 export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role: string | null } | 
 /**
@@ -554,7 +422,7 @@ export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role:
 export type TargetOverride = { node_id: string; chosen_candidate_index: number }
 export type TraceEvent = { timestamp: number; event_type: string; payload: JsonValue }
 export type TraceLevel = "Off" | "Minimal" | "Full"
-export type TypeTextParams = { text: string; text_ref?: OutputRef | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type TypeTextParams = { text: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type ValidationResult = { valid: boolean; errors: string[] }
 export type VariablePromotion = { node_id: string; variable_name: string }
 /**
@@ -590,7 +458,6 @@ export type WindowControlAction = "Close" | "Minimize" | "Maximize" |
  */
 "Zoom"
 export type Workflow = { id: string; name: string; nodes: Node[]; edges: Edge[]; groups?: NodeGroup[]; next_id_counters?: Partial<{ [key in string]: number }>; auto_approve_resolutions?: boolean; intent?: string | null; verify_outcome?: boolean }
-export type WorkflowPatch = { added_nodes: Node[]; removed_node_ids: string[]; updated_nodes: Node[]; added_edges: Edge[]; removed_edges: Edge[]; warnings: string[] }
 
 /** tauri-specta globals **/
 

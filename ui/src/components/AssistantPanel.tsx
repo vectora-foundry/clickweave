@@ -34,6 +34,13 @@ export function AssistantPanel({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const agentStatus = useStore((s) => s.agentStatus);
+  const pendingApproval = useStore((s) => s.pendingApproval);
+  const stopAgent = useStore((s) => s.stopAgent);
+  const approveAction = useStore((s) => s.approveAction);
+  const rejectAction = useStore((s) => s.rejectAction);
+  const agentRunning = agentStatus === "running";
+
   // Auto-scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -172,40 +179,92 @@ export function AssistantPanel({
         </div>
       )}
 
+      {/* Approval card */}
+      {pendingApproval && (
+        <div className="mx-3 mb-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5">
+          <p className="text-[11px] font-medium text-amber-300 mb-1">
+            Agent wants to execute:
+          </p>
+          <p className="text-xs text-[var(--text-primary)] font-mono mb-2 break-all">
+            {pendingApproval.toolName}
+            <span className="text-[var(--text-muted)]">
+              ({typeof pendingApproval.arguments === "string"
+                ? pendingApproval.arguments
+                : JSON.stringify(pendingApproval.arguments, null, 0)?.slice(0, 120)}
+              )
+            </span>
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={approveAction}
+              className="rounded-lg bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-500"
+            >
+              Approve
+            </button>
+            <button
+              onClick={rejectAction}
+              className="rounded-lg border border-red-500/50 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10"
+            >
+              Reject
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Input */}
       <div className="border-t border-[var(--border)] px-3 py-3">
-        <div className="flex gap-2">
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Ask about your workflow..."
-            rows={2}
-            disabled={loading}
-            className="flex-1 resize-none rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none focus:border-[var(--accent-coral)]"
-          />
-          {loading ? (
+        {agentRunning ? (
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--accent-coral)] border-t-transparent" />
+              <span className="text-xs text-[var(--text-secondary)]">
+                Agent running...
+              </span>
+            </div>
             <button
-              onClick={onCancel}
-              className="self-end rounded-lg border border-[var(--text-muted)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] hover:border-[var(--text-primary)] hover:text-[var(--text-primary)]"
-              title="Stop request"
+              onClick={stopAgent}
+              className="rounded-lg border border-red-500/50 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10 hover:text-red-300"
+              title="Stop agent"
             >
               Stop
             </button>
-          ) : (
-            <button
-              onClick={handleSend}
-              disabled={!input.trim()}
-              className="self-end rounded-lg bg-[var(--accent-coral)] px-3 py-2 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
-            >
-              Send
-            </button>
-          )}
-        </div>
-        <p className="mt-1.5 text-[10px] text-[var(--text-muted)]">
-          Enter to send, Shift+Enter for new line
-        </p>
+          </div>
+        ) : (
+          <>
+            <div className="flex gap-2">
+              <textarea
+                ref={textareaRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Ask about your workflow..."
+                rows={2}
+                disabled={loading}
+                className="flex-1 resize-none rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none focus:border-[var(--accent-coral)]"
+              />
+              {loading ? (
+                <button
+                  onClick={onCancel}
+                  className="self-end rounded-lg border border-[var(--text-muted)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] hover:border-[var(--text-primary)] hover:text-[var(--text-primary)]"
+                  title="Stop request"
+                >
+                  Stop
+                </button>
+              ) : (
+                <button
+                  onClick={handleSend}
+                  disabled={!input.trim()}
+                  className="self-end rounded-lg bg-[var(--accent-coral)] px-3 py-2 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
+                >
+                  Send
+                </button>
+              )}
+            </div>
+            <p className="mt-1.5 text-[10px] text-[var(--text-muted)]">
+              Enter to send, Shift+Enter for new line
+            </p>
+          </>
+        )}
       </div>
     </div>
   );

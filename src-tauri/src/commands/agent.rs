@@ -1,7 +1,9 @@
 use super::error::CommandError;
 use super::types::*;
 use clickweave_core::variant_index::{VariantEntry, VariantIndex};
-use clickweave_engine::agent::{AgentCache, AgentCommand, AgentConfig, AgentStep, StepOutcome};
+use clickweave_engine::agent::{
+    AgentCache, AgentChannels, AgentConfig, AgentEvent, ApprovalRequest,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
@@ -32,6 +34,8 @@ pub struct AgentHandle {
     cancel_token: Option<CancellationToken>,
     steering_tx: Option<tokio::sync::mpsc::Sender<String>>,
     task_handle: Option<tauri::async_runtime::JoinHandle<()>>,
+    /// Pending approval oneshot sender — set when the agent is waiting for approval.
+    pending_approval_tx: Option<tokio::sync::oneshot::Sender<bool>>,
 }
 
 impl AgentHandle {
@@ -46,34 +50,8 @@ impl AgentHandle {
             task.abort();
         }
         self.steering_tx = None;
+        self.pending_approval_tx = None;
         had_task
-    }
-}
-
-// ── Helpers ─────────────────────────────────────────────────────
-
-fn step_summary(step: &AgentStep) -> String {
-    match &step.outcome {
-        StepOutcome::Success(text) => {
-            if text.len() > 120 {
-                let end = text.floor_char_boundary(120);
-                format!("{}...", &text[..end])
-            } else {
-                text.clone()
-            }
-        }
-        StepOutcome::Error(err) => format!("Error: {}", err),
-        StepOutcome::Done(summary) => format!("Done: {}", summary),
-        StepOutcome::Replan(reason) => format!("Replan: {}", reason),
-    }
-}
-
-fn step_tool_name(step: &AgentStep) -> String {
-    match &step.command {
-        AgentCommand::ToolCall { tool_name, .. } => tool_name.clone(),
-        AgentCommand::Done { .. } => "agent_done".to_string(),
-        AgentCommand::Replan { .. } => "agent_replan".to_string(),
-        AgentCommand::TextOnly { .. } => "text".to_string(),
     }
 }
 
@@ -113,7 +91,17 @@ pub async fn run_agent(
 
     let (_steering_tx, _steering_rx) = tokio::sync::mpsc::channel::<String>(8);
 
+    // Live event channel: agent runner -> Tauri event emitter
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
+
+    // Approval channel: agent runner sends requests, we forward to UI and store
+    // the oneshot response sender in the handle for `approve_agent_action` to use.
+    let (approval_tx, mut approval_rx) =
+        tokio::sync::mpsc::channel::<(ApprovalRequest, tokio::sync::oneshot::Sender<bool>)>(1);
+
     let emit_handle = app.clone();
+    let event_emit_handle = app.clone();
+    let approval_emit_handle = app.clone();
     let cleanup_handle = app.clone();
     let goal = request.goal.clone();
 
@@ -146,6 +134,11 @@ pub async fn run_agent(
         let variant_context = variant_index.as_context_text();
         let cache = AgentCache::load_from_path(&storage.agent_cache_path());
 
+        let channels = AgentChannels {
+            event_tx,
+            approval_tx,
+        };
+
         // Run the agent loop
         let result = tokio::select! {
             res = clickweave_engine::agent::run_agent_workflow(
@@ -155,6 +148,7 @@ pub async fn run_agent(
                 &mcp,
                 if variant_context.is_empty() { None } else { Some(&variant_context) },
                 Some(cache),
+                Some(channels),
             ) => res,
             _ = agent_token.cancelled() => {
                 let _ = emit_handle.emit(
@@ -190,17 +184,7 @@ pub async fn run_agent(
                 };
                 let _ = VariantIndex::append(&storage.variant_index_path(), &variant_entry);
 
-                // Emit step events for each completed step
-                for step in &state.steps {
-                    let _ = emit_handle.emit(
-                        "agent://step",
-                        AgentStepPayload {
-                            summary: step_summary(step),
-                            tool_name: step_tool_name(step),
-                            step_number: step.index,
-                        },
-                    );
-                }
+                // Final complete event (steps are emitted live now)
                 let _ = emit_handle.emit("agent://complete", ());
             }
             Err(e) => {
@@ -212,6 +196,59 @@ pub async fn run_agent(
         }
 
         let _ = done_tx.send(());
+    });
+
+    // Spawn a task to forward live agent events to the Tauri frontend.
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = event_rx.recv().await {
+            match &event {
+                AgentEvent::StepCompleted {
+                    step_index,
+                    tool_name,
+                    summary,
+                } => {
+                    let _ = event_emit_handle.emit(
+                        "agent://step",
+                        AgentStepPayload {
+                            summary: summary.clone(),
+                            tool_name: tool_name.clone(),
+                            step_number: *step_index,
+                        },
+                    );
+                }
+                AgentEvent::NodeAdded { node } => {
+                    let _ = event_emit_handle.emit("agent://node_added", node);
+                }
+                AgentEvent::EdgeAdded { edge } => {
+                    let _ = event_emit_handle.emit("agent://edge_added", edge);
+                }
+                AgentEvent::GoalComplete { summary } => {
+                    let _ = event_emit_handle.emit(
+                        "agent://goal_complete",
+                        serde_json::json!({ "summary": summary }),
+                    );
+                }
+                AgentEvent::Error { message } => {
+                    let _ = event_emit_handle
+                        .emit("agent://error", serde_json::json!({ "message": message }));
+                }
+            }
+        }
+    });
+
+    // Spawn a task to forward approval requests to the Tauri frontend
+    // and store the oneshot response sender in the handle.
+    tauri::async_runtime::spawn(async move {
+        while let Some((request, resp_tx)) = approval_rx.recv().await {
+            // Store the response sender so `approve_agent_action` can use it
+            {
+                let handle = approval_emit_handle.state::<Mutex<AgentHandle>>();
+                let mut guard = handle.lock().unwrap();
+                guard.pending_approval_tx = Some(resp_tx);
+            }
+            // Emit the approval request to the frontend
+            let _ = approval_emit_handle.emit("agent://approval_required", &request);
+        }
     });
 
     {
@@ -231,6 +268,7 @@ pub async fn run_agent(
         guard.cancel_token = None;
         guard.steering_tx = None;
         guard.task_handle = None;
+        guard.pending_approval_tx = None;
     });
 
     Ok(())
@@ -261,4 +299,22 @@ pub async fn steer_agent(app: tauri::AppHandle, message: String) -> Result<(), C
 
     tx.try_send(message)
         .map_err(|e| CommandError::internal(format!("Failed to send steering message: {e}")))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn approve_agent_action(
+    app: tauri::AppHandle,
+    approved: bool,
+) -> Result<(), CommandError> {
+    let handle = app.state::<Mutex<AgentHandle>>();
+    let mut guard = handle.lock().unwrap();
+    let tx = guard
+        .pending_approval_tx
+        .take()
+        .ok_or(CommandError::validation("No pending approval request"))?;
+    drop(guard);
+
+    let _ = tx.send(approved);
+    Ok(())
 }
