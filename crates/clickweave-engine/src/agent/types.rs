@@ -25,6 +25,10 @@ pub enum AgentEvent {
     Error {
         message: String,
     },
+    /// A nonfatal warning — the run continues but the operator should know.
+    Warning {
+        message: String,
+    },
     CdpConnected {
         app_name: String,
         port: u16,

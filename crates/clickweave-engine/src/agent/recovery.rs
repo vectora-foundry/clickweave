@@ -1,38 +1,26 @@
 /// Action the agent should take after encountering an error.
+///
+/// The agent loop always re-observes the page on the next iteration,
+/// so there is no distinct "retry same action" path. Recovery is
+/// either "continue the loop" or "abort".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecoveryAction {
-    /// Retry the same action (e.g., transient network error).
-    Retry,
-    /// Re-observe the page and let the LLM choose a different action.
-    ReObserve,
+    /// Continue the loop — re-observe and let the LLM choose.
+    Continue,
     /// Abort the agent run — too many consecutive errors.
     Abort,
 }
 
-/// Determine the recovery action based on consecutive error count and
-/// the maximum allowed consecutive errors.
-///
-/// Strategy:
-/// - 1st error: retry the same action (might be transient)
-/// - 2nd error: re-observe the page (the page state may have changed)
-/// - 3rd+ error: abort (the agent is stuck)
+/// Determine whether the agent should continue or abort based on
+/// consecutive error count and the configured maximum.
 pub fn recovery_strategy(
     consecutive_errors: usize,
     max_consecutive_errors: usize,
 ) -> RecoveryAction {
-    if consecutive_errors == 0 {
-        // No errors yet — shouldn't be called, but default to retry
-        return RecoveryAction::Retry;
-    }
-
     if consecutive_errors >= max_consecutive_errors {
-        return RecoveryAction::Abort;
-    }
-
-    if consecutive_errors == 1 {
-        RecoveryAction::Retry
+        RecoveryAction::Abort
     } else {
-        RecoveryAction::ReObserve
+        RecoveryAction::Continue
     }
 }
 
@@ -41,28 +29,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn first_error_retries() {
-        assert_eq!(recovery_strategy(1, 3), RecoveryAction::Retry);
+    fn below_max_continues() {
+        assert_eq!(recovery_strategy(1, 3), RecoveryAction::Continue);
+        assert_eq!(recovery_strategy(2, 3), RecoveryAction::Continue);
     }
 
     #[test]
-    fn second_error_reobserves() {
-        assert_eq!(recovery_strategy(2, 3), RecoveryAction::ReObserve);
-    }
-
-    #[test]
-    fn max_errors_aborts() {
+    fn at_max_aborts() {
         assert_eq!(recovery_strategy(3, 3), RecoveryAction::Abort);
     }
 
     #[test]
-    fn zero_errors_retries() {
-        assert_eq!(recovery_strategy(0, 3), RecoveryAction::Retry);
+    fn above_max_aborts() {
+        assert_eq!(recovery_strategy(5, 3), RecoveryAction::Abort);
+    }
+
+    #[test]
+    fn zero_errors_continues() {
+        assert_eq!(recovery_strategy(0, 3), RecoveryAction::Continue);
     }
 
     #[test]
     fn single_max_aborts_on_first() {
-        // With max_consecutive_errors = 1, the first error triggers abort
         assert_eq!(recovery_strategy(1, 1), RecoveryAction::Abort);
     }
 }

@@ -4,34 +4,49 @@ import type { Node, Edge } from "../../bindings";
 import { useStore } from "../../store/useAppStore";
 import type { AgentStatus } from "../../store/slices/agentSlice";
 
-interface AgentStepPayload {
+/** All run-scoped payloads include a generation ID. */
+interface RunScoped {
+  run_id: string;
+}
+
+interface AgentStartedPayload extends RunScoped {}
+
+interface AgentStepPayload extends RunScoped {
   summary: string;
   tool_name: string;
   step_number: number;
 }
 
-interface CdpConnectedPayload {
+interface NodeAddedPayload extends RunScoped {
+  node: Node;
+}
+
+interface EdgeAddedPayload extends RunScoped {
+  edge: Edge;
+}
+
+interface CdpConnectedPayload extends RunScoped {
   app_name: string;
   port: number;
 }
 
-interface AgentErrorPayload {
+interface AgentErrorPayload extends RunScoped {
   message: string;
 }
 
-interface AgentStoppedPayload {
+interface AgentStoppedPayload extends RunScoped {
   reason: string;
   steps_executed?: number;
   consecutive_errors?: number;
 }
 
-interface StepFailedPayload {
+interface StepFailedPayload extends RunScoped {
   step_number: number;
   tool_name: string;
   error: string;
 }
 
-interface ApprovalRequiredPayload {
+interface ApprovalRequiredPayload extends RunScoped {
   step_index: number;
   tool_name: string;
   arguments: unknown;
@@ -40,9 +55,13 @@ interface ApprovalRequiredPayload {
 
 /**
  * Subscribe to agent backend events:
- * agent://step, agent://plan, agent://complete, agent://stopped,
- * agent://error, agent://node_added, agent://edge_added,
+ * agent://started, agent://step, agent://complete, agent://stopped,
+ * agent://error, agent://warning, agent://node_added, agent://edge_added,
  * agent://approval_required, agent://cdp_connected, agent://step_failed.
+ *
+ * All run-scoped events carry a `run_id` generation ID. Events whose
+ * run_id does not match the active run are silently dropped to prevent
+ * stale state from a previous run leaking into the current one.
  *
  * Dispatches into the Zustand AgentSlice via `getState()`.
  */
@@ -67,8 +86,25 @@ export function useAgentEvents() {
             .pushLog(`Critical: agent event listener failed: ${err}`);
         });
 
+    /** Reject events from a stale run. */
+    const isStale = (runId: string): boolean => {
+      const activeRunId = useStore.getState().agentRunId;
+      return activeRunId !== null && runId !== activeRunId;
+    };
+
+    // ── Run lifecycle ──────────────────────────────────────────
+
+    sub(
+      listen<AgentStartedPayload>("agent://started", (e) => {
+        useStore.getState().setAgentRunId(e.payload.run_id);
+      }),
+    );
+
+    // ── Step events ────────────────────────────────────────────
+
     sub(
       listen<AgentStepPayload>("agent://step", (e) => {
+        if (isStale(e.payload.run_id)) return;
         useStore.getState().addAgentStep({
           summary: e.payload.summary,
           toolName: e.payload.tool_name,
@@ -85,19 +121,22 @@ export function useAgentEvents() {
     );
 
     sub(
-      listen<Node>("agent://node_added", (e) => {
-        useStore.getState().addAgentNode(e.payload);
+      listen<NodeAddedPayload>("agent://node_added", (e) => {
+        if (isStale(e.payload.run_id)) return;
+        useStore.getState().addAgentNode(e.payload.node);
       }),
     );
 
     sub(
-      listen<Edge>("agent://edge_added", (e) => {
-        useStore.getState().addAgentEdge(e.payload);
+      listen<EdgeAddedPayload>("agent://edge_added", (e) => {
+        if (isStale(e.payload.run_id)) return;
+        useStore.getState().addAgentEdge(e.payload.edge);
       }),
     );
 
     sub(
       listen<ApprovalRequiredPayload>("agent://approval_required", (e) => {
+        if (isStale(e.payload.run_id)) return;
         // Ignore stale approval requests that arrive after stop/cancel
         const current = useStore.getState().agentStatus;
         if (current !== "running") return;
@@ -107,14 +146,15 @@ export function useAgentEvents() {
           arguments: e.payload.arguments,
           description: e.payload.description,
         });
-        useStore.getState().pushLog(
-          `Agent awaiting approval: ${e.payload.tool_name}`,
-        );
+        useStore
+          .getState()
+          .pushLog(`Agent awaiting approval: ${e.payload.tool_name}`);
       }),
     );
 
     sub(
       listen<CdpConnectedPayload>("agent://cdp_connected", (e) => {
+        if (isStale(e.payload.run_id)) return;
         useStore
           .getState()
           .pushLog(
@@ -125,6 +165,7 @@ export function useAgentEvents() {
 
     sub(
       listen<StepFailedPayload>("agent://step_failed", (e) => {
+        if (isStale(e.payload.run_id)) return;
         useStore.getState().addAgentStep({
           summary: `Error: ${e.payload.error}`,
           toolName: e.payload.tool_name,
@@ -141,9 +182,10 @@ export function useAgentEvents() {
     );
 
     sub(
-      listen<{ tool_name: string; summary: string }>(
+      listen<RunScoped & { tool_name: string; summary: string }>(
         "agent://sub_action",
         (e) => {
+          if (isStale(e.payload.run_id)) return;
           useStore
             .getState()
             .pushLog(
@@ -152,6 +194,8 @@ export function useAgentEvents() {
         },
       ),
     );
+
+    // ── Terminal events ────────────────────────────────────────
 
     // Only transition status if the agent was still active — prevents
     // a backend event from overriding a user-initiated stop.
@@ -163,7 +207,8 @@ export function useAgentEvents() {
     };
 
     sub(
-      listen("agent://complete", () => {
+      listen<RunScoped>("agent://complete", (e) => {
+        if (isStale(e.payload.run_id)) return;
         setStatusIfActive("complete");
         useStore.getState().pushLog("Agent completed");
       }),
@@ -171,6 +216,7 @@ export function useAgentEvents() {
 
     sub(
       listen<AgentStoppedPayload>("agent://stopped", (e) => {
+        if (isStale(e.payload.run_id)) return;
         setStatusIfActive("stopped");
         const detail =
           e.payload.reason === "max_steps_reached"
@@ -180,14 +226,22 @@ export function useAgentEvents() {
               : e.payload.reason === "approval_unavailable"
                 ? "approval system unavailable"
                 : e.payload.reason;
+        useStore.getState().pushLog(`Agent stopped: ${detail}`);
+      }),
+    );
+
+    sub(
+      listen<RunScoped & { message: string }>("agent://warning", (e) => {
+        if (isStale(e.payload.run_id)) return;
         useStore
           .getState()
-          .pushLog(`Agent stopped: ${detail}`);
+          .pushLog(`Agent warning: ${e.payload.message}`);
       }),
     );
 
     sub(
       listen<AgentErrorPayload>("agent://error", (e) => {
+        if (isStale(e.payload.run_id)) return;
         // Only transition to error if the agent was still active —
         // a racing error after stop should not override "stopped".
         const current = useStore.getState().agentStatus;

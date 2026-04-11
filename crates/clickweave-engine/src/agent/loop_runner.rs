@@ -49,6 +49,13 @@ fn extract_result_text(result: &clickweave_mcp::ToolCallResult) -> String {
         .join("\n")
 }
 
+/// Result of requesting user approval for a tool action.
+enum ApprovalResult {
+    Approved,
+    Rejected,
+    Unavailable,
+}
+
 /// Callback pair for requesting approval from the UI before executing a tool.
 ///
 /// Each approval request uses a fresh `tokio::sync::oneshot` channel to avoid
@@ -115,13 +122,14 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         self.cache
     }
 
-    /// Send an event through the channel (non-blocking).
+    /// Send an event through the channel (backpressured).
     ///
-    /// Logs a warning if the send fails — the UI depends on these events
-    /// for workflow state, so dropped events should not be silent.
-    fn emit_event(&self, event: AgentEvent) {
+    /// Uses `send().await` instead of `try_send()` so the agent loop
+    /// slows down when the consumer falls behind, rather than dropping
+    /// events that the UI depends on for workflow state.
+    async fn emit_event(&self, event: AgentEvent) {
         if let Some(tx) = &self.event_tx {
-            if let Err(e) = tx.try_send(event) {
+            if let Err(e) = tx.send(event).await {
                 warn!("Failed to emit agent event: {}", e);
             }
         }
@@ -189,83 +197,157 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             }
 
             // 2. Check cache for a previously seen decision — replay if hit.
-            //    Skip if the same cache key was just replayed (prevents infinite
-            //    replay loops when the tool result doesn't change page state).
-            if self.config.use_cache {
+            //    Guards:
+            //    - Skip when elements are empty (degenerate cache key on native/no-CDP paths)
+            //    - Skip if the same cache key was just replayed (prevents infinite loops)
+            //    - Approval-gated tools still require user approval on replay
+            //    - Post-tool hooks (auto_connect_cdp) run after replay
+            if self.config.use_cache && !elements.is_empty() {
                 let current_key = super::cache::cache_key(&goal, &elements);
                 let is_repeat = last_cache_key.as_ref() == Some(&current_key);
 
                 if !is_repeat {
                     if let Some(cached) = self.cache.lookup(&goal, &elements) {
-                        let cached_tool = cached.tool_name.clone();
-                        let cached_args = cached.arguments.clone();
-                        debug!(
-                            tool = %cached_tool,
-                            hits = cached.hit_count,
-                            "Cache hit — replaying cached decision"
-                        );
+                        // Skip observation tools that may exist in old cache files
+                        // from before the write-side filter was added.
+                        if Self::OBSERVATION_TOOLS.contains(&cached.tool_name.as_str()) {
+                            debug!(
+                                tool = %cached.tool_name,
+                                "Skipping cached observation tool (stale entry)"
+                            );
+                        } else {
+                            let cached_tool = cached.tool_name.clone();
+                            let cached_args = cached.arguments.clone();
+                            debug!(
+                                tool = %cached_tool,
+                                hits = cached.hit_count,
+                                "Cache hit — replaying cached decision"
+                            );
 
-                        match mcp.call_tool(&cached_tool, Some(cached_args.clone())).await {
-                            Ok(result) if !result.is_error.unwrap_or(false) => {
-                                let result_text = extract_result_text(&result);
-                                let tool_call_id = format!("cache-{}", step_index);
-                                let command = AgentCommand::ToolCall {
-                                    tool_name: cached_tool.clone(),
-                                    arguments: cached_args.clone(),
-                                    tool_call_id: tool_call_id.clone(),
-                                };
-
-                                // Rebuild workflow node for this run — the cache
-                                // stores decisions across runs, so the current
-                                // workflow needs the replayed action as a node.
-                                if self.config.build_workflow {
-                                    self.add_workflow_node(&cached_tool, &cached_args, &mcp_tools);
+                            // Approval-gated tools must be re-approved on replay.
+                            let needs_approval =
+                                !Self::OBSERVATION_TOOLS.contains(&cached_tool.as_str());
+                            if needs_approval {
+                                match self
+                                    .request_approval(
+                                        &cached_tool,
+                                        &cached_args,
+                                        step_index,
+                                        " (cached)",
+                                    )
+                                    .await
+                                {
+                                    Some(ApprovalResult::Rejected) => {
+                                        // Evict the rejected entry so the next iteration
+                                        // falls through to the LLM instead of re-prompting
+                                        // the same cached action in an approval loop.
+                                        self.cache.remove(&goal, &elements);
+                                        last_cache_key = None;
+                                        let command = AgentCommand::ToolCall {
+                                            tool_name: cached_tool.clone(),
+                                            arguments: cached_args.clone(),
+                                            tool_call_id: format!("cache-{}", step_index),
+                                        };
+                                        let step = AgentStep {
+                                            index: step_index,
+                                            elements: elements.clone(),
+                                            command,
+                                            outcome: StepOutcome::Replan(
+                                                "User rejected cached action".to_string(),
+                                            ),
+                                            page_url: self.state.current_url.clone(),
+                                        };
+                                        self.state.steps.push(step);
+                                        previous_result =
+                                            Some("Replan: user rejected cached action".to_string());
+                                        continue;
+                                    }
+                                    Some(ApprovalResult::Unavailable) => {
+                                        self.state.terminal_reason =
+                                            Some(TerminalReason::ApprovalUnavailable);
+                                        break;
+                                    }
+                                    // Approved or no gate configured
+                                    _ => {}
                                 }
+                            }
 
-                                // Reconstruct transcript so the LLM sees the full
-                                // action history, not just the raw result text.
-                                self.messages.push(Message::assistant_tool_calls(vec![
-                                    clickweave_llm::ToolCall {
-                                        id: tool_call_id.clone(),
-                                        call_type: "function".to_string(),
-                                        function: clickweave_llm::FunctionCall {
-                                            name: cached_tool.clone(),
-                                            arguments: serde_json::to_string(&cached_args)
-                                                .unwrap_or_default(),
+                            match mcp.call_tool(&cached_tool, Some(cached_args.clone())).await {
+                                Ok(result) if !result.is_error.unwrap_or(false) => {
+                                    let result_text = extract_result_text(&result);
+                                    let tool_call_id = format!("cache-{}", step_index);
+                                    let command = AgentCommand::ToolCall {
+                                        tool_name: cached_tool.clone(),
+                                        arguments: cached_args.clone(),
+                                        tool_call_id: tool_call_id.clone(),
+                                    };
+
+                                    // Rebuild workflow node for this run — the cache
+                                    // stores decisions across runs, so the current
+                                    // workflow needs the replayed action as a node.
+                                    if self.config.build_workflow {
+                                        self.add_workflow_node(
+                                            &cached_tool,
+                                            &cached_args,
+                                            &mcp_tools,
+                                        )
+                                        .await;
+                                    }
+
+                                    // Reconstruct transcript so the LLM sees the full
+                                    // action history, not just the raw result text.
+                                    self.messages.push(Message::assistant_tool_calls(vec![
+                                        clickweave_llm::ToolCall {
+                                            id: tool_call_id.clone(),
+                                            call_type: "function".to_string(),
+                                            function: clickweave_llm::FunctionCall {
+                                                name: cached_tool.clone(),
+                                                arguments: serde_json::to_string(&cached_args)
+                                                    .unwrap_or_default(),
+                                            },
                                         },
-                                    },
-                                ]));
-                                self.messages
-                                    .push(Message::tool_result(&tool_call_id, &result_text));
+                                    ]));
+                                    self.messages
+                                        .push(Message::tool_result(&tool_call_id, &result_text));
 
-                                // Emit live step event for cached replay
-                                self.emit_event(AgentEvent::StepCompleted {
-                                    step_index,
-                                    tool_name: cached_tool.clone(),
-                                    summary: truncate_summary(&result_text, 120),
-                                });
+                                    // Emit live step event for cached replay
+                                    self.emit_event(AgentEvent::StepCompleted {
+                                        step_index,
+                                        tool_name: cached_tool.clone(),
+                                        summary: truncate_summary(&result_text, 120),
+                                    })
+                                    .await;
 
-                                let step = AgentStep {
-                                    index: step_index,
-                                    elements: elements.clone(),
-                                    command,
-                                    outcome: StepOutcome::Success(result_text.clone()),
-                                    page_url: self.state.current_url.clone(),
-                                };
-                                self.state.steps.push(step);
-                                self.state.consecutive_errors = 0;
-                                previous_result = Some(result_text);
-                                last_cache_key = Some(current_key);
-                                continue;
+                                    self.maybe_cdp_connect(
+                                        &cached_tool,
+                                        &cached_args,
+                                        mcp,
+                                        &mut tools,
+                                    )
+                                    .await;
+
+                                    let step = AgentStep {
+                                        index: step_index,
+                                        elements: elements.clone(),
+                                        command,
+                                        outcome: StepOutcome::Success(result_text.clone()),
+                                        page_url: self.state.current_url.clone(),
+                                    };
+                                    self.state.steps.push(step);
+                                    self.state.consecutive_errors = 0;
+                                    previous_result = Some(result_text);
+                                    last_cache_key = Some(current_key);
+                                    continue;
+                                }
+                                Ok(result) => {
+                                    let err_text = extract_result_text(&result);
+                                    debug!(error = %err_text, "Cached decision returned error, falling through to LLM");
+                                }
+                                Err(e) => {
+                                    debug!(error = %e, "Cached decision execution failed, falling through to LLM");
+                                }
                             }
-                            Ok(result) => {
-                                let err_text = extract_result_text(&result);
-                                debug!(error = %err_text, "Cached decision returned error, falling through to LLM");
-                            }
-                            Err(e) => {
-                                debug!(error = %e, "Cached decision execution failed, falling through to LLM");
-                            }
-                        }
+                        } // else: not an observation tool
                     }
                 }
                 // Reset cache key tracking when falling through to LLM
@@ -337,26 +419,9 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 ..
             } = &command
             {
-                if (tool_name == "launch_app" || tool_name == "focus_window")
-                    && matches!(&outcome, StepOutcome::Success(_))
-                {
-                    if let Some(app_name) = arguments["app_name"].as_str() {
-                        if let Some(cdp_port) = self.auto_connect_cdp(app_name, mcp).await {
-                            self.emit_event(AgentEvent::CdpConnected {
-                                app_name: app_name.to_string(),
-                                port: cdp_port,
-                            });
-                            // CDP connected — refresh the MCP tool list so newly
-                            // registered tools (cdp_click, cdp_type_text, etc.)
-                            // become available to the LLM.
-                            if let Ok(()) = mcp.refresh_tools().await {
-                                tools = mcp.tools_as_openai();
-                                tools.push(prompt::agent_done_tool());
-                                tools.push(prompt::agent_replan_tool());
-                                info!("Rebuilt tool list after CDP connect: {} tools", tools.len());
-                            }
-                        }
-                    }
+                if matches!(&outcome, StepOutcome::Success(_)) {
+                    self.maybe_cdp_connect(tool_name, arguments, mcp, &mut tools)
+                        .await;
                 }
             }
 
@@ -380,7 +445,8 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                         step_index,
                         tool_name: command.tool_name_or_unknown().to_string(),
                         summary: truncate_summary(result_text, 120),
-                    });
+                    })
+                    .await;
 
                     if let AgentCommand::ToolCall {
                         tool_name,
@@ -388,7 +454,13 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                         ..
                     } = &command
                     {
-                        if self.config.use_cache {
+                        // Only cache action tools, never observation tools.
+                        // Observation tools provide fresh environmental evidence
+                        // that must not be replayed from stale cache entries.
+                        if self.config.use_cache
+                            && !Self::OBSERVATION_TOOLS.contains(&tool_name.as_str())
+                            && !elements.is_empty()
+                        {
                             self.cache.store(
                                 &goal,
                                 &elements,
@@ -397,7 +469,8 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                             );
                         }
                         if self.config.build_workflow {
-                            self.add_workflow_node(tool_name, arguments, &mcp_tools);
+                            self.add_workflow_node(tool_name, arguments, &mcp_tools)
+                                .await;
                         }
                     }
                 }
@@ -409,7 +482,8 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                         step_index,
                         tool_name: command.tool_name_or_unknown().to_string(),
                         error: err.clone(),
-                    });
+                    })
+                    .await;
 
                     let action = recovery::recovery_strategy(
                         self.state.consecutive_errors,
@@ -426,11 +500,11 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                             });
                             break;
                         }
-                        RecoveryAction::Retry => {
-                            debug!("Recovery: retrying same action");
-                        }
-                        RecoveryAction::ReObserve => {
-                            debug!("Recovery: re-observing page");
+                        RecoveryAction::Continue => {
+                            debug!(
+                                errors = self.state.consecutive_errors,
+                                "Recovery: re-observing and continuing"
+                            );
                         }
                     }
                 }
@@ -444,7 +518,8 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                     info!(summary = %summary, "Agent completed goal");
                     self.emit_event(AgentEvent::GoalComplete {
                         summary: summary.clone(),
-                    });
+                    })
+                    .await;
                 }
                 StepOutcome::Replan(reason) => {
                     previous_result = Some(format!("Replan requested: {}", reason));
@@ -542,7 +617,8 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         self.emit_event(AgentEvent::SubAction {
             tool_name: "probe_app".to_string(),
             summary: format!("Auto: probing {} for CDP support", app_name),
-        });
+        })
+        .await;
         let probe_text = match mcp.call_tool("probe_app", Some(probe_args)).await {
             Ok(r) => extract_result_text(&r),
             Err(e) => {
@@ -576,7 +652,8 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         self.emit_event(AgentEvent::SubAction {
             tool_name: "quit_app".to_string(),
             summary: format!("Auto: quitting {} for CDP relaunch", app_name),
-        });
+        })
+        .await;
         let quit_args = serde_json::json!({"app_name": app_name});
         let _ = mcp.call_tool("quit_app", Some(quit_args)).await;
 
@@ -604,7 +681,8 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         self.emit_event(AgentEvent::SubAction {
             tool_name: "launch_app".to_string(),
             summary: format!("Auto: relaunching {} with debug port {}", app_name, port),
-        });
+        })
+        .await;
         let launch_args = serde_json::json!({
             "app_name": app_name,
             "args": [format!("--remote-debugging-port={}", port)],
@@ -632,7 +710,8 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         self.emit_event(AgentEvent::SubAction {
             tool_name: "cdp_connect".to_string(),
             summary: format!("Auto: connecting CDP on port {}", port),
-        });
+        })
+        .await;
         if self.cdp_connect_with_retries(port, mcp).await {
             info!(app = app_name, port, "CDP connected");
             Some(port)
@@ -664,6 +743,80 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             }
         }
         false
+    }
+
+    /// Request user approval for a tool action. Returns `None` if no
+    /// approval gate is configured (auto-approve).
+    async fn request_approval(
+        &self,
+        tool_name: &str,
+        arguments: &Value,
+        step_index: usize,
+        description_suffix: &str,
+    ) -> Option<ApprovalResult> {
+        let gate = self.approval_gate.as_ref()?;
+        let description = format!(
+            "{} with {}{}",
+            tool_name,
+            serde_json::to_string(arguments).unwrap_or_default(),
+            description_suffix,
+        );
+        let request = ApprovalRequest {
+            step_index,
+            tool_name: tool_name.to_string(),
+            arguments: arguments.clone(),
+            description,
+        };
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        if gate.request_tx.send((request, resp_tx)).await.is_ok() {
+            match resp_rx.await {
+                Ok(true) => {
+                    debug!(tool = %tool_name, "User approved action");
+                    Some(ApprovalResult::Approved)
+                }
+                Ok(false) => {
+                    info!(tool = %tool_name, "User rejected action");
+                    Some(ApprovalResult::Rejected)
+                }
+                Err(_) => {
+                    warn!(tool = %tool_name, "Approval channel closed");
+                    Some(ApprovalResult::Unavailable)
+                }
+            }
+        } else {
+            warn!(tool = %tool_name, "Approval channel send failed");
+            Some(ApprovalResult::Unavailable)
+        }
+    }
+
+    /// Run post-tool hooks for launch/focus actions: auto-connect CDP
+    /// and refresh the MCP tool list so CDP tools become available.
+    async fn maybe_cdp_connect(
+        &self,
+        tool_name: &str,
+        arguments: &Value,
+        mcp: &(impl Mcp + ?Sized),
+        tools: &mut Vec<Value>,
+    ) {
+        if tool_name != "launch_app" && tool_name != "focus_window" {
+            return;
+        }
+        let Some(app_name) = arguments["app_name"].as_str() else {
+            return;
+        };
+        if let Some(cdp_port) = self.auto_connect_cdp(app_name, mcp).await {
+            self.emit_event(AgentEvent::CdpConnected {
+                app_name: app_name.to_string(),
+                port: cdp_port,
+            })
+            .await;
+            if let Ok(()) = mcp.refresh_tools().await {
+                *tools = mcp.tools_as_openai();
+                tools.push(prompt::agent_done_tool());
+                tools.push(prompt::agent_replan_tool());
+                info!("Rebuilt tool list after CDP connect: {} tools", tools.len());
+            }
+        }
     }
 
     /// Parse the LLM response and execute the chosen action.
@@ -739,47 +892,26 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 // Skip approval for observation-only tools — they don't change state.
                 let needs_approval = !Self::OBSERVATION_TOOLS.contains(&tc.function.name.as_str());
                 if needs_approval {
-                    if let Some(gate) = &self.approval_gate {
-                        let description = format!(
-                            "{} with {}",
-                            tc.function.name,
-                            serde_json::to_string(&args).unwrap_or_default()
-                        );
-                        let request = ApprovalRequest {
-                            step_index,
-                            tool_name: tc.function.name.clone(),
-                            arguments: args.clone(),
-                            description,
-                        };
-                        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-                        if gate.request_tx.send((request, resp_tx)).await.is_ok() {
-                            match resp_rx.await {
-                                Ok(true) => {
-                                    debug!(tool = %tc.function.name, "User approved action");
-                                }
-                                Ok(false) => {
-                                    info!(tool = %tc.function.name, "User rejected action");
-                                    let command = AgentCommand::ToolCall {
-                                        tool_name: tc.function.name.clone(),
-                                        arguments: args.clone(),
-                                        tool_call_id: tc.id.clone(),
-                                    };
-                                    return Ok((
-                                        command,
-                                        StepOutcome::Replan("User rejected action".to_string()),
-                                    ));
-                                }
-                                Err(_) => {
-                                    // Oneshot receiver dropped — approval system gone
-                                    warn!(tool = %tc.function.name, "Approval channel closed, aborting");
-                                    return Err(LoopError::ApprovalUnavailable);
-                                }
-                            }
-                        } else {
-                            // mpsc send failed — receiver dropped, approval system permanently gone
-                            warn!(tool = %tc.function.name, "Approval channel send failed, aborting");
+                    match self
+                        .request_approval(&tc.function.name, &args, step_index, "")
+                        .await
+                    {
+                        Some(ApprovalResult::Rejected) => {
+                            let command = AgentCommand::ToolCall {
+                                tool_name: tc.function.name.clone(),
+                                arguments: args.clone(),
+                                tool_call_id: tc.id.clone(),
+                            };
+                            return Ok((
+                                command,
+                                StepOutcome::Replan("User rejected action".to_string()),
+                            ));
+                        }
+                        Some(ApprovalResult::Unavailable) => {
                             return Err(LoopError::ApprovalUnavailable);
                         }
+                        // Approved or no gate configured
+                        _ => {}
                     }
                 }
 
@@ -843,7 +975,12 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
 
     /// Add a workflow node for the executed tool call.
     /// Skips observation-only tools that the agent uses for perception.
-    fn add_workflow_node(&mut self, tool_name: &str, arguments: &Value, known_tools: &[Value]) {
+    async fn add_workflow_node(
+        &mut self,
+        tool_name: &str,
+        arguments: &Value,
+        known_tools: &[Value],
+    ) {
         if Self::OBSERVATION_TOOLS.contains(&tool_name) {
             return;
         }
@@ -851,9 +988,10 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             Ok(nt) => nt,
             Err(e) => {
                 warn!(error = %e, tool = tool_name, "Could not map tool to workflow node type — workflow graph will be incomplete");
-                self.emit_event(AgentEvent::Error {
+                self.emit_event(AgentEvent::Warning {
                     message: format!("Failed to map tool '{}' to workflow node: {}", tool_name, e),
-                });
+                })
+                .await;
                 return;
             }
         };
@@ -866,7 +1004,8 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         let node_id = node.id;
 
         // Emit live node event before pushing (clone for the event)
-        self.emit_event(AgentEvent::NodeAdded { node: node.clone() });
+        self.emit_event(AgentEvent::NodeAdded { node: node.clone() })
+            .await;
 
         self.state.workflow.nodes.push(node);
 
@@ -876,7 +1015,8 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 from: prev_id,
                 to: node_id,
             };
-            self.emit_event(AgentEvent::EdgeAdded { edge: edge.clone() });
+            self.emit_event(AgentEvent::EdgeAdded { edge: edge.clone() })
+                .await;
             self.state.workflow.edges.push(edge);
         }
 

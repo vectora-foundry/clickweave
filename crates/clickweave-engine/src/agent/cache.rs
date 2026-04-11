@@ -44,6 +44,12 @@ impl AgentCache {
         entry.hit_count += 1;
     }
 
+    /// Remove a cached decision for the given goal and elements.
+    pub fn remove(&mut self, goal: &str, elements: &[CdpFindElementMatch]) {
+        let key = cache_key(goal, elements);
+        self.entries.remove(&key);
+    }
+
     /// Load cache entries from a JSON string.
     pub fn load(json: &str) -> Result<Self, serde_json::Error> {
         let entries = serde_json::from_str(json)?;

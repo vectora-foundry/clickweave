@@ -28,6 +28,8 @@ export interface AgentSlice {
   agentError: string | null;
   currentAgentStep: number;
   pendingApproval: PendingApproval | null;
+  /** Generation ID for the active run — used to reject stale events. */
+  agentRunId: string | null;
   startAgent: (goal: string) => Promise<void>;
   stopAgent: () => Promise<void>;
   addAgentStep: (step: AgentStep) => void;
@@ -38,6 +40,7 @@ export interface AgentSlice {
   rejectAction: () => Promise<void>;
   setAgentStatus: (status: AgentStatus) => void;
   setAgentError: (error: string | null) => void;
+  setAgentRunId: (runId: string) => void;
   resetAgent: () => void;
 }
 
@@ -51,6 +54,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
   agentError: null,
   currentAgentStep: 0,
   pendingApproval: null,
+  agentRunId: null,
 
   startAgent: async (goal) => {
     const { pushLog, agentConfig, projectPath, workflow } = get();
@@ -61,6 +65,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       agentError: null,
       currentAgentStep: 0,
       pendingApproval: null,
+      agentRunId: null,
     });
     pushLog(`Agent started with goal: ${goal}`);
     try {
@@ -144,6 +149,8 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
 
   setAgentError: (error) => set({ agentError: error }),
 
+  setAgentRunId: (runId) => set({ agentRunId: runId }),
+
   resetAgent: () =>
     set({
       agentStatus: "idle",
@@ -152,5 +159,6 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       agentError: null,
       currentAgentStep: 0,
       pendingApproval: null,
+      agentRunId: null,
     }),
 });

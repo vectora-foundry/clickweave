@@ -22,6 +22,7 @@ pub struct AgentRunRequest {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentStepPayload {
+    pub run_id: String,
     pub summary: String,
     pub tool_name: String,
     pub step_number: usize,
@@ -35,6 +36,8 @@ pub struct AgentHandle {
     task_handle: Option<tauri::async_runtime::JoinHandle<()>>,
     /// Pending approval oneshot sender — set when the agent is waiting for approval.
     pending_approval_tx: Option<tokio::sync::oneshot::Sender<bool>>,
+    /// Generation ID for the current run. Used to tag events and reject stale ones.
+    run_id: Option<String>,
 }
 
 impl AgentHandle {
@@ -45,10 +48,13 @@ impl AgentHandle {
         if let Some(token) = self.cancel_token.take() {
             token.cancel();
         }
-        // Do NOT abort the task — let the cancellation token propagate
-        // through tokio::select! so the cancel branch can emit agent://stopped.
-        // The cleanup task will clear task_handle after done_tx fires.
-        self.pending_approval_tx = None;
+        // Send explicit cancellation through the approval channel instead
+        // of silently dropping the sender. This ensures the engine sees
+        // `Ok(false)` (rejection/replan) rather than `Err` (channel closed),
+        // which would surface as `approval_unavailable` instead of `cancelled`.
+        if let Some(tx) = self.pending_approval_tx.take() {
+            let _ = tx.send(false);
+        }
         had_task
     }
 }
@@ -85,9 +91,14 @@ pub async fn run_agent(
     );
     let storage = Arc::new(Mutex::new(storage));
 
+    // Generate a per-run generation ID so event consumers can reject
+    // stale events from a previous run that drain after stop/restart.
+    let run_id = uuid::Uuid::new_v4().to_string();
+
     let cancel_token = CancellationToken::new();
     let agent_token = cancel_token.clone();
     let forwarder_token = cancel_token.clone();
+    let event_forwarder_token = cancel_token.clone();
 
     // Live event channel: agent runner -> Tauri event emitter
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
@@ -104,9 +115,17 @@ pub async fn run_agent(
     let goal = request.goal.clone();
     let task_storage = storage.clone();
     let event_storage = storage.clone();
+    let task_run_id = run_id.clone();
+    let event_run_id = run_id.clone();
+    let approval_run_id = run_id.clone();
 
-    // Channel used to signal the cleanup task when the agent task finishes.
+    // Channels used to signal cleanup when both the agent task and event
+    // forwarder have finished, preventing stale event leakage.
     let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+    let (events_done_tx, events_done_rx) = tokio::sync::oneshot::channel::<()>();
+
+    // Emit agent://started so the frontend knows the run_id before any other events.
+    let _ = app.emit("agent://started", serde_json::json!({ "run_id": &run_id }));
 
     let task_handle = tauri::async_runtime::spawn(async move {
         // Spawn MCP server — cancellation-aware so stop_agent() works
@@ -118,7 +137,7 @@ pub async fn run_agent(
                     Err(e) => {
                         let _ = emit_handle.emit(
                             "agent://error",
-                            serde_json::json!({ "message": format!("MCP spawn failed: {e}") }),
+                            serde_json::json!({ "run_id": task_run_id, "message": format!("MCP spawn failed: {e}") }),
                         );
                         let _ = done_tx.send(());
                         return;
@@ -128,7 +147,7 @@ pub async fn run_agent(
             _ = agent_token.cancelled() => {
                 let _ = emit_handle.emit(
                     "agent://stopped",
-                    serde_json::json!({ "reason": "cancelled" }),
+                    serde_json::json!({ "run_id": task_run_id, "reason": "cancelled" }),
                 );
                 let _ = done_tx.send(());
                 return;
@@ -139,11 +158,26 @@ pub async fn run_agent(
         let llm = clickweave_llm::LlmClient::new(agent_config);
         let config = AgentConfig::default();
 
-        // Begin storage execution and load cross-run state under a single lock
+        // Begin storage execution and load cross-run state under a single lock.
+        // Storage init failure prevents the run from starting — durable tracing
+        // must be available before executing any agent actions.
         let storage = task_storage;
         let (variant_context, cache) = {
             let mut guard = storage.lock().unwrap();
-            let _exec_dir = guard.begin_execution();
+            match guard.begin_execution() {
+                Ok(_) => {}
+                Err(e) => {
+                    let _ = emit_handle.emit(
+                        "agent://error",
+                        serde_json::json!({
+                            "run_id": task_run_id,
+                            "message": format!("Run storage init failed: {e}"),
+                        }),
+                    );
+                    let _ = done_tx.send(());
+                    return;
+                }
+            }
             let variant_index = VariantIndex::load(&guard.variant_index_path());
             let cache = AgentCache::load_from_path(&guard.agent_cache_path());
             (variant_index.as_context_text(), cache)
@@ -168,7 +202,7 @@ pub async fn run_agent(
             _ = agent_token.cancelled() => {
                 let _ = emit_handle.emit(
                     "agent://stopped",
-                    serde_json::json!({ "reason": "cancelled" }),
+                    serde_json::json!({ "run_id": task_run_id, "reason": "cancelled" }),
                 );
                 let _ = done_tx.send(());
                 return;
@@ -203,24 +237,25 @@ pub async fn run_agent(
                     &variant_entry,
                 );
 
-                // Emit truthful terminal event. Stopped payloads use serde
-                // directly on TerminalReason to avoid duplicating variant
-                // structure in json! macros.
+                // Emit truthful terminal event.
                 match &state.terminal_reason {
                     Some(TerminalReason::Completed { summary }) => {
                         let _ = emit_handle.emit(
                             "agent://complete",
-                            serde_json::json!({ "summary": summary }),
+                            serde_json::json!({ "run_id": task_run_id, "summary": summary }),
                         );
                     }
                     Some(reason) => {
-                        let payload = serde_json::to_value(reason).unwrap_or_default();
+                        let mut payload = serde_json::to_value(reason).unwrap_or_default();
+                        if let Some(obj) = payload.as_object_mut() {
+                            obj.insert("run_id".to_string(), serde_json::json!(task_run_id));
+                        }
                         let _ = emit_handle.emit("agent://stopped", payload);
                     }
                     None => {
                         let _ = emit_handle.emit(
                             "agent://stopped",
-                            serde_json::json!({ "reason": "unknown" }),
+                            serde_json::json!({ "run_id": task_run_id, "reason": "unknown" }),
                         );
                     }
                 }
@@ -228,7 +263,7 @@ pub async fn run_agent(
             Err(e) => {
                 let _ = emit_handle.emit(
                     "agent://error",
-                    serde_json::json!({ "message": format!("{e}") }),
+                    serde_json::json!({ "run_id": task_run_id, "message": format!("{e}") }),
                 );
             }
         }
@@ -236,78 +271,114 @@ pub async fn run_agent(
         let _ = done_tx.send(());
     });
 
-    // Spawn a task to forward live agent events to the Tauri frontend
-    // and persist them durably for post-run replay and debugging.
+    // Spawn a task to forward live agent events to the Tauri frontend.
+    // Cancellation-aware: stops accepting new events once the run is cancelled,
+    // then drains any remaining buffered events and signals completion.
+    // Persistence is synchronous within the forwarder to guarantee ordering
+    // and completeness in events.jsonl. The agent loop emits events at LLM
+    // pace (~seconds per step), so the I/O cost is negligible.
     tauri::async_runtime::spawn(async move {
-        while let Some(event) = event_rx.recv().await {
-            // Durable trace: persist every event to events.jsonl
-            let _ = event_storage.lock().unwrap().append_agent_event(&event);
+        loop {
+            tokio::select! {
+                biased;
+                _ = event_forwarder_token.cancelled() => {
+                    // Drain remaining buffered events before exiting
+                    while let Ok(event) = event_rx.try_recv() {
+                        let _ = event_storage.lock().unwrap().append_agent_event(&event);
+                    }
+                    break;
+                }
+                maybe_event = event_rx.recv() => {
+                    match maybe_event {
+                        Some(event) => {
+                            // Durable trace: persist every event to events.jsonl
+                            let _ = event_storage.lock().unwrap().append_agent_event(&event);
 
-            match &event {
-                AgentEvent::StepCompleted {
-                    step_index,
-                    tool_name,
-                    summary,
-                } => {
-                    let _ = event_emit_handle.emit(
-                        "agent://step",
-                        AgentStepPayload {
-                            summary: summary.clone(),
-                            tool_name: tool_name.clone(),
-                            step_number: *step_index,
-                        },
-                    );
-                }
-                AgentEvent::NodeAdded { node } => {
-                    let _ = event_emit_handle.emit("agent://node_added", node);
-                }
-                AgentEvent::EdgeAdded { edge } => {
-                    let _ = event_emit_handle.emit("agent://edge_added", edge);
-                }
-                AgentEvent::GoalComplete { summary } => {
-                    let _ = event_emit_handle.emit(
-                        "agent://goal_complete",
-                        serde_json::json!({ "summary": summary }),
-                    );
-                }
-                AgentEvent::Error { message } => {
-                    let _ = event_emit_handle
-                        .emit("agent://error", serde_json::json!({ "message": message }));
-                }
-                AgentEvent::CdpConnected { app_name, port } => {
-                    let _ = event_emit_handle.emit(
-                        "agent://cdp_connected",
-                        serde_json::json!({
-                            "app_name": app_name,
-                            "port": port,
-                        }),
-                    );
-                }
-                AgentEvent::StepFailed {
-                    step_index,
-                    tool_name,
-                    error,
-                } => {
-                    let _ = event_emit_handle.emit(
-                        "agent://step_failed",
-                        serde_json::json!({
-                            "step_number": step_index,
-                            "tool_name": tool_name,
-                            "error": error,
-                        }),
-                    );
-                }
-                AgentEvent::SubAction { tool_name, summary } => {
-                    let _ = event_emit_handle.emit(
-                        "agent://sub_action",
-                        serde_json::json!({
-                            "tool_name": tool_name,
-                            "summary": summary,
-                        }),
-                    );
+                            match &event {
+                                AgentEvent::StepCompleted {
+                                    step_index,
+                                    tool_name,
+                                    summary,
+                                } => {
+                                    let _ = event_emit_handle.emit(
+                                        "agent://step",
+                                        AgentStepPayload {
+                                            run_id: event_run_id.clone(),
+                                            summary: summary.clone(),
+                                            tool_name: tool_name.clone(),
+                                            step_number: *step_index,
+                                        },
+                                    );
+                                }
+                                AgentEvent::NodeAdded { node } => {
+                                    let _ = event_emit_handle.emit("agent://node_added",
+                                        serde_json::json!({ "run_id": event_run_id, "node": node }));
+                                }
+                                AgentEvent::EdgeAdded { edge } => {
+                                    let _ = event_emit_handle.emit("agent://edge_added",
+                                        serde_json::json!({ "run_id": event_run_id, "edge": edge }));
+                                }
+                                AgentEvent::GoalComplete { summary } => {
+                                    let _ = event_emit_handle.emit(
+                                        "agent://goal_complete",
+                                        serde_json::json!({ "run_id": event_run_id, "summary": summary }),
+                                    );
+                                }
+                                AgentEvent::Error { message } => {
+                                    let _ = event_emit_handle.emit(
+                                        "agent://error",
+                                        serde_json::json!({ "run_id": event_run_id, "message": message }),
+                                    );
+                                }
+                                AgentEvent::Warning { message } => {
+                                    let _ = event_emit_handle.emit(
+                                        "agent://warning",
+                                        serde_json::json!({ "run_id": event_run_id, "message": message }),
+                                    );
+                                }
+                                AgentEvent::CdpConnected { app_name, port } => {
+                                    let _ = event_emit_handle.emit(
+                                        "agent://cdp_connected",
+                                        serde_json::json!({
+                                            "run_id": event_run_id,
+                                            "app_name": app_name,
+                                            "port": port,
+                                        }),
+                                    );
+                                }
+                                AgentEvent::StepFailed {
+                                    step_index,
+                                    tool_name,
+                                    error,
+                                } => {
+                                    let _ = event_emit_handle.emit(
+                                        "agent://step_failed",
+                                        serde_json::json!({
+                                            "run_id": event_run_id,
+                                            "step_number": step_index,
+                                            "tool_name": tool_name,
+                                            "error": error,
+                                        }),
+                                    );
+                                }
+                                AgentEvent::SubAction { tool_name, summary } => {
+                                    let _ = event_emit_handle.emit(
+                                        "agent://sub_action",
+                                        serde_json::json!({
+                                            "run_id": event_run_id,
+                                            "tool_name": tool_name,
+                                            "summary": summary,
+                                        }),
+                                    );
+                                }
+                            }
+                        }
+                        None => break,
+                    }
                 }
             }
         }
+        let _ = events_done_tx.send(());
     });
 
     // Spawn a task to forward approval requests to the Tauri frontend
@@ -322,7 +393,10 @@ pub async fn run_agent(
                         Some((request, resp_tx)) => {
                             // After winning the select race, re-check cancellation
                             // to avoid leaking a stale approval into the next run.
+                            // Send explicit rejection so the engine sees Ok(false)
+                            // instead of Err (channel closed → ApprovalUnavailable).
                             if forwarder_token.is_cancelled() {
+                                let _ = resp_tx.send(false);
                                 break;
                             }
                             {
@@ -330,7 +404,16 @@ pub async fn run_agent(
                                 let mut guard = handle.lock().unwrap();
                                 guard.pending_approval_tx = Some(resp_tx);
                             }
-                            let _ = approval_emit_handle.emit("agent://approval_required", &request);
+                            let _ = approval_emit_handle.emit(
+                                "agent://approval_required",
+                                serde_json::json!({
+                                    "run_id": approval_run_id,
+                                    "step_index": request.step_index,
+                                    "tool_name": request.tool_name,
+                                    "arguments": request.arguments,
+                                    "description": request.description,
+                                }),
+                            );
                         }
                         None => break,
                     }
@@ -345,17 +428,22 @@ pub async fn run_agent(
         let mut guard = handle.lock().unwrap();
         guard.cancel_token = Some(cancel_token);
         guard.task_handle = Some(task_handle);
+        guard.run_id = Some(run_id);
     }
 
-    // Spawn cleanup task: wait for the agent task to signal completion, then clear the handle.
+    // Spawn cleanup task: wait for both the agent task and the event forwarder
+    // to complete before clearing the handle. This prevents stale buffered
+    // events from leaking into a subsequent run.
     tauri::async_runtime::spawn(async move {
         let _ = done_rx.await;
+        let _ = events_done_rx.await;
 
         let handle = cleanup_handle.state::<Mutex<AgentHandle>>();
         let mut guard = handle.lock().unwrap();
         guard.cancel_token = None;
         guard.task_handle = None;
         guard.pending_approval_tx = None;
+        guard.run_id = None;
     });
 
     Ok(())
@@ -386,6 +474,7 @@ pub async fn approve_agent_action(
         .ok_or(CommandError::validation("No pending approval request"))?;
     drop(guard);
 
-    let _ = tx.send(approved);
-    Ok(())
+    tx.send(approved).map_err(|_| {
+        CommandError::validation("Approval channel closed — agent task may have ended")
+    })
 }
