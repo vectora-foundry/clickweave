@@ -166,4 +166,17 @@ mod tests {
         let page_b = vec![make_element("2_0", "heading", "Dashboard", "h1")];
         assert_ne!(page_fingerprint(&page_a), page_fingerprint(&page_b));
     }
+
+    #[test]
+    fn element_fingerprint_differs_by_uid() {
+        // Two elements with the same role, label, and tag but different uids
+        // should produce different fingerprints.
+        let el_a = make_element("1_0", "button", "Submit", "button");
+        let el_b = make_element("2_5", "button", "Submit", "button");
+        assert_ne!(
+            element_fingerprint(&el_a),
+            element_fingerprint(&el_b),
+            "Elements with different uids should have different fingerprints"
+        );
+    }
 }
