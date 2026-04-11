@@ -481,48 +481,52 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                     _ => {}
                 }
 
-                // Request user approval before executing the tool
-                if let Some(gate) = &self.approval_gate {
-                    let description = format!(
-                        "{} with {}",
-                        tc.function.name,
-                        serde_json::to_string(&args).unwrap_or_default()
-                    );
-                    let request = ApprovalRequest {
-                        step_index,
-                        tool_name: tc.function.name.clone(),
-                        arguments: args.clone(),
-                        description,
-                    };
-                    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-                    if gate.request_tx.send((request, resp_tx)).await.is_ok() {
-                        match resp_rx.await {
-                            Ok(true) => {
-                                debug!(tool = %tc.function.name, "User approved action");
-                            }
-                            Ok(false) => {
-                                info!(tool = %tc.function.name, "User rejected action");
-                                let command = AgentCommand::ToolCall {
-                                    tool_name: tc.function.name.clone(),
-                                    arguments: args.clone(),
-                                    tool_call_id: tc.id.clone(),
-                                };
-                                return Ok((
-                                    command,
-                                    StepOutcome::Replan("User rejected action".to_string()),
-                                ));
-                            }
-                            Err(_) => {
-                                // Channel closed — approval system gone, treat as rejection
-                                let command = AgentCommand::ToolCall {
-                                    tool_name: tc.function.name.clone(),
-                                    arguments: args.clone(),
-                                    tool_call_id: tc.id.clone(),
-                                };
-                                return Ok((
-                                    command,
-                                    StepOutcome::Replan("Approval channel closed".to_string()),
-                                ));
+                // Request user approval before executing the tool.
+                // Skip approval for observation-only tools — they don't change state.
+                let needs_approval = !Self::OBSERVATION_TOOLS.contains(&tc.function.name.as_str());
+                if needs_approval {
+                    if let Some(gate) = &self.approval_gate {
+                        let description = format!(
+                            "{} with {}",
+                            tc.function.name,
+                            serde_json::to_string(&args).unwrap_or_default()
+                        );
+                        let request = ApprovalRequest {
+                            step_index,
+                            tool_name: tc.function.name.clone(),
+                            arguments: args.clone(),
+                            description,
+                        };
+                        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                        if gate.request_tx.send((request, resp_tx)).await.is_ok() {
+                            match resp_rx.await {
+                                Ok(true) => {
+                                    debug!(tool = %tc.function.name, "User approved action");
+                                }
+                                Ok(false) => {
+                                    info!(tool = %tc.function.name, "User rejected action");
+                                    let command = AgentCommand::ToolCall {
+                                        tool_name: tc.function.name.clone(),
+                                        arguments: args.clone(),
+                                        tool_call_id: tc.id.clone(),
+                                    };
+                                    return Ok((
+                                        command,
+                                        StepOutcome::Replan("User rejected action".to_string()),
+                                    ));
+                                }
+                                Err(_) => {
+                                    // Channel closed — approval system gone, treat as rejection
+                                    let command = AgentCommand::ToolCall {
+                                        tool_name: tc.function.name.clone(),
+                                        arguments: args.clone(),
+                                        tool_call_id: tc.id.clone(),
+                                    };
+                                    return Ok((
+                                        command,
+                                        StepOutcome::Replan("Approval channel closed".to_string()),
+                                    ));
+                                }
                             }
                         }
                     }
@@ -565,8 +569,33 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         }
     }
 
+    /// Tools that are observation-only — used by the agent to understand the
+    /// screen but should NOT become workflow nodes.
+    const OBSERVATION_TOOLS: &'static [&'static str] = &[
+        "take_screenshot",
+        "list_apps",
+        "list_windows",
+        "find_text",
+        "find_image",
+        "element_at_point",
+        "take_ax_snapshot",
+        "probe_app",
+        "get_displays",
+        "start_recording",
+        "start_hover_tracking",
+        "load_image",
+        "cdp_list_pages",
+        "cdp_take_snapshot",
+        "cdp_find_elements",
+        "android_list_devices",
+    ];
+
     /// Add a workflow node for the executed tool call.
+    /// Skips observation-only tools that the agent uses for perception.
     fn add_workflow_node(&mut self, tool_name: &str, arguments: &Value, known_tools: &[Value]) {
+        if Self::OBSERVATION_TOOLS.contains(&tool_name) {
+            return;
+        }
         let node_type = match tool_invocation_to_node_type(tool_name, arguments, known_tools) {
             Ok(nt) => nt,
             Err(e) => {
