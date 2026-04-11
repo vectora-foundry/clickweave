@@ -4,13 +4,12 @@ import { useStore } from "../store/useAppStore";
 import { useAgentEvents } from "./events/useAgentEvents";
 import { useExecutorNodeEvents } from "./events/useExecutorNodeEvents";
 import { useSupervisionEvents } from "./events/useSupervisionEvents";
-import { useAssistantEvents } from "./events/useAssistantEvents";
 import { useWalkthroughEvents } from "./events/useWalkthroughEvents";
 import { useMenuEvents } from "./events/useMenuEvents";
 
 /**
  * Subscribe to all Tauri `executor://`, `agent://`, `walkthrough://`,
- * `menu://`, `assistant://`, and `recording-bar://` backend events,
+ * `menu://`, and `recording-bar://` backend events,
  * dispatching them into the Zustand store via `getState()` to avoid
  * stale closures.
  *
@@ -21,7 +20,6 @@ export function useExecutorEvents() {
   useAgentEvents();
   useExecutorNodeEvents();
   useSupervisionEvents();
-  useAssistantEvents();
   useWalkthroughEvents();
   useMenuEvents();
 

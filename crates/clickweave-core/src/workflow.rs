@@ -233,6 +233,11 @@ pub enum NodeType {
     // Generic
     McpToolCall(McpToolCallParams),
     AppDebugKitOp(AppDebugKitParams),
+    /// Placeholder for removed or unrecognized node types. Preserved on
+    /// load so that old workflows don't hard-fail; the UI can display them
+    /// as disabled/unsupported.
+    #[serde(other)]
+    Unknown,
 }
 
 impl NodeType {
@@ -266,7 +271,7 @@ impl NodeType {
 
             Self::AiStep(_) => OutputRole::Ai,
 
-            Self::McpToolCall(_) | Self::AppDebugKitOp(_) => OutputRole::Generic,
+            Self::McpToolCall(_) | Self::AppDebugKitOp(_) | Self::Unknown => OutputRole::Generic,
         }
     }
 
@@ -384,6 +389,7 @@ impl NodeType {
             NodeType::AiStep(_) => "AI Step",
             NodeType::McpToolCall(_) => "MCP Tool Call",
             NodeType::AppDebugKitOp(_) => "AppDebugKit Op",
+            NodeType::Unknown => "Unknown",
         }
     }
 
@@ -482,6 +488,7 @@ impl NodeType {
             NodeType::CdpSelectPage(_) => "📑",
             NodeType::CdpHandleDialog(_) => "💬",
             NodeType::McpToolCall(_) | NodeType::AppDebugKitOp(_) => "🔧",
+            NodeType::Unknown => "❓",
         }
     }
 

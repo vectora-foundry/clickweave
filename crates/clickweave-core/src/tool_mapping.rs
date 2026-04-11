@@ -245,7 +245,7 @@ pub fn node_type_to_tool_invocation(
             };
             (&*p.tool_name, args)
         }
-        NodeType::AiStep(_) | NodeType::AppDebugKitOp(_) => {
+        NodeType::AiStep(_) | NodeType::AppDebugKitOp(_) | NodeType::Unknown => {
             return Err(ToolMappingError::NotAToolNode);
         }
     };

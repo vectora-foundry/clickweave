@@ -117,14 +117,50 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 }
             }
 
-            // 2. Check cache for a previously seen decision
+            // 2. Check cache for a previously seen decision — replay if hit
             if self.config.use_cache {
                 if let Some(cached) = self.cache.lookup(&goal, &elements) {
+                    let cached_tool = cached.tool_name.clone();
+                    let cached_args = cached.arguments.clone();
                     debug!(
-                        tool = %cached.tool_name,
+                        tool = %cached_tool,
                         hits = cached.hit_count,
-                        "Cache hit — reusing previous decision"
+                        "Cache hit — replaying cached decision"
                     );
+
+                    match mcp.call_tool(&cached_tool, Some(cached_args.clone())).await {
+                        Ok(result) if !result.is_error.unwrap_or(false) => {
+                            let result_text = extract_result_text(&result);
+                            let command = AgentCommand::ToolCall {
+                                tool_name: cached_tool.clone(),
+                                arguments: cached_args.clone(),
+                                tool_call_id: format!("cache-{}", step_index),
+                            };
+
+                            if self.config.build_workflow {
+                                self.add_workflow_node(&cached_tool, &cached_args, &mcp_tools);
+                            }
+
+                            let step = AgentStep {
+                                index: step_index,
+                                elements: elements.clone(),
+                                command,
+                                outcome: StepOutcome::Success(result_text.clone()),
+                                page_url: self.state.current_url.clone(),
+                            };
+                            self.state.steps.push(step);
+                            self.state.consecutive_errors = 0;
+                            previous_result = Some(result_text);
+                            continue;
+                        }
+                        Ok(result) => {
+                            let err_text = extract_result_text(&result);
+                            debug!(error = %err_text, "Cached decision returned error, falling through to LLM");
+                        }
+                        Err(e) => {
+                            debug!(error = %e, "Cached decision execution failed, falling through to LLM");
+                        }
+                    }
                 }
             }
 

@@ -144,7 +144,7 @@ function App() {
 
   // ── Workflow mutations ───────────────────────────────────────────
   const {
-    addNode, removeNodes, removeEdgesOnly, updateNodePositions, updateNode, addEdge, dataConnect,
+    addNode, removeNodes, removeEdgesOnly, updateNodePositions, updateNode, addEdge,
     createGroup, removeGroup, deleteGroupWithContents,
     renameGroup, recolorGroup, addNodesToGroup, removeNodesFromGroup,
   } = useWorkflowActions();
@@ -245,7 +245,6 @@ function App() {
                     setWorkflow({ ...workflow, edges });
                   }}
                   onConnect={addEdge}
-                  onDataConnect={dataConnect}
                   onDeleteNodes={removeNodes}
                   onRemoveExtraEdges={removeEdgesOnly}
                   onBeforeNodeDrag={() => pushHistory("Move Nodes")}

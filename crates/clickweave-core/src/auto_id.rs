@@ -31,6 +31,7 @@ pub fn auto_id_base(node_type: &NodeType) -> &'static str {
         NodeType::AiStep(_) => "ai_step",
         NodeType::McpToolCall(_) => "mcp_tool_call",
         NodeType::AppDebugKitOp(_) => "app_debug_kit_op",
+        NodeType::Unknown => "unknown",
     }
 }
 

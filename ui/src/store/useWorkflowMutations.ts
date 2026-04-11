@@ -174,30 +174,6 @@ export function useWorkflowMutations(
     [setWorkflow, pushHistory],
   );
 
-  const dataConnect = useCallback(
-    (sourceNodeId: string, targetNodeId: string, sourceField: string, targetInputKey: string) => {
-      pushHistory("Wire Variable");
-      setWorkflow((prev) => {
-        // Find source node auto_id
-        const sourceNode = prev.nodes.find((n) => n.id === sourceNodeId);
-        if (!sourceNode?.auto_id) return prev;
-        const outputRef = { node: sourceNode.auto_id, field: sourceField };
-        // Set the _ref param on the target node
-        return {
-          ...prev,
-          nodes: prev.nodes.map((n) => {
-            if (n.id !== targetNodeId) return n;
-            return {
-              ...n,
-              node_type: { ...n.node_type, [targetInputKey]: outputRef },
-            };
-          }),
-        };
-      });
-    },
-    [setWorkflow, pushHistory],
-  );
-
   const removeEdge = useCallback(
     (from: string, to: string) => {
       pushHistory("Remove Edge");
@@ -324,7 +300,7 @@ export function useWorkflowMutations(
 
   return {
     addNode, removeNode, removeNodes, removeEdgesOnly,
-    updateNodePositions, updateNode, addEdge, dataConnect, removeEdge,
+    updateNodePositions, updateNode, addEdge, removeEdge,
     createGroup, removeGroup, deleteGroupWithContents,
     renameGroup, recolorGroup, addNodesToGroup, removeNodesFromGroup,
   };

@@ -32,7 +32,6 @@ interface GraphCanvasProps {
   onNodePositionsChange: (updates: Map<string, { x: number; y: number }>) => void;
   onEdgesChange: (edges: Edge[]) => void;
   onConnect: (from: string, to: string, sourceHandle?: string) => void;
-  onDataConnect?: (sourceNodeId: string, targetNodeId: string, sourceField: string, targetInputKey: string) => void;
   onDeleteNodes: (ids: string[]) => void;
   onRemoveExtraEdges: (edges: Edge[]) => void;
   onBeforeNodeDrag?: () => void;
@@ -53,7 +52,6 @@ export function GraphCanvas({
   onNodePositionsChange,
   onEdgesChange,
   onConnect,
-  onDataConnect,
   onDeleteNodes,
   onRemoveExtraEdges,
   onBeforeNodeDrag,
@@ -151,7 +149,6 @@ export function GraphCanvas({
     onEdgesChange,
     onRemoveExtraEdges,
     onConnect,
-    onDataConnect,
   });
 
   const handlePaneClick = useCallback(() => {

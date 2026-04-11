@@ -17,7 +17,6 @@ interface UseEdgeSyncParams {
   onEdgesChange: (edges: Edge[]) => void;
   onRemoveExtraEdges: (edges: Edge[]) => void;
   onConnect: (from: string, to: string, sourceHandle?: string) => void;
-  onDataConnect?: (sourceNodeId: string, targetNodeId: string, sourceField: string, targetInputKey: string) => void;
 }
 
 export function useEdgeSync({
@@ -29,7 +28,6 @@ export function useEdgeSync({
   onEdgesChange,
   onRemoveExtraEdges,
   onConnect,
-  onDataConnect,
 }: UseEdgeSyncParams) {
   const combinedRewrites = useMemo(() => {
     const map = new Map<string, string>();
@@ -164,18 +162,9 @@ export function useEdgeSync({
     (connection: Connection) => {
       if (!connection.source || !connection.target) return;
       const sh = connection.sourceHandle ?? "";
-      const th = connection.targetHandle ?? "";
-      if (sh.startsWith("data-") && th.startsWith("data-input-") && onDataConnect) {
-        const sourceField = sh.slice("data-".length);
-        const targetInputKey = th.slice("data-input-".length);
-        onDataConnect(connection.source, connection.target, sourceField, targetInputKey);
-      } else if (sh.startsWith("data-")) {
-        return;
-      } else {
-        onConnect(connection.source, connection.target, sh || undefined);
-      }
+      onConnect(connection.source, connection.target, sh || undefined);
     },
-    [onConnect, onDataConnect],
+    [onConnect],
   );
 
   return {

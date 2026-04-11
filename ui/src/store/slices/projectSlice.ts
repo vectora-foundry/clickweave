@@ -54,17 +54,6 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       autoApprovedCount: 0,
     });
     get().clearHistory();
-    await commands.clearAssistantSession().catch(() => {});
-
-    // Load conversation messages from the backend session
-    try {
-      const convResult = await commands.loadConversation(filePath);
-      if (convResult.status === "ok" && convResult.data) {
-        get().setMessages(convResult.data);
-      }
-    } catch {
-      // Conversation load failed — messages stay empty
-    }
 
     pushLog(`Opened: ${filePath}`);
   },
@@ -84,15 +73,6 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       return;
     }
 
-    // Save conversation from backend session alongside the project
-    if (savePath) {
-      try {
-        await commands.saveConversation(savePath);
-      } catch (e) {
-        console.error("Failed to save conversation:", e);
-      }
-    }
-
     pushLog(projectPath ? "Saved" : `Saved to: ${savePath}`);
   },
 
@@ -102,7 +82,6 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       return;
     }
     const { pushLog } = get();
-    commands.clearAssistantSession().catch(() => {});
     set({
       workflow: makeDefaultWorkflow(),
       projectPath: null,
