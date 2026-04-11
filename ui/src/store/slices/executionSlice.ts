@@ -29,7 +29,6 @@ export interface ExecutionSlice {
   supervisionPause: SupervisionPause | null;
   resolutionProposal: ResolutionProposal | null;
   lastRunStatus: "completed" | "failed" | null;
-  autoApprovedCount: number;
 
   setExecutorState: (state: "idle" | "running") => void;
   setExecutionMode: (mode: ExecutionMode) => void;
@@ -42,11 +41,7 @@ export interface ExecutionSlice {
   stopWorkflow: () => Promise<void>;
   setLastRunStatus: (status: "completed" | "failed" | null) => void;
   isExecutionLocked: () => boolean;
-  setAutoApproveResolutions: (enabled: boolean) => void;
-  setVerifyOutcome: (enabled: boolean) => void;
   setIntent: (intent: string | null) => void;
-  incrementAutoApprovedCount: () => void;
-  dismissAutoApproveBanner: () => void;
 }
 
 export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSlice> = (set, get) => ({
@@ -55,7 +50,6 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
   supervisionPause: null,
   resolutionProposal: null,
   lastRunStatus: null,
-  autoApprovedCount: 0,
 
   setExecutorState: (state) => set({ executorState: state }),
   setLastRunStatus: (status) => set({ lastRunStatus: status }),
@@ -73,26 +67,10 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
     }
   },
 
-  setAutoApproveResolutions: (enabled) => {
-    const { workflow } = get();
-    set({ workflow: { ...workflow, auto_approve_resolutions: enabled } });
-  },
-
-  setVerifyOutcome: (enabled) => {
-    const { workflow } = get();
-    set({ workflow: { ...workflow, verify_outcome: enabled } });
-  },
-
   setIntent: (intent) => {
     const { workflow } = get();
     set({ workflow: { ...workflow, intent: intent || null } });
   },
-
-  incrementAutoApprovedCount: () => {
-    set((s) => ({ autoApprovedCount: s.autoApprovedCount + 1 }));
-  },
-
-  dismissAutoApproveBanner: () => set({ autoApprovedCount: 0 }),
 
   resolveResolution: async (approved) => {
     set({ resolutionProposal: null });
@@ -141,7 +119,7 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
   },
 
   runWorkflow: async () => {
-    const { workflow, projectPath, agentConfig, fastConfig, fastEnabled, plannerConfig, executionMode, outcomeDelayMs, supervisionDelayMs, pushLog } = get();
+    const { workflow, projectPath, agentConfig, fastConfig, fastEnabled, plannerConfig, executionMode, supervisionDelayMs, pushLog } = get();
 
     const graphErrors = validateSingleGraph(workflow.nodes, workflow.edges);
     if (graphErrors.length > 0) {
@@ -151,9 +129,6 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
       return;
     }
 
-    // Reset counter at run start
-    set({ autoApprovedCount: 0 });
-
     const request: RunRequest = {
       workflow,
       project_path: projectPath,
@@ -161,8 +136,6 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
       fast: fastEnabled ? toEndpoint(fastConfig) : null,
       planner: toEndpoint(plannerConfig),
       execution_mode: executionMode,
-      auto_approve_resolutions: workflow.auto_approve_resolutions ?? false,
-      outcome_delay_ms: outcomeDelayMs,
       supervision_delay_ms: supervisionDelayMs,
     };
     const result = await commands.runWorkflow(request);

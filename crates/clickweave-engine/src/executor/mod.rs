@@ -7,7 +7,6 @@ mod element_resolve;
 pub mod error;
 mod find_app;
 mod graph_nav;
-mod outcome_verification;
 pub(crate) mod retry_context;
 mod run_loop;
 mod supervision;
@@ -120,12 +119,6 @@ pub enum ExecutorEvent {
         screenshot: Option<String>,
     },
     NodeCancelled(Uuid),
-    OutcomeVerification {
-        passed: bool,
-        query: String,
-        reasoning: String,
-        screenshot: Option<String>,
-    },
 }
 
 #[derive(Debug, Clone)]
@@ -163,8 +156,6 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     chrome_profiles: Vec<ChromeProfile>,
     /// Channel to send resolution queries to the Tauri listener (Test mode only).
     resolution_tx: Option<tokio::sync::mpsc::Sender<RuntimeQuery>>,
-    /// Delay (ms) before capturing the outcome verification screenshot.
-    outcome_delay_ms: u64,
     /// Delay (ms) before capturing the per-step supervision screenshot.
     supervision_delay_ms: u64,
 }
@@ -206,7 +197,6 @@ impl WorkflowExecutor {
         cancel_token: CancellationToken,
         chrome_profiles_dir: PathBuf,
         resolution_tx: Option<tokio::sync::mpsc::Sender<RuntimeQuery>>,
-        outcome_delay_ms: u64,
         supervision_delay_ms: u64,
     ) -> Self {
         let chrome_profile_store = ChromeProfileStore::new(chrome_profiles_dir);
@@ -241,7 +231,6 @@ impl WorkflowExecutor {
             chrome_profile_store,
             chrome_profiles,
             resolution_tx,
-            outcome_delay_ms,
             supervision_delay_ms,
         }
     }

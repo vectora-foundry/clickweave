@@ -4,19 +4,15 @@ const inputClass =
 interface ExecutionTabProps {
   maxRepairAttempts: number;
   supervisionDelayMs: number;
-  outcomeDelayMs: number;
   onMaxRepairAttemptsChange: (n: number) => void;
   onSupervisionDelayMsChange: (ms: number) => void;
-  onOutcomeDelayMsChange: (ms: number) => void;
 }
 
 export function ExecutionTab({
   maxRepairAttempts,
   supervisionDelayMs,
-  outcomeDelayMs,
   onMaxRepairAttemptsChange,
   onSupervisionDelayMsChange,
-  onOutcomeDelayMsChange,
 }: ExecutionTabProps) {
   return (
     <div className="space-y-4 p-4">
@@ -73,35 +69,6 @@ export function ExecutionTab({
           />
           <p className="mt-1 text-[10px] text-[var(--text-muted)]">
             How long to wait before capturing the per-step supervision screenshot, giving the UI time to settle (0-10000ms).
-          </p>
-        </div>
-      </div>
-
-      <div>
-        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-          Outcome Verification
-        </h3>
-        <p className="mb-2 text-[10px] text-[var(--text-muted)]">
-          Controls the final verification after a workflow completes.
-        </p>
-        <div>
-          <label className="mb-1 block text-xs text-[var(--text-secondary)]">
-            Screenshot Delay (ms)
-          </label>
-          <input
-            type="number"
-            min={0}
-            max={10000}
-            step={100}
-            value={outcomeDelayMs}
-            onChange={(e) => {
-              const clamped = Math.max(0, Math.min(10000, Math.floor(Number(e.target.value) || 0)));
-              onOutcomeDelayMsChange(clamped);
-            }}
-            className={inputClass}
-          />
-          <p className="mt-1 text-[10px] text-[var(--text-muted)]">
-            How long to wait before capturing the outcome verification screenshot (0-10000ms).
           </p>
         </div>
       </div>

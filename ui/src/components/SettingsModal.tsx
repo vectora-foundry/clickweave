@@ -63,7 +63,6 @@ interface SettingsModalProps {
   fastEnabled: boolean;
   maxRepairAttempts: number;
   hoverDwellThreshold: number;
-  outcomeDelayMs: number;
   supervisionDelayMs: number;
   toolPermissions: ToolPermissions;
   onClose: () => void;
@@ -73,7 +72,6 @@ interface SettingsModalProps {
   onFastEnabledChange: (enabled: boolean) => void;
   onMaxRepairAttemptsChange: (n: number) => void;
   onHoverDwellThresholdChange: (ms: number) => void;
-  onOutcomeDelayMsChange: (ms: number) => void;
   onSupervisionDelayMsChange: (ms: number) => void;
   onToolPermissionsChange: (perms: ToolPermissions) => void;
   onToolPermissionChange: (toolName: string, level: "ask" | "allow") => void;
@@ -257,7 +255,6 @@ export function SettingsModal({
   fastEnabled,
   maxRepairAttempts,
   hoverDwellThreshold,
-  outcomeDelayMs,
   supervisionDelayMs,
   toolPermissions,
   onClose,
@@ -267,7 +264,6 @@ export function SettingsModal({
   onFastEnabledChange,
   onMaxRepairAttemptsChange,
   onHoverDwellThresholdChange,
-  onOutcomeDelayMsChange,
   onSupervisionDelayMsChange,
   onToolPermissionsChange,
   onToolPermissionChange,
@@ -315,10 +311,8 @@ export function SettingsModal({
           <ExecutionTab
             maxRepairAttempts={maxRepairAttempts}
             supervisionDelayMs={supervisionDelayMs}
-            outcomeDelayMs={outcomeDelayMs}
             onMaxRepairAttemptsChange={onMaxRepairAttemptsChange}
             onSupervisionDelayMsChange={onSupervisionDelayMsChange}
-            onOutcomeDelayMsChange={onOutcomeDelayMsChange}
           />
         ) : (
         <div className="space-y-4 p-4">

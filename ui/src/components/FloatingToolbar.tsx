@@ -61,16 +61,12 @@ interface FloatingToolbarProps {
   walkthroughStatus: WalkthroughStatus;
   walkthroughPanelOpen: boolean;
   walkthroughEventCount: number;
-  autoApproveResolutions: boolean;
-  verifyOutcome: boolean;
   onToggleLogs: () => void;
   onRunStop: () => void;
   onAssistant: () => void;
   onSetExecutionMode: (mode: ExecutionMode) => void;
   onOpenWalkthroughPanel: () => void;
   onRecord: () => void;
-  onToggleAutoApprove: (enabled: boolean) => void;
-  onToggleVerifyOutcome: (enabled: boolean) => void;
 }
 
 export function FloatingToolbar({
@@ -88,10 +84,6 @@ export function FloatingToolbar({
   onOpenWalkthroughPanel,
   walkthroughEventCount,
   onRecord,
-  autoApproveResolutions,
-  verifyOutcome,
-  onToggleAutoApprove,
-  onToggleVerifyOutcome,
 }: FloatingToolbarProps) {
   const isRunning = executorState === "running";
   const [showConfirm, setShowConfirm] = useState(false);
@@ -194,14 +186,6 @@ export function FloatingToolbar({
             >
               Logs
             </button>
-            {executionMode === "Test" && (
-              <>
-                <div className="mx-1 h-4 w-px bg-[var(--border)]" />
-                <ToolbarToggle title="Auto-approve runtime resolutions" label="Auto" checked={autoApproveResolutions} disabled={isRunning} onChange={onToggleAutoApprove} />
-              </>
-            )}
-            <div className="mx-1 h-4 w-px bg-[var(--border)]" />
-            <ToolbarToggle title="Run outcome verification after workflow completes" label="Verify" checked={verifyOutcome} disabled={isRunning} onChange={onToggleVerifyOutcome} />
             <div className="mx-1 h-4 w-px bg-[var(--border)]" />
             {hasAiNodes && !isRunning && (
               <span className="rounded bg-[var(--accent-blue)]/20 px-1.5 py-0.5 text-[10px] font-medium text-[var(--accent-blue)]">
@@ -305,49 +289,5 @@ export function FloatingToolbar({
         />
       )}
     </>
-  );
-}
-
-function ToolbarToggle({ title, label, checked, disabled, onChange }: {
-  title: string;
-  label: string;
-  checked: boolean;
-  disabled: boolean;
-  onChange: (value: boolean) => void;
-}) {
-  return (
-    <label
-      title={title}
-      className={`flex items-center gap-1.5 cursor-pointer ${disabled ? "opacity-50 pointer-events-none" : ""}`}
-    >
-      <button
-        role="switch"
-        aria-checked={checked}
-        onClick={() => onChange(!checked)}
-        disabled={disabled}
-        className="relative rounded-full transition-colors"
-        style={{
-          width: 28,
-          height: 16,
-          padding: 0,
-          backgroundColor: checked ? "var(--accent-blue)" : "#525252",
-        }}
-      >
-        <span
-          className="absolute rounded-full transition-transform"
-          style={{
-            top: 2,
-            left: 0,
-            width: 12,
-            height: 12,
-            backgroundColor: checked ? "#fff" : "#a3a3a3",
-            transform: `translateX(${checked ? 14 : 2}px)`,
-          }}
-        />
-      </button>
-      <span className={`text-[11px] ${checked ? "text-[var(--accent-blue)]" : "text-[var(--text-tertiary)]"}`}>
-        {label}
-      </span>
-    </label>
   );
 }

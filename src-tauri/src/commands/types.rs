@@ -101,16 +101,8 @@ pub struct RunRequest {
     /// Planner LLM used for supervision in Test mode.
     pub planner: Option<EndpointConfig>,
     pub execution_mode: ExecutionMode,
-    #[serde(default)]
-    pub auto_approve_resolutions: bool,
-    #[serde(default = "default_outcome_delay_ms")]
-    pub outcome_delay_ms: u64,
     #[serde(default = "default_supervision_delay_ms")]
     pub supervision_delay_ms: u64,
-}
-
-fn default_outcome_delay_ms() -> u64 {
-    1000
 }
 
 fn default_supervision_delay_ms() -> u64 {

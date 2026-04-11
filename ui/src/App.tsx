@@ -15,7 +15,6 @@ import { VerdictModal } from "./components/VerdictModal";
 import { SupervisionModal } from "./components/SupervisionModal";
 import { PlannerConfirmation } from "./components/PlannerConfirmation";
 import { CdpAppSelectModal } from "./components/CdpAppSelectModal";
-import { AutoApproveBanner } from "./components/AutoApproveBanner";
 import { useEffect, useMemo } from "react";
 import { useEscapeKey } from "./hooks/useEscapeKey";
 import { useUndoRedoKeyboard } from "./hooks/useUndoRedoKeyboard";
@@ -41,19 +40,15 @@ function App() {
     })),
   );
 
-  const { executorState, lastRunStatus, executionMode, supervisionPause, activeNode, autoApprovedCount } = useStore(
+  const { executorState, lastRunStatus, executionMode, supervisionPause, activeNode } = useStore(
     useShallow((s) => ({
       executorState: s.executorState,
       lastRunStatus: s.lastRunStatus,
       executionMode: s.executionMode,
       supervisionPause: s.supervisionPause,
       activeNode: s.activeNode,
-      autoApprovedCount: s.autoApprovedCount,
     })),
   );
-
-  const autoApproveResolutions = useStore((s) => s.workflow.auto_approve_resolutions ?? false);
-  const verifyOutcome = useStore((s) => s.workflow.verify_outcome ?? false);
 
   const { selectedNode, sidebarCollapsed, logsDrawerOpen, nodeSearch, showSettings, detailTab, logs } = useStore(
     useShallow((s) => ({
@@ -79,7 +74,7 @@ function App() {
     })),
   );
 
-  const { plannerConfig, agentConfig, fastConfig, fastEnabled, maxRepairAttempts, hoverDwellThreshold, outcomeDelayMs, supervisionDelayMs, toolPermissions } = useStore(
+  const { plannerConfig, agentConfig, fastConfig, fastEnabled, maxRepairAttempts, hoverDwellThreshold, supervisionDelayMs, toolPermissions } = useStore(
     useShallow((s) => ({
       plannerConfig: s.plannerConfig,
       agentConfig: s.agentConfig,
@@ -87,7 +82,6 @@ function App() {
       fastEnabled: s.fastEnabled,
       maxRepairAttempts: s.maxRepairAttempts,
       hoverDwellThreshold: s.hoverDwellThreshold,
-      outcomeDelayMs: s.outcomeDelayMs,
       supervisionDelayMs: s.supervisionDelayMs,
       toolPermissions: s.toolPermissions,
     })),
@@ -136,12 +130,7 @@ function App() {
   const clearConversation = useStore((s) => s.clearConversation);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
-  const setAutoApproveResolutions = useStore((s) => s.setAutoApproveResolutions);
-  const setVerifyOutcome = useStore((s) => s.setVerifyOutcome);
-  const setOutcomeDelayMs = useStore((s) => s.setOutcomeDelayMs);
   const setSupervisionDelayMs = useStore((s) => s.setSupervisionDelayMs);
-
-  const dismissAutoApproveBanner = useStore((s) => s.dismissAutoApproveBanner);
 
   // ── Workflow mutations ───────────────────────────────────────────
   const {
@@ -194,16 +183,6 @@ function App() {
 
       <div className="flex flex-1 flex-col overflow-hidden">
         <VerdictBar />
-        {executorState === "idle" && lastRunStatus === "completed" && (
-          <AutoApproveBanner
-            count={autoApprovedCount}
-            onDismiss={dismissAutoApproveBanner}
-            onViewLogs={() => {
-              dismissAutoApproveBanner();
-              if (!logsDrawerOpen) toggleLogsDrawer();
-            }}
-          />
-        )}
 
         <div className="relative flex flex-1 overflow-hidden">
           {isWalkthroughBusy(walkthroughStatus) && (
@@ -277,10 +256,6 @@ function App() {
                   walkthroughEventCount={walkthroughEventCount}
                   onOpenWalkthroughPanel={() => setWalkthroughPanelOpen(true)}
                   onRecord={() => useStore.getState().openCdpModal()}
-                  autoApproveResolutions={autoApproveResolutions}
-                  verifyOutcome={verifyOutcome}
-                  onToggleAutoApprove={setAutoApproveResolutions}
-                  onToggleVerifyOutcome={setVerifyOutcome}
                 />
               </div>
 
@@ -331,7 +306,6 @@ function App() {
         fastEnabled={fastEnabled}
         maxRepairAttempts={maxRepairAttempts}
         hoverDwellThreshold={hoverDwellThreshold}
-        outcomeDelayMs={outcomeDelayMs}
         supervisionDelayMs={supervisionDelayMs}
         toolPermissions={toolPermissions}
         onClose={() => setShowSettings(false)}
@@ -341,7 +315,6 @@ function App() {
         onFastEnabledChange={setFastEnabled}
         onMaxRepairAttemptsChange={setMaxRepairAttempts}
         onHoverDwellThresholdChange={setHoverDwellThreshold}
-        onOutcomeDelayMsChange={setOutcomeDelayMs}
         onSupervisionDelayMsChange={setSupervisionDelayMs}
         onToolPermissionsChange={setToolPermissions}
         onToolPermissionChange={setToolPermission}

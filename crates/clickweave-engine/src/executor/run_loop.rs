@@ -867,45 +867,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
         }
 
-        // Outcome verification — only on successful completion
-        let run_succeeded = !user_cancelled && current.is_none();
-        if run_succeeded {
-            if let Some(result) = self.verify_outcome(&ctx, mcp).await {
-                self.record_event(
-                    None,
-                    "outcome_verification",
-                    serde_json::json!({
-                        "passed": result.passed,
-                        "query": result.query,
-                        "reasoning": result.reasoning,
-                    }),
-                );
-
-                if let Some(ref screenshot) = result.screenshot {
-                    if let Some(exec_dir) = self.storage.execution_dir_name() {
-                        let path = self.storage.base_path().join(exec_dir).join("artifacts");
-                        let _ = std::fs::create_dir_all(&path);
-                        let png_path = path.join("outcome_verification.png");
-                        if let Ok(bytes) = base64_decode_png(screenshot) {
-                            if let Err(e) = std::fs::write(&png_path, bytes) {
-                                tracing::warn!(
-                                    "Failed to save outcome verification screenshot: {}",
-                                    e
-                                );
-                            }
-                        }
-                    }
-                }
-
-                self.emit(ExecutorEvent::OutcomeVerification {
-                    passed: result.passed,
-                    query: result.query,
-                    reasoning: result.reasoning,
-                    screenshot: result.screenshot,
-                });
-            }
-        }
-
         if !user_cancelled {
             self.log("Workflow execution completed");
             self.emit(ExecutorEvent::WorkflowCompleted);
@@ -976,9 +937,4 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             None
         }
     }
-}
-
-fn base64_decode_png(b64: &str) -> Result<Vec<u8>, base64::DecodeError> {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD.decode(b64)
 }

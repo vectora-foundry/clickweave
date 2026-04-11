@@ -257,7 +257,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             ),
             chrome_profiles: Vec::new(),
             resolution_tx: None,
-            outcome_delay_ms: 1000,
             supervision_delay_ms: 500,
         }
     }

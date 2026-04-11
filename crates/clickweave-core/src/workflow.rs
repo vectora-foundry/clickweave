@@ -21,11 +21,7 @@ pub struct Workflow {
     #[serde(default)]
     pub next_id_counters: HashMap<String, u32>,
     #[serde(default)]
-    pub auto_approve_resolutions: bool,
-    #[serde(default)]
     pub intent: Option<String>,
-    #[serde(default)]
-    pub verify_outcome: bool,
 }
 
 impl Default for Workflow {
@@ -37,9 +33,7 @@ impl Default for Workflow {
             edges: vec![],
             groups: vec![],
             next_id_counters: HashMap::new(),
-            auto_approve_resolutions: false,
             intent: None,
-            verify_outcome: false,
         }
     }
 }
