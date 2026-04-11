@@ -709,8 +709,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
 
             if matches!(node.node_type, NodeType::Unknown) {
-                tracing::warn!("Skipping Unknown node: {} ({})", node.name, node_id);
-                self.log(format!("Skipping Unknown node: {}", node.name));
+                let msg = format!(
+                    "Unsupported node type '{}' ({}). This node was created with a newer version or uses removed features.",
+                    node.name, node_id
+                );
+                tracing::warn!("{}", msg);
+                self.log(msg.clone());
+                self.emit(ExecutorEvent::NodeFailed(node_id, msg));
+                user_cancelled = true; // Prevent false-positive "completed" status
                 current = None;
                 continue;
             }
