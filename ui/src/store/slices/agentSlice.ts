@@ -12,7 +12,7 @@ export interface AgentStep {
   pageTransitioned: boolean;
 }
 
-export type AgentStatus = "idle" | "running" | "paused" | "complete" | "error";
+export type AgentStatus = "idle" | "running" | "paused" | "complete" | "stopped" | "error";
 
 export interface PendingApproval {
   stepIndex: number;
@@ -98,17 +98,12 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
 
   stopAgent: async () => {
     const { pushLog } = get();
+    set({ agentStatus: "stopped", pendingApproval: null });
     try {
       await invoke("stop_agent");
     } catch {
       /* ignore if not running */
     }
-    set({
-      agentStatus: "idle",
-      agentGoal: "",
-      agentError: null,
-      pendingApproval: null,
-    });
     pushLog("Agent stopped");
   },
 

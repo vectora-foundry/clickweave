@@ -22,6 +22,12 @@ interface AgentErrorPayload {
   message: string;
 }
 
+interface AgentStoppedPayload {
+  reason: string;
+  steps_executed?: number;
+  consecutive_errors?: number;
+}
+
 interface StepFailedPayload {
   step_number: number;
   tool_name: string;
@@ -37,8 +43,9 @@ interface ApprovalRequiredPayload {
 
 /**
  * Subscribe to agent backend events:
- * agent://step, agent://plan, agent://complete, agent://error,
- * agent://node_added, agent://edge_added, agent://approval_required.
+ * agent://step, agent://plan, agent://complete, agent://stopped,
+ * agent://error, agent://node_added, agent://edge_added,
+ * agent://approval_required, agent://cdp_connected, agent://step_failed.
  *
  * Dispatches into the Zustand AgentSlice via `getState()`.
  */
@@ -143,6 +150,28 @@ export function useAgentEvents() {
       listen("agent://complete", () => {
         useStore.getState().setAgentStatus("complete");
         useStore.getState().pushLog("Agent completed");
+      }),
+    );
+
+    sub(
+      listen<AgentStoppedPayload>("agent://stopped", (e) => {
+        // Only transition to "stopped" if the agent was still active.
+        // If user already hit Stop, status is already "stopped" or "idle".
+        const current = useStore.getState().agentStatus;
+        if (current === "running" || current === "paused") {
+          useStore.getState().setAgentStatus("stopped");
+        }
+        const detail =
+          e.payload.reason === "max_steps_reached"
+            ? `after ${e.payload.steps_executed} steps`
+            : e.payload.reason === "max_errors_reached"
+              ? `after ${e.payload.consecutive_errors} consecutive errors`
+              : e.payload.reason === "approval_unavailable"
+                ? "approval system unavailable"
+                : e.payload.reason;
+        useStore
+          .getState()
+          .pushLog(`Agent stopped: ${detail}`);
       }),
     );
 
