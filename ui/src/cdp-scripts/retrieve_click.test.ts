@@ -1,13 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadRetrieveClick } from "./loader";
-
-type CdpDocument = Document & {
-    __cw_clicks?: unknown[];
-};
-
-function cdpDoc(): CdpDocument {
-    return document as CdpDocument;
-}
+import { cdpDoc } from "./test-helpers";
 
 describe("CDP retrieve_click.js", () => {
     beforeEach(() => {

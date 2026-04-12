@@ -1,13 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadRetrieveHovers } from "./loader";
-
-type CdpDocument = Document & {
-    __cw_hovers?: unknown[];
-};
-
-function cdpDoc(): CdpDocument {
-    return document as CdpDocument;
-}
+import { cdpDoc } from "./test-helpers";
 
 describe("CDP retrieve_hovers.js", () => {
     beforeEach(() => {

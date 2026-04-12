@@ -1,34 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadCheckAndReinject, loadClickListener } from "./loader";
-
-type CdpDocument = Document & {
-    __cw_clicks?: unknown[];
-    __cw_listener?: EventListener;
-    __cw_handler?: EventListener;
-};
-
-function cdpDoc(): CdpDocument {
-    return document as CdpDocument;
-}
-
-function resetCdpState() {
-    const d = cdpDoc();
-    if (d.__cw_listener) {
-        d.removeEventListener("click", d.__cw_listener, true);
-    }
-    delete d.__cw_clicks;
-    delete d.__cw_listener;
-    delete d.__cw_handler;
-    document.body.innerHTML = "";
-}
+import { cdpDoc, resetClickState } from "./test-helpers";
 
 describe("CDP check_and_reinject.js", () => {
     beforeEach(() => {
-        resetCdpState();
+        resetClickState();
     });
 
     afterEach(() => {
-        resetCdpState();
+        resetClickState();
     });
 
     it("returns 'alive' and leaves state untouched when the listener exists", () => {

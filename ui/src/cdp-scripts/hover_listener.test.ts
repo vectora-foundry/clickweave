@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadHoverListener, loadStopHover } from "./loader";
+import { cdpDoc, resetHoverState } from "./test-helpers";
 
 type HoverEntry = {
     ts: number;
@@ -15,49 +16,15 @@ type HoverEntry = {
     parentName: string | null;
 };
 
-type CdpDocument = Document & {
-    __cw_hovers?: HoverEntry[];
-    __cw_hover_interval?: ReturnType<typeof setInterval> | null;
-    __cw_hover_mousemove?: EventListener | null;
-    __cw_hover_flush?: (() => void) | null;
-    __cw_hover_lastEl?: Element | null;
-    __cw_hover_enterTime?: number;
-    __cw_hover_cx?: number;
-    __cw_hover_cy?: number;
-};
-
-function cdpDoc(): CdpDocument {
-    return document as CdpDocument;
-}
-
-function resetCdpState() {
-    const d = cdpDoc();
-    if (d.__cw_hover_interval) {
-        clearInterval(d.__cw_hover_interval);
-    }
-    if (d.__cw_hover_mousemove) {
-        d.removeEventListener("mousemove", d.__cw_hover_mousemove, true);
-    }
-    delete d.__cw_hovers;
-    delete d.__cw_hover_interval;
-    delete d.__cw_hover_mousemove;
-    delete d.__cw_hover_flush;
-    delete d.__cw_hover_lastEl;
-    delete d.__cw_hover_enterTime;
-    delete d.__cw_hover_cx;
-    delete d.__cw_hover_cy;
-    document.body.innerHTML = "";
-}
-
 describe("CDP hover_listener.js", () => {
     beforeEach(() => {
-        resetCdpState();
+        resetHoverState();
         vi.useFakeTimers();
     });
 
     afterEach(() => {
         vi.useRealTimers();
-        resetCdpState();
+        resetHoverState();
     });
 
     it("initializes hover state and registers mousemove + polling interval", () => {

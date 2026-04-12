@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadClickListener, loadRetrieveClick } from "./loader";
+import { cdpDoc, resetClickState } from "./test-helpers";
 
-// Narrow the bits of `document` that the injected script stores on.
 type ClickEntry = {
     ts: number;
     tagName: string;
@@ -17,34 +17,13 @@ type ClickEntry = {
     parentName: string | null;
 };
 
-type CdpDocument = Document & {
-    __cw_clicks?: ClickEntry[];
-    __cw_listener?: EventListener;
-    __cw_handler?: EventListener;
-};
-
-function cdpDoc(): CdpDocument {
-    return document as CdpDocument;
-}
-
-function resetCdpState() {
-    const d = cdpDoc();
-    if (d.__cw_listener) {
-        d.removeEventListener("click", d.__cw_listener, true);
-    }
-    delete d.__cw_clicks;
-    delete d.__cw_listener;
-    delete d.__cw_handler;
-    document.body.innerHTML = "";
-}
-
 describe("CDP click_listener.js", () => {
     beforeEach(() => {
-        resetCdpState();
+        resetClickState();
     });
 
     afterEach(() => {
-        resetCdpState();
+        resetClickState();
     });
 
     it("initializes the click queue and installs a capture-phase listener", () => {
