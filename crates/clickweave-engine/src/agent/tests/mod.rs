@@ -1272,3 +1272,15 @@ async fn retained_history_stays_bounded_across_snapshot_heavy_steps() {
         body.len()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Cross-task / cross-process coordination tests
+//
+// These exercise the full `AgentChannels` contract end-to-end: a harness
+// task plays the role the Tauri forwarders play in production, and the
+// assertions verify the engine responds to realistic sequences of events
+// (stop-during-approval, cache replay through the approval gate, empty-
+// elements native paths, tool-mapping misses, cross-run event draining).
+// ---------------------------------------------------------------------------
+
+mod coordination;

@@ -502,3 +502,81 @@ pub async fn approve_agent_action(
         CommandError::validation("Approval channel closed — agent task may have ended")
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: `AgentHandle::force_stop` must NOT drop the pending
+    /// approval sender silently. Dropping surfaces to the engine as
+    /// `Err(channel closed)` → `TerminalReason::ApprovalUnavailable`,
+    /// which the Tauri layer then emits as `agent://stopped { reason:
+    /// approval_unavailable }`. The fix sends `Ok(false)` explicitly so
+    /// the engine treats the stop as a rejection (`Replan`) and the
+    /// outer select races on `cancel_token.cancel()` to emit
+    /// `agent://stopped { reason: cancelled }`.
+    #[test]
+    fn force_stop_sends_rejection_through_pending_approval() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+        let mut handle = AgentHandle {
+            cancel_token: Some(CancellationToken::new()),
+            pending_approval_tx: Some(tx),
+            ..Default::default()
+        };
+
+        let had_task = handle.force_stop();
+
+        assert!(
+            had_task,
+            "force_stop should report true when cancel_token is installed"
+        );
+        // The receiver must see `Ok(false)` — not `Err` from a dropped sender.
+        assert_eq!(
+            rx.blocking_recv(),
+            Ok(false),
+            "force_stop must send explicit rejection, not drop the oneshot"
+        );
+    }
+
+    /// `force_stop` must also cancel the CancellationToken so the outer
+    /// agent task observes the stop during the spawn window (before
+    /// `task_handle` is installed). The scenario: a user hits Stop while
+    /// MCP spawn is still in progress.
+    #[test]
+    fn force_stop_cancels_token_for_spawn_window_stop() {
+        let token = CancellationToken::new();
+        let mut handle = AgentHandle {
+            cancel_token: Some(token.clone()),
+            ..Default::default()
+        };
+        // Simulate the spawn window: no task_handle, no pending approval.
+        // `force_stop` must still succeed — the token alone is sufficient
+        // evidence that a run is in flight.
+
+        let had_task = handle.force_stop();
+
+        assert!(
+            had_task,
+            "force_stop must return true when a cancel_token is present \
+             even without a task_handle (the spawn window)"
+        );
+        assert!(
+            token.is_cancelled(),
+            "The CancellationToken must be cancelled so the spawning \
+             task sees the stop before it finishes MCP bring-up"
+        );
+    }
+
+    /// `force_stop` must return false when no run is active, so the
+    /// Tauri command can return a validation error instead of silently
+    /// succeeding.
+    #[test]
+    fn force_stop_reports_no_run_active() {
+        let mut handle = AgentHandle::default();
+        let had_task = handle.force_stop();
+        assert!(
+            !had_task,
+            "force_stop must return false when no run is active"
+        );
+    }
+}
