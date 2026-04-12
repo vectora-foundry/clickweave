@@ -57,7 +57,7 @@ type SettingsTab = "general" | "execution" | "permissions";
 
 interface SettingsModalProps {
   open: boolean;
-  plannerConfig: EndpointConfig;
+  supervisorConfig: EndpointConfig;
   agentConfig: EndpointConfig;
   fastConfig: EndpointConfig;
   fastEnabled: boolean;
@@ -66,7 +66,7 @@ interface SettingsModalProps {
   supervisionDelayMs: number;
   toolPermissions: ToolPermissions;
   onClose: () => void;
-  onPlannerConfigChange: (config: EndpointConfig) => void;
+  onSupervisorConfigChange: (config: EndpointConfig) => void;
   onAgentConfigChange: (config: EndpointConfig) => void;
   onFastConfigChange: (config: EndpointConfig) => void;
   onFastEnabledChange: (enabled: boolean) => void;
@@ -249,7 +249,7 @@ function ChromeProfileSection() {
 
 export function SettingsModal({
   open,
-  plannerConfig,
+  supervisorConfig,
   agentConfig,
   fastConfig,
   fastEnabled,
@@ -258,7 +258,7 @@ export function SettingsModal({
   supervisionDelayMs,
   toolPermissions,
   onClose,
-  onPlannerConfigChange,
+  onSupervisorConfigChange,
   onAgentConfigChange,
   onFastConfigChange,
   onFastEnabledChange,
@@ -317,10 +317,10 @@ export function SettingsModal({
         ) : (
         <div className="space-y-4 p-4">
           <ConfigSection
-            title="Planner"
-            description="Generates workflows from intent and applies assistant diffs. Typically a larger model."
-            config={plannerConfig}
-            onChange={onPlannerConfigChange}
+            title="Supervisor"
+            description="Verdicts saved-workflow steps in Test mode and resolves walkthrough click targets. Typically a larger model."
+            config={supervisorConfig}
+            onChange={onSupervisorConfigChange}
           />
 
           <ConfigSection

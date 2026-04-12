@@ -98,8 +98,8 @@ pub struct RunRequest {
     pub project_path: Option<String>,
     pub agent: EndpointConfig,
     pub fast: Option<EndpointConfig>,
-    /// Planner LLM used for supervision in Test mode.
-    pub planner: Option<EndpointConfig>,
+    /// Supervisor LLM used for step verdict in Test mode.
+    pub supervisor: Option<EndpointConfig>,
     pub execution_mode: ExecutionMode,
     #[serde(default = "default_supervision_delay_ms")]
     pub supervision_delay_ms: u64,

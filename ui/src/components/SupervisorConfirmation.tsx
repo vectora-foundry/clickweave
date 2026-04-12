@@ -1,8 +1,8 @@
 /**
  * Tool confirmation dialog — reused by runtime permission API.
- * Currently returns null (planner pipeline removed); will be
+ * Currently returns null (supervisor pipeline removed); will be
  * re-wired when the agent supervision layer needs it.
  */
-export function PlannerConfirmation() {
+export function SupervisorConfirmation() {
   return null;
 }

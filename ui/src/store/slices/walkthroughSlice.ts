@@ -247,7 +247,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   closeCdpModal: () => set({ walkthroughCdpModalOpen: false }),
 
   startWalkthrough: async (cdpApps: CdpAppConfig[] = []) => {
-    const { workflow, projectPath, pushLog, plannerConfig } = get();
+    const { workflow, projectPath, pushLog, supervisorConfig } = get();
     set({
       walkthroughError: null,
       walkthroughEvents: [],
@@ -259,11 +259,11 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
 
       assistantOpen: false,
     });
-    const planner = plannerConfig.baseUrl && plannerConfig.model
-      ? toEndpoint(plannerConfig)
+    const supervisor = supervisorConfig.baseUrl && supervisorConfig.model
+      ? toEndpoint(supervisorConfig)
       : null;
     const { hoverDwellThreshold } = get();
-    const result = await commands.startWalkthrough(workflow.id, projectPath ?? null, planner, cdpApps, hoverDwellThreshold);
+    const result = await commands.startWalkthrough(workflow.id, projectPath ?? null, supervisor, cdpApps, hoverDwellThreshold);
     if (result.status === "error") {
       const msg = errorMessage(result.error);
       set({ walkthroughError: msg, walkthroughCdpModalOpen: false });
@@ -290,11 +290,11 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   },
 
   stopWalkthrough: async () => {
-    const { pushLog, plannerConfig, hoverDwellThreshold } = get();
-    const planner = plannerConfig.baseUrl && plannerConfig.model
-      ? toEndpoint(plannerConfig)
+    const { pushLog, supervisorConfig, hoverDwellThreshold } = get();
+    const supervisor = supervisorConfig.baseUrl && supervisorConfig.model
+      ? toEndpoint(supervisorConfig)
       : null;
-    const result = await commands.stopWalkthrough(planner, hoverDwellThreshold);
+    const result = await commands.stopWalkthrough(supervisor, hoverDwellThreshold);
     if (result.status === "error") {
       pushLog(`Walkthrough stop failed: ${errorMessage(result.error)}`);
     }

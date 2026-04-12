@@ -48,7 +48,7 @@ pub(crate) struct ScreenshotWithMetadata {
 }
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
-    /// Take a screenshot, ask the VLM to describe it, then ask the planner
+    /// Take a screenshot, ask the VLM to describe it, then ask the supervisor
     /// (with full conversation history) whether the step succeeded.
     pub(crate) async fn verify_step(
         &self,
@@ -92,7 +92,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
         };
 
-        // Stage 2: Ask planner with persistent conversation history
+        // Stage 2: Ask supervisor with persistent conversation history
         let step_message = if let Some(ref tool_result) = retry_ctx.last_tool_result {
             format!(
                 "Step label (may be stale): \"{}\"\nExecuted action: {}\nActual tool result: {}\nApp: {}\n\nVisual observation: {}",
@@ -204,7 +204,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     /// Ask the VLM to describe a screenshot using a custom prompt.
-    /// Falls back to the planner when no explicit VLM is configured.
+    /// Falls back to the supervisor when no explicit VLM is configured.
     async fn describe_screenshot_with_prompt(&self, image_base64: &str, prompt: &str) -> String {
         let vlm = match self.vision_backend() {
             Some(v) => v,

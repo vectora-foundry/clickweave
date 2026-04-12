@@ -121,9 +121,9 @@ async importAsset(projectPath: string) : Promise<Result<ImportedAsset | null, Co
     else return { status: "error", error: e  as any };
 }
 },
-async startWalkthrough(workflowId: string, projectPath: string | null, planner: EndpointConfig | null, cdpApps: CdpAppConfig[], hoverDwellThreshold: number | null) : Promise<Result<null, CommandError>> {
+async startWalkthrough(workflowId: string, projectPath: string | null, supervisor: EndpointConfig | null, cdpApps: CdpAppConfig[], hoverDwellThreshold: number | null) : Promise<Result<null, CommandError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("start_walkthrough", { workflowId, projectPath, planner, cdpApps, hoverDwellThreshold }) };
+    return { status: "ok", data: await TAURI_INVOKE("start_walkthrough", { workflowId, projectPath, supervisor, cdpApps, hoverDwellThreshold }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -145,9 +145,9 @@ async resumeWalkthrough() : Promise<Result<null, CommandError>> {
     else return { status: "error", error: e  as any };
 }
 },
-async stopWalkthrough(planner: EndpointConfig | null, hoverDwellThreshold: number | null) : Promise<Result<null, CommandError>> {
+async stopWalkthrough(supervisor: EndpointConfig | null, hoverDwellThreshold: number | null) : Promise<Result<null, CommandError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("stop_walkthrough", { planner, hoverDwellThreshold }) };
+    return { status: "ok", data: await TAURI_INVOKE("stop_walkthrough", { supervisor, hoverDwellThreshold }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -390,9 +390,9 @@ export type QuitAppParams = { app_name: string; verification_method?: Verificati
 export type RunEventsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string; execution_dir: string | null; run_id: string }
 export type RunRequest = { workflow: Workflow; project_path: string | null; agent: EndpointConfig; fast: EndpointConfig | null; 
 /**
- * Planner LLM used for supervision in Test mode.
+ * Supervisor LLM used for step verdict in Test mode.
  */
-planner: EndpointConfig | null; execution_mode: ExecutionMode; supervision_delay_ms?: number }
+supervisor: EndpointConfig | null; execution_mode: ExecutionMode; supervision_delay_ms?: number }
 export type RunStatus = "Ok" | "Failed" | "Stopped" | "Cancelled"
 export type RunsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string }
 /**

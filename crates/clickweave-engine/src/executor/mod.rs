@@ -139,7 +139,7 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     workflow: Workflow,
     agent: C,
     fast: Option<C>,
-    /// Planner-class LLM used for supervision verification in Test mode.
+    /// Supervisor LLM used for step verdict verification in Test mode.
     /// Falls back to fast model, then agent if not configured.
     supervision: Option<C>,
     /// Dedicated fast model for screenshot verification: low max_tokens, thinking disabled.
@@ -404,7 +404,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     /// Return the best available LLM for text reasoning tasks (app resolution,
-    /// element resolution). Prefers supervision (planner-class), falls back to
+    /// element resolution). Prefers supervision, falls back to
     /// VLM, then agent. The tiny agent model often has insufficient context for
     /// these prompts.
     pub(crate) fn reasoning_backend(&self) -> &C {
@@ -540,8 +540,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
     /// Return the best available LLM for vision tasks (image analysis,
     /// screenshot verification). Prefers an explicitly configured VLM, falls
-    /// back to supervision (planner-class). Returns `None` only when neither
-    /// VLM nor planner is configured.
+    /// back to supervision. Returns `None` only when neither
+    /// VLM nor supervisor is configured.
     pub(crate) fn vision_backend(&self) -> Option<&C> {
         self.fast.as_ref().or(self.supervision.as_ref())
     }

@@ -3,7 +3,7 @@ import type { EndpointConfig, ToolPermissions } from "./state";
 import { DEFAULT_ENDPOINT, DEFAULT_TOOL_PERMISSIONS, DEFAULT_FAST_ENABLED } from "./state";
 
 export interface PersistedSettings {
-  plannerConfig: EndpointConfig;
+  supervisorConfig: EndpointConfig;
   agentConfig: EndpointConfig;
   fastConfig: EndpointConfig;
   fastEnabled: boolean;
@@ -14,7 +14,7 @@ export interface PersistedSettings {
 }
 
 const SETTINGS_DEFAULTS: PersistedSettings = {
-  plannerConfig: DEFAULT_ENDPOINT,
+  supervisorConfig: DEFAULT_ENDPOINT,
   agentConfig: DEFAULT_ENDPOINT,
   fastConfig: DEFAULT_ENDPOINT,
   fastEnabled: DEFAULT_FAST_ENABLED,
@@ -31,7 +31,19 @@ export async function loadSettings(): Promise<PersistedSettings> {
   const legacyConfig = await store.get<EndpointConfig>("orchestratorConfig");
   const fallback = legacyConfig ?? SETTINGS_DEFAULTS.agentConfig;
 
-  const plannerConfig = await store.get<EndpointConfig>("plannerConfig");
+  // Migration: plannerConfig → supervisorConfig. The "planner" name was a
+  // tombstone from the removed planner pipeline; the config drives the
+  // supervisor (step verdict) model. Migrate on next load, then delete the
+  // old key so subsequent loads skip the compat path.
+  const supervisorConfigStored = await store.get<EndpointConfig>("supervisorConfig");
+  const legacyPlannerConfig = await store.get<EndpointConfig>("plannerConfig");
+  const supervisorConfig = supervisorConfigStored ?? legacyPlannerConfig ?? fallback;
+  if (!supervisorConfigStored && legacyPlannerConfig) {
+    await store.set("supervisorConfig", legacyPlannerConfig);
+    await store.delete("plannerConfig");
+    await store.save();
+  }
+
   const agentConfig = await store.get<EndpointConfig>("agentConfig");
   const maxRepairAttempts = await store.get<number>("maxRepairAttempts");
   const hoverDwellThreshold = await store.get<number>("hoverDwellThreshold");
@@ -65,7 +77,7 @@ export async function loadSettings(): Promise<PersistedSettings> {
   }
 
   return {
-    plannerConfig: plannerConfig ?? fallback,
+    supervisorConfig,
     agentConfig: agentConfig ?? fallback,
     fastConfig,
     fastEnabled,

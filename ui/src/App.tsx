@@ -13,7 +13,7 @@ import { IntentEmptyState } from "./components/IntentEmptyState";
 import { VerdictBar } from "./components/VerdictBar";
 import { VerdictModal } from "./components/VerdictModal";
 import { SupervisionModal } from "./components/SupervisionModal";
-import { PlannerConfirmation } from "./components/PlannerConfirmation";
+import { SupervisorConfirmation } from "./components/SupervisorConfirmation";
 import { CdpAppSelectModal } from "./components/CdpAppSelectModal";
 import { useEffect, useMemo } from "react";
 import { useEscapeKey } from "./hooks/useEscapeKey";
@@ -74,9 +74,9 @@ function App() {
     })),
   );
 
-  const { plannerConfig, agentConfig, fastConfig, fastEnabled, maxRepairAttempts, hoverDwellThreshold, supervisionDelayMs, toolPermissions } = useStore(
+  const { supervisorConfig, agentConfig, fastConfig, fastEnabled, maxRepairAttempts, hoverDwellThreshold, supervisionDelayMs, toolPermissions } = useStore(
     useShallow((s) => ({
-      plannerConfig: s.plannerConfig,
+      supervisorConfig: s.supervisorConfig,
       agentConfig: s.agentConfig,
       fastConfig: s.fastConfig,
       fastEnabled: s.fastEnabled,
@@ -109,7 +109,7 @@ function App() {
   const clearLogs = useStore((s) => s.clearLogs);
   const pushHistory = useStore((s) => s.pushHistory);
   const saveProject = useStore((s) => s.saveProject);
-  const setPlannerConfig = useStore((s) => s.setPlannerConfig);
+  const setSupervisorConfig = useStore((s) => s.setSupervisorConfig);
   const setAgentConfig = useStore((s) => s.setAgentConfig);
   const setFastConfig = useStore((s) => s.setFastConfig);
   const setFastEnabled = useStore((s) => s.setFastEnabled);
@@ -300,7 +300,7 @@ function App() {
 
       <SettingsModal
         open={showSettings}
-        plannerConfig={plannerConfig}
+        supervisorConfig={supervisorConfig}
         agentConfig={agentConfig}
         fastConfig={fastConfig}
         fastEnabled={fastEnabled}
@@ -309,7 +309,7 @@ function App() {
         supervisionDelayMs={supervisionDelayMs}
         toolPermissions={toolPermissions}
         onClose={() => setShowSettings(false)}
-        onPlannerConfigChange={setPlannerConfig}
+        onSupervisorConfigChange={setSupervisorConfig}
         onAgentConfigChange={setAgentConfig}
         onFastConfigChange={setFastConfig}
         onFastEnabledChange={setFastEnabled}
@@ -329,7 +329,7 @@ function App() {
         />
       )}
 
-      <PlannerConfirmation />
+      <SupervisorConfirmation />
 
       <CdpAppSelectModal
         open={cdpModalOpen}

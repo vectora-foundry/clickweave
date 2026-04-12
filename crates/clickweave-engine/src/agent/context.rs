@@ -18,7 +18,7 @@ const SUPERSEDED_PREFIX: &str = "[superseded ";
 /// `take_screenshot` is deliberately excluded: its result body contains a
 /// `screenshot_id` that `find_image` and the deterministic click/coordinate
 /// flows can reference on a later turn. Collapsing an older screenshot
-/// would erase that id from the only transcript copy the planner has.
+/// would erase that id from the only transcript copy the agent has.
 pub(crate) const SNAPSHOT_PRODUCING_TOOLS: &[&str] = &[
     "cdp_take_ax_snapshot",
     "cdp_take_dom_snapshot",

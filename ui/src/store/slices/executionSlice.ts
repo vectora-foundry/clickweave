@@ -119,7 +119,7 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
   },
 
   runWorkflow: async () => {
-    const { workflow, projectPath, agentConfig, fastConfig, fastEnabled, plannerConfig, executionMode, supervisionDelayMs, pushLog } = get();
+    const { workflow, projectPath, agentConfig, fastConfig, fastEnabled, supervisorConfig, executionMode, supervisionDelayMs, pushLog } = get();
 
     const graphErrors = validateSingleGraph(workflow.nodes, workflow.edges);
     if (graphErrors.length > 0) {
@@ -134,7 +134,7 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
       project_path: projectPath,
       agent: toEndpoint(agentConfig),
       fast: fastEnabled ? toEndpoint(fastConfig) : null,
-      planner: toEndpoint(plannerConfig),
+      supervisor: toEndpoint(supervisorConfig),
       execution_mode: executionMode,
       supervision_delay_ms: supervisionDelayMs,
     };

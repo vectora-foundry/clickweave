@@ -906,7 +906,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         Self::check_tool_error(&result, tool_name)?;
 
         // launch_app implies the app is now focused.
-        // Auto-detect app kind from the running process, since the planner
+        // Auto-detect app kind from the running process, since the agent
         // may not include app_kind in the launch_app arguments.
         if let Some(name) = &launch_app_name {
             let (detected_kind, detected_pid) = if launch_app_kind == AppKind::Native {

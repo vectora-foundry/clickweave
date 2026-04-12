@@ -139,7 +139,7 @@ pub(super) async fn process_capture_events(
     app: tauri::AppHandle,
     mut event_rx: tokio::sync::mpsc::UnboundedReceiver<CaptureEvent>,
     mcp_binary_path: String,
-    planner: Option<super::types::EndpointConfig>,
+    supervisor: Option<super::types::EndpointConfig>,
     storage: WalkthroughStorage,
     session_dir: std::path::PathBuf,
     mut cancel: tokio::sync::watch::Receiver<bool>,
@@ -185,10 +185,10 @@ pub(super) async fn process_capture_events(
     // Wrap in Arc so background enrichment tasks can share it.
     let mcp: Option<std::sync::Arc<McpClient>> = mcp_raw.map(std::sync::Arc::new);
 
-    // Initialize VLM backend if planner config is available.
+    // Initialize VLM backend if supervisor config is available.
     let vlm_backend: Option<std::sync::Arc<clickweave_llm::LlmClient>> =
-        planner.filter(|p| !p.is_empty()).map(|p| {
-            let config = p
+        supervisor.filter(|s| !s.is_empty()).map(|s| {
+            let config = s
                 .into_llm_config(Some(0.0))
                 .with_max_tokens(2048)
                 .with_thinking(false);

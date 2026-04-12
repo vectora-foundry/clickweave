@@ -54,9 +54,9 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
         .filter(|v| !v.is_empty())
         .map(|v| v.into_llm_config(Some(0.0)));
     let supervision_config = request
-        .planner
-        .filter(|p| !p.is_empty())
-        .map(|p| p.into_llm_config(None));
+        .supervisor
+        .filter(|s| !s.is_empty())
+        .map(|s| s.into_llm_config(None));
 
     let storage = resolve_storage(
         &app,

@@ -142,7 +142,7 @@ pub async fn start_walkthrough(
     app: tauri::AppHandle,
     workflow_id: String,
     project_path: Option<String>,
-    planner: Option<super::types::EndpointConfig>,
+    supervisor: Option<super::types::EndpointConfig>,
     cdp_apps: Vec<CdpAppConfig>,
     hover_dwell_threshold: Option<u64>,
 ) -> Result<(), CommandError> {
@@ -231,7 +231,7 @@ pub async fn start_walkthrough(
                 emit_handle,
                 event_rx,
                 mcp_path,
-                planner,
+                supervisor,
                 processing_storage,
                 session_dir,
                 cancel,
@@ -267,7 +267,7 @@ pub async fn start_walkthrough(
                 emit_handle,
                 event_rx,
                 mcp_path,
-                planner,
+                supervisor,
                 processing_storage,
                 session_dir,
                 cancel,
@@ -370,7 +370,7 @@ pub async fn resume_walkthrough(app: tauri::AppHandle) -> Result<(), CommandErro
 #[specta::specta]
 pub async fn stop_walkthrough(
     app: tauri::AppHandle,
-    planner: Option<super::types::EndpointConfig>,
+    supervisor: Option<super::types::EndpointConfig>,
     hover_dwell_threshold: Option<u64>,
 ) -> Result<(), CommandError> {
     let (task, storage, session_dir, workflow_id, session_id) = {
@@ -458,8 +458,8 @@ pub async fn stop_walkthrough(
             generate_hover_screenshots(&mut actions, dir).await;
 
             // VLM: resolve click and hover targets using vision (parallel).
-            if let Some(ref planner_cfg) = planner {
-                resolve_click_targets_with_vlm(&mut actions, planner_cfg).await;
+            if let Some(ref supervisor_cfg) = supervisor {
+                resolve_click_targets_with_vlm(&mut actions, supervisor_cfg).await;
             }
 
             // Clean up raw recording frames — they're no longer needed after

@@ -167,7 +167,7 @@ pub async fn run_agent(
             }
         };
 
-        // Thinking is explicitly enabled: small planner models need a
+        // Thinking is explicitly enabled: small agent models need a
         // reasoning pass to avoid pattern-matching salient literals from the
         // goal text into tool arguments.
         let llm = clickweave_llm::LlmClient::new(agent_config.with_thinking(true));

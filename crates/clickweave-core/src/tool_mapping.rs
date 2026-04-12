@@ -1,6 +1,6 @@
 //! Shared mapping between `NodeType` and MCP tool invocations.
 //!
-//! Used by both the planner (tool args → NodeType) and the executor (NodeType → tool args).
+//! Used by both the agent (tool args → NodeType) and the executor (NodeType → tool args).
 
 use crate::{
     AppKind, CdpClickParams, CdpClosePageParams, CdpFillParams, CdpHandleDialogParams,
@@ -428,7 +428,7 @@ pub fn tool_invocation_to_node_type(
             app_name: optional_str(args, "app_name"),
             ..Default::default()
         })),
-        // CDP tool mappings — prefixed names for planner disambiguation
+        // CDP tool mappings — prefixed names for agent disambiguation
         "cdp_click" => {
             let uid = optional_str(args, "uid");
             let target_str = args
@@ -437,10 +437,10 @@ pub fn tool_invocation_to_node_type(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            // Both `uid` and `target`/`text` from the planner are exact element
+            // Both `uid` and `target`/`text` from the agent are exact element
             // labels (the prompt instructs "use the exact element name from
             // cdp_find_elements"). Intent is only constructed programmatically
-            // for runtime-resolution paths, never from planner output.
+            // for runtime-resolution paths, never from agent output.
             let label = if !uid.is_empty() { uid } else { target_str };
             let target = if label.is_empty() {
                 CdpTarget::default()

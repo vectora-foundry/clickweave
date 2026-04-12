@@ -6,7 +6,7 @@ import type { PersistedSettings } from "../settings";
 import type { StoreState } from "./types";
 
 export interface SettingsSlice {
-  plannerConfig: EndpointConfig;
+  supervisorConfig: EndpointConfig;
   agentConfig: EndpointConfig;
   fastConfig: EndpointConfig;
   fastEnabled: boolean;
@@ -17,7 +17,7 @@ export interface SettingsSlice {
   _settingsLoaded: boolean;
 
   loadSettingsFromDisk: () => void;
-  setPlannerConfig: (config: EndpointConfig) => void;
+  setSupervisorConfig: (config: EndpointConfig) => void;
   setAgentConfig: (config: EndpointConfig) => void;
   setFastConfig: (config: EndpointConfig) => void;
   setFastEnabled: (enabled: boolean) => void;
@@ -46,7 +46,7 @@ function clampInt(value: unknown, min: number, max: number, fallback: number): n
 }
 
 export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice> = (set, get) => ({
-  plannerConfig: DEFAULT_ENDPOINT,
+  supervisorConfig: DEFAULT_ENDPOINT,
   agentConfig: DEFAULT_ENDPOINT,
   fastConfig: DEFAULT_ENDPOINT,
   fastEnabled: DEFAULT_FAST_ENABLED,
@@ -62,7 +62,7 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
     loadSettings()
       .then((s) => {
         set({
-          plannerConfig: s.plannerConfig,
+          supervisorConfig: s.supervisorConfig,
           agentConfig: s.agentConfig,
           fastConfig: s.fastConfig,
           fastEnabled: s.fastEnabled,
@@ -75,7 +75,7 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
       .catch((e) => console.error("Failed to load settings:", e));
   },
 
-  setPlannerConfig: (config) => persistSetting("plannerConfig", config, set),
+  setSupervisorConfig: (config) => persistSetting("supervisorConfig", config, set),
   setAgentConfig: (config) => persistSetting("agentConfig", config, set),
   setFastConfig: (config) => persistSetting("fastConfig", config, set),
   setFastEnabled: (enabled) => persistSetting("fastEnabled", enabled, set),

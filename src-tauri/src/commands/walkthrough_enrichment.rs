@@ -263,11 +263,11 @@ pub(super) fn attach_recording_frames(
 /// uses the before frame (element unobscured by hover effects).
 pub(super) async fn resolve_click_targets_with_vlm(
     actions: &mut [WalkthroughAction],
-    planner_cfg: &super::types::EndpointConfig,
+    supervisor_cfg: &super::types::EndpointConfig,
 ) {
     use clickweave_core::walkthrough::{TargetCandidate, WalkthroughActionKind};
 
-    if planner_cfg.is_empty() {
+    if supervisor_cfg.is_empty() {
         return;
     }
 
@@ -350,7 +350,7 @@ pub(super) async fn resolve_click_targets_with_vlm(
         inputs.len()
     );
 
-    let llm_config = planner_cfg
+    let llm_config = supervisor_cfg
         .clone()
         .into_llm_config(Some(0.1))
         .with_max_tokens(2048)

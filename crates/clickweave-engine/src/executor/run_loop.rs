@@ -636,10 +636,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         if let Some(fast) = &self.fast {
             self.log(format!("Fast model configured: {}", fast.model_name()));
             self.log_model_info("Fast", fast).await;
-        } else if let Some(planner) = &self.supervision {
+        } else if let Some(supervisor) = &self.supervision {
             self.log(format!(
-                "Fast model not configured — using planner ({}) for vision",
-                planner.model_name()
+                "Fast model not configured — using supervisor ({}) for vision",
+                supervisor.model_name()
             ));
         } else {
             self.log("VLM not configured — images sent directly to agent");

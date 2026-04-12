@@ -75,7 +75,7 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
   },
 
   applyApprovedPatch: async () => {
-    // No-op: planner patch workflow was removed with the assistant backend.
+    // No-op: assistant patch workflow was removed with the assistant backend.
   },
 
   discardPendingPatch: () => {
