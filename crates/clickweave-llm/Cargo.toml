@@ -13,15 +13,10 @@ reqwest = { version = "0.12", features = ["json"] }
 tracing.workspace = true
 uuid.workspace = true
 specta = { version = "2.0.0-rc", features = ["derive"], optional = true }
-toml_edit = { version = "0.22", features = ["serde"], optional = true }
-clap = { version = "4", features = ["derive"], optional = true }
-sha2 = { version = "0.10", optional = true }
-chrono = { workspace = true, optional = true }
 image.workspace = true
 base64.workspace = true
 
 [features]
 default = []
 specta = ["dep:specta", "clickweave-core/specta"]
-eval = ["dep:toml_edit", "dep:clap", "dep:sha2", "dep:chrono"]
 
