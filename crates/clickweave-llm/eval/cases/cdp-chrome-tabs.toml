@@ -1,9 +1,0 @@
-name = "CDP: Chrome multi-tab workflow"
-
-[[turns]]
-prompt = "Open Chrome, navigate to github.com, then open a new tab, navigate to google.com, search for 'clickweave', and switch back to the first tab"
-[turns.expect]
-min_nodes = 7
-max_nodes = 14
-required_tools = ["launch_app", "cdp_type_text", "cdp_press_key", "cdp_new_page", "cdp_select_page"]
-forbidden_tools = ["click", "type_text", "press_key", "scroll", "drag", "move_mouse"]

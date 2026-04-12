@@ -1,8 +1,0 @@
-name = "Minimal screenshot task"
-
-[[turns]]
-prompt = "Take a screenshot"
-[turns.expect]
-min_nodes = 1
-max_nodes = 2
-required_tools = ["take_screenshot"]

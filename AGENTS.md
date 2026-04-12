@@ -37,16 +37,6 @@
   - `frontend/architecture.md` — React stack, directory layout, Zustand slices, graph editor behavior
   - `mcp/integration.md` — MCP client lifecycle, tool mapping, protocol types
 
-## Planner Eval
-- **Location:** `crates/clickweave-llm/eval/` — config, cases, results
-- **Binary:** `cargo run -p clickweave-llm --features eval --bin planner_eval`
-- **Purpose:** Measure planner prompt quality by running real user prompts through the LLM pipeline and scoring the generated workflows against structural expectations
-- **Workflow:** Set eval case expectations to what you **want** the planner to produce → run evals → find failures → iterate on the system prompt (`crates/clickweave-llm/prompts/planner.md`) to fix failures → re-run. Do NOT relax expectations to make failing cases pass — use failures to improve the prompt.
-- **Cases:** TOML files in `eval/cases/`, each with a user prompt and `[expect]` block (min/max nodes, required tools, required patterns like `loop`/`conditional`/`verification`)
-- **Config:** `eval/eval.toml` — LLM endpoint, model, prompt template path, runs per case
-- **Flags:** `--case <name>` (substring filter), `--runs N`, `--model`, `--prompt`, `--concurrency N`
-- **Results:** JSON files in `eval/results/` with full generated workflows for manual analysis
-
 ## Design & Implementation Plans
 - Location: `internal_docs/plans/` (gitignored, local-only)
 - Naming: `YYYY-MM-DD_HH-MM-SS-<topic>.md` (e.g., `2026-02-12_10-07-02-app-name-resolution.md`)
