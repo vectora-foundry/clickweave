@@ -415,7 +415,14 @@ export function GraphCanvas({
         onNodeDragStart={handleNodeDragStart}
         onPaneClick={handlePaneClick}
         onPaneContextMenu={(e) => handleContextMenu(e)}
-        onNodeClick={(_, rfNode) => { if (rfNode.type === "workflow") onSelectNode(rfNode.id); }}
+        onNodeClick={(event, rfNode) => {
+          if (rfNode.type !== "workflow") return;
+          // Shift/Ctrl/Meta-click is a multi-select gesture — leave selection
+          // resolution to onNodesChange so the detail modal doesn't open while
+          // the user is picking multiple nodes.
+          if (event.shiftKey || event.ctrlKey || event.metaKey) return;
+          onSelectNode(rfNode.id);
+        }}
         onNodeContextMenu={(e, rfNode) => handleContextMenu(e, rfNode)}
         deleteKeyCode={["Backspace", "Delete"]}
         selectionOnDrag

@@ -137,7 +137,7 @@ export function useNodeChangeHandler({
         const nodeMap = new Map(updatedNodes.map((n) => [n.id, n]));
         const posUpdates = new Map<string, { x: number; y: number }>();
         const affectedGroups = new Set<string>();
-        let selectId: string | null = null;
+        let hasSelectChange = false;
         for (const change of changes) {
           if (change.type === "position" && change.position) {
             const rfNode = nodeMap.get(change.id);
@@ -186,21 +186,37 @@ export function useNodeChangeHandler({
                 }
               }
             }
-          } else if (change.type === "select" && change.selected) {
-            selectId = change.id;
+          } else if (change.type === "select") {
+            hasSelectChange = true;
           } else if (change.type === "dimensions") {
             const rfNode = nodeMap.get(change.id);
             if (rfNode?.parentId) affectedGroups.add(rfNode.parentId);
           }
         }
+        // Resolve selection from the post-change node state: only a single
+        // selected workflow node drives the detail modal. Multi-select (shift-
+        // click, drag-selection box) leaves selectedNode null so the detail
+        // modal stays closed while the user picks multiple nodes to act on.
+        let nextSelectedId: string | null = null;
+        if (hasSelectChange) {
+          let selectedCount = 0;
+          for (const n of updatedNodes) {
+            if (!n.selected || n.type !== "workflow") continue;
+            selectedCount += 1;
+            if (selectedCount > 1) break;
+            nextSelectedId = n.id;
+          }
+          if (selectedCount !== 1) nextSelectedId = null;
+        }
+
         // Defer store updates to after the state updater returns to avoid
         // "Cannot update App while rendering GraphCanvas" (setState-during-render).
-        if (posUpdates.size > 0 || selectId) {
+        if (posUpdates.size > 0 || hasSelectChange) {
           queueMicrotask(() => {
             if (posUpdates.size > 0) onNodePositionsChange(posUpdates);
-            if (selectId) {
+            if (hasSelectChange) {
               selectionFromCanvasRef.current = true;
-              onSelectNode(selectId);
+              onSelectNode(nextSelectedId);
             }
           });
         }
