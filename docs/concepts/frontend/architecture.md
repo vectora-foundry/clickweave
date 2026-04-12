@@ -2,19 +2,17 @@
 
 The frontend is a workflow editor plus execution cockpit.
 
-![Frontend & Tauri IPC](frontend-ipc.drawio.png)
-
 ## Primary UX Surfaces
 
-- **Graph canvas** for building and wiring workflow nodes. Nodes are added via a collapsible node palette on the left (not drag-and-drop). Loop groups can be collapsed/expanded. During execution, the currently-running node is highlighted (`activeNode`), distinct from the user-selected node.
+- **Graph canvas** for inspecting and wiring workflow nodes. Nodes are added via a collapsible node palette on the left (not drag-and-drop). During execution, the currently-running node is highlighted (`activeNode`), distinct from the user-selected node.
 - **Node detail modal** for setup and trace inspection (3 tabs: Setup, Trace, Runs).
-- **Assistant panel** for conversational edits and patch proposals.
+- **Agent cockpit** -- the primary authoring surface. The user types a natural-language goal, the agent LLM runs step by step against the target app, and each emitted tool call appears live as a node on the canvas. Pending-approval prompts, per-step status, and the goal/replan summary are surfaced in the panel.
 - **Walkthrough panel** for reviewing and annotating a recorded walkthrough draft. Users can rename, delete, and annotate steps before applying the draft to the canvas.
 - **Recording bar** -- a global overlay window that shows recording controls (pause, resume, stop, cancel) during walkthrough capture.
 - **Verdict bar and modal** for displaying inline verification results. The bar shows pass/fail/warn status at the top of the app; the modal expands to show per-node breakdowns with individual verdicts and reasoning.
 - **Run/log surfaces** for execution feedback.
 - **Supervision modal** for human-in-the-loop review during Test runs. When a step fails verification the engine pauses and the modal shows the node name, a finding description, and an optional screenshot. The user can retry the step, skip past it, or abort the entire run.
-- **Intent empty state** -- when a new project has no nodes, an onboarding screen prompts the user to describe their intent, which triggers assistant-based planning.
+- **Intent empty state** -- when a new project has no nodes, an onboarding screen prompts the user to describe their goal, which starts the agent loop.
 
 ## Execution Modes
 
@@ -27,12 +25,12 @@ The current mode is stored in execution state and sent to the backend as part of
 
 ## State Philosophy
 
-A single Zustand store composed from 9 slices keeps cross-feature coordination simple:
+A single Zustand store composed from several slices keeps cross-feature coordination simple:
 
 - project/workflow editing (ProjectSlice),
 - execution state -- run status, current mode, supervision pause (ExecutionSlice),
+- agent loop state -- status, current goal, streamed steps, pending approval, per-run generation id (AgentSlice),
 - undo/redo history -- up to 50 snapshots in each direction via `structuredClone` (HistorySlice),
-- assistant conversation and pending patches (AssistantSlice),
 - settings -- persisted to disk via `tauri-plugin-store` (SettingsSlice),
 - logs and verdicts (LogSlice, VerdictSlice),
 - walkthrough recording -- session state, events, draft, annotations, recording bar lifecycle, CDP app selection modal (WalkthroughSlice),
@@ -46,8 +44,8 @@ Backend events stream into the store, and UI updates are derived from state rath
 
 ## Why This Matters
 
-- Graph editing stays responsive while execution runs.
-- Assistant changes are staged as patches before apply.
+- Graph editing stays responsive while the agent loop or executor is running.
+- The agent streams its actions live onto the canvas, so authoring and execution are the same surface -- no separate "generate then review" step.
 - Trace/artifact views make failures debuggable without leaving the app.
 
 For exact file/component/state contracts, see `docs/reference/frontend/architecture.md`.
