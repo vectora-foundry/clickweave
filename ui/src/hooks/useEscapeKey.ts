@@ -19,7 +19,7 @@ export function useEscapeKey() {
         closeVerdictModal,
         showSettings,
         selectedNode,
-        hasMultiSelection,
+        hasCanvasSelection,
         walkthroughStatus,
         walkthroughPanelOpen,
         cancelWalkthrough,
@@ -40,7 +40,10 @@ export function useEscapeKey() {
         closeVerdictModal();
       } else if (showSettings) {
         setShowSettings(false);
-      } else if (hasMultiSelection) {
+      } else if (hasCanvasSelection) {
+        // Canvas-only selections (groups, or 2+ nodes) are not represented
+        // by `selectedNode`, so prefer this branch before the single-node
+        // one. `clearCanvasSelection` also resets `selectedNode` to null.
         clearCanvasSelection();
       } else if (selectedNode !== null) {
         selectNode(null);

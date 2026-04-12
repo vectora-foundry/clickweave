@@ -98,7 +98,7 @@ function App() {
   // ── Action selectors ─────────────────────────────────────────────
   const setWorkflow = useStore((s) => s.setWorkflow);
   const selectNode = useStore((s) => s.selectNode);
-  const setHasMultiSelection = useStore((s) => s.setHasMultiSelection);
+  const setHasCanvasSelection = useStore((s) => s.setHasCanvasSelection);
   const setDetailTab = useStore((s) => s.setDetailTab);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const toggleLogsDrawer = useStore((s) => s.toggleLogsDrawer);
@@ -216,7 +216,7 @@ function App() {
                   activeNode={activeNode}
                   canvasSelectionResetTick={canvasSelectionResetTick}
                   onSelectNode={selectNode}
-                  onMultiSelectionChange={setHasMultiSelection}
+                  onCanvasSelectionChange={setHasCanvasSelection}
                   onNodePositionsChange={updateNodePositions}
                   onEdgesChange={(edges) => {
                     pushHistory("Remove Edge");

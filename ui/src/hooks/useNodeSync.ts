@@ -29,7 +29,7 @@ interface UseNodeSyncParams {
   onRenameConfirm: (groupId: string, newName: string) => void;
   onRenameCancel: () => void;
   onSelectNode: (id: string | null) => void;
-  onMultiSelectionChange: (hasMulti: boolean) => void;
+  onCanvasSelectionChange: (hasMulti: boolean) => void;
   onNodePositionsChange: (updates: Map<string, { x: number; y: number }>) => void;
   onDeleteNodes: (ids: string[]) => void;
   onBeforeNodeDrag?: () => void;
@@ -53,7 +53,7 @@ export function useNodeSync({
   onRenameConfirm,
   onRenameCancel,
   onSelectNode,
-  onMultiSelectionChange,
+  onCanvasSelectionChange,
   onNodePositionsChange,
   onDeleteNodes,
   onBeforeNodeDrag,
@@ -131,7 +131,7 @@ export function useNodeSync({
     selectionFromCanvasRef,
     deletedNodeIdsRef,
     onSelectNode,
-    onMultiSelectionChange,
+    onCanvasSelectionChange,
     onNodePositionsChange,
     onDeleteNodes,
     setRfNodes,

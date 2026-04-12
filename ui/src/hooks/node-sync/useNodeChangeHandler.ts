@@ -27,7 +27,7 @@ interface UseNodeChangeHandlerParams {
   selectionFromCanvasRef: MutableRefObject<boolean>;
   deletedNodeIdsRef: MutableRefObject<Set<string> | null>;
   onSelectNode: (id: string | null) => void;
-  onMultiSelectionChange: (hasMulti: boolean) => void;
+  onCanvasSelectionChange: (hasMulti: boolean) => void;
   onNodePositionsChange: (updates: Map<string, { x: number; y: number }>) => void;
   onDeleteNodes: (ids: string[]) => void;
   setRfNodes: Dispatch<SetStateAction<RFNode[]>>;
@@ -50,7 +50,7 @@ export function useNodeChangeHandler({
   selectionFromCanvasRef,
   deletedNodeIdsRef,
   onSelectNode,
-  onMultiSelectionChange,
+  onCanvasSelectionChange,
   onNodePositionsChange,
   onDeleteNodes,
   setRfNodes,
@@ -115,6 +115,10 @@ export function useNodeChangeHandler({
         // node removal callbacks. The queueMicrotask clears it for nodes with no edges.
         deletedNodeIdsRef.current = new Set(removeIds);
         onDeleteNodes(removeIds);
+        // Deleting a selection removes those nodes from the workflow; any
+        // canvas-only selection state we were tracking is now stale, so
+        // drop it before the Escape handler can consume a phantom flag.
+        onCanvasSelectionChange(false);
         queueMicrotask(() => { deletedNodeIdsRef.current = null; });
         return;
       }
@@ -197,12 +201,13 @@ export function useNodeChangeHandler({
         }
         // Resolve selection from the post-change RF node state. The detail
         // modal opens only when a single workflow node is the sole selection;
-        // any extra selected node (workflow, appGroup, or userGroup container)
-        // means we are in a multi-select gesture and the modal must stay
-        // closed. `hasMulti` separately tracks whether 2+ nodes remain
-        // selected, which the Escape handler consults to clear RF selection.
+        // any extra selection (multiple nodes, or a group container) means
+        // the modal must stay closed and the Escape handler needs a
+        // non-`selectedNode` signal to clear the canvas.
+        //   hasOther = true when there is ANY selection on canvas that
+        //              `selectedNode` does not represent.
         let nextSelectedId: string | null = null;
-        let hasMulti = false;
+        let hasOtherSelection = false;
         if (hasSelectChange) {
           let totalSelected = 0;
           let soleWorkflowId: string | null = null;
@@ -217,7 +222,7 @@ export function useNodeChangeHandler({
             if (totalSelected > 1) break;
           }
           nextSelectedId = totalSelected === 1 ? soleWorkflowId : null;
-          hasMulti = totalSelected > 1;
+          hasOtherSelection = totalSelected > 0 && nextSelectedId === null;
         }
 
         // Defer store updates to after the state updater returns to avoid
@@ -228,7 +233,7 @@ export function useNodeChangeHandler({
             if (hasSelectChange) {
               selectionFromCanvasRef.current = true;
               onSelectNode(nextSelectedId);
-              onMultiSelectionChange(hasMulti);
+              onCanvasSelectionChange(hasOtherSelection);
             }
           });
         }
@@ -262,6 +267,6 @@ export function useNodeChangeHandler({
         return updatedNodes;
       });
     },
-    [onNodePositionsChange, onSelectNode, onMultiSelectionChange, onDeleteNodes, collapsedApps, appGroups, nodeToAppGroup, appGroupMeta, nodeToUserGroup, userGroupMeta, collapsedUserGroups, workflow.groups, setRfNodes, selectionFromCanvasRef, deletedNodeIdsRef],
+    [onNodePositionsChange, onSelectNode, onCanvasSelectionChange, onDeleteNodes, collapsedApps, appGroups, nodeToAppGroup, appGroupMeta, nodeToUserGroup, userGroupMeta, collapsedUserGroups, workflow.groups, setRfNodes, selectionFromCanvasRef, deletedNodeIdsRef],
   );
 }

@@ -21,7 +21,7 @@ function workflowNode(id: string, selected = false): RFNode {
 
 function renderHandler(initialRfNodes: RFNode[]) {
   const onSelectNode = vi.fn<(id: string | null) => void>();
-  const onMultiSelectionChange = vi.fn<(has: boolean) => void>();
+  const onCanvasSelectionChange = vi.fn<(has: boolean) => void>();
   const onNodePositionsChange = vi.fn();
   const onDeleteNodes = vi.fn();
 
@@ -48,7 +48,7 @@ function renderHandler(initialRfNodes: RFNode[]) {
       selectionFromCanvasRef,
       deletedNodeIdsRef,
       onSelectNode,
-      onMultiSelectionChange,
+      onCanvasSelectionChange,
       onNodePositionsChange,
       onDeleteNodes,
       setRfNodes,
@@ -56,7 +56,7 @@ function renderHandler(initialRfNodes: RFNode[]) {
     return { handler, rfNodes, selectionFromCanvasRef };
   });
 
-  return { hook, onSelectNode, onMultiSelectionChange, onNodePositionsChange, onDeleteNodes };
+  return { hook, onSelectNode, onCanvasSelectionChange, onNodePositionsChange, onDeleteNodes };
 }
 
 // Dispatch changes through the handler inside act() so React state updates
@@ -104,7 +104,7 @@ describe("useNodeChangeHandler — selection resolution", () => {
     // Box-select can catch one workflow node plus the enclosing appGroup or
     // userGroup container; the total RF selection is 2, so the modal stays
     // closed even though exactly one *workflow* node is in the mix.
-    const { hook, onSelectNode, onMultiSelectionChange } = renderHandler([
+    const { hook, onSelectNode, onCanvasSelectionChange } = renderHandler([
       workflowNode("a"),
       rfNode("grp1", "appGroup"),
     ]);
@@ -116,11 +116,14 @@ describe("useNodeChangeHandler — selection resolution", () => {
     await dispatch(hook.result.current.handler, changes);
 
     expect(onSelectNode).toHaveBeenCalledWith(null);
-    expect(onMultiSelectionChange).toHaveBeenCalledWith(true);
+    expect(onCanvasSelectionChange).toHaveBeenCalledWith(true);
   });
 
-  it("keeps selection null when only a group container is selected", async () => {
-    const { hook, onSelectNode, onMultiSelectionChange } = renderHandler([
+  it("flags canvas selection when only a group container is selected", async () => {
+    // A lone selected appGroup/userGroup container doesn't live in the
+    // detail modal (selectedNode stays null), but the Escape handler still
+    // needs to clear it, so hasCanvasSelection flips true.
+    const { hook, onSelectNode, onCanvasSelectionChange } = renderHandler([
       rfNode("grp1", "userGroup"),
       workflowNode("a"),
     ]);
@@ -131,7 +134,7 @@ describe("useNodeChangeHandler — selection resolution", () => {
     await dispatch(hook.result.current.handler, changes);
 
     expect(onSelectNode).toHaveBeenCalledWith(null);
-    expect(onMultiSelectionChange).toHaveBeenCalledWith(false);
+    expect(onCanvasSelectionChange).toHaveBeenCalledWith(true);
   });
 
   it("clears selection when shift-click extends an existing selection", async () => {
@@ -172,6 +175,24 @@ describe("useNodeChangeHandler — selection resolution", () => {
 
     expect(onSelectNode).not.toHaveBeenCalled();
     expect(onNodePositionsChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the canvas-selection flag when nodes are deleted", async () => {
+    // Deleting a multi-selection must not leave hasCanvasSelection stuck at
+    // true, otherwise a subsequent Escape is consumed by a phantom flag.
+    const { hook, onCanvasSelectionChange, onDeleteNodes } = renderHandler([
+      workflowNode("a", true),
+      workflowNode("b", true),
+    ]);
+
+    const changes: NodeChange[] = [
+      { type: "remove", id: "a" },
+      { type: "remove", id: "b" },
+    ];
+    await dispatch(hook.result.current.handler, changes);
+
+    expect(onDeleteNodes).toHaveBeenCalledWith(["a", "b"]);
+    expect(onCanvasSelectionChange).toHaveBeenCalledWith(false);
   });
 
   it("marks selection as coming from the canvas so the sync effect skips one pass", async () => {

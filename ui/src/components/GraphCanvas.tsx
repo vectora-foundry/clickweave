@@ -29,7 +29,7 @@ interface GraphCanvasProps {
   activeNode: string | null;
   canvasSelectionResetTick: number;
   onSelectNode: (id: string | null) => void;
-  onMultiSelectionChange: (hasMulti: boolean) => void;
+  onCanvasSelectionChange: (hasMulti: boolean) => void;
   onNodePositionsChange: (updates: Map<string, { x: number; y: number }>) => void;
   onEdgesChange: (edges: Edge[]) => void;
   onConnect: (from: string, to: string, sourceHandle?: string) => void;
@@ -51,7 +51,7 @@ export function GraphCanvas({
   activeNode,
   canvasSelectionResetTick,
   onSelectNode,
-  onMultiSelectionChange,
+  onCanvasSelectionChange,
   onNodePositionsChange,
   onEdgesChange,
   onConnect,
@@ -112,7 +112,7 @@ export function GraphCanvas({
     onRenameConfirm: handleRenameConfirm,
     onRenameCancel: handleRenameCancel,
     onSelectNode,
-    onMultiSelectionChange,
+    onCanvasSelectionChange,
     onNodePositionsChange,
     onDeleteNodes,
     onBeforeNodeDrag,
@@ -141,10 +141,10 @@ export function GraphCanvas({
 
   const handlePaneClick = useCallback(() => {
     onSelectNode(null);
-    onMultiSelectionChange(false);
+    onCanvasSelectionChange(false);
     setContextMenu(null);
     setCreateGroupPopover(null);
-  }, [onSelectNode, onMultiSelectionChange]);
+  }, [onSelectNode, onCanvasSelectionChange]);
 
   // ── Context menu + group creation popover state ──────────────────
   const [contextMenu, setContextMenu] = useState<{
