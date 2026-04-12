@@ -39,12 +39,7 @@ Executor-owned state relevant for CDP and focus bookkeeping:
 - `force_resolve: bool` — skip the persistent decision cache on the next resolution (set after an eviction so retry doesn't replay a stale decision); reset when a node succeeds.
 - `focus_dirty: bool` — set when an AI step calls a focus-changing MCP tool (`launch_app`, `focus_window`, `quit_app`); consumed by post-step logic to refresh `focused_app`.
 
-Runtime resolution outcomes (`RuntimeResolution`):
-
-- `Updated(patch)` / `Rewind { patch, first_node_id }` / `Rejected` behave as before.
-- `Removed(patch)` applies the patch, then checks whether the current node still exists: if it does, rewind to it; otherwise follow its edges (or the entry point) to continue execution rather than blindly rewinding to the deleted id.
-
-`StepOutcome` (private to `run_loop`) — now includes a `Cancelled` variant so a cancellation-token trip during a node is propagated explicitly instead of falling through as a generic failure.
+`StepOutcome` (private to `run_loop`) — includes a `Cancelled` variant so a cancellation-token trip during a node is propagated explicitly instead of falling through as a generic failure.
 
 Supervision is **fail-closed**: backend errors during verification are treated as `passed = false`. A broken verifier must not silently pass a bad step.
 
@@ -55,25 +50,48 @@ Supervision is **fail-closed**: backend errors during verification are treated a
 
 ## Agent Loop
 
-The agent loop (`crates/clickweave-engine/src/agent/`) is a goal-driven observe-act loop that builds workflows dynamically.
+The agent loop (`crates/clickweave-engine/src/agent/`) is a goal-driven observe-act loop. It is the primary LLM-driven execution path in Clickweave — the user types a natural-language goal and the agent emits one MCP tool call per step until the goal is reached.
 
 ### Entry Point
 
-Tauri command `run_agent` (`src-tauri/src/commands/agent.rs`) creates an `AgentRunner` and starts the loop.
+Tauri command `run_agent` (`src-tauri/src/commands/agent.rs`) creates an `AgentRunner` and starts the loop. The command accepts an `AgentRunRequest { goal, agent, project_path, workflow_name, workflow_id }` where `agent` is the LLM endpoint used for decisions.
 
 ### Loop Structure
 
-1. **Observe**: Take screenshot/snapshot of current app state
-2. **Plan**: LLM decides what action to take next based on goal and observations
-3. **Act**: Execute the planned action via MCP tools
-4. **Record**: Add a node to the workflow graph for the executed action
-5. **Evaluate**: Check if the goal has been achieved
-6. Repeat until goal is met or max steps reached
+Implemented in `crates/clickweave-engine/src/agent/loop_runner.rs`:
+
+1. **Observe**: Gather page elements from the current app (via CDP when available; native tools otherwise).
+2. **Cache check**: Look up the observation in the per-run decision cache. On a hit the cached tool call is replayed after re-approval.
+3. **Decide**: The agent LLM receives the conversation so far — system prompt, goal, prior steps and tool results, plus the full MCP tool list (augmented with `agent_done` and `agent_replan`) — and returns exactly one tool call.
+4. **Approve** (optional): If the approval gate is attached, the UI can approve or reject each tool call before dispatch. Pre-approved tool categories skip the prompt.
+5. **Act**: Dispatch the chosen MCP tool and record the result.
+6. **Append**: Persist the emitted tool call as a workflow node and an edge from the previous step, so the run materializes as a linear workflow.
+7. **Compact**: Run context compaction on the transcript, including snapshot supersession — older AX/DOM snapshots collapse to short placeholders while the most recent snapshot per tool stays at full fidelity (see `crates/clickweave-engine/src/agent/context.rs`). Step summaries are collapsed once the transcript exceeds the token budget.
+8. Repeat until `agent_done`, `agent_replan` (replan terminates the run with a divergence summary for the variant index), max steps, max consecutive errors, or user cancellation.
 
 ### Caching
 
-The agent uses a variant index (`VariantIndex`) and action cache to avoid re-running identical actions. Cache keys are derived from app state and action parameters.
+Decisions are cached in an `AgentCache` keyed by goal + observed element signature. Entries are persisted to `agent_cache.json` in the run storage directory so a future run against the same app state can replay the decision without an LLM round-trip. Approval-gated tools are re-approved on replay. Observation-only tools (e.g., `take_screenshot`, `take_ax_snapshot`) are never cached.
+
+### Events
+
+The loop emits events through an `AgentChannels` mpsc channel, forwarded as Tauri events by `commands/agent.rs`:
+
+- `agent://started` — run started; carries the generation `run_id`
+- `agent://step` — tool call completed successfully
+- `agent://step_failed` — tool call returned an error
+- `agent://node_added` / `agent://edge_added` — workflow persistence
+- `agent://approval_required` — approval gate is waiting on the UI
+- `agent://cdp_connected` — CDP auto-connect succeeded
+- `agent://sub_action` — automatic pre/post-tool hook ran (e.g., auto CDP connect)
+- `agent://warning` / `agent://error`
+- `agent://complete` — goal achieved; summary in payload
+- `agent://stopped` — bounded exit (max_steps, max_errors_reached, approval_unavailable, cancelled)
+
+All payloads carry the `run_id` so stale events from a prior run can be filtered on the UI side.
 
 ### Operator Controls
 
-The operator can `stop_agent` to cancel a running agent, or approve/reject individual actions via `approve_agent_action` when the approval gate is active.
+- `stop_agent` — cancels the running loop; sends an explicit rejection through any pending approval so the engine returns `Ok(false)` instead of "approval unavailable".
+- `approve_agent_action { approved: bool }` — responds to the current pending approval.
+

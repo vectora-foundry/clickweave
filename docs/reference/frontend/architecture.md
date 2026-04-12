@@ -1,6 +1,6 @@
 # Frontend Architecture (Reference)
 
-Verified at commit: `cdabe41`
+Verified at commit: `d77b18d`
 
 The UI is a React 19 + Vite app using Zustand for app state and React Flow for graph editing.
 
@@ -27,10 +27,9 @@ ui/src/
 ├── components/
 │   ├── GraphCanvas.tsx
 │   ├── WorkflowNode.tsx
-│   ├── LoopGroupNode.tsx
+│   ├── AppGroupNode.tsx
+│   ├── UserGroupNode.tsx
 │   ├── NodePalette.tsx
-│   ├── AssistantPanel.tsx
-│   ├── ChatMessage.tsx
 │   ├── LogsDrawer.tsx
 │   ├── FloatingToolbar.tsx
 │   ├── Header.tsx
@@ -59,7 +58,6 @@ ui/src/
 │   ├── useEscapeKey.ts
 │   ├── useHorizontalResize.ts
 │   ├── useUndoRedoKeyboard.ts
-│   ├── useLoopGrouping.ts
 │   ├── useNodeSync.ts
 │   ├── useEdgeSync.ts
 │   ├── useWorkflowActions.ts
@@ -68,7 +66,7 @@ ui/src/
 │   ├── events/
 │   │   ├── useExecutorNodeEvents.ts
 │   │   ├── useSupervisionEvents.ts
-│   │   ├── useAssistantEvents.ts
+│   │   ├── useAgentEvents.ts
 │   │   ├── useWalkthroughEvents.ts
 │   │   └── useMenuEvents.ts
 │   ├── node-sync/
@@ -86,7 +84,7 @@ ui/src/
 │   └── slices/
 │       ├── projectSlice.ts
 │       ├── executionSlice.ts
-│       ├── assistantSlice.ts
+│       ├── agentSlice.ts
 │       ├── historySlice.ts
 │       ├── settingsSlice.ts
 │       ├── logSlice.ts
@@ -98,7 +96,6 @@ ui/src/
     ├── appKind.ts
     ├── edgeHandles.ts
     ├── graphValidation.ts
-    ├── loopMembers.ts
     ├── walkthroughDraft.ts
     ├── walkthroughFormatting.ts
     └── walkthroughGrouping.ts
@@ -106,17 +103,16 @@ ui/src/
 
 ## State Model
 
-`StoreState` is the intersection of 10 slices:
+`StoreState` is composed from these slices:
 
 - `ProjectSlice`
 - `ExecutionSlice`
-- `AssistantSlice`
+- `AgentSlice`
 - `HistorySlice`
 - `SettingsSlice`
 - `LogSlice`
 - `VerdictSlice`
 - `WalkthroughSlice`
-- `PlannerSlice`
 - `UiSlice`
 
 Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/src/store/useAppStore.ts`.
@@ -130,19 +126,25 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 
 **ExecutionSlice** (`executionSlice.ts`)
 
-- `executorState: "idle" | "running"`, `executionMode: ExecutionMode`, `supervisionPause: SupervisionPause | null`, `lastRunStatus: "completed" | "failed" | null`, `autoApprovedCount: number`
-- actions: `setExecutorState`, `setExecutionMode`, `setSupervisionPause`, `clearSupervisionPause`, `supervisionRespond`, `runWorkflow`, `stopWorkflow`, `setLastRunStatus`, `setAutoApproveResolutions` (writes to `workflow.auto_approve_resolutions`), `incrementAutoApprovedCount`, `dismissAutoApproveBanner`
+- `executorState: "idle" | "running"`, `executionMode: ExecutionMode`, `supervisionPause: SupervisionPause | null`, `lastRunStatus: "completed" | "failed" | null`
+- actions: `setExecutorState`, `setExecutionMode`, `setSupervisionPause`, `clearSupervisionPause`, `supervisionRespond`, `runWorkflow`, `stopWorkflow`, `setLastRunStatus`, `setIntent`
 
-**AssistantSlice** (`assistantSlice.ts`)
+**AgentSlice** (`agentSlice.ts`)
 
-- `messages` (display-only, populated by `assistant://message` events), `expectedSessionId`, `assistantOpen`, `assistantLoading`, `assistantRetrying`, `assistantError`
-- `pendingPatch`, `pendingPatchWarnings`, `contextUsage`
-- actions: `sendAssistantMessage`, `applyApprovedPatch`, `discardPendingPatch`, `cancelAssistantChat`, `clearConversation`, `appendAssistantMessage`, `setExpectedSessionId`, `setMessages`
+The agent slice owns the live state of the observe-act agent loop. The loop emits `agent://*` events as it runs; the slice folds them into UI state.
+
+- `agentStatus: "idle" | "running" | "complete" | "stopped" | "error"`
+- `agentGoal: string`, `agentSteps: AgentStep[]`, `agentError: string | null`, `currentAgentStep: number`
+- `pendingApproval: PendingApproval | null` — populated when the agent asks the user to approve the next tool invocation
+- `agentRunId: string | null` — per-run generation ID used to drop stale events from a prior run
+- actions: `startAgent(goal)`, `stopAgent`, `addAgentStep`, `addAgentNode`, `addAgentEdge`, `setPendingApproval`, `approveAction`, `rejectAction`, `setAgentStatus`, `setAgentError`, `setAgentRunId`, `resetAgent`
 
 **SettingsSlice** (`settingsSlice.ts`)
 
-- `plannerConfig`, `agentConfig`, `vlmConfig`, `vlmEnabled`, `maxRepairAttempts`, `hoverDwellThreshold`
+- `plannerConfig`, `agentConfig`, `fastConfig`, `fastEnabled`, `maxRepairAttempts`, `hoverDwellThreshold`, `supervisionDelayMs`, `toolPermissions`
 - persistence via `store/settings.ts` (`settings.json` through Tauri plugin-store)
+
+The `plannerConfig` field name is a tombstone from the pre-agent architecture — the value it carries is now the **supervisor LLM** endpoint used for Test-mode step verdicts and walkthrough-enrichment VLM fallback. `agentConfig` drives the agent loop. `fastConfig` (enabled by `fastEnabled`) is the fast-VLM used for screenshot description before the supervisor runs its judge pass.
 
 **UiSlice** (`uiSlice.ts`)
 
@@ -176,22 +178,22 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 
 ## App Event Wiring
 
-`ui/src/hooks/useExecutorEvents.ts` is a thin composer mounted by `App.tsx` that delegates to 5 domain-specific hooks in `ui/src/hooks/events/`:
+`ui/src/hooks/useExecutorEvents.ts` is a thin composer mounted by `App.tsx` that delegates to domain-specific hooks in `ui/src/hooks/events/`:
 
 - `executor://log`, `executor://state`, `executor://node_started`, `executor://node_completed`, `executor://node_failed`
 - `executor://checks_completed`, `executor://workflow_completed`
 - `executor://supervision_passed`, `executor://supervision_paused`
-- `executor://resolution_proposed`, `executor://resolution_dismissed`, `executor://patch_applied`
-- `assistant://repairing`, `assistant://message`, `assistant://session_started`
+- `agent://started`, `agent://step`, `agent://complete`, `agent://stopped`, `agent://error`, `agent://warning`, `agent://node_added`, `agent://edge_added`, `agent://approval_required`, `agent://cdp_connected`, `agent://step_failed`, `agent://sub_action`
 - `walkthrough://state`, `walkthrough://event`, `walkthrough://draft_ready`, `walkthrough://cdp-setup`
 - `recording-bar://action`
-- `menu://new`, `menu://open`, `menu://save`, `menu://toggle-sidebar`, `menu://toggle-logs`, `menu://run-workflow`, `menu://stop-workflow`, `menu://toggle-assistant`
+- `menu://new`, `menu://open`, `menu://save`, `menu://toggle-sidebar`, `menu://toggle-logs`, `menu://run-workflow`, `menu://stop-workflow`
+
+All `agent://*` payloads carry a `run_id` field. Events whose `run_id` does not match the active run are silently dropped so late-arriving events from a previous run cannot leak into the current UI state.
 
 ## Graph Editor (`GraphCanvas`)
 
-`GraphCanvas.tsx` is a thin composition shell that delegates to three hooks:
+`GraphCanvas.tsx` composes the following hooks:
 
-- `useLoopGrouping` — loop collapse state, hidden node tracking
 - `useNodeSync` — RF node state, position tracking, selection sync
 - `useEdgeSync` — RF edge filtering, change handling, connect
 - `useAppGrouping` — auto-group nodes by target app
@@ -202,7 +204,6 @@ Type is defined in `ui/src/store/slices/types.ts` and store composition in `ui/s
 Registered node types:
 
 - `workflow` -> `WorkflowNode`
-- `loopGroup` -> `LoopGroupNode`
 - `appGroup` -> `AppGroupNode` (auto-generated groups by app)
 - `userGroup` -> `UserGroupNode` (user-created groups)
 
@@ -212,19 +213,14 @@ Registered node types:
 - Handle-to-handle connect creates edges
 - Delete key removes selected nodes/edges (multi-select supported; independently selected edges are removed silently via `removeEdgesOnly` without a separate history entry)
 - Node selection drives detail modal visibility
-- Loop groups support collapsed/expanded rendering and child containment
 
-Control-flow edge labels shown in canvas:
-
-- `IfTrue`, `IfFalse`
-- `SwitchCase(name)`, `SwitchDefault`
-- `LoopBody`, `LoopDone`
+Workflows are persisted as a linear sequence of tool-call nodes — there are no control-flow nodes (If / Switch / Loop / EndLoop) and no conditional edge labels. Edges carry only their source/target, with `from` and `to` fields on `Edge`.
 
 ## Node Detail Modal
 
 `NodeDetailModal` is rendered as a flex sidebar (not a floating overlay). It has 3 tabs:
 
-- `Setup`: node params, enabled flag, timeout, settle delay, retries, trace level. For eligible node types (`FindText`, `FindImage`, `TakeScreenshot`, `ListWindows`): Verification role toggle + expected outcome field
+- `Setup`: node params, enabled flag, timeout, settle delay, retries, trace level. For eligible node types (`FindText`, `FindImage`, `TakeScreenshot`): Verification role toggle + expected outcome field
 - `Trace`: trace events + artifact preview/lightbox for selected run
 - `Runs`: run history list (can jump to Trace tab)
 
@@ -233,13 +229,14 @@ Control-flow edge labels shown in canvas:
 From `ui/src/store/state.ts` and `settings.ts`:
 
 - endpoint default: `http://localhost:1234/v1`, model `local`, empty API key
-- `vlmEnabled`: `false`
+- `fastEnabled`: `false`
 - `maxRepairAttempts`: `3`
 - `hoverDwellThreshold`: `2000`
+- `supervisionDelayMs`: `500`
 
 `mcpCommand` was removed — the MCP binary is now resolved automatically by the backend.
 
-`maxRepairAttempts` is clamped to `0..10` in `settingsSlice.ts`.
+`maxRepairAttempts` is clamped to `0..10`, `hoverDwellThreshold` to `100..10000`, and `supervisionDelayMs` to `0..10000` in `settingsSlice.ts`.
 
 ## Generated Bindings
 
@@ -257,6 +254,7 @@ Notable types:
 - `SupervisionPause` — `{ nodeId, nodeName, finding, screenshot }`, defined in `executionSlice.ts`; represents a paused supervision check awaiting user decision
 - `NodeRole` — `"Default" | "Verification"`
 - `WalkthroughStatus`, `WalkthroughAction`, `WalkthroughAnnotations`, `WalkthroughDraftResponse`, `ActionNodeEntry` — walkthrough recording and review types
+- `AgentRunRequest` — request payload for `run_agent` (goal, agent endpoint, project path, workflow name, workflow id)
 
 Do not edit manually.
 
@@ -267,7 +265,6 @@ Do not edit manually.
 | `ui/src/App.tsx` | top-level layout, menu event listeners, app kind map |
 | `ui/src/components/GraphCanvas.tsx` | React Flow graph editor |
 | `ui/src/components/WorkflowNode.tsx` | standard node renderer |
-| `ui/src/components/LoopGroupNode.tsx` | expanded loop group renderer |
 | `ui/src/components/NodePalette.tsx` | collapsible node palette (left sidebar) |
 | `ui/src/components/WalkthroughPanel.tsx` | walkthrough recording review panel |
 | `ui/src/components/VerdictModal.tsx` | verdict detail modal |
@@ -276,12 +273,12 @@ Do not edit manually.
 | `ui/src/store/useAppStore.ts` | composed Zustand store hook |
 | `ui/src/store/useWorkflowMutations.ts` | node/edge mutation helpers with history push (`removeEdgesOnly` for silent edge removal) |
 | `ui/src/store/slices/types.ts` | `StoreState` composition |
+| `ui/src/store/slices/agentSlice.ts` | agent loop live state (status, steps, pending approval, run id) |
 | `ui/src/store/slices/walkthroughSlice.ts` | walkthrough lifecycle state and CDP modal |
 | `ui/src/hooks/useWalkthrough.ts` | focused walkthrough selector hook for WalkthroughPanel |
 | `ui/src/store/slices/historySlice.ts` | undo/redo state and actions |
 | `ui/src/store/settings.ts` | persisted settings I/O |
 | `ui/src/components/SupervisionModal.tsx` | supervision pause modal (retry / skip / abort) |
-| `ui/src/hooks/useLoopGrouping.ts` | loop collapse state, hidden node tracking |
 | `ui/src/hooks/useNodeSync.ts` | RF node state, position tracking, selection sync |
 | `ui/src/hooks/useEdgeSync.ts` | RF edge filtering, change handling |
 | `ui/src/hooks/useAppGrouping.ts` | auto-group nodes by target app |
@@ -290,7 +287,8 @@ Do not edit manually.
 | `ui/src/hooks/useEscapeKey.ts` | global Escape key handler that closes panels in priority order |
 | `ui/src/hooks/useHorizontalResize.ts` | horizontal panel resize drag handle |
 | `ui/src/hooks/useExecutorEvents.ts` | Thin event composer (delegates to `events/*.ts` hooks) |
-| `ui/src/hooks/events/*.ts` | Domain-specific event hooks (executor, supervision, assistant, walkthrough, menu) |
+| `ui/src/hooks/events/useAgentEvents.ts` | Agent-loop event subscriber (`agent://*`) |
+| `ui/src/hooks/events/*.ts` | Domain-specific event hooks (executor, supervision, agent, walkthrough, menu) |
 | `ui/src/hooks/useUndoRedoKeyboard.ts` | Ctrl+Z / Ctrl+Shift+Z keyboard binding |
 | `ui/src/components/CdpAppSelectModal.tsx` | CDP app selection modal for walkthrough recording |
 | `ui/src/utils/appKind.ts` | App kind classification helpers |

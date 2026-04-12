@@ -95,7 +95,7 @@ Client sends JSON-RPC 2.0 messages and parses server responses into typed struct
 }
 ```
 
-Used by planner and AI-step flows when passing tool schemas to LLM backends.
+Used by the agent loop when passing the MCP tool surface to the agent LLM each step.
 
 ## NodeType <-> Tool Mapping
 
@@ -113,12 +113,10 @@ File: `crates/clickweave-core/src/tool_mapping.rs`
 | `TypeText` | `type_text` | `text` |
 | `PressKey` | `press_key` | `key`, optional `modifiers` |
 | `Scroll` | `scroll` | `delta_y`, optional `x`,`y` |
-| `ListWindows` | `list_windows` | optional `app_name` |
 | `FocusWindow` | `focus_window` | one of `app_name` / `window_id` / `pid`; optional `app_kind` |
 | `McpToolCall` | dynamic | pass-through tool + args |
 
-Returns `NotAToolNode` for control-flow nodes and `AiStep`.
-`AppDebugKitOp` is executed in engine deterministic path directly (not through `tool_mapping`).
+`AppDebugKitOp` is executed in the engine's deterministic path directly (not through `tool_mapping`).
 
 ### Tool invocation -> NodeType
 
@@ -132,9 +130,10 @@ The MCP binary path is resolved automatically by `mcp_resolve::resolve_mcp_binar
 Relevant files:
 
 - `src-tauri/src/mcp_resolve.rs`
-- `src-tauri/src/commands/planner.rs`
-- `src-tauri/src/commands/executor.rs`
-- `crates/clickweave-engine/src/executor/run_loop.rs`
+- `src-tauri/src/commands/agent.rs` — spawns the MCP client for the agent loop
+- `src-tauri/src/commands/executor.rs` — spawns the MCP client for deterministic workflow execution
+- `crates/clickweave-engine/src/agent/loop_runner.rs` — dispatches MCP tools step by step from agent decisions
+- `crates/clickweave-engine/src/executor/run_loop.rs` — dispatches MCP tools node by node for saved workflows
 
 ## App Detection
 

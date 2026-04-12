@@ -28,7 +28,6 @@ Each conceptual doc includes a `.drawio.png` diagram (editable in draw.io via th
 |------|-----------|------------|
 | Architecture | `docs/reference/architecture/overview.md` | `docs/concepts/architecture/overview.md` |
 | Engine Execution | `docs/reference/engine/execution.md` | `docs/concepts/engine/execution.md` |
-| LLM Planning/Retries | `docs/reference/llm/planning-retries.md` | `docs/concepts/llm/planning-retries.md` |
 | MCP Integration | `docs/reference/mcp/integration.md` | `docs/concepts/mcp/integration.md` |
 | Frontend Architecture | `docs/reference/frontend/architecture.md` | `docs/concepts/frontend/architecture.md` |
 | Verification | `docs/verification/node-checks.md` | n/a |
