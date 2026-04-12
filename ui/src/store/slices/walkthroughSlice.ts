@@ -22,6 +22,12 @@ export function isWalkthroughBusy(status: WalkthroughStatus): boolean {
   return status === "Recording" || status === "Paused" || status === "Processing";
 }
 
+/** Returns true when live capture is active — Processing intentionally excluded
+ * so the drain-phase events emitted after Stop don't bump visible counters. */
+export function isWalkthroughCapturing(status: WalkthroughStatus): boolean {
+  return status === "Recording" || status === "Paused";
+}
+
 /** Build a lookup map from node_id -> WalkthroughAction using the action-node map. */
 export function buildActionByNodeId(
   actionNodeMap: ActionNodeEntry[],
@@ -229,9 +235,13 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
 
   // ── Recording actions ──
 
-  pushWalkthroughEvent: (event) => set((s) => ({
-    walkthroughEvents: [...s.walkthroughEvents, event],
-  })),
+  pushWalkthroughEvent: (event) => set((s) => {
+    // Drop events received outside active capture — the backend keeps
+    // emitting hover/CDP drain events after the Processing transition and
+    // they must not bump the live counter the user sees after Stop.
+    if (!isWalkthroughCapturing(s.walkthroughStatus)) return {};
+    return { walkthroughEvents: [...s.walkthroughEvents, event] };
+  }),
 
   pushCdpProgress: (progress) => {
     if (typeof progress.status === "string" && progress.status === "Done") {
@@ -248,7 +258,12 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
 
   startWalkthrough: async (cdpApps: CdpAppConfig[] = []) => {
     const { workflow, projectPath, pushLog, supervisorConfig } = get();
+    // Flip to Recording optimistically so the pushWalkthroughEvent guard
+    // accepts events from the backend — the capture processing task is
+    // spawned before the backend's emit_state(Recording), so the first
+    // captured events can land before the state transition arrives.
     set({
+      walkthroughStatus: "Recording",
       walkthroughError: null,
       walkthroughEvents: [],
       walkthroughAnnotations: { ...emptyAnnotations },
@@ -266,11 +281,24 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     const result = await commands.startWalkthrough(workflow.id, projectPath ?? null, supervisor, cdpApps, hoverDwellThreshold);
     if (result.status === "error") {
       const msg = errorMessage(result.error);
-      set({ walkthroughError: msg, walkthroughCdpModalOpen: false });
+      set({ walkthroughStatus: "Idle", walkthroughError: msg, walkthroughCdpModalOpen: false });
       pushLog(`Walkthrough start failed: ${msg}`);
-    } else {
-      openRecordingBarWindow();
+      return;
     }
+    // If the user cancelled during the optimistic window the local status
+    // will have been flipped away from "Recording"; the backend cancel call
+    // issued then may have hit "No walkthrough session is active" because
+    // start_walkthrough hadn't installed guard.session yet. Retry the cancel
+    // now that the session is live so we don't leak a recording the user
+    // already asked to abandon.
+    if (get().walkthroughStatus !== "Recording") {
+      const cancelResult = await commands.cancelWalkthrough();
+      if (cancelResult.status === "error") {
+        pushLog(`Walkthrough cancel after start failed: ${errorMessage(cancelResult.error)}`);
+      }
+      return;
+    }
+    openRecordingBarWindow();
   },
 
   pauseWalkthrough: async () => {
@@ -303,7 +331,11 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   cancelWalkthrough: async () => {
     const { pushLog } = get();
     closeRecordingBarWindow();
+    // Flip off capture locally so drain-phase walkthrough://event entries
+    // emitted by the backend while cancel_walkthrough awaits the processing
+    // task don't repopulate the freshly cleared walkthroughEvents array.
     set({
+      walkthroughStatus: "Processing",
       walkthroughEvents: [],
       walkthroughActions: [],
       walkthroughDraft: null,
@@ -318,6 +350,10 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     const result = await commands.cancelWalkthrough();
     if (result.status === "error") {
       pushLog(`Walkthrough cancel failed: ${errorMessage(result.error)}`);
+      // Backend won't emit a state event for an errored cancel, so settle
+      // the UI back to Idle ourselves — most commonly "No walkthrough
+      // session is active" when Escape races the start-command RPC.
+      set({ walkthroughStatus: "Idle" });
     }
   },
 

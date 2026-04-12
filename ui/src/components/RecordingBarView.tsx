@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
+import { isWalkthroughCapturing } from "../store/slices/walkthroughSlice";
 
 /**
  * Standalone recording bar rendered in its own always-on-top window.
@@ -44,6 +45,9 @@ export function RecordingBarView() {
   const [status, setStatus] = useState<Status>("Recording");
   const [eventCount, setEventCount] = useState(0);
   const [currentApp, setCurrentApp] = useState<string | null>(null);
+  // Mirror of `status` read synchronously inside listeners so event handlers
+  // see the latest value without resubscribing on every status change.
+  const statusRef = useRef<Status>("Recording");
 
   useEffect(() => {
     const { subscribe, dispose } = createListenerRegistry();
@@ -51,12 +55,16 @@ export function RecordingBarView() {
     subscribe(listen<{ status: string }>("walkthrough://state", (e) => {
       const s = e.payload.status;
       if (s === "Recording" || s === "Paused" || s === "Processing") {
+        statusRef.current = s;
         setStatus(s);
       }
     }));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     subscribe(listen<{ event: any }>("walkthrough://event", (e) => {
-      setEventCount((c) => c + 1);
+      // Drain-phase events emitted after Stop must not bump the counter.
+      if (isWalkthroughCapturing(statusRef.current)) {
+        setEventCount((c) => c + 1);
+      }
       const kind = e.payload.event?.kind;
       if (kind?.type === "AppFocused" && kind.app_name) {
         setCurrentApp(kind.app_name);
