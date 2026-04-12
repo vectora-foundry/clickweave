@@ -15,6 +15,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         target: &str,
         mcp: &(impl Mcp + ?Sized),
     ) -> ExecutorResult<String> {
+        if target.trim().is_empty() {
+            return Err(ExecutorError::Cdp(
+                "CDP target is empty; expected a non-empty label or text".to_string(),
+            ));
+        }
+
         // Refresh page list to verify CDP connection is healthy.
         let _ = mcp
             .call_tool("cdp_list_pages", Some(serde_json::json!({})))
