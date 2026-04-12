@@ -314,7 +314,7 @@ export type CdpAppConfig = { name: string;
 binary_path: string | null; app_kind: AppKind }
 export type CdpClickParams = { target: CdpTarget; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type CdpClosePageParams = { page_index?: number | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
-export type CdpFillParams = { uid: string; value: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type CdpFillParams = { target: CdpTarget; value: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type CdpHandleDialogParams = { accept: boolean; prompt_text?: string | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type CdpHoverParams = { target: CdpTarget; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type CdpNavigateParams = { url: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }

@@ -485,7 +485,17 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 }
             })?;
             Self::check_tool_error(&result, "cdp_fill")?;
-            return Self::set_tool_result_and_parse(retry_ctx, &Self::extract_result_text(&result));
+            let result_text = Self::extract_result_text(&result);
+            self.record_event(
+                node_run.as_deref(),
+                "tool_result",
+                serde_json::json!({
+                    "name": "cdp_fill",
+                    "text": Self::truncate_for_trace(&result_text, 8192),
+                    "text_len": result_text.len(),
+                }),
+            );
+            return Self::set_tool_result_and_parse(retry_ctx, &result_text);
         }
 
         // CDP Type: call cdp_type_text directly
