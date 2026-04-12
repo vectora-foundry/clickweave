@@ -293,6 +293,29 @@ mod tests {
     }
 
     #[test]
+    fn extract_find_image_coordinates_from_nested_center_object() {
+        let mut ctx = RuntimeContext::new();
+        // Alternate MCP find_image shape: matches carry a nested center object
+        // rather than flat screen_x/screen_y fields
+        let result = serde_json::json!({
+            "matches": [
+                {"center": {"x": 42.0, "y": 84.0}, "score": 0.88}
+            ]
+        });
+        let node_type = NodeType::FindImage(clickweave_core::FindImageParams::default());
+        extract_result_variables(&mut ctx, "find_image", &result, &node_type);
+
+        assert_eq!(
+            ctx.get_variable("find_image.coordinates"),
+            Some(&serde_json::json!({"x": 42.0, "y": 84.0}))
+        );
+        assert_eq!(
+            ctx.get_variable("find_image.confidence"),
+            Some(&serde_json::json!(0.88))
+        );
+    }
+
+    #[test]
     fn no_coordinates_for_find_app() {
         let mut ctx = RuntimeContext::new();
         let result = serde_json::json!([{"name": "Safari", "id": 1}]);
