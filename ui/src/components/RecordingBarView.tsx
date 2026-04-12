@@ -14,16 +14,26 @@ export function RecordingBarView() {
   const [currentApp, setCurrentApp] = useState<string | null>(null);
 
   useEffect(() => {
+    // Latest status, read inside the event listener to avoid re-subscribing
+    // whenever the status changes.
+    const statusRef = { current: "Recording" as Status };
+
     const unsubs = Promise.all([
       listen<{ status: string }>("walkthrough://state", (e) => {
         const s = e.payload.status;
         if (s === "Recording" || s === "Paused" || s === "Processing") {
+          statusRef.current = s;
           setStatus(s);
         }
       }),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       listen<{ event: any }>("walkthrough://event", (e) => {
-        setEventCount((c) => c + 1);
+        // Freeze the counter once the backend signals Processing — the drain
+        // phase continues emitting hover/CDP events that should not visibly
+        // increment the count after the user pressed Stop.
+        if (statusRef.current === "Recording" || statusRef.current === "Paused") {
+          setEventCount((c) => c + 1);
+        }
         const kind = e.payload.event?.kind;
         if (kind?.type === "AppFocused" && kind.app_name) {
           setCurrentApp(kind.app_name);

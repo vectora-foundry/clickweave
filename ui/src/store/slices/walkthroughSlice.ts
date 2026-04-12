@@ -229,9 +229,16 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
 
   // ── Recording actions ──
 
-  pushWalkthroughEvent: (event) => set((s) => ({
-    walkthroughEvents: [...s.walkthroughEvents, event],
-  })),
+  pushWalkthroughEvent: (event) => set((s) => {
+    // After the user presses Stop the backend keeps emitting events while it
+    // drains hover/CDP retrieval buffers. These arrive after the Processing
+    // state transition and must not bump the live event counter — the count
+    // should freeze at whatever was captured during Recording/Paused.
+    if (s.walkthroughStatus !== "Recording" && s.walkthroughStatus !== "Paused") {
+      return {};
+    }
+    return { walkthroughEvents: [...s.walkthroughEvents, event] };
+  }),
 
   pushCdpProgress: (progress) => {
     if (typeof progress.status === "string" && progress.status === "Done") {
