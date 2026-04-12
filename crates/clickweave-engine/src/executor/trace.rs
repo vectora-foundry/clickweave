@@ -5,7 +5,7 @@ use clickweave_llm::ChatBackend;
 use clickweave_mcp::{ToolCallResult, ToolContent};
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(crate) fn emit(&self, event: ExecutorEvent) {
@@ -63,6 +63,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let msg = msg.into();
         error!("{}", msg);
         self.emit(ExecutorEvent::Error(msg));
+    }
+
+    /// Surface a nonfatal warning: log at `warn!` level for the app-log file
+    /// and emit an `ExecutorEvent::Warning` so the UI can show it to the user.
+    /// The execution continues.
+    pub(crate) fn emit_warning(&self, msg: impl Into<String>) {
+        let msg = msg.into();
+        warn!("{}", msg);
+        self.emit(ExecutorEvent::Warning(msg));
     }
 
     pub(crate) fn now_millis() -> u64 {

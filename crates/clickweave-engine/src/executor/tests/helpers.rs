@@ -33,6 +33,23 @@ impl ChatBackend for StubBackend {
 /// Helper to create a `WorkflowExecutor<StubBackend>` with minimal setup.
 pub(super) fn make_test_executor() -> WorkflowExecutor<StubBackend> {
     let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    make_test_executor_with_sender(tx)
+}
+
+/// Helper that returns the executor plus the event receiver so tests can
+/// inspect emitted `ExecutorEvent`s (warnings, logs, etc.).
+#[allow(dead_code)]
+pub(super) fn make_test_executor_with_events() -> (
+    WorkflowExecutor<StubBackend>,
+    tokio::sync::mpsc::Receiver<ExecutorEvent>,
+) {
+    let (tx, rx) = tokio::sync::mpsc::channel(16);
+    (make_test_executor_with_sender(tx), rx)
+}
+
+fn make_test_executor_with_sender(
+    tx: tokio::sync::mpsc::Sender<ExecutorEvent>,
+) -> WorkflowExecutor<StubBackend> {
     let workflow = Workflow::default();
     let temp_dir = std::env::temp_dir().join("clickweave_test_executor");
     let storage = RunStorage::new_app_data(&temp_dir, &workflow.name, workflow.id);

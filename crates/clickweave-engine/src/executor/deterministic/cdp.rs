@@ -131,10 +131,30 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 "hover" => "move_mouse",
                 _ => "click",
             };
-            self.log(format!(
-                "CDP: native {} at ({}, {}) for '{}'",
-                native_tool, x, y, target
+            // Surface the fallback to the user: the canvas still shows a CDP
+            // node but we're running a native action at screen coordinates,
+            // which moves the physical mouse and is less reliable. A warning
+            // event drives the log panel; a structured trace event lands in
+            // `events.jsonl` so repeat fallbacks are auditable after the run.
+            // TODO: offer a resolution to convert the node to a native Click
+            // when the fallback keeps happening for the same target.
+            self.emit_warning(format!(
+                "CDP {action} for '{target}' fell back to native {native_tool} at ({x}, {y}) — \
+                 element is visible on screen but missing from the CDP accessibility tree. \
+                 Consider converting this node to a native {action} if the fallback is expected.",
             ));
+            self.record_event(
+                node_run,
+                "cdp_native_fallback",
+                serde_json::json!({
+                    "action": action,
+                    "native_tool": native_tool,
+                    "target": target,
+                    "x": x,
+                    "y": y,
+                    "reason": "element_not_in_cdp_snapshot",
+                }),
+            );
             let result = mcp
                 .call_tool(native_tool, Some(serde_json::json!({ "x": x, "y": y })))
                 .await
