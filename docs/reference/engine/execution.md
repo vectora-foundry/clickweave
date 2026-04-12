@@ -26,6 +26,28 @@ Execution starts at Tauri command `run_workflow` (`src-tauri/src/commands/execut
 - `DecisionCache` — persisted LLM decisions from Test mode, replayed in Run mode
 - `RunStorage` — manages trace event files and artifacts per execution
 
+### State & Contracts
+
+Executor-owned state relevant for CDP and focus bookkeeping:
+
+- `cdp_connected_app: Option<(String, i32)>` — name and PID of the app the CDP session is currently bound to. Comparing both fields (not name only) prevents the CDP connection from silently targeting a different instance of a same-name browser.
+- `focused_app: RwLock<Option<(String, AppKind, i32)>>` — last-known focused app with its kind classification and PID. Used by deterministic dispatch to pick the CDP path for Electron/Chrome apps.
+
+`RetryContext` (per-run, transient):
+
+- `completed_node_ids: Vec<(Uuid, String)>` — each entry pairs the node id with its sanitized auto-id prefix, so rollback can also remove any variables the node produced.
+- `force_resolve: bool` — skip the persistent decision cache on the next resolution (set after an eviction so retry doesn't replay a stale decision); reset when a node succeeds.
+- `focus_dirty: bool` — set when an AI step calls a focus-changing MCP tool (`launch_app`, `focus_window`, `quit_app`); consumed by post-step logic to refresh `focused_app`.
+
+Runtime resolution outcomes (`RuntimeResolution`):
+
+- `Updated(patch)` / `Rewind { patch, first_node_id }` / `Rejected` behave as before.
+- `Removed(patch)` applies the patch, then checks whether the current node still exists: if it does, rewind to it; otherwise follow its edges (or the entry point) to continue execution rather than blindly rewinding to the deleted id.
+
+`StepOutcome` (private to `run_loop`) — now includes a `Cancelled` variant so a cancellation-token trip during a node is propagated explicitly instead of falling through as a generic failure.
+
+Supervision is **fail-closed**: backend errors during verification are treated as `passed = false`. A broken verifier must not silently pass a bad step.
+
 ### Execution Modes
 
 - **Test mode**: Interactive. Runs supervision verification, records decisions to cache, supports retry/skip/abort.
