@@ -13,6 +13,7 @@ interface UseNodeSyncParams {
   workflow: Workflow;
   selectedNode: string | null;
   activeNode: string | null;
+  canvasSelectionResetTick: number;
   // App grouping params
   collapsedApps: Set<string>;
   appGroups: Map<string, string[]>;
@@ -28,6 +29,7 @@ interface UseNodeSyncParams {
   onRenameConfirm: (groupId: string, newName: string) => void;
   onRenameCancel: () => void;
   onSelectNode: (id: string | null) => void;
+  onMultiSelectionChange: (hasMulti: boolean) => void;
   onNodePositionsChange: (updates: Map<string, { x: number; y: number }>) => void;
   onDeleteNodes: (ids: string[]) => void;
   onBeforeNodeDrag?: () => void;
@@ -37,6 +39,7 @@ export function useNodeSync({
   workflow,
   selectedNode,
   activeNode,
+  canvasSelectionResetTick,
   collapsedApps,
   appGroups,
   nodeToAppGroup,
@@ -50,6 +53,7 @@ export function useNodeSync({
   onRenameConfirm,
   onRenameCancel,
   onSelectNode,
+  onMultiSelectionChange,
   onNodePositionsChange,
   onDeleteNodes,
   onBeforeNodeDrag,
@@ -96,6 +100,24 @@ export function useNodeSync({
     );
   }, [selectedNode]);
 
+  // ── Force-clear RF selection when the store requests a full reset ───
+  // Escape while a multi-selection is active goes through this path:
+  // `selectedNode` is already null, so the effect above no-ops; the reset
+  // tick gives us an explicit signal to wipe every RF node's `selected`
+  // flag without threading an imperative handle out of this hook.
+  useLayoutEffect(() => {
+    if (canvasSelectionResetTick === 0) return;
+    setRfNodes((prev) => {
+      let changed = false;
+      const next = prev.map((n) => {
+        if (!n.selected) return n;
+        changed = true;
+        return { ...n, selected: false };
+      });
+      return changed ? next : prev;
+    });
+  }, [canvasSelectionResetTick, setRfNodes]);
+
   // ── Handle RF node changes (position, selection, deletion) ─────────
   const handleNodesChange: OnNodesChange = useNodeChangeHandler({
     workflow,
@@ -109,6 +131,7 @@ export function useNodeSync({
     selectionFromCanvasRef,
     deletedNodeIdsRef,
     onSelectNode,
+    onMultiSelectionChange,
     onNodePositionsChange,
     onDeleteNodes,
     setRfNodes,

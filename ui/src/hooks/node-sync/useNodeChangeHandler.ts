@@ -27,6 +27,7 @@ interface UseNodeChangeHandlerParams {
   selectionFromCanvasRef: MutableRefObject<boolean>;
   deletedNodeIdsRef: MutableRefObject<Set<string> | null>;
   onSelectNode: (id: string | null) => void;
+  onMultiSelectionChange: (hasMulti: boolean) => void;
   onNodePositionsChange: (updates: Map<string, { x: number; y: number }>) => void;
   onDeleteNodes: (ids: string[]) => void;
   setRfNodes: Dispatch<SetStateAction<RFNode[]>>;
@@ -49,6 +50,7 @@ export function useNodeChangeHandler({
   selectionFromCanvasRef,
   deletedNodeIdsRef,
   onSelectNode,
+  onMultiSelectionChange,
   onNodePositionsChange,
   onDeleteNodes,
   setRfNodes,
@@ -193,20 +195,29 @@ export function useNodeChangeHandler({
             if (rfNode?.parentId) affectedGroups.add(rfNode.parentId);
           }
         }
-        // Resolve selection from the post-change node state: only a single
-        // selected workflow node drives the detail modal. Multi-select (shift-
-        // click, drag-selection box) leaves selectedNode null so the detail
-        // modal stays closed while the user picks multiple nodes to act on.
+        // Resolve selection from the post-change RF node state. The detail
+        // modal opens only when a single workflow node is the sole selection;
+        // any extra selected node (workflow, appGroup, or userGroup container)
+        // means we are in a multi-select gesture and the modal must stay
+        // closed. `hasMulti` separately tracks whether 2+ nodes remain
+        // selected, which the Escape handler consults to clear RF selection.
         let nextSelectedId: string | null = null;
+        let hasMulti = false;
         if (hasSelectChange) {
-          let selectedCount = 0;
+          let totalSelected = 0;
+          let soleWorkflowId: string | null = null;
           for (const n of updatedNodes) {
-            if (!n.selected || n.type !== "workflow") continue;
-            selectedCount += 1;
-            if (selectedCount > 1) break;
-            nextSelectedId = n.id;
+            if (!n.selected) continue;
+            totalSelected += 1;
+            if (totalSelected === 1 && n.type === "workflow") {
+              soleWorkflowId = n.id;
+            } else {
+              soleWorkflowId = null;
+            }
+            if (totalSelected > 1) break;
           }
-          if (selectedCount !== 1) nextSelectedId = null;
+          nextSelectedId = totalSelected === 1 ? soleWorkflowId : null;
+          hasMulti = totalSelected > 1;
         }
 
         // Defer store updates to after the state updater returns to avoid
@@ -217,6 +228,7 @@ export function useNodeChangeHandler({
             if (hasSelectChange) {
               selectionFromCanvasRef.current = true;
               onSelectNode(nextSelectedId);
+              onMultiSelectionChange(hasMulti);
             }
           });
         }
@@ -250,6 +262,6 @@ export function useNodeChangeHandler({
         return updatedNodes;
       });
     },
-    [onNodePositionsChange, onSelectNode, onDeleteNodes, collapsedApps, appGroups, nodeToAppGroup, appGroupMeta, nodeToUserGroup, userGroupMeta, collapsedUserGroups, workflow.groups, setRfNodes, selectionFromCanvasRef, deletedNodeIdsRef],
+    [onNodePositionsChange, onSelectNode, onMultiSelectionChange, onDeleteNodes, collapsedApps, appGroups, nodeToAppGroup, appGroupMeta, nodeToUserGroup, userGroupMeta, collapsedUserGroups, workflow.groups, setRfNodes, selectionFromCanvasRef, deletedNodeIdsRef],
   );
 }

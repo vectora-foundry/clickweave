@@ -19,6 +19,7 @@ export function useEscapeKey() {
         closeVerdictModal,
         showSettings,
         selectedNode,
+        hasMultiSelection,
         walkthroughStatus,
         walkthroughPanelOpen,
         cancelWalkthrough,
@@ -28,6 +29,7 @@ export function useEscapeKey() {
         logsDrawerOpen,
         setShowSettings,
         selectNode,
+        clearCanvasSelection,
         setAssistantOpen,
         toggleLogsDrawer,
       } = useStore.getState();
@@ -38,6 +40,8 @@ export function useEscapeKey() {
         closeVerdictModal();
       } else if (showSettings) {
         setShowSettings(false);
+      } else if (hasMultiSelection) {
+        clearCanvasSelection();
       } else if (selectedNode !== null) {
         selectNode(null);
       } else if (assistantOpen) {

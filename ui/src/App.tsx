@@ -49,9 +49,10 @@ function App() {
     })),
   );
 
-  const { selectedNode, sidebarCollapsed, logsDrawerOpen, nodeSearch, showSettings, detailTab, logs } = useStore(
+  const { selectedNode, canvasSelectionResetTick, sidebarCollapsed, logsDrawerOpen, nodeSearch, showSettings, detailTab, logs } = useStore(
     useShallow((s) => ({
       selectedNode: s.selectedNode,
+      canvasSelectionResetTick: s.canvasSelectionResetTick,
       sidebarCollapsed: s.sidebarCollapsed,
       logsDrawerOpen: s.logsDrawerOpen,
       nodeSearch: s.nodeSearch,
@@ -97,6 +98,7 @@ function App() {
   // ── Action selectors ─────────────────────────────────────────────
   const setWorkflow = useStore((s) => s.setWorkflow);
   const selectNode = useStore((s) => s.selectNode);
+  const setHasMultiSelection = useStore((s) => s.setHasMultiSelection);
   const setDetailTab = useStore((s) => s.setDetailTab);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const toggleLogsDrawer = useStore((s) => s.toggleLogsDrawer);
@@ -212,7 +214,9 @@ function App() {
                   workflow={workflow}
                   selectedNode={selectedNode}
                   activeNode={activeNode}
+                  canvasSelectionResetTick={canvasSelectionResetTick}
                   onSelectNode={selectNode}
+                  onMultiSelectionChange={setHasMultiSelection}
                   onNodePositionsChange={updateNodePositions}
                   onEdgesChange={(edges) => {
                     pushHistory("Remove Edge");

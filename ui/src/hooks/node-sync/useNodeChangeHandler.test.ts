@@ -5,23 +5,30 @@ import type { Node as RFNode, NodeChange } from "@xyflow/react";
 import { useNodeChangeHandler } from "./useNodeChangeHandler";
 import { makeWorkflow, node } from "../test-helpers";
 
-function workflowNode(id: string, selected = false): RFNode {
+function rfNode(id: string, type: string, selected = false): RFNode {
   return {
     id,
-    type: "workflow",
+    type,
     position: { x: 0, y: 0 },
     data: {},
     selected,
   };
 }
 
+function workflowNode(id: string, selected = false): RFNode {
+  return rfNode(id, "workflow", selected);
+}
+
 function renderHandler(initialRfNodes: RFNode[]) {
   const onSelectNode = vi.fn<(id: string | null) => void>();
+  const onMultiSelectionChange = vi.fn<(has: boolean) => void>();
   const onNodePositionsChange = vi.fn();
   const onDeleteNodes = vi.fn();
 
   const wf = makeWorkflow(
-    initialRfNodes.map((n) => node(n.id, "Click")),
+    initialRfNodes
+      .filter((n) => n.type === "workflow")
+      .map((n) => node(n.id, "Click")),
     [],
   );
 
@@ -41,6 +48,7 @@ function renderHandler(initialRfNodes: RFNode[]) {
       selectionFromCanvasRef,
       deletedNodeIdsRef,
       onSelectNode,
+      onMultiSelectionChange,
       onNodePositionsChange,
       onDeleteNodes,
       setRfNodes,
@@ -48,7 +56,7 @@ function renderHandler(initialRfNodes: RFNode[]) {
     return { handler, rfNodes, selectionFromCanvasRef };
   });
 
-  return { hook, onSelectNode, onNodePositionsChange, onDeleteNodes };
+  return { hook, onSelectNode, onMultiSelectionChange, onNodePositionsChange, onDeleteNodes };
 }
 
 // Dispatch changes through the handler inside act() so React state updates
@@ -90,6 +98,40 @@ describe("useNodeChangeHandler — selection resolution", () => {
 
     expect(onSelectNode).toHaveBeenCalledTimes(1);
     expect(onSelectNode).toHaveBeenCalledWith(null);
+  });
+
+  it("clears selection when a workflow node and a group container are both selected", async () => {
+    // Box-select can catch one workflow node plus the enclosing appGroup or
+    // userGroup container; the total RF selection is 2, so the modal stays
+    // closed even though exactly one *workflow* node is in the mix.
+    const { hook, onSelectNode, onMultiSelectionChange } = renderHandler([
+      workflowNode("a"),
+      rfNode("grp1", "appGroup"),
+    ]);
+
+    const changes: NodeChange[] = [
+      { type: "select", id: "a", selected: true },
+      { type: "select", id: "grp1", selected: true },
+    ];
+    await dispatch(hook.result.current.handler, changes);
+
+    expect(onSelectNode).toHaveBeenCalledWith(null);
+    expect(onMultiSelectionChange).toHaveBeenCalledWith(true);
+  });
+
+  it("keeps selection null when only a group container is selected", async () => {
+    const { hook, onSelectNode, onMultiSelectionChange } = renderHandler([
+      rfNode("grp1", "userGroup"),
+      workflowNode("a"),
+    ]);
+
+    const changes: NodeChange[] = [
+      { type: "select", id: "grp1", selected: true },
+    ];
+    await dispatch(hook.result.current.handler, changes);
+
+    expect(onSelectNode).toHaveBeenCalledWith(null);
+    expect(onMultiSelectionChange).toHaveBeenCalledWith(false);
   });
 
   it("clears selection when shift-click extends an existing selection", async () => {
