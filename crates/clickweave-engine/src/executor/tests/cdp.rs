@@ -77,3 +77,40 @@ async fn resolve_cdp_target_uid_resolves_intent_via_snapshot() {
     assert_eq!(calls[0].0, "cdp_list_pages");
     assert_eq!(calls[1].0, "cdp_take_snapshot");
 }
+
+#[tokio::test]
+async fn execute_cdp_action_returns_resolver_error_when_target_missing() {
+    // The deterministic executor no longer carries a silent native-click
+    // fallback for elements absent from the CDP accessibility tree — the
+    // multi-tier resolver that produced the `__native_at__:X:Y` sentinel
+    // was removed, so `execute_cdp_action` must surface the resolver's
+    // "no matching element" error as a normal `NodeFailed` instead of
+    // quietly moving the physical mouse.
+    use crate::executor::retry_context::RetryContext;
+    use uuid::Uuid;
+
+    let exec = make_test_executor();
+    let mcp = StubToolProvider::new();
+    // Health check + three snapshot attempts that never mention the target.
+    mcp.push_text_response("1: https://example.com [selected]");
+    for _ in 0..3 {
+        mcp.push_text_response("[uid=\"a1\"] button \"Cancel\"");
+    }
+
+    let ctx = RetryContext::new();
+    let err = exec
+        .execute_cdp_action("click", Uuid::new_v4(), "Submit", &mcp, None, &ctx)
+        .await
+        .expect_err("missing element must propagate as an error");
+    assert!(matches!(err, ExecutorError::Cdp(_)));
+    assert!(err.to_string().contains("No matching element"));
+
+    // No native click/move_mouse tool call should appear in the call log.
+    let calls = mcp.take_calls();
+    assert!(
+        calls
+            .iter()
+            .all(|(name, _)| name != "click" && name != "move_mouse"),
+        "execute_cdp_action must not silently fall back to native click: {calls:?}"
+    );
+}

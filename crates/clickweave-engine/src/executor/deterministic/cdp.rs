@@ -102,11 +102,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
     }
 
-    /// Sentinel prefix for native fallback when an element is visible on
-    /// screen but invisible in the CDP accessibility tree. Format:
-    /// `__native_at__:X:Y` where X,Y are screen coordinates.
-    const NATIVE_AT_PREFIX: &'static str = "__native_at__:";
-
     /// Resolve a CDP element and perform an action (click or hover) on it.
     /// Returns the action result text.
     pub(in crate::executor) async fn execute_cdp_action(
@@ -119,33 +114,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         _retry_ctx: &RetryContext,
     ) -> ExecutorResult<String> {
         let uid = self.resolve_cdp_element_uid(target, mcp).await?;
-
-        // Element visible on screen but not in CDP snapshot — use native
-        // click/move_mouse at screen coordinates instead of cdp_click/hover.
-        if let Some(coords) = uid.strip_prefix(Self::NATIVE_AT_PREFIX)
-            && let Some((x_str, y_str)) = coords.split_once(':')
-            && let (Ok(x), Ok(y)) = (x_str.parse::<i32>(), y_str.parse::<i32>())
-        {
-            let native_tool = match action {
-                "click" => "click",
-                "hover" => "move_mouse",
-                _ => "click",
-            };
-            self.log(format!(
-                "CDP: native {} at ({}, {}) for '{}'",
-                native_tool, x, y, target
-            ));
-            let result = mcp
-                .call_tool(native_tool, Some(serde_json::json!({ "x": x, "y": y })))
-                .await
-                .map_err(|e| ExecutorError::Cdp(format!("native {} failed: {e}", native_tool)))?;
-            self.record_event(
-                node_run,
-                &format!("cdp_{}", action),
-                serde_json::json!({ "target": target, "x": x, "y": y }),
-            );
-            return Ok(Self::extract_result_text(&result));
-        }
 
         self.log(format!("CDP: {} element uid='{}'", action, uid));
         let result = mcp
