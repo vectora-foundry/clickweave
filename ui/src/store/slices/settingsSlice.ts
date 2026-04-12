@@ -1,6 +1,7 @@
 import type { StateCreator } from "zustand";
 import type { EndpointConfig, ToolPermissions } from "../state";
 import { DEFAULT_ENDPOINT, DEFAULT_TOOL_PERMISSIONS, DEFAULT_FAST_ENABLED } from "../state";
+import { formatModelStatus, verifyConfiguredModels } from "../modelAvailability";
 import { loadSettings, saveSetting } from "../settings";
 import type { PersistedSettings } from "../settings";
 import type { StoreState } from "./types";
@@ -71,6 +72,14 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
           supervisionDelayMs: clampInt(s.supervisionDelayMs, 0, 10000, 500),
           toolPermissions: s.toolPermissions,
         });
+        verifyConfiguredModels(s)
+          .then((results) => {
+            const pushLog = get().pushLog;
+            for (const status of results) {
+              pushLog(formatModelStatus(status));
+            }
+          })
+          .catch((e) => console.error("Model availability check failed:", e));
       })
       .catch((e) => console.error("Failed to load settings:", e));
   },
