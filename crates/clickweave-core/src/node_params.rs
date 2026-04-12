@@ -420,16 +420,18 @@ pub struct CdpHoverParams {
 
 impl_cdp_target_deser!(CdpHoverParams {});
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct CdpFillParams {
-    pub uid: String,
+    pub target: CdpTarget,
     pub value: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_method: Option<VerificationMethod>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_assertion: Option<String>,
 }
+
+impl_cdp_target_deser!(CdpFillParams { value: String });
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]

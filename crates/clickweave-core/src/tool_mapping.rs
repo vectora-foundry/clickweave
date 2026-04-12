@@ -197,7 +197,7 @@ pub fn node_type_to_tool_invocation(
         NodeType::CdpHover(p) => ("cdp_hover", serde_json::json!({"uid": p.target.as_str()})),
         NodeType::CdpFill(p) => (
             "cdp_fill",
-            serde_json::json!({"uid": p.uid, "value": p.value}),
+            serde_json::json!({"uid": p.target.as_str(), "value": p.value}),
         ),
         NodeType::CdpType(p) => ("cdp_type_text", serde_json::json!({"text": p.text})),
         NodeType::CdpPressKey(p) => {
@@ -490,7 +490,7 @@ pub fn tool_invocation_to_node_type(
         })),
         // CDP tool mappings — accept both old (fill, navigate_page) and new (cdp_fill, cdp_navigate) names
         "fill" | "cdp_fill" => Ok(NodeType::CdpFill(CdpFillParams {
-            uid: optional_str(args, "uid"),
+            target: CdpTarget::ExactLabel(optional_str(args, "uid")),
             value: optional_str(args, "value"),
             ..Default::default()
         })),

@@ -209,6 +209,24 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .await
     }
 
+    /// Resolve a CdpTarget to a concrete UID for use with `cdp_fill` or similar
+    /// UID-only tools. `ResolvedUid` and obvious UID-shaped labels pass through
+    /// untouched; `Intent` and free-form labels go through snapshot resolution
+    /// so the UID is refreshed against the live DOM.
+    pub(in crate::executor) async fn resolve_cdp_target_uid(
+        &self,
+        target: &clickweave_core::CdpTarget,
+        mcp: &(impl Mcp + ?Sized),
+    ) -> ExecutorResult<String> {
+        use clickweave_core::CdpTarget;
+        match target {
+            CdpTarget::ResolvedUid(uid) => Ok(uid.clone()),
+            CdpTarget::ExactLabel(s) if looks_like_cdp_uid(s) => Ok(s.clone()),
+            CdpTarget::ExactLabel(label) => self.resolve_cdp_element_uid(label, mcp).await,
+            CdpTarget::Intent(intent) => self.resolve_cdp_element_uid(intent, mcp).await,
+        }
+    }
+
     /// Resolve a CDP element and hover it. Returns the hover result text.
     pub(in crate::executor) async fn resolve_and_hover_cdp(
         &self,
@@ -600,6 +618,35 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 }
 
+/// Detect UID-shaped strings: an AX/DOM prefix letter plus digits (`a5`, `d12`,
+/// `e1`), or a two-number backend-node form (`1_0`). Anything else is treated
+/// as a human-visible label or intent that must be re-resolved at runtime.
+fn looks_like_cdp_uid(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() {
+        return false;
+    }
+    // `a5`, `d12`, `e1`: single lowercase letter followed only by digits.
+    let mut chars = s.chars();
+    if let Some(first) = chars.next()
+        && first.is_ascii_lowercase()
+        && chars.clone().count() > 0
+        && chars.all(|c| c.is_ascii_digit())
+    {
+        return true;
+    }
+    // `1_0`: digits, single underscore, digits.
+    if let Some((lhs, rhs)) = s.split_once('_')
+        && !lhs.is_empty()
+        && !rhs.is_empty()
+        && lhs.chars().all(|c| c.is_ascii_digit())
+        && rhs.chars().all(|c| c.is_ascii_digit())
+    {
+        return true;
+    }
+    false
+}
+
 /// Check if an app is already running with `--remote-debugging-port=<N>`.
 /// Returns the port if found, so the caller can skip the quit/relaunch cycle.
 pub(crate) async fn existing_debug_port(app_name: &str) -> Option<u16> {
@@ -731,7 +778,33 @@ fn windows_process_image_candidates(app_name: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::windows_process_image_candidates;
+    use super::{looks_like_cdp_uid, windows_process_image_candidates};
+
+    #[test]
+    fn looks_like_cdp_uid_accepts_prefixed_form() {
+        assert!(looks_like_cdp_uid("a5"));
+        assert!(looks_like_cdp_uid("d12"));
+        assert!(looks_like_cdp_uid("e1"));
+    }
+
+    #[test]
+    fn looks_like_cdp_uid_accepts_backend_node_form() {
+        assert!(looks_like_cdp_uid("1_0"));
+        assert!(looks_like_cdp_uid("42_7"));
+    }
+
+    #[test]
+    fn looks_like_cdp_uid_rejects_labels() {
+        assert!(!looks_like_cdp_uid("message input"));
+        assert!(!looks_like_cdp_uid("Send"));
+        assert!(!looks_like_cdp_uid(""));
+        assert!(!looks_like_cdp_uid("a"));
+        assert!(!looks_like_cdp_uid("5"));
+        assert!(!looks_like_cdp_uid("a5b"));
+        assert!(!looks_like_cdp_uid("_5"));
+        assert!(!looks_like_cdp_uid("5_"));
+        assert!(!looks_like_cdp_uid("A5"));
+    }
 
     #[test]
     fn windows_image_candidates_map_known_browsers() {

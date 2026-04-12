@@ -468,6 +468,27 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             return Self::set_tool_result_and_parse(retry_ctx, &result_text);
         }
 
+        // CDP Fill: resolve target → uid (refreshed against live DOM), then call cdp_fill.
+        // The planner can embed labels/intents instead of session-specific UIDs so a
+        // workflow launched afresh still targets the right input.
+        if let NodeType::CdpFill(p) = node_type {
+            let uid = self.resolve_cdp_target_uid(&p.target, mcp).await?;
+            let args = serde_json::json!({"uid": uid, "value": p.value});
+            self.record_event(
+                node_run.as_deref(),
+                "tool_call",
+                serde_json::json!({"name": "cdp_fill", "args": &args}),
+            );
+            let result = mcp.call_tool("cdp_fill", Some(args)).await.map_err(|e| {
+                ExecutorError::ToolCall {
+                    tool: "cdp_fill".to_string(),
+                    message: e.to_string(),
+                }
+            })?;
+            Self::check_tool_error(&result, "cdp_fill")?;
+            return Self::set_tool_result_and_parse(retry_ctx, &Self::extract_result_text(&result));
+        }
+
         // CDP Type: call cdp_type_text directly
         if let NodeType::CdpType(p) = node_type {
             let args = serde_json::json!({"text": p.text});
