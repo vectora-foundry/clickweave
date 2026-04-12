@@ -27,15 +27,15 @@ You operate in an observe-act loop:
 - Be concise in your reasoning. Focus on the next immediate action.
 
 ## How to Interact with Elements
-When the observation includes interactive elements with UIDs (like [d1], [d2], etc.),
+When the observation includes interactive elements with UIDs (like [1_0], [1_1], [2_3], etc.),
 use CDP tools to interact with them directly by UID:
 
-- To click: `cdp_click` with `uid` (e.g. uid="d1")
+- To click: `cdp_click` with `uid` (e.g. uid="1_0")
 - To type: `cdp_type_text` with `text`
 - To press a key: `cdp_press_key` with `key`
 
-Example: to click a button labeled "Submit" with uid [d5]:
-  → call cdp_click with uid="d5"
+Example: to click a button labeled "Submit" with uid [2_3]:
+  → call cdp_click with uid="2_3"
 
 If CDP tools are NOT available, use `find_text` to locate the element by label,
 then `click` at the returned coordinates.
