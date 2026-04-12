@@ -45,62 +45,15 @@ describe("useEdgeSync", () => {
     expect(result.current.rfEdges).toHaveLength(0);
   });
 
-  it("always filters LoopBody edges, keeps LoopDone", () => {
-    const wf = makeWorkflow(
-      [
-        node("loop1", "Loop", { exit_condition: { type: "Always" }, max_iterations: 3 }),
-        node("a", "AiStep"),
-        node("done", "AiStep"),
-      ],
-      [
-        edge("loop1", "a", { type: "LoopBody" }),
-        edge("loop1", "done", { type: "LoopDone" }),
-      ],
-    );
-    const { result } = renderEdgeSync({ workflow: wf });
-    // LoopBody edge filtered, LoopDone edge kept
-    expect(result.current.rfEdges).toHaveLength(1);
-    expect(result.current.rfEdges[0].label).toBe("done");
-  });
-
-  it("generates edge IDs in from-to-handle format", () => {
+  it("generates edge IDs in from-to format", () => {
     const wf = makeWorkflow(
       [node("a", "AiStep"), node("b", "Click")],
       [edge("a", "b")],
     );
     const { result } = renderEdgeSync({ workflow: wf });
-    expect(result.current.rfEdges[0].id).toBe("a-b-default");
+    expect(result.current.rfEdges[0].id).toBe("a-b");
   });
 
-  it("derives edge labels from output type", () => {
-    const wf = makeWorkflow(
-      [
-        node("if1", "If", { condition: { type: "Always" } }),
-        node("a", "AiStep"),
-        node("b", "Click"),
-      ],
-      [
-        edge("if1", "a", { type: "IfTrue" }),
-        edge("if1", "b", { type: "IfFalse" }),
-      ],
-    );
-    const { result } = renderEdgeSync({ workflow: wf });
-    const labels = result.current.rfEdges.map((e) => e.label);
-    expect(labels).toContain("true");
-    expect(labels).toContain("false");
-  });
-
-  it("includes SwitchCase name as label", () => {
-    const wf = makeWorkflow(
-      [
-        node("sw1", "Switch", { cases: [{ name: "foo" }] }),
-        node("a", "AiStep"),
-      ],
-      [edge("sw1", "a", { type: "SwitchCase", name: "foo" })],
-    );
-    const { result } = renderEdgeSync({ workflow: wf });
-    expect(result.current.rfEdges[0].label).toBe("foo");
-  });
 });
 
 describe("useEdgeSync — app group edge rewriting", () => {

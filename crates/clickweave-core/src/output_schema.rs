@@ -68,16 +68,6 @@ impl From<&InputField> for InputFieldInfo {
     }
 }
 
-/// A reference to a specific output field of an upstream node.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct OutputRef {
-    /// auto_id of the source node (e.g. "find_text_1")
-    pub node: String,
-    /// Output field name (e.g. "coordinates")
-    pub field: String,
-}
-
 /// Method used to verify an action node's effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -105,15 +95,6 @@ pub enum NodeContext {
     Native,
     Cdp,
     Independent,
-}
-
-/// Right-hand side of a condition: either a literal or a reference to an upstream output.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-#[serde(tag = "type")]
-pub enum ConditionValue {
-    Literal { value: crate::LiteralValue },
-    Ref(OutputRef),
 }
 
 // --- Output schema registry ---
@@ -226,67 +207,6 @@ const VERIFICATION_OUTPUTS: &[OutputField] = &[
     },
 ];
 
-// --- Input schema registry ---
-
-const CLICK_INPUTS: &[InputField] = &[InputField {
-    name: "target_ref",
-    accepted_types: &[T::Object],
-    description: "Coordinates from FindText/FindImage",
-}];
-const HOVER_INPUTS: &[InputField] = &[InputField {
-    name: "target_ref",
-    accepted_types: &[T::Object],
-    description: "Coordinates from FindText/FindImage",
-}];
-const DRAG_INPUTS: &[InputField] = &[
-    InputField {
-        name: "from_ref",
-        accepted_types: &[T::Object],
-        description: "Start coordinates",
-    },
-    InputField {
-        name: "to_ref",
-        accepted_types: &[T::Object],
-        description: "End coordinates",
-    },
-];
-const TYPE_TEXT_INPUTS: &[InputField] = &[InputField {
-    name: "text_ref",
-    accepted_types: &[T::String, T::Number, T::Bool],
-    description: "Value to type",
-}];
-const FOCUS_WINDOW_INPUTS: &[InputField] = &[InputField {
-    name: "value_ref",
-    accepted_types: &[T::String, T::Number],
-    description: "App name or PID",
-}];
-const AI_STEP_INPUTS: &[InputField] = &[InputField {
-    name: "prompt_ref",
-    accepted_types: &[T::String, T::Number, T::Bool],
-    description: "Include upstream data in the prompt",
-}];
-const CDP_FILL_INPUTS: &[InputField] = &[InputField {
-    name: "value_ref",
-    accepted_types: &[T::String, T::Number, T::Bool],
-    description: "Value to fill",
-}];
-const CDP_TYPE_INPUTS: &[InputField] = &[InputField {
-    name: "text_ref",
-    accepted_types: &[T::String, T::Number, T::Bool],
-    description: "Text to type",
-}];
-const CDP_NAVIGATE_INPUTS: &[InputField] = &[InputField {
-    name: "url_ref",
-    accepted_types: &[T::String],
-    description: "URL to navigate to",
-}];
-const CDP_NEW_PAGE_INPUTS: &[InputField] = &[InputField {
-    name: "url_ref",
-    accepted_types: &[T::String],
-    description: "URL to open in new tab",
-}];
-const EMPTY_INPUTS: &[InputField] = &[];
-
 impl NodeType {
     /// Returns the static output schema (without verification fields).
     pub fn output_schema(&self) -> &'static [OutputField] {
@@ -299,23 +219,6 @@ impl NodeType {
             Self::AiStep(_) => AI_STEP_OUTPUTS,
             Self::McpToolCall(_) | Self::AppDebugKitOp(_) => GENERIC_OUTPUTS,
             _ => EMPTY_OUTPUTS,
-        }
-    }
-
-    /// Returns the static input schema.
-    pub fn input_schema(&self) -> &'static [InputField] {
-        match self {
-            Self::Click(_) => CLICK_INPUTS,
-            Self::Hover(_) => HOVER_INPUTS,
-            Self::Drag(_) => DRAG_INPUTS,
-            Self::TypeText(_) => TYPE_TEXT_INPUTS,
-            Self::FocusWindow(_) => FOCUS_WINDOW_INPUTS,
-            Self::AiStep(_) => AI_STEP_INPUTS,
-            Self::CdpFill(_) => CDP_FILL_INPUTS,
-            Self::CdpType(_) => CDP_TYPE_INPUTS,
-            Self::CdpNavigate(_) => CDP_NAVIGATE_INPUTS,
-            Self::CdpNewPage(_) => CDP_NEW_PAGE_INPUTS,
-            _ => EMPTY_INPUTS,
         }
     }
 }
@@ -355,17 +258,6 @@ impl crate::Workflow {
 mod tests {
     use super::*;
     use crate::*;
-
-    #[test]
-    fn output_ref_serde_roundtrip() {
-        let r = OutputRef {
-            node: "find_text_1".into(),
-            field: "coordinates".into(),
-        };
-        let json = serde_json::to_string(&r).unwrap();
-        let back: OutputRef = serde_json::from_str(&json).unwrap();
-        assert_eq!(r, back);
-    }
 
     #[test]
     fn output_field_type_serde_roundtrip() {
@@ -437,42 +329,5 @@ mod tests {
         assert_eq!(ft.output_schema().len(), 4);
         assert_eq!(ft.output_schema()[0].name, "found");
         assert_eq!(ft.output_schema()[3].name, "coordinates");
-    }
-
-    #[test]
-    fn click_has_target_ref_input() {
-        let ck = NodeType::Click(ClickParams::default());
-        assert_eq!(ck.input_schema().len(), 1);
-        assert_eq!(ck.input_schema()[0].name, "target_ref");
-        assert!(
-            ck.input_schema()[0]
-                .accepted_types
-                .contains(&OutputFieldType::Object)
-        );
-    }
-
-    #[test]
-    fn condition_value_serde_roundtrip() {
-        let lit = ConditionValue::Literal {
-            value: LiteralValue::Bool { value: true },
-        };
-        let json = serde_json::to_string(&lit).unwrap();
-        let back: ConditionValue = serde_json::from_str(&json).unwrap();
-        assert!(matches!(
-            back,
-            ConditionValue::Literal {
-                value: LiteralValue::Bool { value: true }
-            }
-        ));
-
-        let r = ConditionValue::Ref(OutputRef {
-            node: "find_text_1".into(),
-            field: "count".into(),
-        });
-        let json = serde_json::to_string(&r).unwrap();
-        let back: ConditionValue = serde_json::from_str(&json).unwrap();
-        assert!(
-            matches!(back, ConditionValue::Ref(OutputRef { ref node, .. }) if node == "find_text_1")
-        );
     }
 }

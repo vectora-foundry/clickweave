@@ -1274,7 +1274,7 @@ pub(super) async fn spawn_mcp(mcp_binary_path: &str) -> Option<McpClient> {
         Ok(client) => {
             tracing::info!(
                 "MCP client spawned for walkthrough enrichment: {} tools",
-                client.tools().len()
+                client.tool_count()
             );
             Some(client)
         }

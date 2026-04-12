@@ -171,43 +171,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn chrome_detected_by_bundle_id() {
-        assert_eq!(
-            classify_app(Some("com.google.Chrome"), None),
-            AppKind::ChromeBrowser,
-        );
-    }
-
-    #[test]
-    fn chrome_canary_detected_by_bundle_id() {
-        assert_eq!(
-            classify_app(Some("com.google.Chrome.canary"), None),
-            AppKind::ChromeBrowser,
-        );
-    }
-
-    #[test]
-    fn brave_detected_by_bundle_id() {
-        assert_eq!(
-            classify_app(Some("com.brave.Browser"), None),
-            AppKind::ChromeBrowser,
-        );
-    }
-
-    #[test]
-    fn edge_detected_by_bundle_id() {
-        assert_eq!(
-            classify_app(Some("com.microsoft.edgemac"), None),
-            AppKind::ChromeBrowser,
-        );
-    }
-
-    #[test]
-    fn arc_detected_by_bundle_id() {
-        assert_eq!(
-            classify_app(Some("company.thebrowser.Browser"), None),
-            AppKind::ChromeBrowser,
-        );
+    fn chrome_family_detected_by_bundle_id() {
+        for bundle_id in [
+            "com.google.Chrome",
+            "com.google.Chrome.canary",
+            "com.brave.Browser",
+            "com.microsoft.edgemac",
+            "company.thebrowser.Browser",
+        ] {
+            assert_eq!(
+                classify_app(Some(bundle_id), None),
+                AppKind::ChromeBrowser,
+                "bundle_id: {bundle_id}",
+            );
+        }
     }
 
     #[test]

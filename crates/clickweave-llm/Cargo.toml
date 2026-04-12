@@ -25,12 +25,3 @@ default = []
 specta = ["dep:specta", "clickweave-core/specta"]
 eval = ["dep:toml_edit", "dep:clap", "dep:sha2", "dep:chrono"]
 
-[[bin]]
-name = "planner_eval"
-path = "src/bin/planner_eval.rs"
-required-features = ["eval"]
-
-[[bin]]
-name = "resolution_probe"
-path = "src/bin/resolution_probe.rs"
-required-features = ["eval"]

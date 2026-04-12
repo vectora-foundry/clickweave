@@ -1,8 +1,33 @@
 import { useCallback } from "react";
-import type { Edge, EdgeOutput, Node, NodeGroup, NodeType, Workflow } from "../bindings";
-import { edgeOutputsEqual, handleToEdgeOutput } from "../utils/edgeHandles";
+import type { Edge, Node, NodeGroup, NodeType, Workflow } from "../bindings";
 import { topologicalSortMembers } from "../utils/groupValidation";
-import { generateAutoId, nodeTypeName } from "../utils/outputSchema";
+
+/** Extract the variant name from a serde-tagged NodeType. */
+function nodeTypeName(nodeType: Record<string, unknown>): string {
+  return (nodeType as { type?: string }).type ?? "";
+}
+
+const AUTO_ID_BASE: Record<string, string> = {
+  FindText: "find_text", FindImage: "find_image", FindApp: "find_app",
+  TakeScreenshot: "take_screenshot", Click: "click", Hover: "hover",
+  Drag: "drag", TypeText: "type_text", PressKey: "press_key",
+  Scroll: "scroll", FocusWindow: "focus_window", LaunchApp: "launch_app",
+  QuitApp: "quit_app", CdpWait: "cdp_wait", CdpClick: "cdp_click",
+  CdpHover: "cdp_hover", CdpFill: "cdp_fill", CdpType: "cdp_type",
+  CdpPressKey: "cdp_press_key", CdpNavigate: "cdp_navigate",
+  CdpNewPage: "cdp_new_page", CdpClosePage: "cdp_close_page",
+  CdpSelectPage: "cdp_select_page", CdpHandleDialog: "cdp_handle_dialog",
+  AiStep: "ai_step", McpToolCall: "mcp_tool_call", AppDebugKitOp: "app_debug_kit_op",
+};
+
+function generateAutoId(
+  typeName: string,
+  counters: Record<string, number>,
+): { autoId: string; base: string; counter: number } {
+  const base = AUTO_ID_BASE[typeName] ?? typeName.toLowerCase().replace(/\s+/g, "_");
+  const counter = (counters[base] ?? 0) + 1;
+  return { autoId: `${base}_${counter}`, base, counter };
+}
 
 /** Count effective members: direct nodes (not in any child subgroup) + child subgroups.
  *  A parent with only subgroup members but ≥2 subgroups stays alive. */
@@ -104,7 +129,7 @@ export function useWorkflowMutations(
         edges: prev.edges.filter(
           (e) =>
             !edges.some(
-              (r) => e.from === r.from && e.to === r.to && edgeOutputsEqual(e.output, r.output),
+              (r) => e.from === r.from && e.to === r.to,
             ),
         ),
       }));
@@ -140,54 +165,21 @@ export function useWorkflowMutations(
     (from: string, to: string, sourceHandle?: string) => {
       pushHistory("Add Edge");
       setWorkflow((prev) => {
-        const output = sourceHandle ? handleToEdgeOutput(sourceHandle) : null;
-        // For control flow nodes, replace the edge from the exact same output port.
-        const filtered = output
-          ? prev.edges.filter((e) => e.from !== from || !edgeOutputsEqual(e.output, output))
-          : prev.edges.filter((e) => e.from !== from || e.output !== null);
-        const edge: Edge = { from, to, output };
+        // Replace existing edge from the same source
+        const filtered = prev.edges.filter((e) => e.from !== from);
+        const edge: Edge = { from, to };
         return { ...prev, edges: [...filtered, edge] };
       });
     },
     [setWorkflow, pushHistory],
   );
 
-  const dataConnect = useCallback(
-    (sourceNodeId: string, targetNodeId: string, sourceField: string, targetInputKey: string) => {
-      pushHistory("Wire Variable");
-      setWorkflow((prev) => {
-        // Find source node auto_id
-        const sourceNode = prev.nodes.find((n) => n.id === sourceNodeId);
-        if (!sourceNode?.auto_id) return prev;
-        const outputRef = { node: sourceNode.auto_id, field: sourceField };
-        // Set the _ref param on the target node
-        return {
-          ...prev,
-          nodes: prev.nodes.map((n) => {
-            if (n.id !== targetNodeId) return n;
-            return {
-              ...n,
-              node_type: { ...n.node_type, [targetInputKey]: outputRef },
-            };
-          }),
-        };
-      });
-    },
-    [setWorkflow, pushHistory],
-  );
-
   const removeEdge = useCallback(
-    (from: string, to: string, output?: EdgeOutput | null) => {
+    (from: string, to: string) => {
       pushHistory("Remove Edge");
       setWorkflow((prev) => ({
         ...prev,
-        edges: prev.edges.filter((e) => {
-          if (e.from !== from || e.to !== to) return true;
-          if (output !== undefined) {
-            return !edgeOutputsEqual(e.output, output ?? null);
-          }
-          return false;
-        }),
+        edges: prev.edges.filter((e) => e.from !== from || e.to !== to),
       }));
     },
     [setWorkflow, pushHistory],
@@ -308,7 +300,7 @@ export function useWorkflowMutations(
 
   return {
     addNode, removeNode, removeNodes, removeEdgesOnly,
-    updateNodePositions, updateNode, addEdge, dataConnect, removeEdge,
+    updateNodePositions, updateNode, addEdge, removeEdge,
     createGroup, removeGroup, deleteGroupWithContents,
     renameGroup, recolorGroup, addNodesToGroup, removeNodesFromGroup,
   };

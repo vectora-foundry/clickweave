@@ -192,7 +192,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             vec![(prepared_b64.to_string(), mime.to_string())],
         )];
 
-        let observation = match vlm.chat(describe_messages, None).await {
+        let observation = match vlm.chat(&describe_messages, None).await {
             Ok(response) => response
                 .choices
                 .first()
@@ -225,7 +225,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         let judge_messages = vec![Message::user(judge_prompt)];
 
-        match vlm.chat(judge_messages, None).await {
+        match vlm.chat(&judge_messages, None).await {
             Ok(response) => {
                 let raw = response
                     .choices

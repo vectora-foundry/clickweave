@@ -29,12 +29,9 @@ pub fn auto_id_base(node_type: &NodeType) -> &'static str {
         NodeType::CdpWait(_) => "cdp_wait",
         NodeType::CdpHandleDialog(_) => "cdp_handle_dialog",
         NodeType::AiStep(_) => "ai_step",
-        NodeType::If(_) => "if",
-        NodeType::Switch(_) => "switch",
-        NodeType::Loop(_) => "loop",
-        NodeType::EndLoop(_) => "end_loop",
         NodeType::McpToolCall(_) => "mcp_tool_call",
         NodeType::AppDebugKitOp(_) => "app_debug_kit_op",
+        NodeType::Unknown => "unknown",
     }
 }
 

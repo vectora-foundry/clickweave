@@ -483,9 +483,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       name: workflow.name,
       nodes,
       edges,
-      auto_approve_resolutions: workflow.auto_approve_resolutions,
       intent: null,
-      verify_outcome: false,
     };
 
     get().pushHistory("Apply Walkthrough");

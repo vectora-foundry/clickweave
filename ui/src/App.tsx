@@ -13,16 +13,13 @@ import { IntentEmptyState } from "./components/IntentEmptyState";
 import { VerdictBar } from "./components/VerdictBar";
 import { VerdictModal } from "./components/VerdictModal";
 import { SupervisionModal } from "./components/SupervisionModal";
-import { PatchReviewDialog } from "./components/PatchReviewDialog";
 import { PlannerConfirmation } from "./components/PlannerConfirmation";
 import { CdpAppSelectModal } from "./components/CdpAppSelectModal";
-import { AutoApproveBanner } from "./components/AutoApproveBanner";
 import { useEffect, useMemo } from "react";
 import { useEscapeKey } from "./hooks/useEscapeKey";
 import { useUndoRedoKeyboard } from "./hooks/useUndoRedoKeyboard";
 import { useWorkflowActions } from "./hooks/useWorkflowActions";
 import { useExecutorEvents } from "./hooks/useExecutorEvents";
-import { usePlannerEvents } from "./hooks/usePlannerEvents";
 import { buildAppKindMap } from "./hooks/useNodeSync";
 import { isWalkthroughBusy } from "./store/slices/walkthroughSlice";
 
@@ -43,20 +40,15 @@ function App() {
     })),
   );
 
-  const { executorState, lastRunStatus, executionMode, supervisionPause, resolutionProposal, activeNode, autoApprovedCount } = useStore(
+  const { executorState, lastRunStatus, executionMode, supervisionPause, activeNode } = useStore(
     useShallow((s) => ({
       executorState: s.executorState,
       lastRunStatus: s.lastRunStatus,
       executionMode: s.executionMode,
       supervisionPause: s.supervisionPause,
-      resolutionProposal: s.resolutionProposal,
       activeNode: s.activeNode,
-      autoApprovedCount: s.autoApprovedCount,
     })),
   );
-
-  const autoApproveResolutions = useStore((s) => s.workflow.auto_approve_resolutions ?? false);
-  const verifyOutcome = useStore((s) => s.workflow.verify_outcome ?? false);
 
   const { selectedNode, sidebarCollapsed, logsDrawerOpen, nodeSearch, showSettings, detailTab, logs } = useStore(
     useShallow((s) => ({
@@ -70,20 +62,19 @@ function App() {
     })),
   );
 
-  const { assistantOpen, assistantLoading, assistantRetrying, assistantError, messages, pendingPatch, pendingPatchWarnings, contextUsage } = useStore(
+  const { assistantOpen, assistantLoading, assistantRetrying, assistantError, messages, contextUsage, agentStatus } = useStore(
     useShallow((s) => ({
       assistantOpen: s.assistantOpen,
       assistantLoading: s.assistantLoading,
       assistantRetrying: s.assistantRetrying,
       assistantError: s.assistantError,
       messages: s.messages,
-      pendingPatch: s.pendingPatch,
-      pendingPatchWarnings: s.pendingPatchWarnings,
       contextUsage: s.contextUsage,
+      agentStatus: s.agentStatus,
     })),
   );
 
-  const { plannerConfig, agentConfig, fastConfig, fastEnabled, maxRepairAttempts, hoverDwellThreshold, outcomeDelayMs, supervisionDelayMs, toolPermissions } = useStore(
+  const { plannerConfig, agentConfig, fastConfig, fastEnabled, maxRepairAttempts, hoverDwellThreshold, supervisionDelayMs, toolPermissions } = useStore(
     useShallow((s) => ({
       plannerConfig: s.plannerConfig,
       agentConfig: s.agentConfig,
@@ -91,7 +82,6 @@ function App() {
       fastEnabled: s.fastEnabled,
       maxRepairAttempts: s.maxRepairAttempts,
       hoverDwellThreshold: s.hoverDwellThreshold,
-      outcomeDelayMs: s.outcomeDelayMs,
       supervisionDelayMs: s.supervisionDelayMs,
       toolPermissions: s.toolPermissions,
     })),
@@ -129,30 +119,22 @@ function App() {
   const setToolPermission = useStore((s) => s.setToolPermission);
   const setExecutionMode = useStore((s) => s.setExecutionMode);
   const supervisionRespond = useStore((s) => s.supervisionRespond);
-  const resolveResolution = useStore((s) => s.resolveResolution);
   const runWorkflow = useStore((s) => s.runWorkflow);
   const stopWorkflow = useStore((s) => s.stopWorkflow);
   const setAssistantOpen = useStore((s) => s.setAssistantOpen);
   const toggleAssistant = useStore((s) => s.toggleAssistant);
   const setWalkthroughPanelOpen = useStore((s) => s.setWalkthroughPanelOpen);
   const skipIntentEntry = useStore((s) => s.skipIntentEntry);
-  const sendAssistantMessage = useStore((s) => s.sendAssistantMessage);
+  const startAgent = useStore((s) => s.startAgent);
   const cancelAssistantChat = useStore((s) => s.cancelAssistantChat);
-  const applyApprovedPatch = useStore((s) => s.applyApprovedPatch);
-  const discardPendingPatch = useStore((s) => s.discardPendingPatch);
   const clearConversation = useStore((s) => s.clearConversation);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
-  const setAutoApproveResolutions = useStore((s) => s.setAutoApproveResolutions);
-  const setVerifyOutcome = useStore((s) => s.setVerifyOutcome);
-  const setOutcomeDelayMs = useStore((s) => s.setOutcomeDelayMs);
   const setSupervisionDelayMs = useStore((s) => s.setSupervisionDelayMs);
-
-  const dismissAutoApproveBanner = useStore((s) => s.dismissAutoApproveBanner);
 
   // ── Workflow mutations ───────────────────────────────────────────
   const {
-    addNode, removeNodes, removeEdgesOnly, updateNodePositions, updateNode, addEdge, dataConnect,
+    addNode, removeNodes, removeEdgesOnly, updateNodePositions, updateNode, addEdge,
     createGroup, removeGroup, deleteGroupWithContents,
     renameGroup, recolorGroup, addNodesToGroup, removeNodesFromGroup,
   } = useWorkflowActions();
@@ -184,7 +166,6 @@ function App() {
 
   // ── Tauri event listeners (use getState() to avoid stale closures) ──
   useExecutorEvents();
-  usePlannerEvents();
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-[var(--bg-dark)]">
@@ -202,16 +183,6 @@ function App() {
 
       <div className="flex flex-1 flex-col overflow-hidden">
         <VerdictBar />
-        {executorState === "idle" && lastRunStatus === "completed" && (
-          <AutoApproveBanner
-            count={autoApprovedCount}
-            onDismiss={dismissAutoApproveBanner}
-            onViewLogs={() => {
-              dismissAutoApproveBanner();
-              if (!logsDrawerOpen) toggleLogsDrawer();
-            }}
-          />
-        )}
 
         <div className="relative flex flex-1 overflow-hidden">
           {isWalkthroughBusy(walkthroughStatus) && (
@@ -222,14 +193,14 @@ function App() {
               onGenerate={(intent) => {
                 setAssistantOpen(true);
                 skipIntentEntry();
-                sendAssistantMessage(intent);
+                startAgent(intent);
               }}
               onSkip={skipIntentEntry}
               onRecordWalkthrough={() => {
                 skipIntentEntry();
                 useStore.getState().openCdpModal();
               }}
-              loading={assistantLoading}
+              loading={agentStatus === "running"}
             />
           ) : (
             <>
@@ -254,7 +225,6 @@ function App() {
                     setWorkflow({ ...workflow, edges });
                   }}
                   onConnect={addEdge}
-                  onDataConnect={dataConnect}
                   onDeleteNodes={removeNodes}
                   onRemoveExtraEdges={removeEdgesOnly}
                   onBeforeNodeDrag={() => pushHistory("Move Nodes")}
@@ -286,10 +256,6 @@ function App() {
                   walkthroughEventCount={walkthroughEventCount}
                   onOpenWalkthroughPanel={() => setWalkthroughPanelOpen(true)}
                   onRecord={() => useStore.getState().openCdpModal()}
-                  autoApproveResolutions={autoApproveResolutions}
-                  verifyOutcome={verifyOutcome}
-                  onToggleAutoApprove={setAutoApproveResolutions}
-                  onToggleVerifyOutcome={setVerifyOutcome}
                 />
               </div>
 
@@ -299,13 +265,9 @@ function App() {
                 retrying={assistantRetrying}
                 error={assistantError}
                 messages={messages}
-                pendingPatch={pendingPatch}
-                pendingPatchWarnings={pendingPatchWarnings}
                 contextUsage={contextUsage}
-                onSendMessage={sendAssistantMessage}
+                onSendMessage={startAgent}
                 onCancel={cancelAssistantChat}
-                onApplyPatch={applyApprovedPatch}
-                onDiscardPatch={discardPendingPatch}
                 onClearConversation={clearConversation}
                 onClose={() => setAssistantOpen(false)}
               />
@@ -344,7 +306,6 @@ function App() {
         fastEnabled={fastEnabled}
         maxRepairAttempts={maxRepairAttempts}
         hoverDwellThreshold={hoverDwellThreshold}
-        outcomeDelayMs={outcomeDelayMs}
         supervisionDelayMs={supervisionDelayMs}
         toolPermissions={toolPermissions}
         onClose={() => setShowSettings(false)}
@@ -354,7 +315,6 @@ function App() {
         onFastEnabledChange={setFastEnabled}
         onMaxRepairAttemptsChange={setMaxRepairAttempts}
         onHoverDwellThresholdChange={setHoverDwellThreshold}
-        onOutcomeDelayMsChange={setOutcomeDelayMs}
         onSupervisionDelayMsChange={setSupervisionDelayMs}
         onToolPermissionsChange={setToolPermissions}
         onToolPermissionChange={setToolPermission}
@@ -366,25 +326,6 @@ function App() {
         <SupervisionModal
           pause={supervisionPause}
           onRespond={supervisionRespond}
-        />
-      )}
-
-      {resolutionProposal && (
-        <PatchReviewDialog
-          patch={resolutionProposal.patch}
-          reason={resolutionProposal.reason}
-          screenshot={resolutionProposal.screenshot}
-          onApprove={() => resolveResolution(true)}
-          onReject={() => resolveResolution(false)}
-        />
-      )}
-
-      {pendingPatch && !resolutionProposal && (
-        <PatchReviewDialog
-          patch={pendingPatch}
-          reason="Assistant proposed workflow changes"
-          onApprove={() => applyApprovedPatch()}
-          onReject={() => discardPendingPatch()}
         />
       )}
 

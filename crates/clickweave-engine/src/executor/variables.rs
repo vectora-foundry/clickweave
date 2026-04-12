@@ -360,29 +360,20 @@ mod tests {
     }
 
     #[test]
-    fn find_image_array_result_synthesizes_confidence_from_score() {
-        let mut ctx = RuntimeContext::new();
-        let result = serde_json::json!([{"x": 100.0, "y": 200.0, "score": 0.88}]);
-        let node_type = NodeType::FindImage(clickweave_core::FindImageParams::default());
-        extract_result_variables(&mut ctx, "find_image", &result, &node_type);
+    fn find_image_array_result_synthesizes_confidence_from_score_or_confidence_field() {
+        // Both "score" and "confidence" field names should be recognized
+        for (field, value) in [("score", 0.88), ("confidence", 0.95)] {
+            let mut ctx = RuntimeContext::new();
+            let result = serde_json::json!([{"x": 100.0, "y": 200.0, field: value}]);
+            let node_type = NodeType::FindImage(clickweave_core::FindImageParams::default());
+            extract_result_variables(&mut ctx, "find_image", &result, &node_type);
 
-        assert_eq!(
-            ctx.get_variable("find_image.confidence"),
-            Some(&serde_json::json!(0.88))
-        );
-    }
-
-    #[test]
-    fn find_image_array_result_synthesizes_confidence_from_confidence_field() {
-        let mut ctx = RuntimeContext::new();
-        let result = serde_json::json!([{"x": 50.0, "y": 75.0, "confidence": 0.95}]);
-        let node_type = NodeType::FindImage(clickweave_core::FindImageParams::default());
-        extract_result_variables(&mut ctx, "find_image", &result, &node_type);
-
-        assert_eq!(
-            ctx.get_variable("find_image.confidence"),
-            Some(&serde_json::json!(0.95))
-        );
+            assert_eq!(
+                ctx.get_variable("find_image.confidence"),
+                Some(&serde_json::json!(value)),
+                "field: {field}",
+            );
+        }
     }
 
     #[test]

@@ -37,7 +37,7 @@ pub fn merge_patch_into_workflow(
         .filter(|e| {
             !removed_edges
                 .iter()
-                .any(|r| e.from == r.from && e.to == r.to && e.output == r.output)
+                .any(|r| e.from == r.from && e.to == r.to)
         })
         // Also remove edges pointing to/from removed nodes
         .filter(|e| !removed_ids.contains(&e.from) && !removed_ids.contains(&e.to))
@@ -52,9 +52,7 @@ pub fn merge_patch_into_workflow(
         edges,
         groups: workflow.groups.clone(),
         next_id_counters: workflow.next_id_counters.clone(),
-        auto_approve_resolutions: workflow.auto_approve_resolutions,
         intent: workflow.intent.clone(),
-        verify_outcome: workflow.verify_outcome,
     };
     merged.fixup_auto_ids();
     merged
@@ -86,10 +84,7 @@ pub fn splice_insert_before(
     let new_node_ids: Vec<Uuid> = insertions.iter().map(|(id, _)| *id).collect();
 
     // Find predecessor of anchor (unlabeled edge)
-    let pred_edge = workflow
-        .edges
-        .iter()
-        .find(|e| e.to == anchor_id && e.output.is_none());
+    let pred_edge = workflow.edges.iter().find(|e| e.to == anchor_id);
 
     if let Some(pred) = pred_edge {
         // Remove predecessor -> anchor
@@ -98,7 +93,6 @@ pub fn splice_insert_before(
         add_edges.push(Edge {
             from: pred.from,
             to: new_node_ids[0],
-            output: None,
         });
     }
 
@@ -107,7 +101,6 @@ pub fn splice_insert_before(
         add_edges.push(Edge {
             from: window[0],
             to: window[1],
-            output: None,
         });
     }
 
@@ -115,7 +108,6 @@ pub fn splice_insert_before(
     add_edges.push(Edge {
         from: *new_node_ids.last().unwrap(),
         to: anchor_id,
-        output: None,
     });
 
     (add_edges, remove_edges)
@@ -138,6 +130,7 @@ mod tests {
                 ..Default::default()
             }),
             position: Position { x: 0.0, y: 0.0 },
+            description: None,
             auto_id: String::new(),
             enabled: true,
             timeout_ms: None,
@@ -172,7 +165,6 @@ mod tests {
         let edge = Edge {
             from: a.id,
             to: b.id,
-            output: None,
         };
         let wf = Workflow {
             nodes: vec![a.clone(), b.clone()],
@@ -195,7 +187,6 @@ mod tests {
             edges: vec![Edge {
                 from: a.id,
                 to: b.id,
-                output: None,
             }],
             ..Default::default()
         };
@@ -221,7 +212,6 @@ mod tests {
             edges: vec![Edge {
                 from: a.id,
                 to: b.id,
-                output: None,
             }],
             ..Default::default()
         };
@@ -237,12 +227,11 @@ mod tests {
     }
 
     #[test]
-    fn merge_preserves_intent_and_verify_outcome() {
+    fn merge_preserves_intent() {
         let node = make_node("Click A");
         let wf = Workflow {
             nodes: vec![node.clone()],
             intent: Some("Send a message to Alice".to_string()),
-            verify_outcome: true,
             ..Default::default()
         };
         let mut updated = node.clone();
@@ -250,6 +239,5 @@ mod tests {
 
         let result = merge_patch_into_workflow(&wf, &[], &[], &[updated], &[], &[]);
         assert_eq!(result.intent.as_deref(), Some("Send a message to Alice"));
-        assert!(result.verify_outcome);
     }
 }

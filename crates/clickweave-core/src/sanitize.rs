@@ -57,18 +57,10 @@ mod tests {
     }
 
     #[test]
-    fn path_empty_string() {
-        assert_eq!(sanitize_for_path(""), "unnamed");
-    }
-
-    #[test]
-    fn path_only_dashes() {
-        assert_eq!(sanitize_for_path("---"), "unnamed");
-    }
-
-    #[test]
-    fn path_only_whitespace() {
-        assert_eq!(sanitize_for_path("   "), "unnamed");
+    fn path_empty_or_blank_falls_back_to_unnamed() {
+        for input in ["", "---", "   "] {
+            assert_eq!(sanitize_for_path(input), "unnamed", "input: {input:?}");
+        }
     }
 
     #[test]

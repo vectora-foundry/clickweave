@@ -58,7 +58,6 @@ export function buildDag(workflow: Workflow, opts?: { skipLoopDone?: boolean }):
   for (const n of workflow.nodes) inDegree.set(n.id, 0);
   for (const e of workflow.edges) {
     if (endLoopNodeIds.has(e.from)) continue;
-    if (skipLoopDone && e.output?.type === "LoopDone") continue;
     const list = outgoing.get(e.from) ?? [];
     list.push(e.to);
     outgoing.set(e.from, list);

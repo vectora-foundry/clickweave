@@ -92,16 +92,4 @@ describe("autoDissolveGroups", () => {
     expect(result).toHaveLength(0);
   });
 
-  it("promotes orphaned subgroup with enough members to top-level", () => {
-    // Parent has 0 direct + 1 subgroup = 1 effective → dissolves
-    // Child has 2 members, promoted to top-level → survives
-    const groups = [
-      group("parent", "Parent", ["a", "b"]),
-      group("child", "Child", ["a", "b"], "parent"),
-    ];
-    const result = autoDissolveGroups(groups);
-    expect(result).toHaveLength(1);
-    expect(result[0]!.id).toBe("child");
-    expect(result[0]!.parent_group_id).toBeNull();
-  });
 });

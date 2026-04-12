@@ -1,11 +1,7 @@
 use super::error::CommandError;
-use super::planner_session::AssistantSessionHandle;
-use super::resolution_listener::ResolutionState;
 use super::types::*;
-use clickweave_core::{ExecutionMode, validate_workflow};
-use clickweave_engine::{
-    ExecutorCommand, ExecutorEvent, ExecutorState, RuntimeQuery, WorkflowExecutor,
-};
+use clickweave_core::validate_workflow;
+use clickweave_engine::{ExecutorCommand, ExecutorEvent, ExecutorState, WorkflowExecutor};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 use tokio_util::sync::CancellationToken;
@@ -16,8 +12,6 @@ pub struct ExecutorHandle {
     cancel_token: Option<CancellationToken>,
     cmd_tx: Option<tokio::sync::mpsc::Sender<ExecutorCommand>>,
     task_handle: Option<tauri::async_runtime::JoinHandle<()>>,
-    /// Cancellation token for the resolution listener task (Test mode only).
-    listener_cancel_token: Option<CancellationToken>,
 }
 
 impl ExecutorHandle {
@@ -28,10 +22,6 @@ impl ExecutorHandle {
     /// Returns `true` if a task was actually running.
     pub fn force_stop(&mut self) -> bool {
         let had_task = self.task_handle.is_some();
-        // Cancel the resolution listener first
-        if let Some(token) = self.listener_cancel_token.take() {
-            token.cancel();
-        }
         // Signal cancellation first (graceful)
         if let Some(token) = self.cancel_token.take() {
             token.cancel();
@@ -92,37 +82,6 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
         app_data.0.join("chrome-profiles")
     };
 
-    // Create resolution channel for Test mode (planner LLM available).
-    let is_test_mode = request.execution_mode == ExecutionMode::Test;
-    let has_planner = supervision_config.is_some();
-    let (resolution_tx, resolution_rx) = if is_test_mode && has_planner {
-        let (tx, rx) = tokio::sync::mpsc::channel::<RuntimeQuery>(4);
-        (Some(tx), Some(rx))
-    } else {
-        (None, None)
-    };
-
-    // Store auto-approve flag in ResolutionState (snapshotted at run start)
-    {
-        let state = app.state::<Mutex<ResolutionState>>();
-        let mut guard = state.lock().unwrap();
-        guard.auto_approve = request.auto_approve_resolutions;
-    }
-
-    // Lock execution on the assistant session and store workflow snapshot
-    if resolution_rx.is_some() {
-        let session_handle = app.state::<tokio::sync::Mutex<AssistantSessionHandle>>();
-        let mut guard = session_handle.lock().await;
-        guard.execution_locked = true;
-        guard.resolution_workflow = Some(request.workflow.clone());
-        // Store the planner config for resolution LLM calls
-        if guard.assistant_config.is_none()
-            && let Some(ref planner_cfg) = supervision_config
-        {
-            guard.assistant_config = Some(planner_cfg.clone());
-        }
-    }
-
     let task_handle = tauri::async_runtime::spawn(async move {
         let mut executor = WorkflowExecutor::new(
             request.workflow,
@@ -136,21 +95,11 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
             storage,
             executor_token,
             chrome_profiles_dir,
-            resolution_tx,
-            request.outcome_delay_ms,
+            None, // no resolution channel
             request.supervision_delay_ms,
         );
         executor.run(cmd_rx).await;
     });
-
-    // Spawn the resolution listener (Test mode only)
-    let listener_cancel_token = if let Some(rx) = resolution_rx {
-        let token = CancellationToken::new();
-        super::resolution_listener::spawn_listener(app.clone(), rx, token.clone());
-        Some(token)
-    } else {
-        None
-    };
 
     {
         let handle = app.state::<Mutex<ExecutorHandle>>();
@@ -158,7 +107,6 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
         guard.cancel_token = Some(cancel_token);
         guard.cmd_tx = Some(cmd_tx);
         guard.task_handle = Some(task_handle);
-        guard.listener_cancel_token = listener_cancel_token;
     }
 
     tauri::async_runtime::spawn(async move {
@@ -238,20 +186,6 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
                         node_id: id.to_string(),
                     },
                 ),
-                ExecutorEvent::OutcomeVerification {
-                    passed,
-                    query,
-                    reasoning,
-                    screenshot,
-                } => emit_handle.emit(
-                    "executor://outcome_verification",
-                    serde_json::json!({
-                        "passed": passed,
-                        "query": query,
-                        "reasoning": reasoning,
-                        "screenshot": screenshot,
-                    }),
-                ),
             };
             if let Err(e) = emit_result {
                 warn!("Failed to emit executor event to UI: {}", e);
@@ -270,38 +204,11 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
             );
         }
 
-        // Cancel the resolution listener
-        {
-            let state = cleanup_handle.state::<Mutex<ExecutorHandle>>();
-            let mut guard = state.lock().unwrap();
-            if let Some(token) = guard.listener_cancel_token.take() {
-                token.cancel();
-            }
-        }
-
-        // Unlock execution on the assistant session and dismiss stale resolution
-        {
-            let session_handle =
-                cleanup_handle.state::<tokio::sync::Mutex<AssistantSessionHandle>>();
-            let mut guard = session_handle.lock().await;
-            guard.execution_locked = false;
-            guard.resolution_workflow = None;
-        }
-
-        // Dismiss any pending resolution approval
-        let _ = cleanup_handle.emit("executor://resolution_dismissed", ());
-        {
-            let res_state = cleanup_handle.state::<Mutex<ResolutionState>>();
-            let mut guard = res_state.lock().unwrap();
-            guard.response_tx.take();
-        }
-
         let state = cleanup_handle.state::<Mutex<ExecutorHandle>>();
         let mut guard = state.lock().unwrap();
         guard.cancel_token = None;
         guard.cmd_tx = None;
         guard.task_handle = None;
-        guard.listener_cancel_token = None;
     });
 
     Ok(())
@@ -310,30 +217,11 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
 #[tauri::command]
 #[specta::specta]
 pub async fn stop_workflow(app: tauri::AppHandle) -> Result<(), CommandError> {
-    {
-        let handle = app.state::<Mutex<ExecutorHandle>>();
-        let mut guard = handle.lock().unwrap();
-        if !guard.force_stop() {
-            return Err(CommandError::validation("No workflow is running"));
-        }
+    let handle = app.state::<Mutex<ExecutorHandle>>();
+    let mut guard = handle.lock().unwrap();
+    if !guard.force_stop() {
+        return Err(CommandError::validation("No workflow is running"));
     }
-
-    // Unlock execution on the assistant session
-    {
-        let session_handle = app.state::<tokio::sync::Mutex<AssistantSessionHandle>>();
-        let mut guard = session_handle.lock().await;
-        guard.execution_locked = false;
-        guard.resolution_workflow = None;
-    }
-
-    // Dismiss any pending resolution approval
-    let _ = app.emit("executor://resolution_dismissed", ());
-    {
-        let res_state = app.state::<Mutex<ResolutionState>>();
-        let mut guard = res_state.lock().unwrap();
-        guard.response_tx.take();
-    }
-
     Ok(())
 }
 

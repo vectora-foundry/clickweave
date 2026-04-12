@@ -223,7 +223,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             vec![(prepared_b64, mime)],
         )];
 
-        match vlm.chat(messages, None).await {
+        match vlm.chat(&messages, None).await {
             Ok(response) => response
                 .choices
                 .first()
@@ -263,7 +263,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             history.clone()
         };
 
-        let result = match backend.chat(messages, None).await {
+        let result = match backend.chat(&messages, None).await {
             Ok(response) => {
                 let raw = response
                     .choices

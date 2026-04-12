@@ -394,9 +394,7 @@ pub fn synthesize_draft(
         edges: Vec::new(),
         groups: Vec::new(),
         next_id_counters: std::collections::HashMap::new(),
-        auto_approve_resolutions: false,
         intent: None,
-        verify_outcome: false,
     };
 
     let mut node_index = 0usize;
@@ -610,11 +608,7 @@ pub fn synthesize_draft(
     for i in 0..workflow.nodes.len().saturating_sub(1) {
         let from = workflow.nodes[i].id;
         let to = workflow.nodes[i + 1].id;
-        workflow.edges.push(Edge {
-            from,
-            to,
-            output: None,
-        });
+        workflow.edges.push(Edge { from, to });
     }
 
     workflow

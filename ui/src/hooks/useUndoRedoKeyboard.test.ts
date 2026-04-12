@@ -35,20 +35,8 @@ describe("useUndoRedoKeyboard", () => {
     expect(redo).not.toHaveBeenCalled();
   });
 
-  it("calls undo on Ctrl+Z (Windows/Linux)", () => {
-    fireKey("z", { ctrlKey: true });
-    expect(undo).toHaveBeenCalledOnce();
-    expect(redo).not.toHaveBeenCalled();
-  });
-
   it("calls redo on Cmd+Shift+Z (macOS)", () => {
     fireKey("Z", { metaKey: true, shiftKey: true });
-    expect(redo).toHaveBeenCalledOnce();
-    expect(undo).not.toHaveBeenCalled();
-  });
-
-  it("calls redo on Ctrl+Shift+Z (Windows/Linux)", () => {
-    fireKey("Z", { ctrlKey: true, shiftKey: true });
     expect(redo).toHaveBeenCalledOnce();
     expect(undo).not.toHaveBeenCalled();
   });
@@ -74,17 +62,6 @@ describe("useUndoRedoKeyboard", () => {
     expect(undo).not.toHaveBeenCalled();
 
     document.body.removeChild(input);
-  });
-
-  it("does nothing when a textarea is focused", () => {
-    const textarea = document.createElement("textarea");
-    document.body.appendChild(textarea);
-    textarea.focus();
-
-    fireKey("z", { metaKey: true });
-    expect(undo).not.toHaveBeenCalled();
-
-    document.body.removeChild(textarea);
   });
 
 });

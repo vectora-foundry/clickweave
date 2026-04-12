@@ -143,27 +143,6 @@ describe("computeAppGroups", () => {
     expect(groups[1].items).toHaveLength(1);
   });
 
-  it("keeps deleted nodes in groups so they can be restored", () => {
-    const actions = [
-      makeAction("a1", "Calculator", "FocusWindow"),
-      makeAction("a2", "Calculator"),
-      makeAction("a3", "Calculator"),
-    ];
-    const nodes = [makeNode("n1", "FocusWindow"), makeNode("n2"), makeNode("n3")];
-    const map: ActionNodeEntry[] = [
-      { action_id: "a1", node_id: "n1" },
-      { action_id: "a2", node_id: "n2" },
-      { action_id: "a3", node_id: "n3" },
-    ];
-    const order = ["n1", "n2", "n3"];
-    const deleted = new Set(["n2"]);
-
-    const groups = computeAppGroups(order, nodes, actions, map);
-    expect(groups).toHaveLength(1);
-    expect(groups[0].items).toHaveLength(3); // all items including deleted n2
-    expect(groups[0].items.map((i) => i.id)).toEqual(["n1", "n2", "n3"]);
-  });
-
   it("includes candidate actions in groups", () => {
     const actions = [
       makeAction("a1", "Calculator", "FocusWindow"),

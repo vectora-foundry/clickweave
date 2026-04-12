@@ -99,7 +99,7 @@ export function applyAnnotationsToDraft(
   // correct even when nodes have been inserted (kept candidates) or deleted.
   const edges: Edge[] = [];
   for (let i = 0; i < nodes.length - 1; i++) {
-    edges.push({ from: nodes[i].id, to: nodes[i + 1].id, output: null });
+    edges.push({ from: nodes[i].id, to: nodes[i + 1].id });
   }
 
   return { nodes: recomputeNodePositions(nodes), edges };

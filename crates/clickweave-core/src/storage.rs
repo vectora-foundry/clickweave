@@ -95,6 +95,26 @@ impl RunStorage {
         self.base_path.join("decisions.json")
     }
 
+    /// Path to the agent decision cache (workflow-level, persists across runs).
+    pub fn agent_cache_path(&self) -> PathBuf {
+        self.base_path.join("agent_cache.json")
+    }
+
+    /// Path to the variant index file (workflow-level, not per-execution).
+    pub fn variant_index_path(&self) -> PathBuf {
+        self.base_path.join("variant_index.jsonl")
+    }
+
+    /// Append a serializable agent event to the execution-level events.jsonl.
+    pub fn append_agent_event(&self, event: &impl Serialize) -> Result<()> {
+        let execution_dir = self
+            .execution_dir
+            .as_ref()
+            .context("begin_execution() must be called before append_agent_event()")?;
+        let events_path = self.base_path.join(execution_dir).join("events.jsonl");
+        append_jsonl(&events_path, event)
+    }
+
     /// Create storage for a saved project.
     ///
     /// Path: `<project>/.clickweave/runs/<sanitized_workflow_name>/`

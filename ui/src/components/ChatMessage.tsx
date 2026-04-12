@@ -21,27 +21,19 @@ function PatchBadge({ count, names, label, badgeClass, nameClass }: {
   );
 }
 
-interface ChatMessageProps {
+export interface ChatMessageProps {
   entry: ChatEntry;
   isLastAssistant: boolean;
-  pendingPatch: WorkflowPatch | null;
-  pendingPatchWarnings: string[];
-  onApplyPatch: () => void;
-  onDiscardPatch: () => void;
   onResend?: () => void;
 }
 
 export function ChatMessage({
   entry,
   isLastAssistant,
-  pendingPatch,
-  pendingPatchWarnings,
-  onApplyPatch,
-  onDiscardPatch,
   onResend,
 }: ChatMessageProps) {
   const isUser = entry.role === "user";
-  const showPatchActions = isLastAssistant && pendingPatch !== null;
+  const showPatchActions = false;
 
   return (
     <div className={`group flex flex-col ${isUser ? "items-end" : "items-start"}`}>
@@ -69,32 +61,6 @@ export function ChatMessage({
           </div>
         )}
 
-        {/* Warnings */}
-        {showPatchActions && pendingPatchWarnings.length > 0 && (
-          <div className="mt-2 rounded border border-yellow-500/30 bg-yellow-500/10 px-2 py-1.5 text-[11px] text-yellow-400">
-            {pendingPatchWarnings.map((w, i) => (
-              <div key={i}>{w}</div>
-            ))}
-          </div>
-        )}
-
-        {/* Apply/Discard buttons */}
-        {showPatchActions && (
-          <div className="mt-2 flex items-center gap-2 border-t border-[var(--border)] pt-2">
-            <button
-              onClick={onApplyPatch}
-              className="rounded bg-[var(--accent-green)] px-3 py-1 text-[11px] font-medium text-white hover:opacity-90"
-            >
-              Apply Changes
-            </button>
-            <button
-              onClick={onDiscardPatch}
-              className="rounded px-2 py-1 text-[11px] text-[var(--text-secondary)] hover:bg-[var(--bg-dark)] hover:text-[var(--text-primary)]"
-            >
-              Discard
-            </button>
-          </div>
-        )}
       </div>
 
       {/* Resend button for user messages */}

@@ -2,8 +2,13 @@ import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { NodeRole } from "../bindings";
 import { InlineRenameInput } from "./InlineRenameInput";
-import type { OutputFieldInfo } from "../utils/outputSchema";
 import { typeColor } from "../utils/typeColors";
+
+interface OutputFieldInfo {
+  name: string;
+  field_type: string;
+  description: string;
+}
 
 interface WiredInput {
   key: string;
@@ -25,6 +30,7 @@ interface WorkflowNodeData {
   onToggleCollapse?: () => void;
   subtitle?: string;
   isRenaming?: boolean;
+  isHypothetical?: boolean;
   hideSourceHandle?: boolean;
   onRenameConfirm?: (newName: string) => void;
   onRenameCancel?: () => void;
@@ -149,6 +155,7 @@ export const WorkflowNode = memo(function WorkflowNode({
     onToggleCollapse,
     subtitle,
     isRenaming,
+    isHypothetical,
     onRenameConfirm,
     onRenameCancel,
   } = d;
@@ -162,7 +169,7 @@ export const WorkflowNode = memo(function WorkflowNode({
     <div
       className={`group relative min-w-[140px] rounded-lg border-2 bg-[var(--bg-panel)] transition-shadow ${
         !enabled ? "opacity-50" : ""
-      } ${needsTallNode ? "min-h-[60px]" : ""} ${needsExtraTallNode ? "min-h-[80px]" : ""}`}
+      } ${isHypothetical ? "opacity-50 border-dashed" : ""} ${needsTallNode ? "min-h-[60px]" : ""} ${needsExtraTallNode ? "min-h-[80px]" : ""}`}
       style={{
         borderColor: selected ? color : isVerification ? "#f59e0b" : isControlFlow ? "#10b98144" : "var(--border)",
         boxShadow: selected ? `0 0 12px ${color}33` : "none",
@@ -243,7 +250,7 @@ export const WorkflowNode = memo(function WorkflowNode({
       <SourceHandles data={d} />
       {d.outputFields && d.outputFields.length > 0 && (
         <PortHandles
-          items={d.outputFields.map((f) => ({ key: f.name, color: typeColor(f.type) }))}
+          items={d.outputFields.map((f: OutputFieldInfo) => ({ key: f.name, color: typeColor(f.field_type) }))}
           type="source" position={Position.Right} idPrefix="data-" sideOffset="right"
         />
       )}

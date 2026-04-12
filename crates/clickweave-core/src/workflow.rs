@@ -21,11 +21,7 @@ pub struct Workflow {
     #[serde(default)]
     pub next_id_counters: HashMap<String, u32>,
     #[serde(default)]
-    pub auto_approve_resolutions: bool,
-    #[serde(default)]
     pub intent: Option<String>,
-    #[serde(default)]
-    pub verify_outcome: bool,
 }
 
 impl Default for Workflow {
@@ -37,9 +33,7 @@ impl Default for Workflow {
             edges: vec![],
             groups: vec![],
             next_id_counters: HashMap::new(),
-            auto_approve_resolutions: false,
             intent: None,
-            verify_outcome: false,
         }
     }
 }
@@ -51,6 +45,8 @@ pub struct Node {
     pub node_type: NodeType,
     pub position: Position,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     #[serde(default)]
     pub auto_id: String,
     pub enabled: bool,
@@ -72,29 +68,11 @@ pub struct Position {
     pub y: f32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-#[serde(tag = "type")]
-pub enum EdgeOutput {
-    IfTrue,
-    IfFalse,
-    SwitchCase {
-        name: String,
-    },
-    SwitchDefault,
-    /// Edge from Loop node into the loop body.
-    LoopBody,
-    /// Edge from Loop node when exit condition is met (or max iterations hit).
-    LoopDone,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct Edge {
     pub from: Uuid,
     pub to: Uuid,
-    /// Which output port this edge connects from. None for regular single-output edges.
-    pub output: Option<EdgeOutput>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +97,7 @@ impl Node {
             node_type,
             position,
             name: name.into(),
+            description: None,
             auto_id: auto_id.into(),
             enabled: true,
             timeout_ms: None,
@@ -150,19 +129,7 @@ impl Workflow {
     }
 
     pub fn add_edge(&mut self, from: Uuid, to: Uuid) {
-        self.edges.push(Edge {
-            from,
-            to,
-            output: None,
-        });
-    }
-
-    pub fn add_edge_with_output(&mut self, from: Uuid, to: Uuid, output: EdgeOutput) {
-        self.edges.push(Edge {
-            from,
-            to,
-            output: Some(output),
-        });
+        self.edges.push(Edge { from, to });
     }
 
     pub fn find_node(&self, id: Uuid) -> Option<&Node> {
@@ -183,21 +150,8 @@ impl Workflow {
     }
 
     /// Find entry points: nodes with no incoming edges.
-    /// EndLoop back-edges are excluded so loops don't break entry detection.
     fn entry_points(&self) -> Vec<Uuid> {
-        let endloop_ids: std::collections::HashSet<Uuid> = self
-            .nodes
-            .iter()
-            .filter(|n| matches!(n.node_type, NodeType::EndLoop(_)))
-            .map(|n| n.id)
-            .collect();
-
-        let targets: std::collections::HashSet<Uuid> = self
-            .edges
-            .iter()
-            .filter(|e| !endloop_ids.contains(&e.from))
-            .map(|e| e.to)
-            .collect();
+        let targets: std::collections::HashSet<Uuid> = self.edges.iter().map(|e| e.to).collect();
 
         self.nodes
             .iter()
@@ -270,14 +224,14 @@ pub enum NodeType {
     CdpHandleDialog(CdpHandleDialogParams),
     // AI
     AiStep(AiStepParams),
-    // Control Flow
-    If(IfParams),
-    Switch(SwitchParams),
-    Loop(LoopParams),
-    EndLoop(EndLoopParams),
     // Generic
     McpToolCall(McpToolCallParams),
     AppDebugKitOp(AppDebugKitParams),
+    /// Placeholder for removed or unrecognized node types. Preserved on
+    /// load so that old workflows don't hard-fail; the UI can display them
+    /// as disabled/unsupported.
+    #[serde(other)]
+    Unknown,
 }
 
 impl NodeType {
@@ -311,11 +265,7 @@ impl NodeType {
 
             Self::AiStep(_) => OutputRole::Ai,
 
-            Self::If(_) | Self::Switch(_) | Self::Loop(_) | Self::EndLoop(_) => {
-                OutputRole::ControlFlow
-            }
-
-            Self::McpToolCall(_) | Self::AppDebugKitOp(_) => OutputRole::Generic,
+            Self::McpToolCall(_) | Self::AppDebugKitOp(_) | Self::Unknown => OutputRole::Generic,
         }
     }
 
@@ -431,77 +381,49 @@ impl NodeType {
             NodeType::CdpSelectPage(_) => "CDP Select Page",
             NodeType::CdpHandleDialog(_) => "CDP Handle Dialog",
             NodeType::AiStep(_) => "AI Step",
-            NodeType::If(_) => "If",
-            NodeType::Switch(_) => "Switch",
-            NodeType::Loop(_) => "Loop",
-            NodeType::EndLoop(_) => "End Loop",
             NodeType::McpToolCall(_) => "MCP Tool Call",
             NodeType::AppDebugKitOp(_) => "AppDebugKit Op",
+            NodeType::Unknown => "Unknown",
         }
     }
 
     /// Human-readable description of what this node does, for LLM verification prompts.
     pub fn action_description(&self) -> String {
         match self {
-            NodeType::Click(p) => {
-                if let Some(ref r) = p.target_ref {
-                    return format!("Click at {{{}.{}}}", r.node, r.field);
+            NodeType::Click(p) => match &p.target {
+                Some(t) if !t.text().is_empty() => format!("Clicked on '{}'", t.text()),
+                Some(ClickTarget::Coordinates { x, y }) => {
+                    format!("Clicked at ({}, {})", x, y)
                 }
-                match &p.target {
-                    Some(t) if !t.text().is_empty() => format!("Clicked on '{}'", t.text()),
-                    Some(ClickTarget::Coordinates { x, y }) => {
-                        format!("Clicked at ({}, {})", x, y)
-                    }
-                    Some(ClickTarget::WindowControl { action }) => {
-                        format!("Clicked {}", action.display_name().to_lowercase())
-                    }
-                    _ => "Clicked".to_string(),
+                Some(ClickTarget::WindowControl { action }) => {
+                    format!("Clicked {}", action.display_name().to_lowercase())
                 }
-            }
-            NodeType::Hover(p) => {
-                if let Some(ref r) = p.target_ref {
-                    return format!("Hover at {{{}.{}}}", r.node, r.field);
+                _ => "Clicked".to_string(),
+            },
+            NodeType::Hover(p) => match &p.target {
+                Some(t) if !t.text().is_empty() => format!("Hovered over '{}'", t.text()),
+                Some(ClickTarget::Coordinates { x, y }) => {
+                    format!("Hovered at ({}, {})", x, y)
                 }
-                match &p.target {
-                    Some(t) if !t.text().is_empty() => format!("Hovered over '{}'", t.text()),
-                    Some(ClickTarget::Coordinates { x, y }) => {
-                        format!("Hovered at ({}, {})", x, y)
-                    }
-                    Some(ClickTarget::WindowControl { action }) => {
-                        format!("Hovered {}", action.display_name().to_lowercase())
-                    }
-                    _ => "Hovered".to_string(),
+                Some(ClickTarget::WindowControl { action }) => {
+                    format!("Hovered {}", action.display_name().to_lowercase())
                 }
-            }
-            NodeType::Drag(p) => {
-                if p.from_ref.is_some() || p.to_ref.is_some() {
-                    return "Dragged (using refs)".to_string();
-                }
-                format!(
-                    "Dragged from ({}, {}) to ({}, {})",
-                    p.from_x.unwrap_or(0.0),
-                    p.from_y.unwrap_or(0.0),
-                    p.to_x.unwrap_or(0.0),
-                    p.to_y.unwrap_or(0.0)
-                )
-            }
-            NodeType::TypeText(p) => {
-                if let Some(ref r) = p.text_ref {
-                    return format!("Type {{{}.{}}}", r.node, r.field);
-                }
-                format!("Typed '{}'", p.text)
-            }
+                _ => "Hovered".to_string(),
+            },
+            NodeType::Drag(p) => format!(
+                "Dragged from ({}, {}) to ({}, {})",
+                p.from_x.unwrap_or(0.0),
+                p.from_y.unwrap_or(0.0),
+                p.to_x.unwrap_or(0.0),
+                p.to_y.unwrap_or(0.0)
+            ),
+            NodeType::TypeText(p) => format!("Typed '{}'", p.text),
             NodeType::PressKey(p) => format!("Pressed key '{}'", p.key),
             NodeType::Scroll(p) => format!("Scrolled by {}", p.delta_y),
-            NodeType::FocusWindow(p) => {
-                if let Some(ref r) = p.value_ref {
-                    return format!("Focus window {{{}.{}}}", r.node, r.field);
-                }
-                match &p.value {
-                    Some(v) => format!("Focused window '{}'", v),
-                    None => "Focused window".to_string(),
-                }
-            }
+            NodeType::FocusWindow(p) => match &p.value {
+                Some(v) => format!("Focused window '{}'", v),
+                None => "Focused window".to_string(),
+            },
             NodeType::LaunchApp(p) => format!("Launched app '{}'", p.app_name),
             NodeType::QuitApp(p) => format!("Quit app '{}'", p.app_name),
             NodeType::FindText(p) => format!("Searched for text '{}'", p.search_text),
@@ -511,29 +433,11 @@ impl NodeType {
             NodeType::CdpWait(p) => format!("Waited for text '{}'", p.text),
             NodeType::CdpClick(p) => format!("CDP clicked element '{}'", p.target.as_str()),
             NodeType::CdpHover(p) => format!("CDP hovered element '{}'", p.target.as_str()),
-            NodeType::CdpFill(p) => {
-                if let Some(ref r) = p.value_ref {
-                    return format!("CDP filled with {{{}.{}}}", r.node, r.field);
-                }
-                format!("CDP filled with '{}'", p.value)
-            }
-            NodeType::CdpType(p) => {
-                if let Some(ref r) = p.text_ref {
-                    return format!("CDP typed {{{}.{}}}", r.node, r.field);
-                }
-                format!("CDP typed '{}'", p.text)
-            }
+            NodeType::CdpFill(p) => format!("CDP filled with '{}'", p.value),
+            NodeType::CdpType(p) => format!("CDP typed '{}'", p.text),
             NodeType::CdpPressKey(p) => format!("CDP pressed key '{}'", p.key),
-            NodeType::CdpNavigate(p) => {
-                if let Some(ref r) = p.url_ref {
-                    return format!("CDP navigated to {{{}.{}}}", r.node, r.field);
-                }
-                format!("CDP navigated to '{}'", p.url)
-            }
+            NodeType::CdpNavigate(p) => format!("CDP navigated to '{}'", p.url),
             NodeType::CdpNewPage(p) => {
-                if let Some(ref r) = p.url_ref {
-                    return format!("CDP opened new page {{{}.{}}}", r.node, r.field);
-                }
                 if p.url.is_empty() {
                     "CDP opened new page".to_string()
                 } else {
@@ -578,8 +482,7 @@ impl NodeType {
             NodeType::CdpSelectPage(_) => "📑",
             NodeType::CdpHandleDialog(_) => "💬",
             NodeType::McpToolCall(_) | NodeType::AppDebugKitOp(_) => "🔧",
-            NodeType::If(_) | NodeType::Switch(_) => "\u{2442}",
-            NodeType::Loop(_) | NodeType::EndLoop(_) => "\u{21BB}",
+            NodeType::Unknown => "❓",
         }
     }
 
@@ -647,71 +550,6 @@ impl NodeType {
             && self.verification_assertion().is_some_and(|a| !a.is_empty())
     }
 
-    /// Returns all `(input_field_name, OutputRef)` pairs set on this node.
-    ///
-    /// The input field name corresponds to the `InputField::name` from
-    /// `input_schema()`, allowing callers to look up `accepted_types`.
-    pub fn ref_params(&self) -> Vec<(&'static str, &crate::output_schema::OutputRef)> {
-        let mut refs = Vec::new();
-        match self {
-            Self::Click(p) => {
-                if let Some(ref r) = p.target_ref {
-                    refs.push(("target_ref", r));
-                }
-            }
-            Self::Hover(p) => {
-                if let Some(ref r) = p.target_ref {
-                    refs.push(("target_ref", r));
-                }
-            }
-            Self::Drag(p) => {
-                if let Some(ref r) = p.from_ref {
-                    refs.push(("from_ref", r));
-                }
-                if let Some(ref r) = p.to_ref {
-                    refs.push(("to_ref", r));
-                }
-            }
-            Self::TypeText(p) => {
-                if let Some(ref r) = p.text_ref {
-                    refs.push(("text_ref", r));
-                }
-            }
-            Self::FocusWindow(p) => {
-                if let Some(ref r) = p.value_ref {
-                    refs.push(("value_ref", r));
-                }
-            }
-            Self::AiStep(p) => {
-                if let Some(ref r) = p.prompt_ref {
-                    refs.push(("prompt_ref", r));
-                }
-            }
-            Self::CdpFill(p) => {
-                if let Some(ref r) = p.value_ref {
-                    refs.push(("value_ref", r));
-                }
-            }
-            Self::CdpType(p) => {
-                if let Some(ref r) = p.text_ref {
-                    refs.push(("text_ref", r));
-                }
-            }
-            Self::CdpNavigate(p) => {
-                if let Some(ref r) = p.url_ref {
-                    refs.push(("url_ref", r));
-                }
-            }
-            Self::CdpNewPage(p) => {
-                if let Some(ref r) = p.url_ref {
-                    refs.push(("url_ref", r));
-                }
-            }
-            _ => {}
-        }
-        refs
-    }
-
     /// All available node types with default parameters.
     pub fn all_defaults() -> Vec<NodeType> {
         vec![
@@ -745,36 +583,6 @@ impl NodeType {
             NodeType::CdpHandleDialog(CdpHandleDialogParams::default()),
             // AI
             NodeType::AiStep(AiStepParams::default()),
-            // Control Flow
-            NodeType::If(IfParams {
-                condition: Condition {
-                    left: crate::output_schema::OutputRef {
-                        node: String::new(),
-                        field: String::new(),
-                    },
-                    operator: Operator::Equals,
-                    right: crate::output_schema::ConditionValue::Literal {
-                        value: LiteralValue::Bool { value: true },
-                    },
-                },
-            }),
-            NodeType::Switch(SwitchParams { cases: vec![] }),
-            NodeType::Loop(LoopParams {
-                exit_condition: Condition {
-                    left: crate::output_schema::OutputRef {
-                        node: String::new(),
-                        field: String::new(),
-                    },
-                    operator: Operator::Equals,
-                    right: crate::output_schema::ConditionValue::Literal {
-                        value: LiteralValue::Bool { value: true },
-                    },
-                },
-                max_iterations: 100,
-            }),
-            NodeType::EndLoop(EndLoopParams {
-                loop_id: Uuid::nil(),
-            }),
             // Generic
             NodeType::McpToolCall(McpToolCallParams::default()),
             NodeType::AppDebugKitOp(AppDebugKitParams::default()),
@@ -819,7 +627,6 @@ impl NodeType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::output_schema::{ConditionValue, OutputRef};
 
     #[test]
     fn test_node_type_serialization_roundtrip() {
@@ -913,51 +720,6 @@ mod tests {
         assert!(NodeType::AppDebugKitOp(AppDebugKitParams::default()).is_deterministic());
         assert!(NodeType::CdpClick(CdpClickParams::default()).is_deterministic());
         assert!(NodeType::CdpWait(CdpWaitParams::default()).is_deterministic());
-
-        let dummy_condition = Condition {
-            left: OutputRef {
-                node: String::new(),
-                field: String::new(),
-            },
-            operator: Operator::Equals,
-            right: ConditionValue::Literal {
-                value: LiteralValue::Bool { value: true },
-            },
-        };
-        assert!(
-            NodeType::If(IfParams {
-                condition: dummy_condition.clone()
-            })
-            .is_deterministic()
-        );
-        assert!(NodeType::Switch(SwitchParams { cases: vec![] }).is_deterministic());
-        assert!(
-            NodeType::Loop(LoopParams {
-                exit_condition: dummy_condition,
-                max_iterations: 100
-            })
-            .is_deterministic()
-        );
-        assert!(
-            NodeType::EndLoop(EndLoopParams {
-                loop_id: Uuid::nil()
-            })
-            .is_deterministic()
-        );
-    }
-
-    #[test]
-    fn test_all_defaults_covers_all_roles() {
-        let defaults = NodeType::all_defaults();
-        assert_eq!(defaults.len(), 31);
-
-        let roles: std::collections::HashSet<OutputRole> =
-            defaults.iter().map(|nt| nt.output_role()).collect();
-        assert!(roles.contains(&OutputRole::Ai));
-        assert!(roles.contains(&OutputRole::Query));
-        assert!(roles.contains(&OutputRole::Action));
-        assert!(roles.contains(&OutputRole::Generic));
-        assert!(roles.contains(&OutputRole::ControlFlow));
     }
 
     #[test]
@@ -1066,26 +828,6 @@ mod tests {
     }
 
     #[test]
-    fn test_edge_output_serialization_roundtrip() {
-        let variants = vec![
-            EdgeOutput::IfTrue,
-            EdgeOutput::IfFalse,
-            EdgeOutput::SwitchCase {
-                name: "Has error".to_string(),
-            },
-            EdgeOutput::SwitchDefault,
-            EdgeOutput::LoopBody,
-            EdgeOutput::LoopDone,
-        ];
-        for variant in &variants {
-            let json = serde_json::to_string(variant).expect("serialize EdgeOutput");
-            let deserialized: EdgeOutput =
-                serde_json::from_str(&json).expect("deserialize EdgeOutput");
-            assert_eq!(*variant, deserialized);
-        }
-    }
-
-    #[test]
     fn test_workflow_without_groups_deserializes() {
         let json = r#"{"id":"00000000-0000-0000-0000-000000000001","name":"Old Workflow","nodes":[],"edges":[]}"#;
         let wf: Workflow = serde_json::from_str(json).expect("should deserialize without groups");
@@ -1116,51 +858,6 @@ mod tests {
         assert_eq!(deserialized.groups.len(), 1);
         assert_eq!(deserialized.groups[0].name, "Login Flow");
         assert_eq!(deserialized.groups[0].node_ids.len(), 2);
-    }
-
-    #[test]
-    fn test_condition_serialization_roundtrip() {
-        let conditions = vec![
-            Condition {
-                left: OutputRef {
-                    node: "result".to_string(),
-                    field: "result".to_string(),
-                },
-                operator: Operator::Equals,
-                right: ConditionValue::Literal {
-                    value: LiteralValue::String {
-                        value: "success".to_string(),
-                    },
-                },
-            },
-            Condition {
-                left: OutputRef {
-                    node: "count".to_string(),
-                    field: "result".to_string(),
-                },
-                operator: Operator::GreaterThan,
-                right: ConditionValue::Literal {
-                    value: LiteralValue::Number { value: 5.0 },
-                },
-            },
-            Condition {
-                left: OutputRef {
-                    node: "done".to_string(),
-                    field: "result".to_string(),
-                },
-                operator: Operator::Equals,
-                right: ConditionValue::Literal {
-                    value: LiteralValue::Bool { value: true },
-                },
-            },
-        ];
-        for condition in &conditions {
-            let json = serde_json::to_string(condition).expect("serialize Condition");
-            let deserialized: Condition =
-                serde_json::from_str(&json).expect("deserialize Condition");
-            let json2 = serde_json::to_string(&deserialized).expect("re-serialize Condition");
-            assert_eq!(json, json2);
-        }
     }
 
     #[test]

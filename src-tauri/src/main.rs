@@ -95,14 +95,6 @@ fn main() {
         validate,
         node_type_defaults,
         generate_auto_id,
-        patch_workflow,
-        assistant_chat,
-        cancel_assistant_chat,
-        get_assistant_session_id,
-        rewind_conversation,
-        clear_assistant_session,
-        save_conversation,
-        load_conversation,
         run_workflow,
         stop_workflow,
         supervision_respond,
@@ -125,10 +117,11 @@ fn main() {
         is_chrome_profile_configured,
         get_chrome_profile_path,
         launch_chrome_for_setup,
-        planner_confirmation_respond,
-        resolution_respond,
         confirmable_tools,
         check_endpoint,
+        run_agent,
+        stop_agent,
+        approve_agent_action,
     ]);
 
     #[cfg(debug_assertions)]
@@ -151,13 +144,9 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .manage(Mutex::new(AgentHandle::default()))
         .manage(Mutex::new(ExecutorHandle::default()))
-        .manage(tokio::sync::Mutex::new(AssistantSessionHandle::default()))
-        .manage(Mutex::new(ResolutionState::default()))
         .manage(Mutex::new(WalkthroughHandle::default()))
-        .manage(std::sync::Arc::new(std::sync::Mutex::new(
-            PlannerHandle::default(),
-        )))
         .invoke_handler(builder.invoke_handler())
         .menu(menu::build_menu)
         .setup(move |app| {

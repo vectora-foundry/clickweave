@@ -2,14 +2,11 @@ mod action_verification;
 mod ai_step;
 mod app_resolve;
 mod cdp_wait;
-mod control_flow;
-mod deterministic;
+pub(crate) mod deterministic;
 mod element_resolve;
 pub mod error;
 mod find_app;
 mod graph_nav;
-mod outcome_verification;
-mod output_ref;
 pub(crate) mod retry_context;
 mod run_loop;
 mod supervision;
@@ -65,6 +62,10 @@ pub(crate) trait Mcp: Send + Sync {
 
     /// Convert available tools to the OpenAI-compatible function-call format.
     fn tools_as_openai(&self) -> Vec<serde_json::Value>;
+
+    /// Re-fetch the tool list from the MCP server. Call after state-changing
+    /// operations that expose new tools (e.g. `cdp_connect`).
+    fn refresh_tools(&self) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
 impl Mcp for clickweave_mcp::McpClient {
@@ -82,6 +83,10 @@ impl Mcp for clickweave_mcp::McpClient {
 
     fn tools_as_openai(&self) -> Vec<serde_json::Value> {
         clickweave_mcp::McpClient::tools_as_openai(self)
+    }
+
+    fn refresh_tools(&self) -> impl Future<Output = anyhow::Result<()>> + Send {
+        clickweave_mcp::McpClient::refresh_tools(self)
     }
 }
 
@@ -122,12 +127,6 @@ pub enum ExecutorEvent {
         screenshot: Option<String>,
     },
     NodeCancelled(Uuid),
-    OutcomeVerification {
-        passed: bool,
-        query: String,
-        reasoning: String,
-        screenshot: Option<String>,
-    },
 }
 
 #[derive(Debug, Clone)]
@@ -165,8 +164,6 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     chrome_profiles: Vec<ChromeProfile>,
     /// Channel to send resolution queries to the Tauri listener (Test mode only).
     resolution_tx: Option<tokio::sync::mpsc::Sender<RuntimeQuery>>,
-    /// Delay (ms) before capturing the outcome verification screenshot.
-    outcome_delay_ms: u64,
     /// Delay (ms) before capturing the per-step supervision screenshot.
     supervision_delay_ms: u64,
 }
@@ -208,7 +205,6 @@ impl WorkflowExecutor {
         cancel_token: CancellationToken,
         chrome_profiles_dir: PathBuf,
         resolution_tx: Option<tokio::sync::mpsc::Sender<RuntimeQuery>>,
-        outcome_delay_ms: u64,
         supervision_delay_ms: u64,
     ) -> Self {
         let chrome_profile_store = ChromeProfileStore::new(chrome_profiles_dir);
@@ -243,7 +239,6 @@ impl WorkflowExecutor {
             chrome_profile_store,
             chrome_profiles,
             resolution_tx,
-            outcome_delay_ms,
             supervision_delay_ms,
         }
     }

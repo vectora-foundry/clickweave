@@ -1,8 +1,7 @@
 use super::error::CommandError;
 use super::types::*;
 use clickweave_core::{NodeType, Workflow, validate_workflow};
-use clickweave_llm::planner::conversation::ConversationSession;
-use clickweave_llm::planner::tool_use::CONFIRMABLE_TOOLS;
+use clickweave_llm::CONFIRMABLE_TOOLS;
 use std::path::PathBuf;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
@@ -180,50 +179,4 @@ pub async fn import_asset(
         relative_path,
         absolute_path,
     }))
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn save_conversation(app: tauri::AppHandle, path: String) -> Result<(), CommandError> {
-    let handle = app.state::<tokio::sync::Mutex<super::planner_session::AssistantSessionHandle>>();
-    let guard = handle.lock().await;
-    let conversation = &guard.conversation;
-
-    let dir = project_dir(&path);
-    let conv_path = dir.join("conversation.json");
-    std::fs::create_dir_all(conv_path.parent().unwrap()).ok();
-
-    let content = serde_json::to_string_pretty(conversation)
-        .map_err(|e| CommandError::internal(format!("Failed to serialize conversation: {}", e)))?;
-
-    std::fs::write(&conv_path, content)
-        .map_err(|e| CommandError::io(format!("Failed to write conversation: {}", e)))?;
-
-    Ok(())
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn load_conversation(
-    app: tauri::AppHandle,
-    path: String,
-) -> Result<Vec<clickweave_llm::planner::conversation::ChatEntry>, CommandError> {
-    let dir = project_dir(&path);
-    let conv_path = dir.join("conversation.json");
-
-    let handle = app.state::<tokio::sync::Mutex<super::planner_session::AssistantSessionHandle>>();
-    let mut guard = handle.lock().await;
-
-    if conv_path.exists() {
-        let content = std::fs::read_to_string(&conv_path)
-            .map_err(|e| CommandError::io(format!("Failed to read conversation: {}", e)))?;
-        let conversation: ConversationSession = serde_json::from_str(&content).map_err(|e| {
-            CommandError::validation(format!("Failed to parse conversation: {}", e))
-        })?;
-        guard.conversation = conversation;
-    } else {
-        guard.conversation = ConversationSession::default();
-    }
-
-    Ok(guard.conversation.messages.clone())
 }

@@ -71,7 +71,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             let response = self
                 .agent
-                .chat(messages.clone(), Some(filtered_tools.clone()))
+                .chat(&messages, Some(&filtered_tools))
                 .await
                 .map_err(|e| ExecutorError::Llm(e.to_string()))?;
 

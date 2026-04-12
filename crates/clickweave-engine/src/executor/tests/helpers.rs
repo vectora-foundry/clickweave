@@ -20,8 +20,8 @@ impl ChatBackend for StubBackend {
 
     async fn chat(
         &self,
-        _messages: Vec<Message>,
-        _tools: Option<Vec<Value>>,
+        _messages: &[Message],
+        _tools: Option<&[Value]>,
     ) -> anyhow::Result<ChatResponse> {
         panic!("StubBackend::chat should not be called in this test");
     }
@@ -70,8 +70,8 @@ impl ChatBackend for ScriptedBackend {
 
     async fn chat(
         &self,
-        _messages: Vec<Message>,
-        _tools: Option<Vec<Value>>,
+        _messages: &[Message],
+        _tools: Option<&[Value]>,
     ) -> anyhow::Result<ChatResponse> {
         let text = self
             .responses
@@ -180,6 +180,10 @@ impl Mcp for StubToolProvider {
     fn tools_as_openai(&self) -> Vec<Value> {
         self.openai_schemas.clone()
     }
+
+    async fn refresh_tools(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 pub(super) fn make_scripted_executor(responses: Vec<&str>) -> WorkflowExecutor<ScriptedBackend> {
@@ -257,7 +261,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             ),
             chrome_profiles: Vec::new(),
             resolution_tx: None,
-            outcome_delay_ms: 1000,
             supervision_delay_ms: 500,
         }
     }
@@ -279,21 +282,6 @@ pub(super) fn make_executor_with_workflow(workflow: Workflow) -> WorkflowExecuto
         storage,
         CancellationToken::new(),
     )
-}
-
-/// Helper: build a dummy condition that always evaluates to true when the
-/// variable "done.result" is set to true.
-pub(super) fn dummy_condition() -> clickweave_core::Condition {
-    clickweave_core::Condition {
-        left: clickweave_core::output_schema::OutputRef {
-            node: "done".to_string(),
-            field: "result".to_string(),
-        },
-        operator: clickweave_core::Operator::Equals,
-        right: clickweave_core::output_schema::ConditionValue::Literal {
-            value: clickweave_core::LiteralValue::Bool { value: true },
-        },
-    }
 }
 
 /// Helper to create find_text match entries for click disambiguation tests.
