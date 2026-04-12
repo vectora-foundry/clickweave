@@ -102,4 +102,79 @@ describe("walkthroughSlice.cancelWalkthrough", () => {
     resolveInvoke?.();
     await pending;
   });
+
+  it("settles back to Idle when the backend rejects the cancel", async () => {
+    useStore.setState({ walkthroughStatus: "Recording" });
+    invokeMock.mockRejectedValueOnce({
+      kind: "Validation",
+      message: "No walkthrough session is active",
+    });
+    await useStore.getState().cancelWalkthrough();
+    expect(useStore.getState().walkthroughStatus).toBe("Idle");
+  });
+});
+
+describe("walkthroughSlice.startWalkthrough cancel-during-start race", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+  });
+
+  it("retries cancel once the session is live when Escape races start", async () => {
+    useStore.setState({
+      walkthroughStatus: "Idle",
+      workflow: { id: "wf1", name: "wf", nodes: [], edges: [], groups: [] } as never,
+      projectPath: null,
+      supervisorConfig: { baseUrl: "", apiKey: "", model: "" } as never,
+      hoverDwellThreshold: 2000,
+    });
+
+    const invocations: string[] = [];
+    // 1st invoke = start_walkthrough (held open). 2nd = cancel_walkthrough
+    // fired by Escape while start is in flight; backend has no session yet.
+    // 3rd = cancel_walkthrough retried by startWalkthrough after the session
+    // becomes live.
+    let resolveStart: (() => void) | undefined;
+    invokeMock.mockImplementation((cmd: string) => {
+      invocations.push(cmd);
+      if (cmd === "start_walkthrough") {
+        return new Promise<void>((r) => {
+          resolveStart = () => r();
+        });
+      }
+      if (cmd === "cancel_walkthrough") {
+        // First cancel call fails (no session yet); retry succeeds.
+        if (invocations.filter((c) => c === "cancel_walkthrough").length === 1) {
+          return Promise.reject({
+            kind: "Validation",
+            message: "No walkthrough session is active",
+          });
+        }
+        return Promise.resolve(null);
+      }
+      return Promise.resolve(null);
+    });
+
+    const startPending = useStore.getState().startWalkthrough();
+    // Optimistic flip so early capture events aren't dropped.
+    expect(useStore.getState().walkthroughStatus).toBe("Recording");
+
+    // Escape races in, fires cancel while start RPC is still open.
+    const cancelPending = useStore.getState().cancelWalkthrough();
+    expect(useStore.getState().walkthroughStatus).toBe("Processing");
+    await cancelPending;
+    // First cancel errored — settle back to Idle.
+    expect(useStore.getState().walkthroughStatus).toBe("Idle");
+
+    // Now the backend session finishes being set up.
+    resolveStart?.();
+    await startPending;
+
+    // Start must have retried cancel because local status was no longer
+    // Recording when the start RPC resolved.
+    expect(invocations).toEqual([
+      "start_walkthrough",
+      "cancel_walkthrough",
+      "cancel_walkthrough",
+    ]);
+  });
 });

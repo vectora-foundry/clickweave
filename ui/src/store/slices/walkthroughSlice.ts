@@ -283,9 +283,22 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       const msg = errorMessage(result.error);
       set({ walkthroughStatus: "Idle", walkthroughError: msg, walkthroughCdpModalOpen: false });
       pushLog(`Walkthrough start failed: ${msg}`);
-    } else {
-      openRecordingBarWindow();
+      return;
     }
+    // If the user cancelled during the optimistic window the local status
+    // will have been flipped away from "Recording"; the backend cancel call
+    // issued then may have hit "No walkthrough session is active" because
+    // start_walkthrough hadn't installed guard.session yet. Retry the cancel
+    // now that the session is live so we don't leak a recording the user
+    // already asked to abandon.
+    if (get().walkthroughStatus !== "Recording") {
+      const cancelResult = await commands.cancelWalkthrough();
+      if (cancelResult.status === "error") {
+        pushLog(`Walkthrough cancel after start failed: ${errorMessage(cancelResult.error)}`);
+      }
+      return;
+    }
+    openRecordingBarWindow();
   },
 
   pauseWalkthrough: async () => {
@@ -337,6 +350,10 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     const result = await commands.cancelWalkthrough();
     if (result.status === "error") {
       pushLog(`Walkthrough cancel failed: ${errorMessage(result.error)}`);
+      // Backend won't emit a state event for an errored cancel, so settle
+      // the UI back to Idle ourselves — most commonly "No walkthrough
+      // session is active" when Escape races the start-command RPC.
+      set({ walkthroughStatus: "Idle" });
     }
   },
 
