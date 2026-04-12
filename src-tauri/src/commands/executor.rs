@@ -118,9 +118,6 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
                 ExecutorEvent::Log(msg) | ExecutorEvent::Error(msg) => {
                     emit_handle.emit("executor://log", LogPayload { message: msg })
                 }
-                ExecutorEvent::Warning(msg) => {
-                    emit_handle.emit("executor://warning", LogPayload { message: msg })
-                }
                 ExecutorEvent::StateChanged(state) => emit_handle.emit(
                     "executor://state",
                     StatePayload {

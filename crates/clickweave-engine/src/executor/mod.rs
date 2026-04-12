@@ -99,7 +99,6 @@ pub enum ExecutorEvent {
     RunCreated(Uuid, NodeRun),
     WorkflowCompleted,
     ChecksCompleted(Vec<NodeVerdict>),
-    Warning(String),
     Error(String),
     SupervisionPassed {
         node_id: Uuid,

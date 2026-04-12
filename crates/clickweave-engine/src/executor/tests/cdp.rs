@@ -1,8 +1,6 @@
 use super::helpers::*;
-use crate::executor::retry_context::RetryContext;
-use crate::executor::{ExecutorError, ExecutorEvent};
+use crate::executor::ExecutorError;
 use clickweave_core::CdpTarget;
-use uuid::Uuid;
 
 #[tokio::test]
 async fn resolve_cdp_element_uid_rejects_empty_target() {
@@ -81,71 +79,38 @@ async fn resolve_cdp_target_uid_resolves_intent_via_snapshot() {
 }
 
 #[tokio::test]
-async fn execute_cdp_action_emits_warning_on_native_fallback() {
-    // A `__native_at__:X:Y` sentinel UID triggers the native click/move_mouse
-    // fallback. The fallback must emit `ExecutorEvent::Warning` so the user
-    // knows a CDP node actually ran as a native action.
-    let (exec, mut rx) = make_test_executor_with_events();
-    let mcp = StubToolProvider::new();
+async fn execute_cdp_action_returns_resolver_error_when_target_missing() {
+    // The deterministic executor no longer carries a silent native-click
+    // fallback for elements absent from the CDP accessibility tree — the
+    // multi-tier resolver that produced the `__native_at__:X:Y` sentinel
+    // was removed, so `execute_cdp_action` must surface the resolver's
+    // "no matching element" error as a normal `NodeFailed` instead of
+    // quietly moving the physical mouse.
+    use crate::executor::retry_context::RetryContext;
+    use uuid::Uuid;
 
-    // resolve_cdp_element_uid: cdp_list_pages health check, then snapshot
-    // whose matching line carries the native-fallback sentinel as its UID.
+    let exec = make_test_executor();
+    let mcp = StubToolProvider::new();
+    // Health check + three snapshot attempts that never mention the target.
     mcp.push_text_response("1: https://example.com [selected]");
-    mcp.push_text_response("[uid=\"__native_at__:100:200\"] button \"Submit\"");
-    // The subsequent native click call.
-    mcp.push_text_response("clicked");
+    for _ in 0..3 {
+        mcp.push_text_response("[uid=\"a1\"] button \"Cancel\"");
+    }
 
     let ctx = RetryContext::new();
-    let out = exec
+    let err = exec
         .execute_cdp_action("click", Uuid::new_v4(), "Submit", &mcp, None, &ctx)
         .await
-        .expect("native fallback should succeed");
-    assert_eq!(out, "clicked");
+        .expect_err("missing element must propagate as an error");
+    assert!(matches!(err, ExecutorError::Cdp(_)));
+    assert!(err.to_string().contains("No matching element"));
 
-    // The native click call should have gone through instead of cdp_click.
+    // No native click/move_mouse tool call should appear in the call log.
     let calls = mcp.take_calls();
-    assert_eq!(calls[0].0, "cdp_list_pages");
-    assert_eq!(calls[1].0, "cdp_take_snapshot");
-    assert_eq!(calls[2].0, "click");
-    assert_eq!(
-        calls[2].1,
-        Some(serde_json::json!({ "x": 100, "y": 200 })),
-        "native click must receive the coordinates from the sentinel UID"
-    );
-
-    // A warning event should have been emitted so the UI can surface that
-    // a CDP node silently ran as a native action.
-    let mut saw_warning = false;
-    while let Ok(event) = rx.try_recv() {
-        if let ExecutorEvent::Warning(msg) = event {
-            assert!(
-                msg.contains("native click") && msg.contains("Submit"),
-                "warning message should name the target and the native tool: {msg}"
-            );
-            saw_warning = true;
-        }
-    }
     assert!(
-        saw_warning,
-        "native fallback must emit ExecutorEvent::Warning"
+        calls
+            .iter()
+            .all(|(name, _)| name != "click" && name != "move_mouse"),
+        "execute_cdp_action must not silently fall back to native click: {calls:?}"
     );
-}
-
-#[tokio::test]
-async fn execute_cdp_action_uses_move_mouse_for_hover_fallback() {
-    // The hover action must fall back to `move_mouse`, not `click`.
-    let (exec, _rx) = make_test_executor_with_events();
-    let mcp = StubToolProvider::new();
-    mcp.push_text_response("1: https://example.com [selected]");
-    mcp.push_text_response("[uid=\"__native_at__:42:99\"] link \"Tooltip Target\"");
-    mcp.push_text_response("moved");
-
-    let ctx = RetryContext::new();
-    exec.execute_cdp_action("hover", Uuid::new_v4(), "Tooltip Target", &mcp, None, &ctx)
-        .await
-        .expect("hover fallback should succeed");
-
-    let calls = mcp.take_calls();
-    assert_eq!(calls[2].0, "move_mouse");
-    assert_eq!(calls[2].1, Some(serde_json::json!({ "x": 42, "y": 99 })));
 }

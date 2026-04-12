@@ -26,9 +26,6 @@ export function useExecutorNodeEvents() {
     sub(listen<{ message: string }>("executor://log", (e) => {
       useStore.getState().pushLog(e.payload.message);
     }));
-    sub(listen<{ message: string }>("executor://warning", (e) => {
-      useStore.getState().pushLog(`Warning: ${e.payload.message}`);
-    }));
     sub(listen<{ state: string }>("executor://state", (e) => {
       const s = e.payload.state as "idle" | "running";
       useStore.getState().setExecutorState(s);
