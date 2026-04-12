@@ -514,7 +514,17 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     message: e.to_string(),
                 })?;
             Self::check_tool_error(&result, "cdp_type_text")?;
-            return Self::set_tool_result_and_parse(retry_ctx, &Self::extract_result_text(&result));
+            let result_text = Self::extract_result_text(&result);
+            self.record_event(
+                node_run.as_deref(),
+                "tool_result",
+                serde_json::json!({
+                    "name": "cdp_type_text",
+                    "text": Self::truncate_for_trace(&result_text, 8192),
+                    "text_len": result_text.len(),
+                }),
+            );
+            return Self::set_tool_result_and_parse(retry_ctx, &result_text);
         }
 
         // CDP Press Key: call cdp_press_key directly
@@ -536,7 +546,17 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     message: e.to_string(),
                 })?;
             Self::check_tool_error(&result, "cdp_press_key")?;
-            return Self::set_tool_result_and_parse(retry_ctx, &Self::extract_result_text(&result));
+            let result_text = Self::extract_result_text(&result);
+            self.record_event(
+                node_run.as_deref(),
+                "tool_result",
+                serde_json::json!({
+                    "name": "cdp_press_key",
+                    "text": Self::truncate_for_trace(&result_text, 8192),
+                    "text_len": result_text.len(),
+                }),
+            );
+            return Self::set_tool_result_and_parse(retry_ctx, &result_text);
         }
 
         if let NodeType::AppDebugKitOp(p) = node_type {
