@@ -24,7 +24,7 @@ use clickweave_core::chrome_profiles::{ChromeProfile, ChromeProfileStore};
 use clickweave_core::decision_cache::DecisionCache;
 use clickweave_core::runtime::RuntimeContext;
 use clickweave_core::storage::RunStorage;
-use clickweave_core::{ExecutionMode, NodeRun, NodeVerdict, RuntimeResolution, Workflow};
+use clickweave_core::{ExecutionMode, NodeRun, NodeVerdict, Workflow};
 use clickweave_llm::{ChatBackend, LlmClient, LlmConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -34,20 +34,6 @@ use std::sync::RwLock;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-
-/// Query sent from executor to Tauri layer when resolution fails.
-/// Lives in engine crate (not core) because it carries a tokio channel sender.
-pub struct RuntimeQuery {
-    pub node_id: Uuid,
-    pub node_name: String,
-    pub action_description: String,
-    pub target: String,
-    pub screenshot: Option<String>,
-    pub element_inventory: String,
-    pub current_node_id: Uuid,
-    pub completed_node_ids: Vec<Uuid>,
-    pub response_tx: tokio::sync::oneshot::Sender<RuntimeResolution>,
-}
 
 /// Trait abstracting MCP tool operations, used to enable test stubs.
 pub(crate) trait Mcp: Send + Sync {
@@ -162,8 +148,6 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     chrome_profile_store: ChromeProfileStore,
     /// Cached profile list, loaded once at construction.
     chrome_profiles: Vec<ChromeProfile>,
-    /// Channel to send resolution queries to the Tauri listener (Test mode only).
-    resolution_tx: Option<tokio::sync::mpsc::Sender<RuntimeQuery>>,
     /// Delay (ms) before capturing the per-step supervision screenshot.
     supervision_delay_ms: u64,
 }
@@ -204,7 +188,6 @@ impl WorkflowExecutor {
         storage: RunStorage,
         cancel_token: CancellationToken,
         chrome_profiles_dir: PathBuf,
-        resolution_tx: Option<tokio::sync::mpsc::Sender<RuntimeQuery>>,
         supervision_delay_ms: u64,
     ) -> Self {
         let chrome_profile_store = ChromeProfileStore::new(chrome_profiles_dir);
@@ -238,7 +221,6 @@ impl WorkflowExecutor {
             cancel_token,
             chrome_profile_store,
             chrome_profiles,
-            resolution_tx,
             supervision_delay_ms,
         }
     }
@@ -414,63 +396,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .unwrap_or(&self.agent)
     }
 
-    /// Send a runtime resolution query and wait for the response.
-    /// Returns None if no resolution_tx is available (Run mode) or
-    /// if this (node_id, target) was previously rejected.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn request_resolution(
-        &self,
-        retry_ctx: &retry_context::RetryContext,
-        node_id: Uuid,
-        node_name: &str,
-        action_description: &str,
-        target: &str,
-        element_inventory: &str,
-        screenshot: Option<String>,
-    ) -> Option<RuntimeResolution> {
-        let tx = self.resolution_tx.as_ref()?;
-
-        // Skip if previously rejected for this (node, target)
-        if retry_ctx
-            .rejected_resolutions
-            .contains(&(node_id, target.to_string()))
-        {
-            return None;
-        }
-
-        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-        let query = RuntimeQuery {
-            node_id,
-            node_name: node_name.to_string(),
-            action_description: action_description.to_string(),
-            target: target.to_string(),
-            screenshot,
-            element_inventory: element_inventory.to_string(),
-            current_node_id: node_id,
-            completed_node_ids: retry_ctx
-                .completed_node_ids
-                .iter()
-                .map(|(id, _)| *id)
-                .collect(),
-            response_tx,
-        };
-
-        if tx.send(query).await.is_err() {
-            return None; // listener shut down
-        }
-
-        response_rx.await.ok()
-    }
-
     /// Roll back execution state to just after the given target node.
     ///
     /// Removes all completed nodes after `target` from `ctx.completed_node_ids`,
-    /// strips the corresponding variables from `self.context`, clears loop
-    /// counters, and removes verdicts for invalidated nodes.
+    /// strips the corresponding variables from `self.context`, and removes
+    /// verdicts for invalidated nodes.
     fn rollback_to(&mut self, target: Uuid, ctx: &mut retry_context::RetryContext) {
-        // Use rposition to find the LAST (most recent) occurrence of the target.
-        // In loops, the same node appears multiple times; we want to keep all
-        // iterations up to and including the most recent completion of the target.
+        // Use rposition to find the LAST (most recent) occurrence of the target
+        // so that callers that re-enter the same node keep all prior state.
         let rollback_from = ctx
             .completed_node_ids
             .iter()
@@ -485,57 +418,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             self.context.remove_variables_with_prefix(prefix);
         }
 
-        // NOTE: Loop counters are intentionally NOT cleared here.
-        // completed_node_ids doesn't track Loop/EndLoop control-flow nodes,
-        // so we cannot determine which loops the rewind crosses. Clearing
-        // all counters resets active parent loops; clearing none preserves
-        // stale counters if the rewind crosses a loop boundary. Both are
-        // wrong in different edge cases. In practice, runtime resolution
-        // rewinds stay within the same loop iteration or advance forward,
-        // so preserving counters is the safer default. A proper fix requires
-        // tracking loop entry/exit in the rewind path (deferred).
-
         let inv_ids: HashSet<Uuid> = invalidated.iter().map(|(id, _)| *id).collect();
 
         ctx.runtime_verdicts
             .retain(|v| !inv_ids.contains(&v.node_id));
 
-        // Prune execution_history: truncate right after the last retained
-        // NodeCompleted so that stale control-flow entries (BranchTaken,
-        // LoopIteration, etc.) recorded after the rewind target are also removed.
-        let target_completed_count = ctx.completed_node_ids.len();
-        if target_completed_count == 0 {
-            ctx.execution_history.clear();
-        } else {
-            // Find position right after the Nth NodeCompleted (N = retained count)
-            let mut seen = 0usize;
-            let mut cutoff = 0;
-            for (i, e) in ctx.execution_history.iter().enumerate() {
-                if matches!(
-                    e,
-                    retry_context::ExecutionHistoryEntry::NodeCompleted { .. }
-                ) {
-                    seen += 1;
-                    if seen == target_completed_count {
-                        cutoff = i + 1;
-                        break;
-                    }
-                }
-            }
-            ctx.execution_history.truncate(cutoff);
-        }
-    }
-
-    /// Apply a resolution patch to the in-memory workflow.
-    pub(crate) fn apply_resolution_patch(&mut self, patch: &clickweave_core::WorkflowPatchCompact) {
-        self.workflow = clickweave_core::merge_patch_into_workflow(
-            &self.workflow,
-            &patch.added_nodes,
-            &patch.removed_node_ids,
-            &patch.updated_nodes,
-            &patch.added_edges,
-            &patch.removed_edges,
-        );
+        // execution_history contains one entry per completed node; truncate
+        // to match the retained node count.
+        ctx.execution_history.truncate(ctx.completed_node_ids.len());
     }
 
     /// Return the best available LLM for vision tasks (image analysis,

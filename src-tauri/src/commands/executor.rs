@@ -95,7 +95,6 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
             storage,
             executor_token,
             chrome_profiles_dir,
-            None, // no resolution channel
             request.supervision_delay_ms,
         );
         executor.run(cmd_rx).await;

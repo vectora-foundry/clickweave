@@ -7,9 +7,7 @@ pub mod chrome_profiles;
 pub mod decision_cache;
 mod node_params;
 pub mod output_schema;
-pub mod patch_merge;
 pub mod runtime;
-pub mod runtime_query;
 pub mod sanitize;
 pub mod storage;
 pub mod tool_mapping;
@@ -20,8 +18,6 @@ mod workflow;
 pub use app_kind::AppKind;
 pub use node_params::*;
 pub use output_schema::*;
-pub use patch_merge::{merge_patch_into_workflow, splice_insert_before};
-pub use runtime_query::{RuntimeResolution, WorkflowPatchCompact};
 pub use walkthrough::*;
 pub use workflow::*;
 

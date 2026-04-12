@@ -42,9 +42,6 @@ pub enum ExecutorError {
         "No CDP connection — ensure a FocusWindow or LaunchApp targeting a CDP-capable app runs before {node_type}"
     )]
     NoCdpConnection { node_type: String },
-
-    #[error("Rewind to node {0}")]
-    Rewind(uuid::Uuid),
 }
 
 /// Alias used throughout the executor.

@@ -1,6 +1,5 @@
 use clickweave_core::NodeVerdict;
 use clickweave_llm::Message;
-use std::collections::HashSet;
 use std::sync::RwLock;
 use uuid::Uuid;
 
@@ -66,9 +65,6 @@ pub(crate) struct RetryContext {
     /// the corresponding variables.
     pub completed_node_ids: Vec<(Uuid, String)>,
 
-    /// Rejected resolutions keyed by (node_id, target) -- skip callback on retry.
-    pub rejected_resolutions: HashSet<(Uuid, String)>,
-
     /// When true, skip the persistent decision cache during element and app
     /// resolution so the executor re-resolves via LLM instead of replaying a
     /// stale cached decision. Set after an eviction on retry; reset to false
@@ -101,7 +97,6 @@ impl RetryContext {
             supervision_history: RwLock::new(Vec::new()),
             runtime_verdicts: Vec::new(),
             completed_node_ids: Vec::new(),
-            rejected_resolutions: HashSet::new(),
             force_resolve: false,
             focus_dirty: false,
             last_tool_result: None,

@@ -22,8 +22,6 @@ enum StepOutcome {
     Succeeded,
     /// User or system aborted during supervision.
     Aborted,
-    /// Execution or resolution triggered a rewind to a different node.
-    Rewind(Uuid),
     /// Node failed (error already emitted/finalized inside the step).
     Failed,
     /// Inline verification-role node produced a failing verdict.
@@ -181,101 +179,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 }
                 Err(e) => return Err(e),
             }
-        }
-    }
-
-    /// Attempt runtime resolution for a failed node.
-    ///
-    /// Sends a resolution query to the Tauri layer and applies the response
-    /// (Updated, Rewind, Removed). Returns `Some(StepOutcome)` if the resolution
-    /// produced an actionable outcome, or `None` if no resolution was available
-    /// or the user rejected it.
-    #[allow(clippy::too_many_arguments)]
-    async fn attempt_runtime_resolution(
-        &mut self,
-        node_id: Uuid,
-        node_name: &str,
-        node_type: &NodeType,
-        node_run: &mut Option<NodeRun>,
-        ctx: &mut RetryContext,
-        action_desc: &str,
-        target_text: &str,
-        error_detail: &str,
-        screenshot: Option<String>,
-    ) -> Option<StepOutcome> {
-        self.resolution_tx.as_ref()?;
-
-        if let Some(resolution) = self
-            .request_resolution(
-                ctx,
-                node_id,
-                node_name,
-                action_desc,
-                target_text,
-                error_detail,
-                screenshot,
-            )
-            .await
-        {
-            use clickweave_core::RuntimeResolution;
-            match resolution {
-                RuntimeResolution::Updated(patch) => {
-                    self.log("Runtime resolution: Updated — applying patch and retrying");
-                    self.apply_resolution_patch(&patch);
-                    self.evict_caches_for_node(node_type);
-                    if let Some(run) = node_run {
-                        self.finalize_run(run, RunStatus::Cancelled);
-                    }
-                    self.emit(ExecutorEvent::NodeCancelled(node_id));
-                    Some(StepOutcome::Rewind(node_id))
-                }
-                RuntimeResolution::Rewind {
-                    patch,
-                    first_node_id,
-                } => {
-                    self.log(format!("Runtime resolution: Rewind to {}", first_node_id));
-                    self.apply_resolution_patch(&patch);
-                    if let Some(run) = node_run {
-                        self.finalize_run(run, RunStatus::Cancelled);
-                    }
-                    self.emit(ExecutorEvent::NodeCancelled(node_id));
-                    Some(StepOutcome::Rewind(first_node_id))
-                }
-                RuntimeResolution::Removed(patch) => {
-                    self.log("Runtime resolution: Removed — applying patch");
-                    self.apply_resolution_patch(&patch);
-                    self.evict_caches_for_node(node_type);
-                    if let Some(run) = node_run {
-                        self.finalize_run(run, RunStatus::Cancelled);
-                    }
-                    self.emit(ExecutorEvent::NodeCancelled(node_id));
-
-                    if self.workflow.find_node(node_id).is_some() {
-                        // Node still exists — retry it (redundant steps ahead were removed)
-                        Some(StepOutcome::Rewind(node_id))
-                    } else {
-                        // Current node was removed — follow updated edges
-                        let next = self
-                            .follow_single_edge(node_id)
-                            .or_else(|| self.entry_points().first().copied());
-                        match next {
-                            Some(next_id) => Some(StepOutcome::Rewind(next_id)),
-                            None => {
-                                self.log("No successor after node removal — workflow complete");
-                                Some(StepOutcome::Succeeded)
-                            }
-                        }
-                    }
-                }
-                RuntimeResolution::Rejected => {
-                    self.log("Runtime resolution: Rejected — falling through");
-                    ctx.rejected_resolutions
-                        .insert((node_id, target_text.to_string()));
-                    None
-                }
-            }
-        } else {
-            None
         }
     }
 
@@ -457,51 +360,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                 .await;
                             continue;
                         } else {
-                            // Exhausted auto-retries — try runtime resolution
-                            // before falling through to the manual supervision dialog.
+                            // Exhausted auto-retries — fall through to the
+                            // manual supervision dialog.
                             ctx.supervision_hint = None;
-
-                            let target_text =
-                                node_type.target_text().unwrap_or_default().to_string();
-                            let action_desc = format!(
-                                "{} (supervision failed: {})",
-                                node_type.action_description(),
-                                &verification.reasoning,
-                            );
-
-                            self.log(format!(
-                                "Supervision exhausted for '{}'. Trying runtime resolution...",
-                                node_name
-                            ));
-
-                            // Use the supervision screenshot if available,
-                            // otherwise take a fresh one.
-                            let screenshot = verification.screenshot.clone().or_else(|| {
-                                let mut args = serde_json::json!({ "format": "png" });
-                                if let Some(ref name) = self.focused_app_name() {
-                                    args["app_name"] = serde_json::Value::String(name.clone());
-                                }
-                                // extract_screenshot_image is async but we
-                                // need it sync here — skip if unavailable.
-                                None
-                            });
-
-                            if let Some(outcome) = self
-                                .attempt_runtime_resolution(
-                                    node_id,
-                                    node_name,
-                                    node_type,
-                                    node_run,
-                                    ctx,
-                                    &action_desc,
-                                    &target_text,
-                                    &verification.reasoning,
-                                    screenshot,
-                                )
-                                .await
-                            {
-                                return outcome;
-                            }
 
                             match self
                                 .handle_supervision_pause(
@@ -538,70 +399,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     } else {
                         return StepOutcome::Succeeded;
                     }
-                }
-                Err(ExecutorError::Rewind(target)) => {
-                    self.log(format!(
-                        "Resolution rewind: cancelling '{}', rewinding to {}",
-                        node_name, target
-                    ));
-                    if let Some(run) = node_run {
-                        self.finalize_run(run, RunStatus::Cancelled);
-                    }
-                    self.emit(ExecutorEvent::NodeCancelled(node_id));
-                    return StepOutcome::Rewind(target);
-                }
-                Err(ref e)
-                    if self.execution_mode == ExecutionMode::Test
-                        && matches!(
-                            e,
-                            ExecutorError::ElementResolution(_)
-                                | ExecutorError::ClickTarget(_)
-                                | ExecutorError::Cdp(_)
-                        ) =>
-                {
-                    let target_text = node_type.target_text().unwrap_or_default().to_string();
-                    let action_desc = node_type.action_description();
-                    let err_detail = e.to_string();
-
-                    self.log(format!(
-                        "Element/target resolution failed for '{}': {}. Trying runtime resolution...",
-                        node_name, err_detail
-                    ));
-
-                    // Take a screenshot for the resolution dialog
-                    let screenshot = {
-                        let mut args = serde_json::json!({ "format": "png" });
-                        if let Some(ref name) = self.focused_app_name() {
-                            args["app_name"] = serde_json::Value::String(name.clone());
-                        }
-                        self.extract_screenshot_image(mcp, args).await
-                    };
-
-                    if let Some(outcome) = self
-                        .attempt_runtime_resolution(
-                            node_id,
-                            node_name,
-                            node_type,
-                            node_run,
-                            ctx,
-                            &action_desc,
-                            &target_text,
-                            &err_detail,
-                            screenshot,
-                        )
-                        .await
-                    {
-                        return outcome;
-                    }
-
-                    // No resolution or rejected — fail the node
-                    let msg = err_detail;
-                    self.emit_error(format!("Node {} failed: {}", node_name, msg));
-                    if let Some(run) = node_run {
-                        self.finalize_run(run, RunStatus::Failed);
-                    }
-                    self.emit(ExecutorEvent::NodeFailed(node_id, msg));
-                    return StepOutcome::Failed;
                 }
                 Err(ExecutorError::Cancelled) => {
                     self.log(format!("Node '{}' cancelled", node_name));
@@ -815,10 +612,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     );
 
                     current = self.follow_single_edge(node_id);
-                }
-                StepOutcome::Rewind(target) => {
-                    self.rollback_to(target, &mut ctx);
-                    current = Some(target);
                 }
                 StepOutcome::Aborted => {
                     if let Some(ref mut run) = node_run {
