@@ -19,182 +19,31 @@ use super::types::{
 /// shared across all JS execution contexts, so the listener, handler,
 /// and click queue remain accessible regardless of which world runs the
 /// injection or retrieval.
-pub const CDP_CLICK_LISTENER_JS: &str = r#"() => {
-  const d = document;
-  d.__cw_clicks = [];
-  const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
-  const INTERACTIVE = '[role="button"],[role="link"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="tab"],[role="treeitem"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="textbox"],[role="combobox"],[role="searchbox"],[role="slider"],[role="spinbutton"],a,button,select,textarea,input,[tabindex]:not([tabindex="-1"])';
-  function accessibleText(node) {
-    const a = node.ariaLabel || node.getAttribute('aria-label');
-    if (a) return a;
-    const lb = node.getAttribute('aria-labelledby');
-    if (lb) {
-      const t = lb.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
-      if (t) return t.substring(0, 200);
-    }
-    if (node.title) return node.title;
-    if (node.alt) return node.alt;
-    if (node.placeholder) return node.placeholder;
-    if ((node.tagName === 'svg' || node.tagName === 'SVG') || (node.namespaceURI === 'http://www.w3.org/2000/svg' && node.tagName === 'svg')) {
-      const st = node.querySelector('title');
-      if (st?.textContent) return st.textContent.trim().substring(0, 200);
-    }
-    let t = '';
-    for (const ch of node.childNodes) {
-      if (ch.nodeType === 3) { t += ch.textContent; continue; }
-      if (ch.nodeType === 1 && ch.getAttribute('aria-hidden') !== 'true') {
-        const sub = accessibleText(ch);
-        if (sub && t) t += ' ';
-        t += sub;
-      }
-    }
-    return t.trim().substring(0, 200);
-  }
-  d.__cw_handler = (e) => {
-    const el = e.target.closest(INTERACTIVE) || e.target.closest('[aria-label]') || e.target;
-    let text = accessibleText(el);
-    if (!text) {
-      let p = el.parentElement;
-      while (p && p !== d.documentElement) {
-        const la = p.ariaLabel || p.getAttribute('aria-label');
-        if (la) { text = la; break; }
-        const lb = p.getAttribute('aria-labelledby');
-        if (lb) {
-          const r = lb.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
-          if (r) { text = r; break; }
-        }
-        if (p.title) { text = p.title; break; }
-        p = p.parentElement;
-      }
-    }
-    let parentRole = null;
-    let parentName = null;
-    {
-      let p = el.parentElement;
-      while (p && p !== d.documentElement) {
-        const r = p.getAttribute('role');
-        const a = p.ariaLabel || p.getAttribute('aria-label');
-        if (r || a) {
-          parentRole = r || null;
-          parentName = a || accessibleText(p).substring(0, 200) || null;
-          break;
-        }
-        p = p.parentElement;
-      }
-    }
-    d.__cw_clicks.push({
-      ts: Date.now(),
-      tagName: el.tagName,
-      role: el.getAttribute('role') || TAG_ROLES[el.tagName] || null,
-      ariaLabel: el.ariaLabel || el.getAttribute('aria-label') || null,
-      textContent: text || null,
-      title: el.title || el.closest('[title]')?.title || null,
-      value: el.value || null,
-      href: el.closest('a')?.href || null,
-      id: el.id || null,
-      className: el.className || null,
-      parentRole: parentRole,
-      parentName: parentName,
-    });
-  };
-  if (d.__cw_listener) {
-    d.removeEventListener('click', d.__cw_listener, true);
-  }
-  d.__cw_listener = (e) => d.__cw_handler(e);
-  d.addEventListener('click', d.__cw_listener, true);
-}"#;
+///
+/// The body is assembled at compile time from `cdp_scripts/common.js`
+/// (shared `TAG_ROLES` / `INTERACTIVE` / `accessibleText` helpers) and
+/// `cdp_scripts/click_listener.js` (the listener-specific logic).
+pub const CDP_CLICK_LISTENER_JS: &str = concat!(
+    "() => {\n",
+    include_str!("cdp_scripts/common.js"),
+    include_str!("cdp_scripts/click_listener.js"),
+    "}",
+);
 
 /// JavaScript to retrieve and remove the oldest click from the queue.
-pub const CDP_RETRIEVE_CLICK_JS: &str = r#"() => {
-  if (!Array.isArray(document.__cw_clicks)) return null;
-  return document.__cw_clicks.shift() || null;
-}"#;
+pub const CDP_RETRIEVE_CLICK_JS: &str = include_str!("cdp_scripts/retrieve_click.js");
 
 /// JavaScript to check if the click listener is still alive; re-inject if lost.
 /// Returns `"reinjected"` if it was re-injected, `"alive"` otherwise.
-pub const CDP_CHECK_AND_REINJECT_JS: &str = r#"() => {
-  const d = document;
-  if (d.__cw_listener) return 'alive';
-  d.__cw_clicks = [];
-  const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
-  const INTERACTIVE = '[role="button"],[role="link"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="tab"],[role="treeitem"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="textbox"],[role="combobox"],[role="searchbox"],[role="slider"],[role="spinbutton"],a,button,select,textarea,input,[tabindex]:not([tabindex="-1"])';
-  function accessibleText(node) {
-    const a = node.ariaLabel || node.getAttribute('aria-label');
-    if (a) return a;
-    const lb = node.getAttribute('aria-labelledby');
-    if (lb) {
-      const t = lb.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
-      if (t) return t.substring(0, 200);
-    }
-    if (node.title) return node.title;
-    if (node.alt) return node.alt;
-    if (node.placeholder) return node.placeholder;
-    if ((node.tagName === 'svg' || node.tagName === 'SVG') || (node.namespaceURI === 'http://www.w3.org/2000/svg' && node.tagName === 'svg')) {
-      const st = node.querySelector('title');
-      if (st?.textContent) return st.textContent.trim().substring(0, 200);
-    }
-    let t = '';
-    for (const ch of node.childNodes) {
-      if (ch.nodeType === 3) { t += ch.textContent; continue; }
-      if (ch.nodeType === 1 && ch.getAttribute('aria-hidden') !== 'true') {
-        const sub = accessibleText(ch);
-        if (sub && t) t += ' ';
-        t += sub;
-      }
-    }
-    return t.trim().substring(0, 200);
-  }
-  d.__cw_handler = (e) => {
-    const el = e.target.closest(INTERACTIVE) || e.target.closest('[aria-label]') || e.target;
-    let text = accessibleText(el);
-    if (!text) {
-      let p = el.parentElement;
-      while (p && p !== d.documentElement) {
-        const la = p.ariaLabel || p.getAttribute('aria-label');
-        if (la) { text = la; break; }
-        const lb = p.getAttribute('aria-labelledby');
-        if (lb) {
-          const r = lb.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
-          if (r) { text = r; break; }
-        }
-        if (p.title) { text = p.title; break; }
-        p = p.parentElement;
-      }
-    }
-    let parentRole = null;
-    let parentName = null;
-    {
-      let p = el.parentElement;
-      while (p && p !== d.documentElement) {
-        const r = p.getAttribute('role');
-        const a = p.ariaLabel || p.getAttribute('aria-label');
-        if (r || a) {
-          parentRole = r || null;
-          parentName = a || accessibleText(p).substring(0, 200) || null;
-          break;
-        }
-        p = p.parentElement;
-      }
-    }
-    d.__cw_clicks.push({
-      ts: Date.now(),
-      tagName: el.tagName,
-      role: el.getAttribute('role') || TAG_ROLES[el.tagName] || null,
-      ariaLabel: el.ariaLabel || el.getAttribute('aria-label') || null,
-      textContent: text || null,
-      title: el.title || el.closest('[title]')?.title || null,
-      value: el.value || null,
-      href: el.closest('a')?.href || null,
-      id: el.id || null,
-      className: el.className || null,
-      parentRole: parentRole,
-      parentName: parentName,
-    });
-  };
-  d.__cw_listener = (e) => d.__cw_handler(e);
-  d.addEventListener('click', d.__cw_listener, true);
-  return 'reinjected';
-}"#;
+///
+/// Body assembled from `cdp_scripts/common.js` and
+/// `cdp_scripts/check_and_reinject.js`.
+pub const CDP_CHECK_AND_REINJECT_JS: &str = concat!(
+    "() => {\n",
+    include_str!("cdp_scripts/common.js"),
+    include_str!("cdp_scripts/check_and_reinject.js"),
+    "}",
+);
 
 /// JavaScript hover listener injected into CDP-enabled apps.
 /// Tracks which interactive element the cursor is over using a polling
@@ -210,136 +59,24 @@ pub const CDP_CHECK_AND_REINJECT_JS: &str = r#"() => {
 ///
 /// Contains a `__CW_MIN_DWELL__` placeholder that must be replaced with
 /// the actual minimum dwell threshold (in milliseconds) before injection.
-pub const CDP_HOVER_LISTENER_JS: &str = r#"() => {
-  const d = document;
-  d.__cw_hovers = [];
-  d.__cw_hover_cx = 0;
-  d.__cw_hover_cy = 0;
-  d.__cw_hover_enter_sx = 0;
-  d.__cw_hover_enter_sy = 0;
-  const TAG_ROLES = {BUTTON:'button',A:'link',INPUT:'textbox',SELECT:'combobox',TEXTAREA:'textbox'};
-  const INTERACTIVE = '[role="button"],[role="link"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="tab"],[role="treeitem"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="textbox"],[role="combobox"],[role="searchbox"],[role="slider"],[role="spinbutton"],a,button,select,textarea,input,[tabindex]:not([tabindex="-1"])';
-  function accessibleText(node) {
-    const a = node.ariaLabel || node.getAttribute('aria-label');
-    if (a) return a;
-    const lb = node.getAttribute('aria-labelledby');
-    if (lb) {
-      const t = lb.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
-      if (t) return t.substring(0, 200);
-    }
-    if (node.title) return node.title;
-    if (node.alt) return node.alt;
-    if (node.placeholder) return node.placeholder;
-    if ((node.tagName === 'svg' || node.tagName === 'SVG') || (node.namespaceURI === 'http://www.w3.org/2000/svg' && node.tagName === 'svg')) {
-      const st = node.querySelector('title');
-      if (st?.textContent) return st.textContent.trim().substring(0, 200);
-    }
-    let t = '';
-    for (const ch of node.childNodes) {
-      if (ch.nodeType === 3) { t += ch.textContent; continue; }
-      if (ch.nodeType === 1 && ch.getAttribute('aria-hidden') !== 'true') {
-        const sub = accessibleText(ch);
-        if (sub && t) t += ' ';
-        t += sub;
-      }
-    }
-    return t.trim().substring(0, 200);
-  }
-  d.__cw_hover_lastEl = null;
-  d.__cw_hover_enterTime = 0;
-  const MIN_DWELL = __CW_MIN_DWELL__;
-  if (d.__cw_hover_mousemove) {
-    d.removeEventListener('mousemove', d.__cw_hover_mousemove, true);
-  }
-  d.__cw_hover_mousemove = (e) => {
-    d.__cw_hover_cx = e.clientX;
-    d.__cw_hover_cy = e.clientY;
-  };
-  d.addEventListener('mousemove', d.__cw_hover_mousemove, true);
-  d.__cw_hover_flush = () => {
-    const el = d.__cw_hover_lastEl;
-    const enter = d.__cw_hover_enterTime;
-    if (!el || !enter) return;
-    const now = Date.now();
-    if ((now - enter) < MIN_DWELL) return;
-    let text = accessibleText(el);
-    if (!text) {
-      let p = el.parentElement;
-      while (p && p !== d.documentElement) {
-        const la = p.ariaLabel || p.getAttribute('aria-label');
-        if (la) { text = la; break; }
-        const lb = p.getAttribute('aria-labelledby');
-        if (lb) {
-          const r = lb.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').filter(Boolean).join(' ');
-          if (r) { text = r; break; }
-        }
-        if (p.title) { text = p.title; break; }
-        p = p.parentElement;
-      }
-    }
-    let parentRole = null;
-    let parentName = null;
-    {
-      let p = el.parentElement;
-      while (p && p !== d.documentElement) {
-        const r = p.getAttribute('role');
-        const a = p.ariaLabel || p.getAttribute('aria-label');
-        if (r || a) {
-          parentRole = r || null;
-          parentName = a || accessibleText(p).substring(0, 200) || null;
-          break;
-        }
-        p = p.parentElement;
-      }
-    }
-    d.__cw_hovers.push({
-      ts: enter,
-      dwellMs: now - enter,
-      x: d.__cw_hover_enter_sx,
-      y: d.__cw_hover_enter_sy,
-      tagName: el.tagName,
-      role: el.getAttribute('role') || TAG_ROLES[el.tagName] || null,
-      ariaLabel: el.ariaLabel || el.getAttribute('aria-label') || null,
-      textContent: text || null,
-      href: el.closest('a')?.href || null,
-      parentRole: parentRole,
-      parentName: parentName,
-    });
-    d.__cw_hover_lastEl = null;
-    d.__cw_hover_enterTime = 0;
-  };
-  if (d.__cw_hover_interval) clearInterval(d.__cw_hover_interval);
-  d.__cw_hover_interval = setInterval(() => {
-    const raw = d.elementFromPoint(d.__cw_hover_cx, d.__cw_hover_cy);
-    if (!raw) { d.__cw_hover_lastEl = null; d.__cw_hover_enterTime = 0; return; }
-    const el = raw.closest(INTERACTIVE) || raw.closest('[aria-label]') || raw;
-    if (el === d.__cw_hover_lastEl) return;
-    d.__cw_hover_flush();
-    d.__cw_hover_lastEl = el;
-    d.__cw_hover_enterTime = Date.now();
-    d.__cw_hover_enter_sx = d.__cw_hover_cx + window.screenX;
-    d.__cw_hover_enter_sy = d.__cw_hover_cy + window.screenY;
-  }, 100);
-}"#;
+///
+/// Body assembled from `cdp_scripts/common.js` and
+/// `cdp_scripts/hover_listener.js`.
+pub const CDP_HOVER_LISTENER_JS: &str = concat!(
+    "() => {\n",
+    include_str!("cdp_scripts/common.js"),
+    include_str!("cdp_scripts/hover_listener.js"),
+    "}",
+);
 
 /// JavaScript to retrieve and clear all collected hover data from the
 /// injected hover listener.  Returns the full array and resets it.
-pub const CDP_RETRIEVE_HOVERS_JS: &str = r#"() => {
-  if (!Array.isArray(document.__cw_hovers)) return [];
-  const h = document.__cw_hovers;
-  document.__cw_hovers = [];
-  return h;
-}"#;
+pub const CDP_RETRIEVE_HOVERS_JS: &str = include_str!("cdp_scripts/retrieve_hovers.js");
 
 /// JavaScript to stop the hover listener's polling interval and remove
 /// the mousemove handler, flushing any pending dwell that exceeds the
 /// minimum threshold.
-pub const CDP_STOP_HOVER_JS: &str = r#"() => {
-  const d = document;
-  if (d.__cw_hover_interval) { clearInterval(d.__cw_hover_interval); d.__cw_hover_interval = null; }
-  if (d.__cw_hover_flush) { d.__cw_hover_flush(); d.__cw_hover_flush = null; }
-  if (d.__cw_hover_mousemove) { d.removeEventListener('mousemove', d.__cw_hover_mousemove, true); d.__cw_hover_mousemove = null; }
-}"#;
+pub const CDP_STOP_HOVER_JS: &str = include_str!("cdp_scripts/stop_hover.js");
 
 // ---------------------------------------------------------------------------
 // Pure session helpers
