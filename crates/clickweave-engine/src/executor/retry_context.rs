@@ -84,12 +84,6 @@ impl RetryContext {
             .unwrap_or_else(|e| e.into_inner())
     }
 
-    pub fn read_tried_cdp_uids(&self) -> std::sync::RwLockReadGuard<'_, Vec<String>> {
-        self.tried_cdp_uids
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-    }
-
     pub fn write_tried_cdp_uids(&self) -> std::sync::RwLockWriteGuard<'_, Vec<String>> {
         self.tried_cdp_uids
             .write()

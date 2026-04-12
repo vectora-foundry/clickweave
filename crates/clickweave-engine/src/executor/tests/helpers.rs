@@ -269,24 +269,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 }
 
-/// Helper to create a WorkflowExecutor with a specific workflow for testing.
-pub(super) fn make_executor_with_workflow(workflow: Workflow) -> WorkflowExecutor<StubBackend> {
-    let (tx, _rx) = tokio::sync::mpsc::channel(16);
-    let temp_dir = std::env::temp_dir().join("clickweave_test_walker");
-    let storage = RunStorage::new_app_data(&temp_dir, &workflow.name, workflow.id);
-    WorkflowExecutor::with_backends(
-        workflow,
-        StubBackend,
-        None,
-        String::new(),
-        ExecutionMode::Run,
-        None,
-        tx,
-        storage,
-        CancellationToken::new(),
-    )
-}
-
 /// Helper to create find_text match entries for click disambiguation tests.
 pub(super) fn make_find_text_matches(entries: &[(&str, &str)]) -> Vec<Value> {
     entries

@@ -385,10 +385,7 @@ mod tests {
     // Bring in test-only re-exports of private types from the parent module
     mod clickweave_core_test_imports {
         pub use crate::MouseButton;
-        pub use crate::walkthrough::types::{
-            ActionConfidence, ScreenshotMeta, WalkthroughAction, WalkthroughActionKind,
-            WalkthroughEvent, WalkthroughEventKind,
-        };
+        pub use crate::walkthrough::types::{ActionConfidence, WalkthroughEventKind};
         pub use uuid::Uuid;
     }
 

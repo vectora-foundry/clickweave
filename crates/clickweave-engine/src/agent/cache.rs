@@ -72,9 +72,7 @@ impl AgentCache {
 
     /// Save cache to a file path.
     pub fn save_to_path(&self, path: &std::path::Path) -> std::io::Result<()> {
-        let json = self
-            .save()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let json = self.save().map_err(std::io::Error::other)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }

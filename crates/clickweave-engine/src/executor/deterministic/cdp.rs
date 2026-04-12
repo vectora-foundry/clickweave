@@ -112,7 +112,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(in crate::executor) async fn execute_cdp_action(
         &self,
         action: &str,
-        node_id: Uuid,
+        _node_id: Uuid,
         target: &str,
         mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
@@ -122,32 +122,29 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         // Element visible on screen but not in CDP snapshot — use native
         // click/move_mouse at screen coordinates instead of cdp_click/hover.
-        if let Some(coords) = uid.strip_prefix(Self::NATIVE_AT_PREFIX) {
-            if let Some((x_str, y_str)) = coords.split_once(':') {
-                if let (Ok(x), Ok(y)) = (x_str.parse::<i32>(), y_str.parse::<i32>()) {
-                    let native_tool = match action {
-                        "click" => "click",
-                        "hover" => "move_mouse",
-                        _ => "click",
-                    };
-                    self.log(format!(
-                        "CDP: native {} at ({}, {}) for '{}'",
-                        native_tool, x, y, target
-                    ));
-                    let result = mcp
-                        .call_tool(native_tool, Some(serde_json::json!({ "x": x, "y": y })))
-                        .await
-                        .map_err(|e| {
-                            ExecutorError::Cdp(format!("native {} failed: {e}", native_tool))
-                        })?;
-                    self.record_event(
-                        node_run,
-                        &format!("cdp_{}", action),
-                        serde_json::json!({ "target": target, "x": x, "y": y }),
-                    );
-                    return Ok(Self::extract_result_text(&result));
-                }
-            }
+        if let Some(coords) = uid.strip_prefix(Self::NATIVE_AT_PREFIX)
+            && let Some((x_str, y_str)) = coords.split_once(':')
+            && let (Ok(x), Ok(y)) = (x_str.parse::<i32>(), y_str.parse::<i32>())
+        {
+            let native_tool = match action {
+                "click" => "click",
+                "hover" => "move_mouse",
+                _ => "click",
+            };
+            self.log(format!(
+                "CDP: native {} at ({}, {}) for '{}'",
+                native_tool, x, y, target
+            ));
+            let result = mcp
+                .call_tool(native_tool, Some(serde_json::json!({ "x": x, "y": y })))
+                .await
+                .map_err(|e| ExecutorError::Cdp(format!("native {} failed: {e}", native_tool)))?;
+            self.record_event(
+                node_run,
+                &format!("cdp_{}", action),
+                serde_json::json!({ "target": target, "x": x, "y": y }),
+            );
+            return Ok(Self::extract_result_text(&result));
         }
 
         self.log(format!("CDP: {} element uid='{}'", action, uid));
@@ -231,7 +228,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// when the PID is not yet known (e.g. immediately after launch).
     pub(in crate::executor) async fn ensure_cdp_connected(
         &mut self,
-        node_id: Uuid,
+        _node_id: Uuid,
         app_name: &str,
         pid: i32,
         mcp: &(impl Mcp + ?Sized),

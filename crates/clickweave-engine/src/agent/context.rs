@@ -58,6 +58,7 @@ fn resolve_tool_name<'a>(messages: &'a [Message], msg: &Message) -> Option<&'a s
 }
 
 /// Estimate the number of tokens in a string.
+#[cfg(test)]
 pub fn estimate_tokens(text: &str) -> usize {
     // Rough approximation: 1 token ≈ 4 characters
     text.len().div_ceil(CHARS_PER_TOKEN)
@@ -188,18 +189,18 @@ pub fn compact_step_summaries(
     let mut compacted = Vec::new();
 
     // Keep the system message (always first)
-    if let Some(system_msg) = messages.first() {
-        if system_msg.role == "system" {
-            compacted.push(system_msg.clone());
-        }
+    if let Some(system_msg) = messages.first()
+        && system_msg.role == "system"
+    {
+        compacted.push(system_msg.clone());
     }
 
     // Keep the goal message (second message — user-controlled goal text
     // that must survive compaction to keep the LLM on-task).
-    if let Some(goal_msg) = messages.get(1) {
-        if goal_msg.role == "user" {
-            compacted.push(goal_msg.clone());
-        }
+    if let Some(goal_msg) = messages.get(1)
+        && goal_msg.role == "user"
+    {
+        compacted.push(goal_msg.clone());
     }
 
     // Add compact summary as a user message
@@ -333,7 +334,7 @@ mod tests {
         // Should contain a summary message
         let has_summary = compacted.iter().any(|m| {
             m.content_text()
-                .map_or(false, |t| t.contains("Previous Steps Summary"))
+                .is_some_and(|t| t.contains("Previous Steps Summary"))
         });
         assert!(has_summary);
     }
@@ -349,7 +350,7 @@ mod tests {
         for i in 0..10 {
             messages.push(Message::user(format!("Observation {}", i)));
             messages.push(Message::assistant(format!("Action {}", i)));
-            messages.push(Message::tool_result(&format!("call_{}", i), "ok"));
+            messages.push(Message::tool_result(format!("call_{}", i), "ok"));
             steps.push(make_step(i));
         }
 
@@ -361,7 +362,7 @@ mod tests {
         assert!(
             compacted.iter().any(|m| m
                 .content_text()
-                .map_or(false, |t| t.contains("Open the calculator app"))),
+                .is_some_and(|t| t.contains("Open the calculator app"))),
             "Goal message was dropped during compaction"
         );
     }
@@ -376,7 +377,7 @@ mod tests {
         for i in 0..10 {
             messages.push(Message::user(format!("Observation {}", i)));
             messages.push(Message::assistant(format!("Action {}", i)));
-            messages.push(Message::tool_result(&format!("call_{}", i), "ok"));
+            messages.push(Message::tool_result(format!("call_{}", i), "ok"));
             steps.push(make_step(i));
         }
 
@@ -389,10 +390,7 @@ mod tests {
         // Count goal messages — should be exactly 1
         let goal_count = second
             .iter()
-            .filter(|m| {
-                m.content_text()
-                    .map_or(false, |t| t.contains("Do the thing"))
-            })
+            .filter(|m| m.content_text().is_some_and(|t| t.contains("Do the thing")))
             .count();
         assert_eq!(goal_count, 1, "Goal duplicated after repeated compaction");
 
@@ -401,7 +399,7 @@ mod tests {
             .iter()
             .filter(|m| {
                 m.content_text()
-                    .map_or(false, |t| t.contains("Previous Steps Summary"))
+                    .is_some_and(|t| t.contains("Previous Steps Summary"))
             })
             .count();
         assert_eq!(

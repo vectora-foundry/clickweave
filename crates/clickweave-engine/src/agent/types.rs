@@ -14,7 +14,7 @@ pub enum AgentEvent {
         summary: String,
     },
     NodeAdded {
-        node: clickweave_core::Node,
+        node: Box<clickweave_core::Node>,
     },
     EdgeAdded {
         edge: clickweave_core::Edge,
