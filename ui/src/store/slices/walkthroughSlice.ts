@@ -22,6 +22,12 @@ export function isWalkthroughBusy(status: WalkthroughStatus): boolean {
   return status === "Recording" || status === "Paused" || status === "Processing";
 }
 
+/** Returns true when live capture is active — Processing intentionally excluded
+ * so the drain-phase events emitted after Stop don't bump visible counters. */
+export function isWalkthroughCapturing(status: WalkthroughStatus): boolean {
+  return status === "Recording" || status === "Paused";
+}
+
 /** Build a lookup map from node_id -> WalkthroughAction using the action-node map. */
 export function buildActionByNodeId(
   actionNodeMap: ActionNodeEntry[],
@@ -230,13 +236,10 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   // ── Recording actions ──
 
   pushWalkthroughEvent: (event) => set((s) => {
-    // After the user presses Stop the backend keeps emitting events while it
-    // drains hover/CDP retrieval buffers. These arrive after the Processing
-    // state transition and must not bump the live event counter — the count
-    // should freeze at whatever was captured during Recording/Paused.
-    if (s.walkthroughStatus !== "Recording" && s.walkthroughStatus !== "Paused") {
-      return {};
-    }
+    // Drop events received outside active capture — the backend keeps
+    // emitting hover/CDP drain events after the Processing transition and
+    // they must not bump the live counter the user sees after Stop.
+    if (!isWalkthroughCapturing(s.walkthroughStatus)) return {};
     return { walkthroughEvents: [...s.walkthroughEvents, event] };
   }),
 

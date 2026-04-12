@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
+import { isWalkthroughCapturing } from "../store/slices/walkthroughSlice";
 
 /**
  * Standalone recording bar rendered in its own always-on-top window.
@@ -12,12 +13,11 @@ export function RecordingBarView() {
   const [status, setStatus] = useState<Status>("Recording");
   const [eventCount, setEventCount] = useState(0);
   const [currentApp, setCurrentApp] = useState<string | null>(null);
+  // Mirror of `status` read synchronously inside listeners so event handlers
+  // see the latest value without resubscribing on every status change.
+  const statusRef = useRef<Status>("Recording");
 
   useEffect(() => {
-    // Latest status, read inside the event listener to avoid re-subscribing
-    // whenever the status changes.
-    const statusRef = { current: "Recording" as Status };
-
     const unsubs = Promise.all([
       listen<{ status: string }>("walkthrough://state", (e) => {
         const s = e.payload.status;
@@ -28,10 +28,8 @@ export function RecordingBarView() {
       }),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       listen<{ event: any }>("walkthrough://event", (e) => {
-        // Freeze the counter once the backend signals Processing — the drain
-        // phase continues emitting hover/CDP events that should not visibly
-        // increment the count after the user pressed Stop.
-        if (statusRef.current === "Recording" || statusRef.current === "Paused") {
+        // Drain-phase events emitted after Stop must not bump the counter.
+        if (isWalkthroughCapturing(statusRef.current)) {
           setEventCount((c) => c + 1);
         }
         const kind = e.payload.event?.kind;
