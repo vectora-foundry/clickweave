@@ -8,31 +8,54 @@ import { listen, emit } from "@tauri-apps/api/event";
 
 type Status = "Recording" | "Paused" | "Processing";
 
+/**
+ * Tracks pending listener registrations so a single failed subscription does
+ * not leak its siblings, and unmount during pending registration still
+ * releases any listener that resolved after the teardown ran.
+ *
+ * Exported for unit testing.
+ */
+export function createListenerRegistry() {
+  const unlisteners: (() => void)[] = [];
+  let cancelled = false;
+
+  const subscribe = (p: Promise<() => void>) =>
+    p
+      .then((u) => {
+        if (cancelled) {
+          u();
+          return;
+        }
+        unlisteners.push(u);
+      })
+      .catch((err) => {
+        console.error("Failed to subscribe to recording bar event:", err);
+      });
+
+  const dispose = () => {
+    cancelled = true;
+    unlisteners.forEach((u) => u());
+  };
+
+  return { subscribe, dispose };
+}
+
 export function RecordingBarView() {
   const [status, setStatus] = useState<Status>("Recording");
   const [eventCount, setEventCount] = useState(0);
   const [currentApp, setCurrentApp] = useState<string | null>(null);
 
   useEffect(() => {
-    const unlisteners: (() => void)[] = [];
-    let cancelled = false;
+    const { subscribe, dispose } = createListenerRegistry();
 
-    const sub = (p: Promise<() => void>) =>
-      p.then((u) => {
-        if (cancelled) { u(); return; }
-        unlisteners.push(u);
-      }).catch((err) => {
-        console.error("Failed to subscribe to recording bar event:", err);
-      });
-
-    sub(listen<{ status: string }>("walkthrough://state", (e) => {
+    subscribe(listen<{ status: string }>("walkthrough://state", (e) => {
       const s = e.payload.status;
       if (s === "Recording" || s === "Paused" || s === "Processing") {
         setStatus(s);
       }
     }));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    sub(listen<{ event: any }>("walkthrough://event", (e) => {
+    subscribe(listen<{ event: any }>("walkthrough://event", (e) => {
       setEventCount((c) => c + 1);
       const kind = e.payload.event?.kind;
       if (kind?.type === "AppFocused" && kind.app_name) {
@@ -40,10 +63,7 @@ export function RecordingBarView() {
       }
     }));
 
-    return () => {
-      cancelled = true;
-      unlisteners.forEach((u) => u());
-    };
+    return dispose;
   }, []);
 
   const onPause = () => emit("recording-bar://action", { action: "pause" });
