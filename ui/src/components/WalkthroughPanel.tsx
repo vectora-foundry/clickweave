@@ -225,7 +225,16 @@ export function WalkthroughPanel() {
           <span className="w-5" />
           <span className={`w-4 text-center text-sm ${color}`}>{icon}</span>
           <span className="truncate text-xs text-[var(--text-secondary)]">{actionLabel(action)}</span>
-          <div className="flex gap-0.5 ml-auto shrink-0 text-[10px]">
+          <span
+            className="ml-auto shrink-0 rounded bg-purple-500/20 px-1.5 py-0.5 text-[10px] text-purple-300 cursor-help outline-none focus-visible:ring-1 focus-visible:ring-purple-400"
+            tabIndex={0}
+            role="note"
+            aria-label="Candidate: a possible action detected during the recording that the system isn't sure about (for example, a hover that may or may not have been intentional). Choose Keep to include it in the workflow, or Dismiss to skip it."
+            title="Candidate: a possible action detected during the recording that the system isn't sure about (for example, a hover that may or may not have been intentional). Choose Keep to include it in the workflow, or Dismiss to skip it."
+          >
+            Candidate
+          </span>
+          <div className="flex gap-0.5 shrink-0 text-[10px]">
             <button onClick={(e) => { e.stopPropagation(); walkthrough.keepCandidate(action.id); }} className="rounded bg-green-700 px-1.5 py-0.5 text-white hover:bg-green-600">Keep</button>
             <button onClick={(e) => { e.stopPropagation(); walkthrough.dismissCandidate(action.id); }} className="rounded bg-[var(--bg-input)] px-1.5 py-0.5 text-[var(--text-muted)] hover:bg-red-500/20">Dismiss</button>
           </div>
