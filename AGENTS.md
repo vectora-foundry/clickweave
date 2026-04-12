@@ -32,9 +32,8 @@
 ## Reference Docs
 - `docs/reference/` — **read these first** when exploring a subsystem, before doing broad searches
   - `architecture/overview.md` — crate structure, dependency graph, module tables, IPC commands, event contract
-  - `engine/execution.md` — executor flow, control-flow semantics, retries, variable extraction, caches
-  - `llm/planning-retries.md` — prompt structure, retry layers, planner/patcher/assistant pipelines
-  - `frontend/architecture.md` — React stack, directory layout, Zustand slices, graph editor behavior
+  - `engine/execution.md` — deterministic executor flow, agent loop structure, retries, caches, supervision
+  - `frontend/architecture.md` — React stack, directory layout, Zustand slices (including agent slice), graph editor behavior
   - `mcp/integration.md` — MCP client lifecycle, tool mapping, protocol types
 
 ## Design & Implementation Plans
