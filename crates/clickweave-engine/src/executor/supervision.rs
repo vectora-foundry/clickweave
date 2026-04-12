@@ -1,6 +1,6 @@
 use super::Mcp;
+use super::WorkflowExecutor;
 use super::retry_context::RetryContext;
-use super::{LoopExitReason, PendingLoopExit, WorkflowExecutor};
 use clickweave_core::NodeType;
 use clickweave_llm::{ChatBackend, ChatOptions, Message};
 use clickweave_mcp::ToolContent;
@@ -35,16 +35,6 @@ pub(crate) struct VerificationResult {
     pub reasoning: String,
     /// Base64-encoded screenshot captured for verification, if available.
     pub screenshot: Option<String>,
-}
-
-/// Screenshot image data with capture metadata needed for coordinate conversion.
-pub(crate) struct ScreenshotWithMetadata {
-    pub image_base64: String,
-    pub origin_x: f64,
-    pub origin_y: f64,
-    pub scale: f64,
-    pub pixel_width: u32,
-    pub pixel_height: u32,
 }
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
@@ -106,75 +96,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         };
         let (passed, reasoning) = self
             .judge_with_history(&step_message, node_name, retry_ctx)
-            .await;
-
-        VerificationResult {
-            passed,
-            reasoning,
-            screenshot: screenshot_data,
-        }
-    }
-
-    /// Verify the outcome after a loop exits. Takes a screenshot and asks
-    /// the supervision LLM whether the loop achieved its goal.
-    pub(crate) async fn verify_loop_exit(
-        &self,
-        loop_exit: &PendingLoopExit,
-        mcp: &(impl Mcp + ?Sized),
-        retry_ctx: &RetryContext,
-    ) -> VerificationResult {
-        debug!(
-            loop_name = loop_exit.loop_name.as_str(),
-            reason = loop_exit.reason.as_str(),
-            iterations = loop_exit.iterations,
-            "verifying loop exit"
-        );
-
-        let app_name = self
-            .focused_app_name()
-            .unwrap_or_else(|| "unknown".to_string());
-
-        let screenshot_data = self.capture_verification_screenshot(mcp).await;
-        let observation = match &screenshot_data {
-            Some(image_base64) => {
-                let prompt = format!(
-                    "Describe the current state of the app '{}'. \
-                     The loop '{}' just finished after {} iterations (exit: {}). \
-                     What does the screen show now? Be concise (1-2 sentences).",
-                    app_name,
-                    loop_exit.loop_name,
-                    loop_exit.iterations,
-                    loop_exit.reason.as_str(),
-                );
-                self.describe_screenshot_with_prompt(image_base64, &prompt)
-                    .await
-            }
-            None => {
-                self.log(
-                    "Supervision: screenshot capture failed for loop exit verification".to_string(),
-                );
-                "Screenshot capture failed — no visual observation available.".to_string()
-            }
-        };
-
-        let exit_description = match loop_exit.reason {
-            LoopExitReason::ConditionMet => format!(
-                "exit condition met after {} iterations",
-                loop_exit.iterations
-            ),
-            LoopExitReason::MaxIterations => format!(
-                "hit max iterations ({}) without meeting exit condition",
-                loop_exit.iterations
-            ),
-        };
-
-        let step_message = format!(
-            "Loop completed: \"{}\" — {}\nApp: {}\n\nVisual observation: {}",
-            loop_exit.loop_name, exit_description, app_name, observation
-        );
-        let log_label = format!("Loop '{}'", loop_exit.loop_name);
-        let (passed, reasoning) = self
-            .judge_with_history(&step_message, &log_label, retry_ctx)
             .await;
 
         VerificationResult {
@@ -351,81 +272,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
         }
 
-        None
-    }
-
-    /// Capture a screenshot with full metadata (origin, scale, dimensions).
-    /// Used by VLM resolution for coordinate conversion.
-    pub(crate) async fn capture_screenshot_with_metadata(
-        &self,
-        mcp: &(impl Mcp + ?Sized),
-    ) -> Option<ScreenshotWithMetadata> {
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-        let app_name = self.focused_app_name();
-        let mut args = serde_json::json!({ "mode": "window" });
-        if let Some(ref name) = app_name {
-            args["app_name"] = Value::String(name.clone());
-        }
-
-        for attempt in 0..3 {
-            if attempt > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            }
-            let result = mcp
-                .call_tool("take_screenshot", Some(args.clone()))
-                .await
-                .ok()?;
-            if result.is_error == Some(true) {
-                continue;
-            }
-
-            let mut image_base64 = None;
-            let mut origin_x = 0.0_f64;
-            let mut origin_y = 0.0_f64;
-            let mut scale = 1.0_f64;
-            let mut pixel_width = 0_u32;
-            let mut pixel_height = 0_u32;
-
-            for content in &result.content {
-                match content {
-                    ToolContent::Image { data, .. } => {
-                        image_base64 = Some(data.clone());
-                    }
-                    ToolContent::Text { text } => {
-                        if let Ok(meta) = serde_json::from_str::<Value>(text) {
-                            if let Some(v) = meta["screenshot_origin_x"].as_f64() {
-                                origin_x = v;
-                            }
-                            if let Some(v) = meta["screenshot_origin_y"].as_f64() {
-                                origin_y = v;
-                            }
-                            if let Some(v) = meta["screenshot_scale"].as_f64() {
-                                scale = v;
-                            }
-                            if let Some(v) = meta["screenshot_pixel_width"].as_u64() {
-                                pixel_width = v as u32;
-                            }
-                            if let Some(v) = meta["screenshot_pixel_height"].as_u64() {
-                                pixel_height = v as u32;
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            if let Some(image) = image_base64 {
-                return Some(ScreenshotWithMetadata {
-                    image_base64: image,
-                    origin_x,
-                    origin_y,
-                    scale,
-                    pixel_width,
-                    pixel_height,
-                });
-            }
-        }
         None
     }
 

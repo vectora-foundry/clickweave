@@ -1,10 +1,9 @@
 //! Runtime context for workflow execution.
 //!
-//! Holds variables produced by node outputs and loop iteration counters.
+//! Holds variables produced by node outputs.
 
 use serde_json::Value;
 use std::collections::HashMap;
-use uuid::Uuid;
 
 /// Runtime state maintained during workflow execution.
 #[derive(Debug, Default)]
@@ -12,9 +11,6 @@ pub struct RuntimeContext {
     /// Variables produced by node outputs.
     /// Key format: "<auto_id>.<field>" (e.g., "find_text_1.found").
     pub variables: HashMap<String, Value>,
-
-    /// Loop iteration counters. Key: Loop node UUID, Value: current iteration (0-indexed).
-    pub loop_counters: HashMap<Uuid, u32>,
 }
 
 impl RuntimeContext {

@@ -3,37 +3,11 @@ use clickweave_llm::Message;
 use std::sync::RwLock;
 use uuid::Uuid;
 
-use super::PendingLoopExit;
-
-/// A recorded execution event for outcome verification summary.
-/// Maintains chronological order across both execution nodes and control-flow decisions.
-#[derive(Debug, Clone)]
-pub(crate) enum ExecutionHistoryEntry {
-    NodeCompleted {
-        node_name: String,
-        action_description: String,
-    },
-    BranchTaken {
-        node_name: String,
-        outcome: String,
-    },
-    LoopIteration {
-        node_name: String,
-        iteration: u32,
-    },
-    LoopExited {
-        node_name: String,
-        reason: String,
-        iterations: u32,
-    },
-}
-
 /// Per-run transient state that is meaningful only during a single graph walk.
 ///
 /// Created at the start of `run_with_mcp()` and threaded through methods that
-/// need supervision retry state, loop exits, verdicts, and resolution tracking.
-/// This keeps `WorkflowExecutor` free of fields whose lifetimes are shorter
-/// than the executor itself.
+/// need supervision retry state and verdicts. This keeps `WorkflowExecutor`
+/// free of fields whose lifetimes are shorter than the executor itself.
 pub(crate) struct RetryContext {
     /// Hint from a previous supervision failure, threaded into disambiguation
     /// prompts on retry so the LLM picks a different match.
@@ -49,10 +23,6 @@ pub(crate) struct RetryContext {
     /// looks like a URL (e.g. `gmail.com`, `https://...`).
     /// Arms the following `press_key return` intercept.
     pub last_typed_url: Option<String>,
-
-    /// Set by eval_control_flow when a loop exits; consumed by the main loop
-    /// to run a deferred visual verification after the loop completes.
-    pub pending_loop_exit: Option<PendingLoopExit>,
 
     /// Persistent conversation history for supervision across the entire run.
     pub supervision_history: RwLock<Vec<Message>>,
@@ -80,10 +50,6 @@ pub(crate) struct RetryContext {
     /// Set by deterministic execution, read by supervision to include
     /// actual-vs-intended comparison in the step message.
     pub last_tool_result: Option<String>,
-
-    /// Ordered execution history for outcome verification summary.
-    /// Interleaves node completions and control-flow decisions chronologically.
-    pub execution_history: Vec<ExecutionHistoryEntry>,
 }
 
 impl RetryContext {
@@ -93,14 +59,12 @@ impl RetryContext {
             tried_click_indices: RwLock::new(Vec::new()),
             tried_cdp_uids: RwLock::new(Vec::new()),
             last_typed_url: None,
-            pending_loop_exit: None,
             supervision_history: RwLock::new(Vec::new()),
             runtime_verdicts: Vec::new(),
             completed_node_ids: Vec::new(),
             force_resolve: false,
             focus_dirty: false,
             last_tool_result: None,
-            execution_history: Vec::new(),
         }
     }
 

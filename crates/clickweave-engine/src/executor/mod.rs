@@ -152,28 +152,6 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     supervision_delay_ms: u64,
 }
 
-pub(crate) struct PendingLoopExit {
-    pub node_id: Uuid,
-    pub loop_name: String,
-    pub reason: LoopExitReason,
-    pub iterations: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LoopExitReason {
-    ConditionMet,
-    MaxIterations,
-}
-
-impl LoopExitReason {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            LoopExitReason::ConditionMet => "condition_met",
-            LoopExitReason::MaxIterations => "max_iterations",
-        }
-    }
-}
-
 impl WorkflowExecutor {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -422,10 +400,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         ctx.runtime_verdicts
             .retain(|v| !inv_ids.contains(&v.node_id));
-
-        // execution_history contains one entry per completed node; truncate
-        // to match the retained node count.
-        ctx.execution_history.truncate(ctx.completed_node_ids.len());
     }
 
     /// Return the best available LLM for vision tasks (image analysis,

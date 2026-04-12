@@ -309,19 +309,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
                     // Supervision (Test mode only)
                     if self.execution_mode == ExecutionMode::Test {
-                        // Skip per-step supervision for nodes inside loops —
-                        // individual steps (clicks, keypresses, condition
-                        // checks) are verified in aggregate by
-                        // verify_loop_exit when the loop completes.
-                        let inside_loop = !self.context.loop_counters.is_empty();
-                        if inside_loop {
-                            self.log(format!(
-                                "Skipping supervision for '{}' (inside loop)",
-                                node_name
-                            ));
-                            return StepOutcome::Succeeded;
-                        }
-
                         let verification = self.verify_step(node_name, node_type, mcp, ctx).await;
                         if verification.passed {
                             ctx.supervision_hint = None;
@@ -604,12 +591,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         node_id,
                         clickweave_core::storage::sanitize_name(&node_auto_id),
                     ));
-                    ctx.execution_history.push(
-                        super::retry_context::ExecutionHistoryEntry::NodeCompleted {
-                            node_name: node_name.clone(),
-                            action_description: node_type.action_description(),
-                        },
-                    );
 
                     current = self.follow_single_edge(node_id);
                 }
