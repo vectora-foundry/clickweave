@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadRetrieveHovers } from "./loader";
-import { cdpDoc } from "./test-helpers";
+import { cdpDoc, type CdpHoverRecord } from "./test-helpers";
 
 describe("CDP retrieve_hovers.js", () => {
     beforeEach(() => {
@@ -16,7 +16,7 @@ describe("CDP retrieve_hovers.js", () => {
     });
 
     it("returns the full queue and clears it atomically", () => {
-        const entries = [{ ts: 1 }, { ts: 2 }, { ts: 3 }];
+        const entries = [{ ts: 1 }, { ts: 2 }, { ts: 3 }] as CdpHoverRecord[];
         cdpDoc().__cw_hovers = entries;
 
         const result = loadRetrieveHovers()();

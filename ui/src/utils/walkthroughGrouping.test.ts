@@ -257,8 +257,8 @@ describe("applyAnnotationsToDraft with nodeOrder", () => {
     );
     expect(result.nodes.map((n) => n.id)).toEqual(["n3", "n1", "n2"]);
     expect(result.edges).toEqual([
-      { from: "n3", to: "n1", output: null },
-      { from: "n1", to: "n2", output: null },
+      { from: "n3", to: "n1" },
+      { from: "n1", to: "n2" },
     ]);
   });
 

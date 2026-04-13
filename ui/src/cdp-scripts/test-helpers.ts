@@ -2,11 +2,42 @@
 // The injected scripts stash state on `document` under `__cw_*` keys — tests
 // narrow or widen as needed, but reset logic is identical across the suite.
 
+// Shapes mirror the records pushed by the injected listeners in
+// crates/clickweave-core/src/walkthrough/cdp_scripts/{click,hover}_listener.js.
+export type CdpClickRecord = {
+    ts: number;
+    tagName: string;
+    role: string | null;
+    ariaLabel: string | null;
+    textContent: string | null;
+    title: string | null;
+    value: string | null;
+    href: string | null;
+    id: string | null;
+    className: string | null;
+    parentRole: string | null;
+    parentName: string | null;
+};
+
+export type CdpHoverRecord = {
+    ts: number;
+    dwellMs: number;
+    x: number;
+    y: number;
+    tagName: string;
+    role: string | null;
+    ariaLabel: string | null;
+    textContent: string | null;
+    href: string | null;
+    parentRole: string | null;
+    parentName: string | null;
+};
+
 export type CdpDocument = Document & {
-    __cw_clicks?: unknown[];
+    __cw_clicks?: CdpClickRecord[];
     __cw_listener?: EventListener;
     __cw_handler?: EventListener;
-    __cw_hovers?: unknown[];
+    __cw_hovers?: CdpHoverRecord[];
     __cw_hover_interval?: ReturnType<typeof setInterval> | null;
     __cw_hover_mousemove?: EventListener | null;
     __cw_hover_flush?: (() => void) | null;

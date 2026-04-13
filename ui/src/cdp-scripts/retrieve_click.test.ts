@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadRetrieveClick } from "./loader";
-import { cdpDoc } from "./test-helpers";
+import { cdpDoc, type CdpClickRecord } from "./test-helpers";
 
 describe("CDP retrieve_click.js", () => {
     beforeEach(() => {
@@ -26,7 +26,7 @@ describe("CDP retrieve_click.js", () => {
         cdpDoc().__cw_clicks = [
             { ts: 1, tagName: "FIRST" },
             { ts: 2, tagName: "SECOND" },
-        ];
+        ] as CdpClickRecord[];
         const retrieve = loadRetrieveClick();
         expect(retrieve()).toMatchObject({ tagName: "FIRST" });
         expect(retrieve()).toMatchObject({ tagName: "SECOND" });
@@ -34,7 +34,7 @@ describe("CDP retrieve_click.js", () => {
     });
 
     it("mutates the queue in place (shift semantics)", () => {
-        cdpDoc().__cw_clicks = [{ ts: 1 }, { ts: 2 }];
+        cdpDoc().__cw_clicks = [{ ts: 1 }, { ts: 2 }] as CdpClickRecord[];
         loadRetrieveClick()();
         expect(cdpDoc().__cw_clicks).toHaveLength(1);
     });
