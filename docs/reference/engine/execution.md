@@ -1,5 +1,7 @@
 # Workflow Execution (Reference)
 
+Verified at commit: `4425c6c`
+
 The engine provides two execution modes: **workflow executor** (deterministic replay of node graphs) and **agent loop** (goal-driven autonomous execution).
 
 ## Workflow Executor
@@ -63,15 +65,15 @@ Implemented in `crates/clickweave-engine/src/agent/loop_runner.rs`:
 1. **Observe**: Gather page elements from the current app (via CDP when available; native tools otherwise).
 2. **Cache check**: Look up the observation in the per-run decision cache. On a hit the cached tool call is replayed after re-approval.
 3. **Decide**: The agent LLM receives the conversation so far — system prompt, goal, prior steps and tool results, plus the full MCP tool list (augmented with `agent_done` and `agent_replan`) — and returns exactly one tool call.
-4. **Approve** (optional): If the approval gate is attached, the UI can approve or reject each tool call before dispatch. Pre-approved tool categories skip the prompt.
+4. **Approve** (optional): If the approval gate is attached, the UI can approve or reject each tool call before dispatch. Observation-only tools (see `OBSERVATION_TOOLS` in `loop_runner.rs` — e.g., `take_screenshot`, `take_ax_snapshot`, `find_text`, `cdp_take_snapshot`) bypass the approval prompt because they do not change state.
 5. **Act**: Dispatch the chosen MCP tool and record the result.
 6. **Append**: Persist the emitted tool call as a workflow node and an edge from the previous step, so the run materializes as a linear workflow.
 7. **Compact**: Run context compaction on the transcript, including snapshot supersession — older AX/DOM snapshots collapse to short placeholders while the most recent snapshot per tool stays at full fidelity (see `crates/clickweave-engine/src/agent/context.rs`). Step summaries are collapsed once the transcript exceeds the token budget.
-8. Repeat until `agent_done`, `agent_replan` (replan terminates the run with a divergence summary for the variant index), max steps, max consecutive errors, or user cancellation.
+8. Repeat until `agent_done`, max steps, max consecutive errors, or user cancellation. `agent_replan` does **not** terminate the run — it records the replan reason as the previous tool result and the loop continues, giving the model a chance to re-observe and pick a different action.
 
 ### Caching
 
-Decisions are cached in an `AgentCache` keyed by goal + observed element signature. Entries are persisted to `agent_cache.json` in the run storage directory so a future run against the same app state can replay the decision without an LLM round-trip. Approval-gated tools are re-approved on replay. Observation-only tools (e.g., `take_screenshot`, `take_ax_snapshot`) are never cached.
+Decisions are cached in an `AgentCache` keyed by goal + observed element signature. Entries are persisted at `RunStorage::agent_cache_path()` — `agent_cache.json` at the **workflow** level (sibling to per-execution directories, not inside one), so the cache is shared across every run of that workflow and survives individual executions. Future runs against the same app state replay the decision without an LLM round-trip. Approval-gated tools are re-approved on replay. Observation-only tools (e.g., `take_screenshot`, `take_ax_snapshot`) are never cached.
 
 ### Events
 

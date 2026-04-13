@@ -1,6 +1,6 @@
 # MCP Integration (Reference)
 
-Verified at commit: `cdabe41`
+Verified at commit: `4425c6c`
 
 Clickweave executes desktop/browser automation by spawning a single MCP server subprocess (`native-devtools-mcp`) and talking JSON-RPC over stdio via `McpClient`.
 
@@ -149,7 +149,7 @@ During walkthrough recording, apps are classified as `Native`, `ChromeBrowser`, 
 | Electron apps | Framework directory check | Zero — automatic |
 | Native apps | Default (neither matches) | N/A |
 
-**Chrome-family**: matched by bundle ID (`com.google.Chrome`, `com.brave.Browser`, `com.microsoft.edgemac`, `company.thebrowser.Browser`, `org.chromium.Chromium`).
+**Chrome-family**: matched by bundle ID (`com.google.Chrome`, `com.google.Chrome.canary`, `com.brave.Browser`, `com.microsoft.edgemac`, `company.thebrowser.Browser`, `org.chromium.Chromium`).
 
 **Electron**: detected by checking for `Contents/Frameworks/Electron Framework.framework` (macOS) or `resources\electron.asar` (Windows) in the app bundle. Uses `proc_pidpath` (macOS) to resolve PID → bundle path.
 

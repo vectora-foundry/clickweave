@@ -1,5 +1,7 @@
 # Architecture Overview (Reference)
 
+Verified at commit: `4425c6c`
+
 Clickweave is a Tauri v2 desktop app with a Rust backend and a React frontend.
 
 ## Workspace Crates
@@ -132,12 +134,14 @@ UI
 ### Project Commands
 - `ping`, `get_mcp_status` — health checks
 - `open_project`, `save_project` — file I/O
+- `pick_workflow_file`, `pick_save_file` — native open/save dialogs
+- `import_asset` — pick an image and copy it into the project's `assets/` dir
 - `validate` — workflow validation
 - `node_type_defaults`, `generate_auto_id` — node catalog
 - `confirmable_tools`, `check_endpoint` — settings helpers
 
 ### Walkthrough Commands
-- `start_walkthrough`, `stop_walkthrough`, `pause_walkthrough`, `resume_walkthrough`
+- `start_walkthrough`, `stop_walkthrough`, `pause_walkthrough`, `resume_walkthrough`, `cancel_walkthrough`
 - `get_walkthrough_draft`, `apply_walkthrough_annotations`, `seed_walkthrough_cache`
 - `detect_cdp_apps`, `validate_app_path`
 
