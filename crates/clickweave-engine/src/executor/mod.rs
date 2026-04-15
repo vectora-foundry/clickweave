@@ -1,5 +1,6 @@
 mod action_verification;
 mod ai_step;
+pub(crate) mod ambiguity;
 mod app_resolve;
 mod cdp_wait;
 pub(crate) mod deterministic;
@@ -111,6 +112,25 @@ pub enum ExecutorEvent {
         finding: String,
         /// Base64-encoded screenshot captured during verification, if available.
         screenshot: Option<String>,
+    },
+    /// Agent picked one candidate from an ambiguous CDP resolver match.
+    /// Fires after the agent commits to a choice; the run loop continues with
+    /// the chosen uid. The UI renders this as a persistent card with a modal
+    /// that overlays each candidate's rect on top of the captured screenshot.
+    AmbiguityResolved {
+        node_id: Uuid,
+        target: String,
+        candidates: Vec<CandidateView>,
+        chosen_uid: String,
+        reasoning: String,
+        /// Screenshot filename relative to the node's `artifacts/` directory.
+        /// The UI reads the live base64 from `screenshot_base64`; this path is
+        /// for post-run re-rendering via the trace event.
+        screenshot_path: String,
+        /// Base64-encoded PNG of the screenshot taken at decision time. Sent
+        /// inline so the UI can render the modal immediately without a
+        /// separate filesystem read.
+        screenshot_base64: String,
     },
     NodeCancelled(Uuid),
 }

@@ -395,6 +395,74 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     self.emit(ExecutorEvent::NodeCancelled(node_id));
                     return StepOutcome::Cancelled;
                 }
+                Err(ExecutorError::CdpAmbiguousTarget { target, candidates }) => {
+                    // Agent-driven disambiguation: pick one candidate, stash
+                    // the uid in the retry context, and re-run the node so the
+                    // resolver short-circuits to the chosen uid.
+                    let already_tried = ctx.read_cdp_ambiguity_overrides().contains_key(&target);
+                    if already_tried {
+                        let msg = format!(
+                            "Disambiguation already attempted for '{}' but resolver remained ambiguous",
+                            target
+                        );
+                        self.emit_error(format!("Node {} failed: {}", node_name, msg));
+                        if let Some(run) = node_run {
+                            self.finalize_run(run, RunStatus::Failed);
+                        }
+                        self.emit(ExecutorEvent::NodeFailed(node_id, msg));
+                        return StepOutcome::Failed;
+                    }
+
+                    self.log(format!(
+                        "Ambiguous CDP target '{}' — asking agent to pick among {} candidates",
+                        target,
+                        candidates.len()
+                    ));
+                    match self
+                        .resolve_cdp_ambiguity(
+                            node_id,
+                            node_name,
+                            &target,
+                            candidates,
+                            mcp,
+                            node_run.as_mut(),
+                        )
+                        .await
+                    {
+                        Ok(res) => {
+                            self.log(format!(
+                                "Agent picked uid='{}' for '{}': {}",
+                                res.chosen_uid,
+                                target,
+                                super::WorkflowExecutor::<C>::truncate_for_trace(
+                                    &res.reasoning,
+                                    200
+                                )
+                            ));
+                            ctx.write_cdp_ambiguity_overrides()
+                                .insert(target.clone(), res.chosen_uid.clone());
+                            self.emit(ExecutorEvent::AmbiguityResolved {
+                                node_id,
+                                target,
+                                candidates: res.candidates_with_rects,
+                                chosen_uid: res.chosen_uid,
+                                reasoning: res.reasoning,
+                                screenshot_path: res.screenshot_path,
+                                screenshot_base64: res.screenshot_base64,
+                            });
+                            continue;
+                        }
+                        Err(disambig_err) => {
+                            let msg = format!("Disambiguation failed: {}", disambig_err);
+                            self.emit_error(format!("Node {} failed: {}", node_name, msg));
+                            if let Some(run) = node_run {
+                                self.finalize_run(run, RunStatus::Failed);
+                            }
+                            self.emit(ExecutorEvent::NodeFailed(node_id, msg));
+                            return StepOutcome::Failed;
+                        }
+                    }
+                }
                 Err(e) => {
                     let msg = e.to_string();
                     self.emit_error(format!("Node {} failed: {}", node_name, msg));
