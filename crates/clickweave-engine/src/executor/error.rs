@@ -31,9 +31,9 @@ pub enum ExecutorError {
     Cdp(String),
 
     #[error(
-        "Ambiguous CDP target '{target}': {} candidates matched — {}",
+        "Ambiguous CDP target '{target}': {} candidates matched (uids: {})",
         candidates.len(),
-        candidates.iter().map(|c| format!("uid={} ({})", c.uid, c.snippet)).collect::<Vec<_>>().join("; ")
+        candidates.iter().map(|c| c.uid.as_str()).collect::<Vec<_>>().join(", ")
     )]
     CdpAmbiguousTarget {
         target: String,
