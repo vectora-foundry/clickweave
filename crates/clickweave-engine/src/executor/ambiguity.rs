@@ -40,6 +40,8 @@ struct SidecarRecord {
     chosen_uid: String,
     reasoning: String,
     candidates: Vec<CandidateView>,
+    viewport_width: f64,
+    viewport_height: f64,
     screenshot_path: String,
 }
 
@@ -107,6 +109,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             &chosen_uid,
             &reasoning,
             &candidates_with_rects,
+            viewport,
             &screenshot_b64,
             node_run,
         );
@@ -198,6 +201,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         chosen_uid: &str,
         reasoning: &str,
         candidates: &[CandidateView],
+        viewport: Viewport,
         screenshot_b64: &str,
         mut node_run: Option<&mut NodeRun>,
     ) -> String {
@@ -231,6 +235,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 chosen_uid: chosen_uid.to_string(),
                 reasoning: reasoning.to_string(),
                 candidates: candidates.to_vec(),
+                viewport_width: viewport.width,
+                viewport_height: viewport.height,
                 screenshot_path: screenshot_filename.clone(),
             };
             match serde_json::to_vec_pretty(&sidecar) {
@@ -257,6 +263,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             "chosen_uid": chosen_uid,
             "reasoning": reasoning,
             "candidates": candidates,
+            "viewport_width": viewport.width,
+            "viewport_height": viewport.height,
             "screenshot_path": screenshot_filename,
         });
         if let Some(run) = node_run.as_deref() {

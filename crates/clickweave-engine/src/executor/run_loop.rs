@@ -334,6 +334,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                 verification.reasoning,
                             ));
                             ctx.supervision_hint = Some(verification.reasoning.clone());
+                            // Drop the prior agent pick so the supervision
+                            // hint can drive a different disambiguation on
+                            // the retry. Without this, the resolver would
+                            // short-circuit on the stale override.
+                            ctx.write_cdp_ambiguity_overrides().clear();
                             self.evict_caches_for_node(node_type);
                             ctx.force_resolve = true;
                             self.record_event(
