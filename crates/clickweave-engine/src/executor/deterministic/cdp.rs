@@ -54,30 +54,25 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
 
             let snapshot_text = Self::extract_result_text(&snapshot_result);
-            let candidates = collect_snapshot_candidates(&snapshot_text, target);
+            let mut candidates = collect_snapshot_candidates(&snapshot_text, target);
 
-            match candidates.len() {
-                0 => continue,
-                1 => {
-                    let uid = candidates
-                        .into_iter()
-                        .next()
-                        .map(|c| c.uid)
-                        .unwrap_or_default();
-                    self.log(format!("CDP: resolved '{}' -> uid='{}'", target, uid));
-                    return Ok(uid);
-                }
-                n => {
-                    self.log(format!(
-                        "CDP: ambiguous target '{}' matched {} elements",
-                        target, n
-                    ));
-                    return Err(ExecutorError::CdpAmbiguousTarget {
-                        target: target.to_string(),
-                        candidates,
-                    });
-                }
+            if candidates.is_empty() {
+                continue;
             }
+            if candidates.len() == 1 {
+                let uid = candidates.swap_remove(0).uid;
+                self.log(format!("CDP: resolved '{}' -> uid='{}'", target, uid));
+                return Ok(uid);
+            }
+            self.log(format!(
+                "CDP: ambiguous target '{}' matched {} elements",
+                target,
+                candidates.len()
+            ));
+            return Err(ExecutorError::CdpAmbiguousTarget {
+                target: target.to_string(),
+                candidates,
+            });
         }
 
         Err(ExecutorError::Cdp(format!(
