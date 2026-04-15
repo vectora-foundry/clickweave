@@ -659,7 +659,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                     })
                     .await;
 
-                    let mut cap_hit_tool: Option<String> = None;
+                    let mut cap_hit = false;
                     if let AgentCommand::ToolCall {
                         tool_name,
                         arguments,
@@ -684,11 +684,10 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                             self.add_workflow_node(tool_name, arguments, &mcp_tools)
                                 .await;
                         }
-                        if self.record_destructive_and_check_cap(tool_name, &annotations_by_tool) {
-                            cap_hit_tool = Some(tool_name.clone());
-                        }
+                        cap_hit =
+                            self.record_destructive_and_check_cap(tool_name, &annotations_by_tool);
                     }
-                    if cap_hit_tool.is_some() {
+                    if cap_hit {
                         self.emit_destructive_cap_hit().await;
                         break;
                     }

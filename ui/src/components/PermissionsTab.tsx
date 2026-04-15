@@ -10,6 +10,55 @@ const inputClass =
 const textInputClass =
   "bg-[var(--bg-input)] text-[var(--text-primary)] border border-[var(--border)] rounded-md px-2.5 py-1 text-[11px] font-mono flex-1 min-w-0";
 
+const settingRowClass =
+  "flex items-center justify-between gap-3 rounded-lg bg-[var(--bg-dark)] px-3.5 py-2.5";
+
+interface SettingRowProps {
+  title: string;
+  description: string;
+  control: React.ReactNode;
+}
+
+function SettingRow({ title, description, control }: SettingRowProps) {
+  return (
+    <div className={settingRowClass}>
+      <div>
+        <div className="text-xs font-semibold text-[var(--text-primary)]">
+          {title}
+        </div>
+        <div className="mt-0.5 text-[10px] text-[var(--text-muted)]">
+          {description}
+        </div>
+      </div>
+      {control}
+    </div>
+  );
+}
+
+interface ToggleProps {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+}
+
+function Toggle({ checked, onChange }: ToggleProps) {
+  return (
+    <button
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={`relative h-[22px] w-10 flex-shrink-0 rounded-full transition-colors ${
+        checked ? "bg-[var(--accent-coral)]" : "bg-[var(--bg-input)]"
+      }`}
+    >
+      <span
+        className={`absolute top-[3px] h-4 w-4 rounded-full bg-white transition-[left] ${
+          checked ? "left-[21px]" : "left-[3px]"
+        }`}
+      />
+    </button>
+  );
+}
+
 interface PermissionsTabProps {
   toolPermissions: ToolPermissions;
   onToolPermissionsChange: (perms: ToolPermissions) => void;
@@ -61,92 +110,54 @@ export function PermissionsTab({
 
   return (
     <div className="space-y-4 p-4">
-      {/* Destructive guardrail */}
-      <div className="flex items-center justify-between gap-3 rounded-lg bg-[var(--bg-dark)] px-3.5 py-2.5">
-        <div>
-          <div className="text-xs font-semibold text-[var(--text-primary)]">
-            Require confirmation for destructive actions even when allowed
-          </div>
-          <div className="mt-0.5 text-[10px] text-[var(--text-muted)]">
-            Destructive tools (send, submit, delete) will still prompt even if
-            they or the global override are set to allow.
-          </div>
-        </div>
-        <button
-          role="switch"
-          aria-checked={requireConfirmDestructive}
-          onClick={() =>
-            onToolPermissionsChange({
-              ...toolPermissions,
-              requireConfirmDestructive: !requireConfirmDestructive,
-            })
-          }
-          className={`relative h-[22px] w-10 flex-shrink-0 rounded-full transition-colors ${
-            requireConfirmDestructive ? "bg-[var(--accent-coral)]" : "bg-[var(--bg-input)]"
-          }`}
-        >
-          <span
-            className={`absolute top-[3px] h-4 w-4 rounded-full bg-white transition-[left] ${
-              requireConfirmDestructive ? "left-[21px]" : "left-[3px]"
-            }`}
+      <SettingRow
+        title="Require confirmation for destructive actions even when allowed"
+        description="Destructive tools (send, submit, delete) will still prompt even if they or the global override are set to allow."
+        control={
+          <Toggle
+            checked={requireConfirmDestructive}
+            onChange={(next) =>
+              onToolPermissionsChange({
+                ...toolPermissions,
+                requireConfirmDestructive: next,
+              })
+            }
           />
-        </button>
-      </div>
+        }
+      />
 
-      {/* Global override */}
-      <div className="flex items-center justify-between gap-3 rounded-lg bg-[var(--bg-dark)] px-3.5 py-2.5">
-        <div>
-          <div className="text-xs font-semibold text-[var(--text-primary)]">
-            Allow all planning actions
-          </div>
-          <div className="mt-0.5 text-[10px] text-[var(--text-muted)]">
-            Skip confirmation for all tools. Per-tool settings are ignored,
-            but the destructive guardrail above still applies when it is on.
-          </div>
-        </div>
-        <button
-          role="switch"
-          aria-checked={allowAll}
-          onClick={() =>
-            onToolPermissionsChange({ ...toolPermissions, allowAll: !allowAll })
-          }
-          className={`relative h-[22px] w-10 flex-shrink-0 rounded-full transition-colors ${
-            allowAll ? "bg-[var(--accent-coral)]" : "bg-[var(--bg-input)]"
-          }`}
-        >
-          <span
-            className={`absolute top-[3px] h-4 w-4 rounded-full bg-white transition-[left] ${
-              allowAll ? "left-[21px]" : "left-[3px]"
-            }`}
+      <SettingRow
+        title="Allow all planning actions"
+        description="Skip confirmation for all tools. Per-tool settings are ignored, but the destructive guardrail above still applies when it is on."
+        control={
+          <Toggle
+            checked={allowAll}
+            onChange={(next) =>
+              onToolPermissionsChange({ ...toolPermissions, allowAll: next })
+            }
           />
-        </button>
-      </div>
+        }
+      />
 
-      {/* Consecutive destructive cap */}
-      <div className="flex items-center justify-between gap-3 rounded-lg bg-[var(--bg-dark)] px-3.5 py-2.5">
-        <div>
-          <div className="text-xs font-semibold text-[var(--text-primary)]">
-            Consecutive destructive call cap
-          </div>
-          <div className="mt-0.5 text-[10px] text-[var(--text-muted)]">
-            Halt the run after this many destructive actions in a row.
-            0 disables the cap.
-          </div>
-        </div>
-        <input
-          type="number"
-          min={0}
-          max={20}
-          value={consecutiveDestructiveCap}
-          onChange={(e) =>
-            onToolPermissionsChange({
-              ...toolPermissions,
-              consecutiveDestructiveCap: clampCap(e.target.value),
-            })
-          }
-          className={`${inputClass} w-16 text-center`}
-        />
-      </div>
+      <SettingRow
+        title="Consecutive destructive call cap"
+        description="Halt the run after this many destructive actions in a row. 0 disables the cap."
+        control={
+          <input
+            type="number"
+            min={0}
+            max={20}
+            value={consecutiveDestructiveCap}
+            onChange={(e) =>
+              onToolPermissionsChange({
+                ...toolPermissions,
+                consecutiveDestructiveCap: clampCap(e.target.value),
+              })
+            }
+            className={`${inputClass} w-16 text-center`}
+          />
+        }
+      />
 
       {/* Per-tool section */}
       <div>
