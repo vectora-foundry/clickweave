@@ -93,20 +93,30 @@ pub struct Tool {
     #[serde(default)]
     pub description: Option<String>,
     pub input_schema: Value,
+    #[serde(default)]
+    pub annotations: Option<Value>,
 }
 
 /// Convert a slice of MCP tools to OpenAI-compatible function-calling format.
+///
+/// Safety annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`,
+/// `openWorldHint`) are carried through under `function.annotations` so the
+/// agent's permission policy can read them off each tool.
 pub fn tools_to_openai(tools: &[Tool]) -> Vec<Value> {
     tools
         .iter()
         .map(|tool| {
+            let mut function = serde_json::json!({
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.input_schema
+            });
+            if let Some(ann) = &tool.annotations {
+                function["annotations"] = ann.clone();
+            }
             serde_json::json!({
                 "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.input_schema
-                }
+                "function": function
             })
         })
         .collect()
@@ -388,6 +398,7 @@ mod tests {
                         "y": {"type": "number"}
                     }
                 }),
+                annotations: None,
             },
             Tool {
                 name: "type_text".to_string(),
@@ -398,6 +409,7 @@ mod tests {
                         "text": {"type": "string"}
                     }
                 }),
+                annotations: None,
             },
         ];
 
@@ -430,6 +442,7 @@ mod tests {
             name: "ping".to_string(),
             description: None,
             input_schema: json!({"type": "object"}),
+            annotations: None,
         }];
 
         let openai = tools_to_openai(&tools);
@@ -440,6 +453,45 @@ mod tests {
             openai[0]["function"]["parameters"],
             json!({"type": "object"})
         );
+    }
+
+    #[test]
+    fn tools_to_openai_carries_annotations_under_function() {
+        let tools = vec![Tool {
+            name: "quit_app".to_string(),
+            description: Some("Quit an app".to_string()),
+            input_schema: json!({"type": "object"}),
+            annotations: Some(json!({
+                "readOnlyHint": false,
+                "destructiveHint": true,
+                "idempotentHint": false
+            })),
+        }];
+
+        let openai = tools_to_openai(&tools);
+        assert_eq!(
+            openai[0]["function"]["annotations"]["destructiveHint"], true,
+            "destructiveHint must survive round-trip so the agent's permission policy can read it",
+        );
+        assert_eq!(openai[0]["function"]["annotations"]["readOnlyHint"], false);
+    }
+
+    #[test]
+    fn tool_deserializes_annotations_when_server_provides_them() {
+        let raw = json!({
+            "name": "send",
+            "description": "Send a message",
+            "inputSchema": {"type": "object"},
+            "annotations": {
+                "readOnlyHint": false,
+                "destructiveHint": true
+            }
+        });
+
+        let tool: Tool = serde_json::from_value(raw).unwrap();
+        assert!(tool.annotations.is_some());
+        let ann = tool.annotations.unwrap();
+        assert_eq!(ann["destructiveHint"], true);
     }
 
     // ── ToolCallParams serialization ────────────────────────────────────
