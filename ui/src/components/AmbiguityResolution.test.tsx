@@ -17,6 +17,8 @@ function makeResolution(
     target: "Save",
     chosenUid: "a2",
     reasoning: "Second Save is the primary toolbar action.",
+    viewportWidth: 1280,
+    viewportHeight: 720,
     screenshotPath: "ambiguity_abc.png",
     screenshotBase64: TINY_PNG,
     createdAt: 1234,
