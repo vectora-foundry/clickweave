@@ -79,14 +79,7 @@ async fn resolve_cdp_ambiguity_returns_chosen_uid_and_rects_from_vlm() {
     );
 
     let res = exec
-        .resolve_cdp_ambiguity(
-            Uuid::new_v4(),
-            "Click Save",
-            "Save",
-            sample_candidates(),
-            &mcp,
-            None,
-        )
+        .resolve_cdp_ambiguity("Click Save", "Save", sample_candidates(), &mcp, None)
         .await
         .expect("disambiguation should succeed");
 
@@ -126,14 +119,7 @@ async fn resolve_cdp_ambiguity_propagates_vlm_parse_failure() {
     mcp.push_text_response("[null, null]");
 
     let err = exec
-        .resolve_cdp_ambiguity(
-            Uuid::new_v4(),
-            "Click Save",
-            "Save",
-            sample_candidates(),
-            &mcp,
-            None,
-        )
+        .resolve_cdp_ambiguity("Click Save", "Save", sample_candidates(), &mcp, None)
         .await
         .expect_err("unparsable VLM response must surface as an error");
     let msg = err.to_string();
@@ -152,14 +138,7 @@ async fn resolve_cdp_ambiguity_rejects_unknown_uid_from_vlm() {
     mcp.push_text_response("[null, null]");
 
     let err = exec
-        .resolve_cdp_ambiguity(
-            Uuid::new_v4(),
-            "Click Save",
-            "Save",
-            sample_candidates(),
-            &mcp,
-            None,
-        )
+        .resolve_cdp_ambiguity("Click Save", "Save", sample_candidates(), &mcp, None)
         .await
         .expect_err("unknown chosen_uid must fail");
     assert!(matches!(err, ExecutorError::Cdp(_)));
@@ -182,14 +161,7 @@ async fn resolve_cdp_ambiguity_surfaces_screenshot_failure() {
     }
 
     let err = exec
-        .resolve_cdp_ambiguity(
-            Uuid::new_v4(),
-            "Click Save",
-            "Save",
-            sample_candidates(),
-            &mcp,
-            None,
-        )
+        .resolve_cdp_ambiguity("Click Save", "Save", sample_candidates(), &mcp, None)
         .await
         .expect_err("screenshot failure must bubble up");
     let msg = err.to_string();
@@ -248,7 +220,6 @@ async fn resolve_cdp_ambiguity_persists_artifacts_when_trace_enabled() {
 
     let res = exec
         .resolve_cdp_ambiguity(
-            Uuid::new_v4(),
             "Click Save",
             "Save",
             sample_candidates(),

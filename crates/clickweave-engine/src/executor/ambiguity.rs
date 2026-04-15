@@ -58,7 +58,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// candidate/rect data for the UI.
     pub(crate) async fn resolve_cdp_ambiguity(
         &self,
-        _node_id: Uuid,
         node_name: &str,
         target: &str,
         candidates: Vec<CdpCandidate>,

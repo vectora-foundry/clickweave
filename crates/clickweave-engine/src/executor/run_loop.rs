@@ -420,7 +420,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     ));
                     match self
                         .resolve_cdp_ambiguity(
-                            node_id,
                             node_name,
                             &target,
                             candidates,
@@ -434,10 +433,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                 "Agent picked uid='{}' for '{}': {}",
                                 res.chosen_uid,
                                 target,
-                                super::WorkflowExecutor::<C>::truncate_for_trace(
-                                    &res.reasoning,
-                                    200
-                                )
+                                Self::truncate_for_trace(&res.reasoning, 200)
                             ));
                             ctx.write_cdp_ambiguity_overrides()
                                 .insert(target.clone(), res.chosen_uid.clone());
