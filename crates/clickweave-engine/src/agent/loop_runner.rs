@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -11,6 +12,7 @@ use tracing::{debug, info, warn};
 
 use super::completion_check::{VlmVerdict, build_completion_prompt, parse_yes_no};
 use super::context;
+use super::permissions::{PermissionAction, PermissionPolicy, ToolAnnotations, evaluate};
 use super::prompt;
 use super::recovery::{self, RecoveryAction};
 use super::transition;
@@ -57,6 +59,29 @@ enum ApprovalResult {
     Unavailable,
 }
 
+/// Build an index from tool name → MCP annotations from the raw tool
+/// JSON list produced by `mcp.tools_as_openai()`. Tools without an
+/// `annotations` block produce the default (all-`None`) struct.
+///
+/// Both the top-level `annotations` shape and the `function.annotations`
+/// shape are supported, matching what `ToolAnnotations::from_tool_json`
+/// accepts. Tools without a readable name are skipped.
+fn build_annotations_index(mcp_tools: &[Value]) -> HashMap<String, ToolAnnotations> {
+    let mut index = HashMap::with_capacity(mcp_tools.len());
+    for tool in mcp_tools {
+        let name = tool
+            .get("function")
+            .and_then(|f| f.get("name"))
+            .or_else(|| tool.get("name"))
+            .and_then(|v| v.as_str());
+        let Some(name) = name else {
+            continue;
+        };
+        index.insert(name.to_string(), ToolAnnotations::from_tool_json(tool));
+    }
+    index
+}
+
 /// Callback pair for requesting approval from the UI before executing a tool.
 ///
 /// Each approval request uses a fresh `tokio::sync::oneshot` channel to avoid
@@ -78,6 +103,11 @@ pub struct AgentRunner<'a, B: ChatBackend> {
     /// Optional VLM backend used to verify `agent_done` against a fresh
     /// screenshot. Disabled = legacy behaviour (agent's self-report wins).
     vision: Option<&'a B>,
+    /// Permission policy consulted before every non-observation tool call.
+    /// The default policy has no rules, allow_all = false, and
+    /// require_confirm_destructive = false, which reproduces the previous
+    /// behaviour (every approval-gated tool goes through the prompt).
+    permissions: PermissionPolicy,
 }
 
 impl<'a, B: ChatBackend> AgentRunner<'a, B> {
@@ -91,6 +121,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             event_tx: None,
             approval_gate: None,
             vision: None,
+            permissions: PermissionPolicy::default(),
         }
     }
 
@@ -105,7 +136,17 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             event_tx: None,
             approval_gate: None,
             vision: None,
+            permissions: PermissionPolicy::default(),
         }
+    }
+
+    /// Attach a permission policy. When set, the policy is evaluated for
+    /// every non-observation tool call before the approval prompt fires.
+    /// `Allow` skips the prompt, `Deny` fails the step with a policy-reject
+    /// error, `Ask` falls through to the existing approval flow.
+    pub fn with_permissions(mut self, policy: PermissionPolicy) -> Self {
+        self.permissions = policy;
+        self
     }
 
     /// Attach a VLM backend used to verify agent-reported completion.
@@ -152,6 +193,77 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         }
     }
 
+    /// Evaluate the permission policy for a proposed tool call. Looks
+    /// the tool up in the annotations index (missing → empty
+    /// annotations, which means "no hints") and consults the pure
+    /// `permissions::evaluate` function. Returns the resolved action
+    /// (`Allow` / `Ask` / `Deny`).
+    fn policy_for(
+        &self,
+        tool_name: &str,
+        arguments: &Value,
+        annotations_by_tool: &HashMap<String, ToolAnnotations>,
+    ) -> PermissionAction {
+        let ann = annotations_by_tool
+            .get(tool_name)
+            .copied()
+            .unwrap_or_default();
+        evaluate(&self.permissions, tool_name, arguments, &ann)
+    }
+
+    /// Update the consecutive-destructive-call tracker after a successful
+    /// tool call. Returns true when the cap is configured and has been
+    /// reached, meaning the caller should halt the run.
+    ///
+    /// `destructive_hint == Some(true)` increments the streak; anything
+    /// else resets it. A cap value of `0` disables the feature entirely,
+    /// so the method is a no-op in that case.
+    fn record_destructive_and_check_cap(
+        &mut self,
+        tool_name: &str,
+        annotations_by_tool: &HashMap<String, ToolAnnotations>,
+    ) -> bool {
+        if self.config.consecutive_destructive_cap == 0 {
+            return false;
+        }
+        let destructive = annotations_by_tool
+            .get(tool_name)
+            .and_then(|a| a.destructive_hint)
+            .unwrap_or(false);
+        if destructive {
+            self.state
+                .recent_destructive_tools
+                .push(tool_name.to_string());
+        } else {
+            self.state.recent_destructive_tools.clear();
+        }
+        self.state.recent_destructive_tools.len() >= self.config.consecutive_destructive_cap
+    }
+
+    /// Halt the run because the consecutive-destructive cap was reached.
+    /// Emits the cap-hit event and sets the terminal reason. Called once
+    /// when `record_destructive_and_check_cap` reports the cap has been
+    /// hit. Clears `recent_destructive_tools` afterwards so state serialization
+    /// reflects the drained streak.
+    async fn emit_destructive_cap_hit(&mut self) {
+        let recent = std::mem::take(&mut self.state.recent_destructive_tools);
+        let cap = self.config.consecutive_destructive_cap;
+        warn!(
+            cap,
+            tools = ?recent,
+            "Consecutive destructive cap reached — halting run"
+        );
+        self.emit_event(AgentEvent::ConsecutiveDestructiveCapHit {
+            recent_tool_names: recent.clone(),
+            cap,
+        })
+        .await;
+        self.state.terminal_reason = Some(TerminalReason::ConsecutiveDestructiveCap {
+            recent_tool_names: recent,
+            cap,
+        });
+    }
+
     /// Run the agent loop to completion or max steps.
     ///
     /// # Arguments
@@ -192,6 +304,12 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             .cloned()
             .chain([prompt::agent_done_tool(), prompt::agent_replan_tool()])
             .collect();
+
+        // Index each tool's MCP annotations by name, so the policy
+        // evaluator and the consecutive-destructive-cap tracker can
+        // answer "is this tool destructive / read-only?" in O(1) per
+        // call. Missing annotations are represented as `None` fields.
+        let annotations_by_tool = build_annotations_index(&mcp_tools);
 
         info!(goal = %goal, max_steps = self.config.max_steps, "Agent starting");
 
@@ -247,51 +365,106 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                         );
 
                         // Approval-gated tools must be re-approved on replay.
+                        // The permission policy decides whether to skip the
+                        // prompt (Allow), hard-reject (Deny), or prompt (Ask).
                         let needs_approval =
                             !Self::OBSERVATION_TOOLS.contains(&cached_tool.as_str());
                         if needs_approval {
-                            match self
-                                .request_approval(
-                                    &cached_tool,
-                                    &cached_args,
+                            let policy_action =
+                                self.policy_for(&cached_tool, &cached_args, &annotations_by_tool);
+                            if matches!(policy_action, PermissionAction::Deny) {
+                                // Hard policy reject: fail the step, drop
+                                // the cached entry so the next iteration
+                                // does not re-hit it, and continue the loop
+                                // — same as any other step error.
+                                self.cache.remove(&goal, &elements);
+                                last_cache_key = None;
+                                let err_msg =
+                                    format!("Tool `{}` denied by permission policy", cached_tool);
+                                warn!(
+                                    tool = %cached_tool,
+                                    "Cached tool denied by permission policy"
+                                );
+                                let command = AgentCommand::ToolCall {
+                                    tool_name: cached_tool.clone(),
+                                    arguments: cached_args.clone(),
+                                    tool_call_id: format!("cache-{}", step_index),
+                                };
+                                self.emit_event(AgentEvent::StepFailed {
                                     step_index,
-                                    " (cached)",
-                                )
-                                .await
-                            {
-                                Some(ApprovalResult::Rejected) => {
-                                    // Evict the rejected entry so the next iteration
-                                    // falls through to the LLM instead of re-prompting
-                                    // the same cached action in an approval loop.
-                                    self.cache.remove(&goal, &elements);
-                                    last_cache_key = None;
-                                    let command = AgentCommand::ToolCall {
-                                        tool_name: cached_tool.clone(),
-                                        arguments: cached_args.clone(),
-                                        tool_call_id: format!("cache-{}", step_index),
-                                    };
-                                    let step = AgentStep {
-                                        index: step_index,
-                                        elements: elements.clone(),
-                                        command,
-                                        outcome: StepOutcome::Replan(
-                                            "User rejected cached action".to_string(),
-                                        ),
-                                        page_url: self.state.current_url.clone(),
-                                    };
-                                    self.state.steps.push(step);
-                                    previous_result =
-                                        Some("Replan: user rejected cached action".to_string());
-                                    continue;
-                                }
-                                Some(ApprovalResult::Unavailable) => {
+                                    tool_name: cached_tool.clone(),
+                                    error: err_msg.clone(),
+                                })
+                                .await;
+                                let step = AgentStep {
+                                    index: step_index,
+                                    elements: elements.clone(),
+                                    command,
+                                    outcome: StepOutcome::Error(err_msg.clone()),
+                                    page_url: self.state.current_url.clone(),
+                                };
+                                self.state.steps.push(step);
+                                self.state.consecutive_errors += 1;
+                                previous_result = Some(format!("Error: {}", err_msg));
+                                let action = recovery::recovery_strategy(
+                                    self.state.consecutive_errors,
+                                    self.config.max_consecutive_errors,
+                                );
+                                if matches!(action, RecoveryAction::Abort) {
                                     self.state.terminal_reason =
-                                        Some(TerminalReason::ApprovalUnavailable);
+                                        Some(TerminalReason::MaxErrorsReached {
+                                            consecutive_errors: self.state.consecutive_errors,
+                                        });
                                     break;
                                 }
-                                // Approved or no gate configured
-                                _ => {}
+                                continue;
                             }
+                            if matches!(policy_action, PermissionAction::Ask) {
+                                match self
+                                    .request_approval(
+                                        &cached_tool,
+                                        &cached_args,
+                                        step_index,
+                                        " (cached)",
+                                    )
+                                    .await
+                                {
+                                    Some(ApprovalResult::Rejected) => {
+                                        // Evict the rejected entry so the next
+                                        // iteration falls through to the LLM
+                                        // instead of re-prompting the same
+                                        // cached action in an approval loop.
+                                        self.cache.remove(&goal, &elements);
+                                        last_cache_key = None;
+                                        let command = AgentCommand::ToolCall {
+                                            tool_name: cached_tool.clone(),
+                                            arguments: cached_args.clone(),
+                                            tool_call_id: format!("cache-{}", step_index),
+                                        };
+                                        let step = AgentStep {
+                                            index: step_index,
+                                            elements: elements.clone(),
+                                            command,
+                                            outcome: StepOutcome::Replan(
+                                                "User rejected cached action".to_string(),
+                                            ),
+                                            page_url: self.state.current_url.clone(),
+                                        };
+                                        self.state.steps.push(step);
+                                        previous_result =
+                                            Some("Replan: user rejected cached action".to_string());
+                                        continue;
+                                    }
+                                    Some(ApprovalResult::Unavailable) => {
+                                        self.state.terminal_reason =
+                                            Some(TerminalReason::ApprovalUnavailable);
+                                        break;
+                                    }
+                                    // Approved or no gate configured
+                                    _ => {}
+                                }
+                            }
+                            // PermissionAction::Allow: skip approval entirely.
                         }
 
                         match mcp.call_tool(&cached_tool, Some(cached_args.clone())).await {
@@ -350,6 +523,17 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                                 self.state.consecutive_errors = 0;
                                 previous_result = Some(result_text);
                                 last_cache_key = Some(current_key);
+
+                                // Destructive-cap accounting: the cached
+                                // replay counts toward the streak just like
+                                // a live tool call.
+                                if self.record_destructive_and_check_cap(
+                                    &cached_tool,
+                                    &annotations_by_tool,
+                                ) {
+                                    self.emit_destructive_cap_hit().await;
+                                    break;
+                                }
                                 continue;
                             }
                             Ok(result) => {
@@ -426,6 +610,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                     &elements,
                     &mcp_tools,
                     step_index,
+                    &annotations_by_tool,
                 )
                 .await
             {
@@ -474,6 +659,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                     })
                     .await;
 
+                    let mut cap_hit_tool: Option<String> = None;
                     if let AgentCommand::ToolCall {
                         tool_name,
                         arguments,
@@ -498,6 +684,13 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                             self.add_workflow_node(tool_name, arguments, &mcp_tools)
                                 .await;
                         }
+                        if self.record_destructive_and_check_cap(tool_name, &annotations_by_tool) {
+                            cap_hit_tool = Some(tool_name.clone());
+                        }
+                    }
+                    if cap_hit_tool.is_some() {
+                        self.emit_destructive_cap_hit().await;
+                        break;
                     }
                 }
                 StepOutcome::Error(err) => {
@@ -979,6 +1172,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     }
 
     /// Parse the LLM response and execute the chosen action.
+    #[allow(clippy::too_many_arguments)]
     async fn execute_response(
         &self,
         message: &clickweave_llm::Message,
@@ -987,6 +1181,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         _elements: &[CdpFindElementMatch],
         _mcp_tools: &[Value],
         step_index: usize,
+        annotations_by_tool: &HashMap<String, ToolAnnotations>,
     ) -> Result<(AgentCommand, StepOutcome), LoopError> {
         // Check for tool calls
         if let Some(tool_calls) = &message.tool_calls {
@@ -1048,29 +1243,60 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 }
 
                 // Request user approval before executing the tool.
-                // Skip approval for observation-only tools — they don't change state.
+                // Observation-only tools bypass approval entirely; for
+                // everything else, the permission policy decides whether
+                // to prompt (Ask), skip the prompt (Allow), or hard-reject
+                // (Deny).
                 let needs_approval = !Self::OBSERVATION_TOOLS.contains(&tc.function.name.as_str());
                 if needs_approval {
-                    match self
-                        .request_approval(&tc.function.name, &args, step_index, "")
-                        .await
-                    {
-                        Some(ApprovalResult::Rejected) => {
+                    let policy_action =
+                        self.policy_for(&tc.function.name, &args, annotations_by_tool);
+                    match policy_action {
+                        PermissionAction::Deny => {
+                            warn!(
+                                tool = %tc.function.name,
+                                "Tool denied by permission policy"
+                            );
                             let command = AgentCommand::ToolCall {
                                 tool_name: tc.function.name.clone(),
                                 arguments: args.clone(),
                                 tool_call_id: tc.id.clone(),
                             };
-                            return Ok((
-                                command,
-                                StepOutcome::Replan("User rejected action".to_string()),
-                            ));
+                            let err_msg =
+                                format!("Tool `{}` denied by permission policy", tc.function.name);
+                            return Ok((command, StepOutcome::Error(err_msg)));
                         }
-                        Some(ApprovalResult::Unavailable) => {
-                            return Err(LoopError::ApprovalUnavailable);
+                        PermissionAction::Allow => {
+                            // Skip the approval prompt entirely; the
+                            // policy pre-authorized this invocation.
+                            debug!(
+                                tool = %tc.function.name,
+                                "Permission policy allowed tool — skipping approval"
+                            );
                         }
-                        // Approved or no gate configured
-                        _ => {}
+                        PermissionAction::Ask => {
+                            match self
+                                .request_approval(&tc.function.name, &args, step_index, "")
+                                .await
+                            {
+                                Some(ApprovalResult::Rejected) => {
+                                    let command = AgentCommand::ToolCall {
+                                        tool_name: tc.function.name.clone(),
+                                        arguments: args.clone(),
+                                        tool_call_id: tc.id.clone(),
+                                    };
+                                    return Ok((
+                                        command,
+                                        StepOutcome::Replan("User rejected action".to_string()),
+                                    ));
+                                }
+                                Some(ApprovalResult::Unavailable) => {
+                                    return Err(LoopError::ApprovalUnavailable);
+                                }
+                                // Approved or no gate configured
+                                _ => {}
+                            }
+                        }
                     }
                 }
 

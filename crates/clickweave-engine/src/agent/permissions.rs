@@ -152,22 +152,27 @@ fn rule_matches(rule: &PermissionRule, tool_name: &str, arguments_json: &str) ->
     if !glob_match(&rule.tool_pattern, tool_name) {
         return false;
     }
-    if let Some(needle) = rule.args_pattern.as_deref() {
-        if !needle.is_empty() && !arguments_json.contains(needle) {
-            return false;
-        }
+    if let Some(needle) = rule.args_pattern.as_deref()
+        && !needle.is_empty()
+        && !arguments_json.contains(needle)
+    {
+        return false;
     }
     true
 }
 
 /// Pick the most-restrictive action among a set of matching rules:
 /// `Deny` beats `Ask` beats `Allow`. Used when multiple rules fire.
-fn combine_actions(actions: impl IntoIterator<Item = PermissionAction>) -> Option<PermissionAction> {
+fn combine_actions(
+    actions: impl IntoIterator<Item = PermissionAction>,
+) -> Option<PermissionAction> {
     let mut out: Option<PermissionAction> = None;
     for action in actions {
         out = Some(match (out, action) {
             (None, a) => a,
-            (Some(PermissionAction::Deny), _) | (_, PermissionAction::Deny) => PermissionAction::Deny,
+            (Some(PermissionAction::Deny), _) | (_, PermissionAction::Deny) => {
+                PermissionAction::Deny
+            }
             (Some(PermissionAction::Ask), _) | (_, PermissionAction::Ask) => PermissionAction::Ask,
             _ => PermissionAction::Allow,
         });
@@ -485,12 +490,7 @@ mod tests {
             rules: vec![rule("shutdown", PermissionAction::Deny)],
             ..Default::default()
         };
-        let action = evaluate(
-            &policy,
-            "shutdown",
-            &json!({}),
-            &ToolAnnotations::default(),
-        );
+        let action = evaluate(&policy, "shutdown", &json!({}), &ToolAnnotations::default());
         assert_eq!(action, PermissionAction::Deny);
     }
 

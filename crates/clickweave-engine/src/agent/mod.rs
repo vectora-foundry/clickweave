@@ -36,6 +36,9 @@ pub struct AgentChannels {
 /// When `vision` is `Some`, the runner verifies `agent_done` against a
 /// fresh screenshot via the VLM and may halt with a disagreement event
 /// when the VLM rejects completion.
+/// When `permissions` is `Some`, the runner consults the policy for every
+/// non-observation tool call — `Allow` skips approval, `Deny` hard-rejects,
+/// `Ask` falls through to the existing approval prompt.
 /// Returns both the final agent state and the (possibly updated) cache.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_agent_workflow<B: ChatBackend>(
@@ -47,6 +50,7 @@ pub async fn run_agent_workflow<B: ChatBackend>(
     cache: Option<AgentCache>,
     channels: Option<AgentChannels>,
     vision: Option<&B>,
+    permissions: Option<PermissionPolicy>,
 ) -> anyhow::Result<(AgentState, AgentCache)> {
     let tools = mcp.tools_as_openai();
     let workflow = clickweave_core::Workflow::default();
@@ -61,6 +65,9 @@ pub async fn run_agent_workflow<B: ChatBackend>(
     }
     if let Some(v) = vision {
         runner = runner.with_vision(v);
+    }
+    if let Some(policy) = permissions {
+        runner = runner.with_permissions(policy);
     }
     let state = runner
         .run(goal, workflow, mcp, variant_context, tools)

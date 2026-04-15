@@ -489,6 +489,7 @@ async fn agent_state_reports_max_errors_reason() {
         max_consecutive_errors: 3,
         build_workflow: false,
         use_cache: false,
+        consecutive_destructive_cap: 0,
     };
 
     let mut runner = AgentRunner::new(&agent_llm, config);

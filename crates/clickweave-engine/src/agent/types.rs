@@ -58,6 +58,15 @@ pub enum AgentEvent {
         /// The summary the agent provided when it called `agent_done`.
         agent_summary: String,
     },
+    /// The agent executed N destructive tool calls in a row, hitting the
+    /// configured cap. The run halts; the UI surfaces a short notice.
+    ConsecutiveDestructiveCapHit {
+        /// Tool names of the destructive calls that triggered the halt,
+        /// in execution order (oldest first).
+        recent_tool_names: Vec<String>,
+        /// The cap value the run was configured with.
+        cap: usize,
+    },
 }
 
 /// Approval request sent to the UI before executing an action.
@@ -80,6 +89,9 @@ pub struct AgentConfig {
     pub build_workflow: bool,
     /// Whether to use the decision cache for repeated page states.
     pub use_cache: bool,
+    /// Halt the run after this many consecutive destructive tool calls.
+    /// `0` disables the cap entirely.
+    pub consecutive_destructive_cap: usize,
 }
 
 impl Default for AgentConfig {
@@ -89,6 +101,7 @@ impl Default for AgentConfig {
             max_consecutive_errors: 3,
             build_workflow: true,
             use_cache: true,
+            consecutive_destructive_cap: 3,
         }
     }
 }
@@ -164,6 +177,10 @@ pub struct AgentState {
     pub terminal_reason: Option<TerminalReason>,
     /// Current page URL.
     pub current_url: String,
+    /// Destructive tool names executed consecutively, oldest first.
+    /// Resets to empty when a non-destructive tool succeeds. The length
+    /// is compared against `AgentConfig::consecutive_destructive_cap`.
+    pub recent_destructive_tools: Vec<String>,
 }
 
 impl AgentState {
@@ -177,6 +194,7 @@ impl AgentState {
             summary: None,
             terminal_reason: None,
             current_url: String::new(),
+            recent_destructive_tools: Vec::new(),
         }
     }
 }
@@ -200,6 +218,15 @@ pub enum TerminalReason {
         agent_summary: String,
         vlm_reasoning: String,
     },
+    /// The consecutive-destructive-call cap was reached. The run halts so
+    /// the operator can review what the agent did instead of barrelling
+    /// through more destructive actions unchecked.
+    ConsecutiveDestructiveCap {
+        /// Destructive tools that triggered the cap, in execution order.
+        recent_tool_names: Vec<String>,
+        /// The cap the run was configured with.
+        cap: usize,
+    },
 }
 
 impl TerminalReason {
@@ -220,6 +247,14 @@ impl TerminalReason {
             Self::CompletionDisagreement { vlm_reasoning, .. } => {
                 format!("Completion verification disagreed: {}", vlm_reasoning)
             }
+            Self::ConsecutiveDestructiveCap {
+                recent_tool_names,
+                cap,
+            } => format!(
+                "Halted: reached {} consecutive destructive actions ({})",
+                cap,
+                recent_tool_names.join(", ")
+            ),
         }
     }
 }

@@ -2,7 +2,8 @@ use super::error::CommandError;
 use super::types::*;
 use clickweave_core::variant_index::{VariantEntry, VariantIndex};
 use clickweave_engine::agent::{
-    AgentCache, AgentChannels, AgentConfig, AgentEvent, ApprovalRequest,
+    AgentCache, AgentChannels, AgentConfig, AgentEvent, ApprovalRequest, PermissionAction,
+    PermissionPolicy, PermissionRule,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -11,6 +12,85 @@ use tokio_util::sync::CancellationToken;
 
 // ── Request / payload types ─────────────────────────────────────
 
+/// Wire form of a single permission rule. Mirrors
+/// `clickweave_engine::agent::PermissionRule` but with a `specta::Type`
+/// derive so the TypeScript bindings pick it up.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct PermissionRuleWire {
+    pub tool_pattern: String,
+    pub args_pattern: Option<String>,
+    pub action: PermissionActionWire,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PermissionActionWire {
+    Allow,
+    Ask,
+    Deny,
+}
+
+impl From<PermissionActionWire> for PermissionAction {
+    fn from(a: PermissionActionWire) -> Self {
+        match a {
+            PermissionActionWire::Allow => PermissionAction::Allow,
+            PermissionActionWire::Ask => PermissionAction::Ask,
+            PermissionActionWire::Deny => PermissionAction::Deny,
+        }
+    }
+}
+
+impl From<PermissionRuleWire> for PermissionRule {
+    fn from(r: PermissionRuleWire) -> Self {
+        PermissionRule {
+            tool_pattern: r.tool_pattern,
+            args_pattern: r.args_pattern,
+            action: r.action.into(),
+        }
+    }
+}
+
+/// Wire form of the permission policy the UI ships with every `run_agent`.
+/// `tools` is the per-tool override map from the existing 2-tier UI (ask
+/// / allow). It is mapped into `PermissionRule`s with the tool name as a
+/// literal pattern so the Rust side only needs one evaluator.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, specta::Type)]
+pub struct PermissionPolicyWire {
+    #[serde(default)]
+    pub rules: Vec<PermissionRuleWire>,
+    #[serde(default)]
+    pub allow_all: bool,
+    #[serde(default)]
+    pub require_confirm_destructive: bool,
+    /// Per-tool overrides: `{ "click": "allow" }`. Merged into the rule
+    /// list as literal-pattern rules before the evaluator runs.
+    #[serde(default)]
+    pub per_tool: std::collections::HashMap<String, PermissionActionWire>,
+}
+
+impl From<PermissionPolicyWire> for PermissionPolicy {
+    fn from(p: PermissionPolicyWire) -> Self {
+        // Per-tool overrides append after explicit rules so both sources
+        // contribute to rule matching. Ordering does not affect the final
+        // action because the evaluator combines matches with
+        // Deny > Ask > Allow — not "last rule wins".
+        let mut rules: Vec<PermissionRule> =
+            p.rules.into_iter().map(PermissionRule::from).collect();
+        for (name, action) in p.per_tool {
+            rules.push(PermissionRule {
+                tool_pattern: name,
+                args_pattern: None,
+                action: action.into(),
+            });
+        }
+        PermissionPolicy {
+            rules,
+            allow_all: p.allow_all,
+            require_confirm_destructive: p.require_confirm_destructive,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct AgentRunRequest {
     pub goal: String,
@@ -18,6 +98,14 @@ pub struct AgentRunRequest {
     pub project_path: Option<String>,
     pub workflow_name: String,
     pub workflow_id: String,
+    /// Permission policy for this run. When `None`, the default policy
+    /// (empty rules, allow_all=false, guardrail off) is used.
+    #[serde(default)]
+    pub permissions: Option<PermissionPolicyWire>,
+    /// Halt the run after this many consecutive destructive tool calls.
+    /// `0` disables the cap. `None` uses the engine default (3).
+    #[serde(default)]
+    pub consecutive_destructive_cap: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -97,6 +185,9 @@ pub async fn run_agent(
     // Generate a per-run generation ID so event consumers can reject
     // stale events from a previous run that drain after stop/restart.
     let run_id = uuid::Uuid::new_v4().to_string();
+
+    let permission_policy: Option<PermissionPolicy> = request.permissions.map(Into::into);
+    let consecutive_destructive_cap = request.consecutive_destructive_cap;
 
     let cancel_token = CancellationToken::new();
     let agent_token = cancel_token.clone();
@@ -178,7 +269,10 @@ pub async fn run_agent(
         // falls through to normal completion instead of tanking the run.
         let vision =
             clickweave_llm::LlmClient::new(agent_config.with_thinking(false).with_max_tokens(512));
-        let config = AgentConfig::default();
+        let mut config = AgentConfig::default();
+        if let Some(cap) = consecutive_destructive_cap {
+            config.consecutive_destructive_cap = cap;
+        }
 
         // Begin storage execution and load cross-run state under a single lock.
         // Storage init failure prevents the run from starting — durable tracing
@@ -221,6 +315,11 @@ pub async fn run_agent(
                 Some(cache),
                 Some(channels),
                 Some(&vision),
+                // Permission policy is threaded from the UI via the
+                // `run_agent` request; None means "use the default
+                // (empty-rules, allow_all=false, guardrail off)" which
+                // reproduces the Phase-1 behaviour.
+                permission_policy.clone(),
             ) => res,
             _ = agent_token.cancelled() => {
                 let _ = emit_handle.emit(
@@ -423,6 +522,19 @@ pub async fn run_agent(
                                             "screenshot_b64": screenshot_b64,
                                             "vlm_reasoning": vlm_reasoning,
                                             "agent_summary": agent_summary,
+                                        }),
+                                    );
+                                }
+                                AgentEvent::ConsecutiveDestructiveCapHit {
+                                    recent_tool_names,
+                                    cap,
+                                } => {
+                                    let _ = event_emit_handle.emit(
+                                        "agent://consecutive_destructive_cap_hit",
+                                        serde_json::json!({
+                                            "run_id": event_run_id,
+                                            "recent_tool_names": recent_tool_names,
+                                            "cap": cap,
                                         }),
                                     );
                                 }
