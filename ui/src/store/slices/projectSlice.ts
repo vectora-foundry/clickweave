@@ -47,6 +47,8 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       messages: [],
     });
     get().clearHistory();
+    // Ambiguity resolutions are specific to the prior workflow's nodes.
+    get().clearAmbiguityResolutions();
 
     pushLog(`Opened: ${filePath}`);
   },
@@ -84,6 +86,7 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       assistantError: null,
     });
     get().clearHistory();
+    get().clearAmbiguityResolutions();
     pushLog("New project created");
   },
 

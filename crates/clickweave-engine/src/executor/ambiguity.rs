@@ -19,6 +19,12 @@ pub(crate) struct DisambiguationResult {
     pub chosen_uid: String,
     pub reasoning: String,
     pub candidates_with_rects: Vec<CandidateView>,
+    /// Viewport dimensions at capture time. The UI uses these to translate
+    /// the CDP-viewport rects (CSS pixels, origin at viewport top-left) into
+    /// image-pixel coordinates inside the captured screenshot, which may
+    /// include chrome (tab bar, title bar) above/around the viewport.
+    pub viewport_width: f64,
+    pub viewport_height: f64,
     /// Path to the captured screenshot, relative to the node's `artifacts/`
     /// directory (the same base the UI consumes).
     pub screenshot_path: String,
@@ -73,7 +79,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 )
             })?;
 
-        let rects = fetch_candidate_rects(&candidates, mcp).await;
+        let (viewport, rects) = fetch_candidate_rects(&candidates, mcp).await;
         let candidates_with_rects: Vec<CandidateView> = candidates
             .into_iter()
             .zip(rects.into_iter())
@@ -109,6 +115,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             chosen_uid,
             reasoning,
             candidates_with_rects,
+            viewport_width: viewport.width,
+            viewport_height: viewport.height,
             screenshot_path,
             screenshot_base64: screenshot_b64,
         })
@@ -283,15 +291,24 @@ fn parse_disambiguation_response(raw: &str) -> Option<(String, String)> {
     Some((chosen, reasoning))
 }
 
-/// Batched `Runtime.evaluate` that returns a JSON array aligned 1:1 with
-/// `candidates`. Each entry is `{x, y, width, height}` or null. Falls back to
-/// per-candidate nulls when the CDP call fails.
+/// Viewport dimensions reported alongside the rects so the UI can translate
+/// CDP-viewport coordinates into image-pixel coordinates when the captured
+/// screenshot includes window chrome (OS title bar, browser toolbar, etc.).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Viewport {
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Batched `Runtime.evaluate` that returns viewport dimensions plus a rect for
+/// each candidate uid (or null for uids it can't locate). Falls back to
+/// per-candidate nulls + zero-sized viewport when the CDP call fails.
 async fn fetch_candidate_rects(
     candidates: &[CdpCandidate],
     mcp: &(impl Mcp + ?Sized),
-) -> Vec<Option<Rect>> {
+) -> (Viewport, Vec<Option<Rect>>) {
     if candidates.is_empty() {
-        return Vec::new();
+        return (Viewport::default(), Vec::new());
     }
 
     let uids_json = serde_json::to_string(
@@ -305,7 +322,7 @@ async fn fetch_candidate_rects(
     let js = format!(
         r#"(() => {{
   const uids = {};
-  return uids.map((uid) => {{
+  const rects = uids.map((uid) => {{
     try {{
       let el = document.querySelector('[data-uid="' + uid + '"]') ||
                document.querySelector('[uid="' + uid + '"]') ||
@@ -317,6 +334,10 @@ async fn fetch_candidate_rects(
       return null;
     }}
   }});
+  return {{
+    viewport: {{ width: window.innerWidth, height: window.innerHeight }},
+    rects: rects,
+  }};
 }})()"#,
         uids_json
     );
@@ -324,7 +345,7 @@ async fn fetch_candidate_rects(
     let args = serde_json::json!({ "function": js });
     let result = match mcp.call_tool("cdp_evaluate_script", Some(args)).await {
         Ok(r) if r.is_error != Some(true) => r,
-        _ => return vec![None; candidates.len()],
+        _ => return (Viewport::default(), vec![None; candidates.len()]),
     };
 
     let raw_text = result
@@ -337,41 +358,66 @@ async fn fetch_candidate_rects(
         .collect::<Vec<_>>()
         .join("");
 
-    parse_rects_array(&raw_text, candidates.len())
+    parse_candidate_rects_response(&raw_text, candidates.len())
 }
 
-/// Accept either a raw JSON array, a ```json-fenced array, or the
-/// `{"result": [...]}` wrapper chrome-devtools-mcp sometimes emits. Returns
-/// exactly `expected_len` entries, padding with `None` on parse failure.
-pub(crate) fn parse_rects_array(text: &str, expected_len: usize) -> Vec<Option<Rect>> {
+/// Accept either the new `{viewport, rects}` envelope, a raw rects array, a
+/// ```json-fenced array, or the `{"result": [...]}` wrapper chrome-devtools-mcp
+/// sometimes emits. Returns exactly `expected_len` rects, padding with `None`
+/// on parse failure. Viewport defaults to zeros when unavailable.
+pub(crate) fn parse_candidate_rects_response(
+    text: &str,
+    expected_len: usize,
+) -> (Viewport, Vec<Option<Rect>>) {
     let stripped = super::app_resolve::strip_code_block(text);
-    let value: Option<Value> = serde_json::from_str(stripped).ok();
-    let array: Option<&Vec<Value>> = value.as_ref().and_then(|v| {
-        v.as_array().or_else(|| {
-            // Some MCP implementations wrap the return value in {"result": ...}.
-            v.get("result").and_then(|r| r.as_array())
-        })
-    });
+    let Ok(value): Result<Value, _> = serde_json::from_str(stripped) else {
+        return (Viewport::default(), vec![None; expected_len]);
+    };
 
-    match array {
-        Some(arr) => {
-            let mut out: Vec<Option<Rect>> = arr
-                .iter()
-                .map(|entry| {
-                    let obj = entry.as_object()?;
-                    Some(Rect {
-                        x: obj.get("x")?.as_f64()?,
-                        y: obj.get("y")?.as_f64()?,
-                        width: obj.get("width")?.as_f64()?,
-                        height: obj.get("height")?.as_f64()?,
-                    })
+    // Unwrap an optional `{"result": ...}` envelope first.
+    let inner = value.get("result").unwrap_or(&value);
+
+    // Case 1: `{ viewport: {w,h}, rects: [...] }`
+    if let Some(obj) = inner.as_object()
+        && let Some(rects_val) = obj.get("rects")
+        && let Some(arr) = rects_val.as_array()
+    {
+        let viewport = obj
+            .get("viewport")
+            .and_then(|v| v.as_object())
+            .and_then(|vp| {
+                Some(Viewport {
+                    width: vp.get("width")?.as_f64()?,
+                    height: vp.get("height")?.as_f64()?,
                 })
-                .collect();
-            out.resize(expected_len, None);
-            out
-        }
-        None => vec![None; expected_len],
+            })
+            .unwrap_or_default();
+        return (viewport, parse_rects_only(arr, expected_len));
     }
+
+    // Case 2: a bare rects array (used by tests and legacy clients).
+    if let Some(arr) = inner.as_array() {
+        return (Viewport::default(), parse_rects_only(arr, expected_len));
+    }
+
+    (Viewport::default(), vec![None; expected_len])
+}
+
+fn parse_rects_only(arr: &[Value], expected_len: usize) -> Vec<Option<Rect>> {
+    let mut out: Vec<Option<Rect>> = arr
+        .iter()
+        .map(|entry| {
+            let obj = entry.as_object()?;
+            Some(Rect {
+                x: obj.get("x")?.as_f64()?,
+                y: obj.get("y")?.as_f64()?,
+                width: obj.get("width")?.as_f64()?,
+                height: obj.get("height")?.as_f64()?,
+            })
+        })
+        .collect();
+    out.resize(expected_len, None);
+    out
 }
 
 #[cfg(test)]
@@ -416,8 +462,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_rects_array_accepts_plain_array() {
-        let rects = parse_rects_array(
+    fn parse_candidate_rects_response_accepts_bare_array() {
+        let (vp, rects) = parse_candidate_rects_response(
             r#"[{"x": 1.0, "y": 2.0, "width": 3.0, "height": 4.0}, null]"#,
             2,
         );
@@ -426,21 +472,54 @@ mod tests {
         assert_eq!(r.x, 1.0);
         assert_eq!(r.width, 3.0);
         assert!(rects[1].is_none());
+        // Bare arrays carry no viewport info.
+        assert_eq!(vp.width, 0.0);
+        assert_eq!(vp.height, 0.0);
     }
 
     #[test]
-    fn parse_rects_array_pads_with_none_on_parse_failure() {
-        assert_eq!(parse_rects_array("not json", 3).len(), 3);
-        assert!(parse_rects_array("not json", 3).iter().all(|e| e.is_none()));
+    fn parse_candidate_rects_response_pads_with_none_on_parse_failure() {
+        let (_, rects) = parse_candidate_rects_response("not json", 3);
+        assert_eq!(rects.len(), 3);
+        assert!(rects.iter().all(|e| e.is_none()));
     }
 
     #[test]
-    fn parse_rects_array_unwraps_result_envelope() {
-        let rects = parse_rects_array(
+    fn parse_candidate_rects_response_unwraps_result_envelope() {
+        let (_, rects) = parse_candidate_rects_response(
             r#"{"result": [{"x": 10.0, "y": 20.0, "width": 30.0, "height": 40.0}]}"#,
             1,
         );
         let r = rects[0].as_ref().expect("rect present");
         assert_eq!(r.x, 10.0);
+    }
+
+    #[test]
+    fn parse_candidate_rects_response_extracts_viewport_from_envelope() {
+        let (vp, rects) = parse_candidate_rects_response(
+            r#"{
+                "viewport": {"width": 1280.0, "height": 720.0},
+                "rects": [{"x": 5.0, "y": 6.0, "width": 7.0, "height": 8.0}]
+            }"#,
+            1,
+        );
+        assert_eq!(vp.width, 1280.0);
+        assert_eq!(vp.height, 720.0);
+        assert_eq!(rects[0].as_ref().unwrap().x, 5.0);
+    }
+
+    #[test]
+    fn parse_candidate_rects_response_extracts_viewport_inside_result_wrapper() {
+        let (vp, rects) = parse_candidate_rects_response(
+            r#"{"result": {
+                "viewport": {"width": 800.0, "height": 600.0},
+                "rects": []
+            }}"#,
+            2,
+        );
+        assert_eq!(vp.width, 800.0);
+        assert_eq!(vp.height, 600.0);
+        assert_eq!(rects.len(), 2);
+        assert!(rects.iter().all(|r| r.is_none()));
     }
 }

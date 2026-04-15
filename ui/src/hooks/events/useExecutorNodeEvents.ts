@@ -10,6 +10,8 @@ interface AmbiguityResolvedPayload {
   candidates: AmbiguityCandidateView[];
   chosen_uid: string;
   reasoning: string;
+  viewport_width: number;
+  viewport_height: number;
   screenshot_path: string;
   screenshot_base64: string;
 }
@@ -73,6 +75,8 @@ export function useExecutorNodeEvents() {
         })),
         chosenUid: p.chosen_uid,
         reasoning: p.reasoning,
+        viewportWidth: p.viewport_width,
+        viewportHeight: p.viewport_height,
         screenshotPath: p.screenshot_path,
         screenshotBase64: p.screenshot_base64,
         createdAt: Date.now(),

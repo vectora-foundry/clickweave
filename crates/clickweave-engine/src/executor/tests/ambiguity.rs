@@ -73,9 +73,11 @@ async fn resolve_cdp_ambiguity_returns_chosen_uid_and_rects_from_vlm() {
     let mcp = StubToolProvider::new();
     // capture_verification_screenshot -> take_screenshot (image)
     mcp.push_response(screenshot_response());
-    // cdp_evaluate_script for rects
+    // cdp_evaluate_script now returns a {viewport, rects} envelope.
     mcp.push_text_response(
-        r#"[{"x": 10.0, "y": 20.0, "width": 30.0, "height": 40.0}, {"x": 50.0, "y": 60.0, "width": 70.0, "height": 80.0}]"#,
+        r#"{"viewport": {"width": 1280.0, "height": 720.0},
+             "rects": [{"x": 10.0, "y": 20.0, "width": 30.0, "height": 40.0},
+                       {"x": 50.0, "y": 60.0, "width": 70.0, "height": 80.0}]}"#,
     );
 
     let res = exec
@@ -97,6 +99,8 @@ async fn resolve_cdp_ambiguity_returns_chosen_uid_and_rects_from_vlm() {
         .as_ref()
         .expect("second rect present");
     assert_eq!(r1.y, 60.0);
+    assert_eq!(res.viewport_width, 1280.0);
+    assert_eq!(res.viewport_height, 720.0);
     // screenshot_path is a filename, not a full path — the UI resolves it
     // relative to the node's artifacts dir.
     assert!(res.screenshot_path.ends_with(".png"));

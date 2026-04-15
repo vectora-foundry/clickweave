@@ -206,6 +206,8 @@ describe("agentSlice ambiguity resolutions", () => {
     ],
     chosenUid: "a1",
     reasoning: "only visible candidate",
+    viewportWidth: 1280,
+    viewportHeight: 720,
     screenshotPath: "ambiguity_abc.png",
     screenshotBase64: "aaaa",
     createdAt: 1,

@@ -185,6 +185,8 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
                     candidates,
                     chosen_uid,
                     reasoning,
+                    viewport_width,
+                    viewport_height,
                     screenshot_path,
                     screenshot_base64,
                 } => emit_handle.emit(
@@ -207,6 +209,8 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
                             .collect(),
                         chosen_uid,
                         reasoning,
+                        viewport_width,
+                        viewport_height,
                         screenshot_path,
                         screenshot_base64,
                     },
