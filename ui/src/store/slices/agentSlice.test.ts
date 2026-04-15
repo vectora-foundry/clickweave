@@ -109,6 +109,24 @@ describe("agentSlice.startAgent", () => {
     expect(statusDuringInvoke).toBe("running");
   });
 
+  it("clears a leftover agentRunId on a fresh start so stale events from the prior run are dropped", async () => {
+    // After a run reaches a terminal state, `agentRunId` is not cleared
+    // automatically — terminal event handlers leave it in place. A fresh
+    // start from "complete"/"stopped"/"error" must null it out so any
+    // late in-flight event from the prior run fails `isStaleRunId`
+    // instead of being accepted into the new run's state.
+    useStore.getState().setAgentRunId("run-prior");
+    useStore.getState().setAgentStatus("complete");
+    let runIdDuringInvoke: string | null | undefined;
+    invokeMock.mockImplementationOnce(async () => {
+      runIdDuringInvoke = useStore.getState().agentRunId;
+    });
+
+    await useStore.getState().startAgent("fresh goal");
+
+    expect(runIdDuringInvoke).toBeNull();
+  });
+
   it("surfaces non-AlreadyRunning rejections as agentStatus=error on a fresh start", async () => {
     invokeMock.mockRejectedValueOnce({
       kind: "Internal",

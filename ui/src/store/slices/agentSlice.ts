@@ -80,11 +80,6 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
     // terminal events (e.g. `agent://error` from a fast MCP-spawn
     // failure) can flip status to "error" — their handler gates on
     // `agentStatus === "running"`.
-    //
-    // `agentRunId` is intentionally left to `agent://started`: the
-    // backend emits that event before `run_agent` returns, and
-    // clobbering it here would race with the listener and leave every
-    // subsequent event looking stale under `isStaleRunId`.
     const wasActive = agentStatus === "running";
     if (!wasActive) {
       set({
@@ -94,6 +89,12 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
         agentError: null,
         currentAgentStep: 0,
         pendingApproval: null,
+        // Clear the prior run's ID so any late in-flight events from it
+        // fail `isStaleRunId` (which drops events when active is null).
+        // `agent://started` from the new run will install the fresh ID;
+        // setting null here — not after invoke — avoids racing with that
+        // listener.
+        agentRunId: null,
       });
       pushLog(`Agent started with goal: ${goal}`);
     }
