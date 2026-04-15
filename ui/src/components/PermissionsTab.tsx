@@ -128,7 +128,7 @@ export function PermissionsTab({
 
       <SettingRow
         title="Allow all planning actions"
-        description="Skip confirmation for all tools. Per-tool settings are ignored, but the destructive guardrail above still applies when it is on."
+        description="Skip confirmation for all tools. Per-tool settings and pattern rules are ignored, but the destructive guardrail above still applies when it is on."
         control={
           <Toggle
             checked={allowAll}
@@ -209,7 +209,10 @@ export function PermissionsTab({
           Rules apply to any tool matching the glob. Deny beats Ask beats Allow
           when multiple rules match. The args substring is optional.
         </div>
-        <div className="space-y-1.5">
+        <div
+          className={`space-y-1.5 ${allowAll ? "opacity-40 pointer-events-none" : ""}`}
+          aria-disabled={allowAll}
+        >
           {patternRules.map((rule, index) => (
             <div
               key={index}
@@ -223,6 +226,7 @@ export function PermissionsTab({
                 }
                 placeholder="cdp_*"
                 aria-label="Tool glob pattern"
+                disabled={allowAll}
                 className={textInputClass}
               />
               <input
@@ -233,6 +237,7 @@ export function PermissionsTab({
                 }
                 placeholder="args substring (optional)"
                 aria-label="Args substring"
+                disabled={allowAll}
                 className={textInputClass}
               />
               <select
@@ -242,6 +247,7 @@ export function PermissionsTab({
                 }
                 className={inputClass}
                 aria-label="Rule action"
+                disabled={allowAll}
               >
                 <option value="allow">Allow</option>
                 <option value="ask">Ask</option>
@@ -251,6 +257,7 @@ export function PermissionsTab({
                 type="button"
                 onClick={() => removeRule(index)}
                 aria-label="Remove rule"
+                disabled={allowAll}
                 className="flex-shrink-0 rounded-md border border-[var(--border)] px-2 py-1 text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
               >
                 &times;
@@ -260,6 +267,7 @@ export function PermissionsTab({
           <button
             type="button"
             onClick={addRule}
+            disabled={allowAll}
             className="rounded-md border border-[var(--border)] px-3 py-1.5 text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
           >
             + Add rule
