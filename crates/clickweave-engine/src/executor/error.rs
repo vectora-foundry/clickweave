@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// A single snapshot line that matched the resolver target, retained so the
@@ -8,6 +9,25 @@ pub struct CdpCandidate {
     pub uid: String,
     /// The full snapshot line, trimmed, for context.
     pub snippet: String,
+}
+
+/// Viewport rectangle of a candidate element, expressed in CSS pixels relative
+/// to the top-left of the page viewport.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Rect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Extended candidate record carrying its viewport rect so the UI can draw
+/// overlays. Used by the `AmbiguityResolved` executor event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CandidateView {
+    pub uid: String,
+    pub snippet: String,
+    pub rect: Option<Rect>,
 }
 
 #[derive(Debug, Error)]

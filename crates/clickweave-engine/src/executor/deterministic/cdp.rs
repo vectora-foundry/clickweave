@@ -10,15 +10,40 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Simple element resolution: take a snapshot, find the first matching
     /// element by text, and return its UID. No LLM disambiguation or
     /// multi-tier fallbacks — the agent architecture handles that.
+    #[cfg(test)]
     pub(in crate::executor) async fn resolve_cdp_element_uid(
         &self,
         target: &str,
         mcp: &(impl Mcp + ?Sized),
     ) -> ExecutorResult<String> {
+        self.resolve_cdp_element_uid_with_overrides(target, mcp, None)
+            .await
+    }
+
+    /// Variant that lets the caller pass a target→uid override map. When an
+    /// override is present for `target`, the snapshot/MCP round-trip is
+    /// skipped and the pre-chosen uid is returned directly. Used by the
+    /// agent-disambiguation retry path.
+    pub(in crate::executor) async fn resolve_cdp_element_uid_with_overrides(
+        &self,
+        target: &str,
+        mcp: &(impl Mcp + ?Sized),
+        overrides: Option<&RetryContext>,
+    ) -> ExecutorResult<String> {
         if target.trim().is_empty() {
             return Err(ExecutorError::Cdp(
                 "CDP target is empty; expected a non-empty label or text".to_string(),
             ));
+        }
+
+        if let Some(ctx) = overrides
+            && let Some(uid) = ctx.read_cdp_ambiguity_overrides().get(target).cloned()
+        {
+            self.log(format!(
+                "CDP: using agent-picked uid='{}' for '{}' (ambiguity override)",
+                uid, target
+            ));
+            return Ok(uid);
         }
 
         // Refresh page list to verify CDP connection is healthy.
@@ -90,9 +115,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         target: &str,
         mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
-        _retry_ctx: &RetryContext,
+        retry_ctx: &RetryContext,
     ) -> ExecutorResult<String> {
-        let uid = self.resolve_cdp_element_uid(target, mcp).await?;
+        let uid = self
+            .resolve_cdp_element_uid_with_overrides(target, mcp, Some(retry_ctx))
+            .await?;
 
         self.log(format!("CDP: {} element uid='{}'", action, uid));
         let result = mcp
@@ -137,17 +164,35 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// UID-only tools. `ResolvedUid` and obvious UID-shaped labels pass through
     /// untouched; `Intent` and free-form labels go through snapshot resolution
     /// so the UID is refreshed against the live DOM.
+    #[cfg(test)]
     pub(in crate::executor) async fn resolve_cdp_target_uid(
         &self,
         target: &clickweave_core::CdpTarget,
         mcp: &(impl Mcp + ?Sized),
     ) -> ExecutorResult<String> {
+        self.resolve_cdp_target_uid_with_overrides(target, mcp, None)
+            .await
+    }
+
+    /// Override-aware variant of `resolve_cdp_target_uid`.
+    pub(in crate::executor) async fn resolve_cdp_target_uid_with_overrides(
+        &self,
+        target: &clickweave_core::CdpTarget,
+        mcp: &(impl Mcp + ?Sized),
+        overrides: Option<&RetryContext>,
+    ) -> ExecutorResult<String> {
         use clickweave_core::CdpTarget;
         match target {
             CdpTarget::ResolvedUid(uid) => Ok(uid.clone()),
             CdpTarget::ExactLabel(s) if looks_like_cdp_uid(s) => Ok(s.clone()),
-            CdpTarget::ExactLabel(label) => self.resolve_cdp_element_uid(label, mcp).await,
-            CdpTarget::Intent(intent) => self.resolve_cdp_element_uid(intent, mcp).await,
+            CdpTarget::ExactLabel(label) => {
+                self.resolve_cdp_element_uid_with_overrides(label, mcp, overrides)
+                    .await
+            }
+            CdpTarget::Intent(intent) => {
+                self.resolve_cdp_element_uid_with_overrides(intent, mcp, overrides)
+                    .await
+            }
         }
     }
 

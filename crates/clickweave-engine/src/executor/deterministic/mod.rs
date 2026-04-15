@@ -471,7 +471,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // CDP Fill: resolve target against the live snapshot so a UID baked in
         // at planning time stays valid after relaunch.
         if let NodeType::CdpFill(p) = node_type {
-            let uid = self.resolve_cdp_target_uid(&p.target, mcp).await?;
+            let uid = self
+                .resolve_cdp_target_uid_with_overrides(&p.target, mcp, Some(retry_ctx))
+                .await?;
             let args = serde_json::json!({"uid": uid, "value": p.value});
             self.record_event(
                 node_run.as_deref(),

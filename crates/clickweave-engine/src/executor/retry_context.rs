@@ -1,5 +1,6 @@
 use clickweave_core::NodeVerdict;
 use clickweave_llm::Message;
+use std::collections::HashMap;
 use std::sync::RwLock;
 use uuid::Uuid;
 
@@ -50,6 +51,12 @@ pub(crate) struct RetryContext {
     /// Set by deterministic execution, read by supervision to include
     /// actual-vs-intended comparison in the step message.
     pub last_tool_result: Option<String>,
+
+    /// Agent-picked UID overrides for CDP targets whose snapshot was ambiguous.
+    /// Keyed by the resolver target string; the CDP resolver consults this map
+    /// before taking a snapshot so the follow-up retry clicks the chosen
+    /// element instead of re-raising the same ambiguity error.
+    pub cdp_ambiguity_overrides: RwLock<HashMap<String, String>>,
 }
 
 impl RetryContext {
@@ -65,7 +72,24 @@ impl RetryContext {
             force_resolve: false,
             focus_dirty: false,
             last_tool_result: None,
+            cdp_ambiguity_overrides: RwLock::new(HashMap::new()),
         }
+    }
+
+    pub fn read_cdp_ambiguity_overrides(
+        &self,
+    ) -> std::sync::RwLockReadGuard<'_, HashMap<String, String>> {
+        self.cdp_ambiguity_overrides
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn write_cdp_ambiguity_overrides(
+        &self,
+    ) -> std::sync::RwLockWriteGuard<'_, HashMap<String, String>> {
+        self.cdp_ambiguity_overrides
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     // ── RwLock helpers ───────────────────────────────────────────────────
