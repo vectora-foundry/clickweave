@@ -43,6 +43,10 @@ export interface AmbiguityResolution {
   candidates: AmbiguityCandidateView[];
   chosenUid: string;
   reasoning: string;
+  /** Viewport dimensions (CSS pixels) at capture time — rects are relative
+   *  to this viewport, not to the full screenshot. `0` means unknown. */
+  viewportWidth: number;
+  viewportHeight: number;
   /** Path relative to the node's `artifacts/` directory. */
   screenshotPath: string;
   /** Base64-encoded PNG data. Populated from the live executor event. */

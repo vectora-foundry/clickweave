@@ -176,6 +176,8 @@ pub struct AmbiguityResolvedPayload {
     pub candidates: Vec<CandidateViewPayload>,
     pub chosen_uid: String,
     pub reasoning: String,
+    pub viewport_width: f64,
+    pub viewport_height: f64,
     /// Screenshot filename relative to the node's `artifacts/` directory.
     pub screenshot_path: String,
     /// Base64-encoded PNG of the screenshot taken when the agent decided.

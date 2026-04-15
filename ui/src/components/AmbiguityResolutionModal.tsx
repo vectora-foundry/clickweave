@@ -20,10 +20,17 @@ const CHOSEN_FILL = "rgba(16, 185, 129, 0.15)";
  * outline plus a subtle fill tint so it's immediately obvious which one the
  * agent committed to.
  *
- * Rects come from the CDP viewport (CSS pixels). The captured image may be at
- * a different natural resolution than the viewport (device-pixel ratio), so
- * we scale by the ratio between the rendered image size and the natural image
- * size.
+ * Rects come from the CDP viewport (CSS pixels, top-left is the viewport
+ * origin). The engine captures a whole-window screenshot that may include OS
+ * chrome (title bar, tab bar) above the viewport, so we need the viewport
+ * dimensions to compute:
+ *   - scale: imagePx per viewport CSS px (pick the axis that matches so we
+ *     don't stretch).
+ *   - offset: how many image pixels of chrome sit above the viewport —
+ *     approximated as `naturalHeight - viewportHeight*scale` on the vertical
+ *     axis and centered horizontally.
+ * When `viewportWidth`/`viewportHeight` are 0 (CDP evaluate failed), we fall
+ * back to the old full-image scaling so the overlay still shows something.
  */
 export function AmbiguityResolutionModal({ resolution, onClose }: Props) {
   const imageRef = useRef<HTMLImageElement>(null);
@@ -56,16 +63,33 @@ export function AmbiguityResolutionModal({ resolution, onClose }: Props) {
       ctx.scale(dpr, dpr);
       ctx.clearRect(0, 0, rect.width, rect.height);
 
-      // Scale CDP-viewport coordinates (naturalWidth/Height) to the rendered
-      // image size. If naturalWidth is 0 (still decoding), skip.
+      // Viewport → image mapping. Candidate rects are viewport-relative
+      // (CSS pixels). The screenshot may include OS chrome around the
+      // viewport, so scale by the viewport extent and offset by the chrome
+      // band. When viewport info is missing, assume the image IS the
+      // viewport (fallback).
       if (img.naturalWidth === 0 || img.naturalHeight === 0) return;
-      const sx = rect.width / img.naturalWidth;
-      const sy = rect.height / img.naturalHeight;
+      const { viewportWidth, viewportHeight } = resolution;
+      const hasViewport = viewportWidth > 0 && viewportHeight > 0;
+      const vpW = hasViewport ? viewportWidth : img.naturalWidth;
+      const vpH = hasViewport ? viewportHeight : img.naturalHeight;
+      const dispToImage = rect.width / img.naturalWidth;
+      const sx = (rect.width / vpW) * (vpW / img.naturalWidth);
+      const sy = (rect.height / vpH) * (vpH / img.naturalHeight);
+      // Chrome offset inside the image (image px): whatever's above/beside
+      // the viewport. Horizontal offset assumes chrome is roughly centered
+      // (true for most browser windows); vertical offset assumes chrome sits
+      // at the top (tab + title bars).
+      const chromeXImgPx = Math.max(0, img.naturalWidth - vpW) / 2;
+      const chromeYImgPx = Math.max(0, img.naturalHeight - vpH);
+      // Convert image-pixel offsets to rendered-pixel offsets.
+      const offsetX = chromeXImgPx * dispToImage;
+      const offsetY = chromeYImgPx * (rect.height / img.naturalHeight);
 
       const drawRect = (c: AmbiguityCandidateView, isChosen: boolean) => {
         if (!c.rect) return;
-        const x = c.rect.x * sx;
-        const y = c.rect.y * sy;
+        const x = c.rect.x * sx + offsetX;
+        const y = c.rect.y * sy + offsetY;
         const w = c.rect.width * sx;
         const h = c.rect.height * sy;
 

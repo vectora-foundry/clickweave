@@ -123,6 +123,12 @@ pub enum ExecutorEvent {
         candidates: Vec<CandidateView>,
         chosen_uid: String,
         reasoning: String,
+        /// Viewport dimensions (CSS pixels) at capture time. Used by the UI
+        /// overlay to translate candidate rects — which are viewport-relative
+        /// — into image-pixel coordinates when the screenshot includes
+        /// chrome (title bar, tab bar) around the viewport.
+        viewport_width: f64,
+        viewport_height: f64,
         /// Screenshot filename relative to the node's `artifacts/` directory.
         /// The UI reads the live base64 from `screenshot_base64`; this path is
         /// for post-run re-rendering via the trace event.

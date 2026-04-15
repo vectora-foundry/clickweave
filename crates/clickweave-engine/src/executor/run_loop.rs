@@ -166,6 +166,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     // fresh start on each plain retry.
                     retry_ctx.write_tried_click_indices().clear();
                     retry_ctx.write_tried_cdp_uids().clear();
+                    retry_ctx.write_cdp_ambiguity_overrides().clear();
                     self.evict_caches_for_node(node_type);
                     retry_ctx.force_resolve = true;
                     self.record_event(
@@ -368,6 +369,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                     supervision_attempts = 0;
                                     ctx.write_tried_click_indices().clear();
                                     ctx.write_tried_cdp_uids().clear();
+                                    ctx.write_cdp_ambiguity_overrides().clear();
                                     ctx.supervision_hint = None;
                                     self.re_execute_preceding_click(node_id, node_type, mcp, ctx)
                                         .await;
@@ -443,6 +445,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                 candidates: res.candidates_with_rects,
                                 chosen_uid: res.chosen_uid,
                                 reasoning: res.reasoning,
+                                viewport_width: res.viewport_width,
+                                viewport_height: res.viewport_height,
                                 screenshot_path: res.screenshot_path,
                                 screenshot_base64: res.screenshot_base64,
                             });
@@ -585,6 +589,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             ctx.supervision_hint = None;
             ctx.write_tried_click_indices().clear();
             ctx.write_tried_cdp_uids().clear();
+            // Disambiguation overrides are per-node: a later node that happens
+            // to share a target label (e.g. "Save") must re-resolve against
+            // its own page rather than reuse an earlier node's chosen uid.
+            ctx.write_cdp_ambiguity_overrides().clear();
             self.log(format!(
                 "Executing node: {} ({})",
                 node_name,
