@@ -184,10 +184,6 @@ impl Mcp for StubToolProvider {
     fn tools_as_openai(&self) -> Vec<Value> {
         self.openai_schemas.clone()
     }
-
-    async fn refresh_tools(&self) -> anyhow::Result<()> {
-        Ok(())
-    }
 }
 
 pub(super) fn make_scripted_executor(responses: Vec<&str>) -> WorkflowExecutor<ScriptedBackend> {

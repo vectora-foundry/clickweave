@@ -49,10 +49,6 @@ pub(crate) trait Mcp: Send + Sync {
 
     /// Convert available tools to the OpenAI-compatible function-call format.
     fn tools_as_openai(&self) -> Vec<serde_json::Value>;
-
-    /// Re-fetch the tool list from the MCP server. Call after state-changing
-    /// operations that expose new tools (e.g. `cdp_connect`).
-    fn refresh_tools(&self) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
 impl Mcp for clickweave_mcp::McpClient {
@@ -70,10 +66,6 @@ impl Mcp for clickweave_mcp::McpClient {
 
     fn tools_as_openai(&self) -> Vec<serde_json::Value> {
         clickweave_mcp::McpClient::tools_as_openai(self)
-    }
-
-    fn refresh_tools(&self) -> impl Future<Output = anyhow::Result<()>> + Send {
-        clickweave_mcp::McpClient::refresh_tools(self)
     }
 }
 
