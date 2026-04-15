@@ -139,9 +139,15 @@ async fn resolve_cdp_element_uid_surfaces_ambiguous_candidates() {
         "display should mention target: {display}"
     );
     assert!(
-        display.contains("a1"),
-        "display should list uids: {display}"
+        display.contains("3 candidates"),
+        "display should mention candidate count: {display}"
     );
+    for uid in ["a1", "a2", "a3"] {
+        assert!(
+            display.contains(uid),
+            "display should list uid {uid}: {display}"
+        );
+    }
     assert!(
         !display.contains("button"),
         "display must not leak snippet tokens: {display}"
