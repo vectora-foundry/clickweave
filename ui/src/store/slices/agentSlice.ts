@@ -73,16 +73,6 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
 
   startAgent: async (goal) => {
     const { pushLog, agentConfig, projectPath, workflow } = get();
-    set({
-      agentStatus: "running",
-      agentGoal: goal,
-      agentSteps: [],
-      agentError: null,
-      currentAgentStep: 0,
-      pendingApproval: null,
-      agentRunId: null,
-    });
-    pushLog(`Agent started with goal: ${goal}`);
     try {
       await invoke("run_agent", {
         request: {
@@ -93,10 +83,22 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
           workflow_id: workflow.id,
         },
       });
+      // Only reset visible run state once the backend has accepted the
+      // request. If invoke rejects (e.g. AlreadyRunning) we must leave
+      // agentRunId, agentSteps, pendingApproval, and agentStatus alone
+      // so the original run's events continue to route to the UI.
+      set({
+        agentStatus: "running",
+        agentGoal: goal,
+        agentSteps: [],
+        agentError: null,
+        currentAgentStep: 0,
+        pendingApproval: null,
+        agentRunId: null,
+      });
+      pushLog(`Agent started with goal: ${goal}`);
     } catch (err) {
-      const msg = formatAgentError(err);
-      set({ agentStatus: "error", agentError: msg });
-      pushLog(`Agent failed: ${msg}`);
+      pushLog(`Agent start rejected: ${formatAgentError(err)}`);
     }
   },
 

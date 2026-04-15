@@ -15,30 +15,62 @@ describe("agentSlice.startAgent", () => {
     useStore.getState().resetAgent();
   });
 
-  it("surfaces AlreadyRunning rejections into agentStatus=error", async () => {
+  it("preserves the active run's state when invoke rejects with AlreadyRunning", async () => {
+    // Simulate an in-flight run: the original startAgent already installed
+    // a run ID and accumulated step/approval state.
+    useStore.getState().setAgentRunId("run-prior");
+    useStore.getState().setAgentStatus("running");
+    useStore.getState().addAgentStep({
+      summary: "prior step",
+      toolName: "click",
+      toolArgs: null,
+      toolResult: "ok",
+      pageTransitioned: false,
+    });
+    useStore.getState().setPendingApproval({
+      stepIndex: 0,
+      toolName: "click",
+      arguments: {},
+      description: "Click the button",
+    });
+
     invokeMock.mockRejectedValueOnce({
       kind: "AlreadyRunning",
       message: "Already running",
     });
 
-    await useStore.getState().startAgent("do something");
+    await useStore.getState().startAgent("duplicate goal");
 
     const state = useStore.getState();
-    expect(state.agentStatus).toBe("error");
-    expect(state.agentError).toBe("Already running");
+    // The rejection path must NOT wipe the live run — otherwise
+    // useAgentEvents drops every subsequent event as stale.
+    expect(state.agentRunId).toBe("run-prior");
+    expect(state.agentStatus).toBe("running");
+    expect(state.agentSteps).toHaveLength(1);
+    expect(state.pendingApproval).not.toBeNull();
+    expect(state.agentError).toBeNull();
+    const lastLog = useStore.getState().logs.at(-1);
+    expect(lastLog).toContain("Agent start rejected");
+    expect(lastLog).toContain("Already running");
   });
 
-  it("surfaces string-serialized AlreadyRunning rejections into agentStatus=error", async () => {
+  it("preserves the active run's state when invoke rejects with a string error", async () => {
+    useStore.getState().setAgentRunId("run-prior");
+    useStore.getState().setAgentStatus("running");
+
     invokeMock.mockRejectedValueOnce("AlreadyRunning: Already running");
 
-    await useStore.getState().startAgent("do something");
+    await useStore.getState().startAgent("duplicate goal");
 
     const state = useStore.getState();
-    expect(state.agentStatus).toBe("error");
-    expect(state.agentError).toMatch(/already running/i);
+    expect(state.agentRunId).toBe("run-prior");
+    expect(state.agentStatus).toBe("running");
+    const lastLog = useStore.getState().logs.at(-1);
+    expect(lastLog).toMatch(/agent start rejected/i);
+    expect(lastLog).toMatch(/already running/i);
   });
 
-  it("stays in running state when invoke succeeds", async () => {
+  it("resets run state and enters running state when invoke succeeds", async () => {
     invokeMock.mockResolvedValueOnce(undefined);
 
     await useStore.getState().startAgent("do something else");
@@ -46,9 +78,12 @@ describe("agentSlice.startAgent", () => {
     const state = useStore.getState();
     expect(state.agentStatus).toBe("running");
     expect(state.agentError).toBeNull();
+    expect(state.agentGoal).toBe("do something else");
+    expect(state.agentSteps).toEqual([]);
+    expect(state.pendingApproval).toBeNull();
   });
 
-  it("clears the previous agentRunId before invoke so stale events are treated as stale", async () => {
+  it("clears the previous agentRunId after a successful invoke so agent://started can install a fresh one", async () => {
     useStore.getState().setAgentRunId("run-prior");
     invokeMock.mockResolvedValueOnce(undefined);
 
