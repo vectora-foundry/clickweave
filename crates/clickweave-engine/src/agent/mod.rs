@@ -2,12 +2,14 @@ mod cache;
 mod completion_check;
 mod context;
 mod loop_runner;
+pub mod permissions;
 mod prompt;
 mod recovery;
 mod transition;
 mod types;
 
 pub use loop_runner::{AgentRunner, ApprovalGate};
+pub use permissions::{PermissionAction, PermissionPolicy, PermissionRule, ToolAnnotations};
 pub use types::*;
 
 use clickweave_llm::ChatBackend;
