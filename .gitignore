@@ -4,6 +4,7 @@ node_modules
 src-tauri/logs/
 .claude/memory/
 .claude/settings.local.json
+.claude/issues.local.md
 .claude/plans/
 .claude/code-reviews/
 .claude/handoff/

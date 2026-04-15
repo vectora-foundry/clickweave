@@ -40,6 +40,12 @@
 - Location: `internal_docs/plans/` (gitignored, local-only)
 - Naming: `YYYY-MM-DD_HH-MM-SS-<topic>.md` (e.g., `2026-02-12_10-07-02-app-name-resolution.md`)
 
+## Issue Conventions
+- **Issues repo is separate from this code repo.** Do not file issues against this repo.
+- **Private specifics** (target issues repo, project board, canonical labels) live in `.claude/issues.local.md` (gitignored). Read that before creating any issue.
+- **Sub-issue linkage:** add `Parent: #NN` in the child body.
+- **Public-PR hazard:** never reference private issue numbers in PRs against this public repo. Link from the private issue to the PR instead.
+
 ## Rust Development
 
 ### Code Style
