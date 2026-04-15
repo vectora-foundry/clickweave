@@ -1,5 +1,15 @@
 use thiserror::Error;
 
+/// A single snapshot line that matched the resolver target, retained so the
+/// agent loop (or a human reading the error) can disambiguate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CdpCandidate {
+    /// UID parsed from the snapshot line (e.g. `a5`, `1_0`).
+    pub uid: String,
+    /// The full snapshot line, trimmed, for context.
+    pub snippet: String,
+}
+
 #[derive(Debug, Error)]
 pub enum ExecutorError {
     #[error("LLM error: {0}")]
@@ -19,6 +29,16 @@ pub enum ExecutorError {
 
     #[error("CDP error: {0}")]
     Cdp(String),
+
+    #[error(
+        "Ambiguous CDP target '{target}': {} candidates matched — {}",
+        candidates.len(),
+        candidates.iter().map(|c| format!("uid={} ({})", c.uid, c.snippet)).collect::<Vec<_>>().join("; ")
+    )]
+    CdpAmbiguousTarget {
+        target: String,
+        candidates: Vec<CdpCandidate>,
+    },
 
     #[error("Validation error: {0}")]
     Validation(String),

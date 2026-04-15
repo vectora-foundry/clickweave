@@ -79,6 +79,81 @@ async fn resolve_cdp_target_uid_resolves_intent_via_snapshot() {
 }
 
 #[tokio::test]
+async fn resolve_cdp_element_uid_succeeds_with_single_match() {
+    let exec = make_test_executor();
+    let mcp = StubToolProvider::new();
+    // cdp_list_pages (health check) then cdp_take_snapshot with exactly one match.
+    mcp.push_text_response("1: https://example.com [selected]");
+    mcp.push_text_response("[uid=\"a5\"] button \"Submit\"");
+
+    let uid = exec
+        .resolve_cdp_element_uid("Submit", &mcp)
+        .await
+        .expect("single match should resolve");
+    assert_eq!(uid, "a5");
+}
+
+#[tokio::test]
+async fn resolve_cdp_element_uid_reports_zero_matches() {
+    let exec = make_test_executor();
+    let mcp = StubToolProvider::new();
+    // Health check + three snapshot attempts that never mention the target.
+    mcp.push_text_response("1: https://example.com [selected]");
+    for _ in 0..3 {
+        mcp.push_text_response("[uid=\"a1\"] button \"Cancel\"");
+    }
+
+    let err = exec
+        .resolve_cdp_element_uid("Submit", &mcp)
+        .await
+        .expect_err("missing element must fail");
+    assert!(matches!(err, ExecutorError::Cdp(_)));
+    assert!(err.to_string().contains("No matching element"));
+}
+
+#[tokio::test]
+async fn resolve_cdp_element_uid_surfaces_ambiguous_candidates() {
+    use crate::executor::CdpCandidate;
+
+    let exec = make_test_executor();
+    let mcp = StubToolProvider::new();
+    // Health check + a snapshot with three buttons labelled "Save".
+    mcp.push_text_response("1: https://example.com [selected]");
+    mcp.push_text_response(concat!(
+        "[uid=\"a1\"] button \"Save\"\n",
+        "[uid=\"a2\"] button \"Save\"\n",
+        "[uid=\"a3\"] button \"Save\"\n",
+    ));
+
+    let err = exec
+        .resolve_cdp_element_uid("Save", &mcp)
+        .await
+        .expect_err("ambiguous match must fail loudly");
+
+    let ExecutorError::CdpAmbiguousTarget { target, candidates } = err else {
+        panic!("expected CdpAmbiguousTarget, got: {err:?}");
+    };
+    assert_eq!(target, "Save");
+    assert_eq!(
+        candidates,
+        vec![
+            CdpCandidate {
+                uid: "a1".to_string(),
+                snippet: "[uid=\"a1\"] button \"Save\"".to_string(),
+            },
+            CdpCandidate {
+                uid: "a2".to_string(),
+                snippet: "[uid=\"a2\"] button \"Save\"".to_string(),
+            },
+            CdpCandidate {
+                uid: "a3".to_string(),
+                snippet: "[uid=\"a3\"] button \"Save\"".to_string(),
+            },
+        ]
+    );
+}
+
+#[tokio::test]
 async fn execute_cdp_action_returns_resolver_error_when_target_missing() {
     // The deterministic executor no longer carries a silent native-click
     // fallback for elements absent from the CDP accessibility tree — the

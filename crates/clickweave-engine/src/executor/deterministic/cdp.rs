@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use super::super::retry_context::RetryContext;
-use super::super::{ExecutorError, ExecutorResult, Mcp, WorkflowExecutor};
+use super::super::{CdpCandidate, ExecutorError, ExecutorResult, Mcp, WorkflowExecutor};
 use clickweave_core::NodeRun;
 use clickweave_llm::ChatBackend;
 use uuid::Uuid;
@@ -54,22 +54,28 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
 
             let snapshot_text = Self::extract_result_text(&snapshot_result);
-            let target_lower = target.to_lowercase();
+            let candidates = collect_snapshot_candidates(&snapshot_text, target);
 
-            // Simple search: find lines containing the target text and a UID.
-            for line in snapshot_text.lines() {
-                let Some(uid) = Self::parse_snapshot_uid(line) else {
-                    continue;
-                };
-                // Skip leaf text nodes.
-                let after_uid = line.trim_start();
-                if after_uid.contains("StaticText") || after_uid.contains("InlineTextBox") {
-                    continue;
-                }
-                // Check if the line label contains the target.
-                if line.to_lowercase().contains(&target_lower) {
+            match candidates.len() {
+                0 => continue,
+                1 => {
+                    let uid = candidates
+                        .into_iter()
+                        .next()
+                        .map(|c| c.uid)
+                        .unwrap_or_default();
                     self.log(format!("CDP: resolved '{}' -> uid='{}'", target, uid));
                     return Ok(uid);
+                }
+                n => {
+                    self.log(format!(
+                        "CDP: ambiguous target '{}' matched {} elements",
+                        target, n
+                    ));
+                    return Err(ExecutorError::CdpAmbiguousTarget {
+                        target: target.to_string(),
+                        candidates,
+                    });
                 }
             }
         }
@@ -78,28 +84,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             "No matching element for '{}' in CDP snapshot",
             target
         )))
-    }
-
-    /// Parse a UID from a CDP snapshot line.
-    /// Handles both `uid=1_0 ...` and `[uid="e1"] ...` formats.
-    fn parse_snapshot_uid(line: &str) -> Option<String> {
-        let uid_pos = line.find("uid=")?;
-        let rest = &line[uid_pos + 4..];
-        if let Some(quoted) = rest.strip_prefix('"') {
-            let end = quoted.find('"')?;
-            let uid = &quoted[..end];
-            if uid.is_empty() {
-                return None;
-            }
-            Some(uid.to_string())
-        } else {
-            let end = rest.find(' ').unwrap_or(rest.len());
-            let uid = &rest[..end];
-            if uid.is_empty() {
-                return None;
-            }
-            Some(uid.to_string())
-        }
     }
 
     /// Resolve a CDP element and perform an action (click or hover) on it.
@@ -520,6 +504,52 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 }
 
+/// Parse a UID from a CDP snapshot line.
+/// Handles both `uid=1_0 ...` and `[uid="e1"] ...` formats.
+fn parse_snapshot_uid(line: &str) -> Option<String> {
+    let uid_pos = line.find("uid=")?;
+    let rest = &line[uid_pos + 4..];
+    if let Some(quoted) = rest.strip_prefix('"') {
+        let end = quoted.find('"')?;
+        let uid = &quoted[..end];
+        if uid.is_empty() {
+            return None;
+        }
+        Some(uid.to_string())
+    } else {
+        let end = rest.find(' ').unwrap_or(rest.len());
+        let uid = &rest[..end];
+        if uid.is_empty() {
+            return None;
+        }
+        Some(uid.to_string())
+    }
+}
+
+/// Scan a CDP snapshot for lines whose label contains `target` (case-insensitive)
+/// and carry a UID. Leaf text nodes (`StaticText`, `InlineTextBox`) are skipped
+/// — those repeat the parent's label and would inflate the candidate count.
+fn collect_snapshot_candidates(snapshot_text: &str, target: &str) -> Vec<CdpCandidate> {
+    let target_lower = target.to_lowercase();
+    let mut out = Vec::new();
+    for line in snapshot_text.lines() {
+        let Some(uid) = parse_snapshot_uid(line) else {
+            continue;
+        };
+        let after_uid = line.trim_start();
+        if after_uid.contains("StaticText") || after_uid.contains("InlineTextBox") {
+            continue;
+        }
+        if line.to_lowercase().contains(&target_lower) {
+            out.push(CdpCandidate {
+                uid,
+                snippet: after_uid.to_string(),
+            });
+        }
+    }
+    out
+}
+
 /// Detect UID-shaped strings: an AX/DOM prefix letter plus digits (`a5`, `d12`,
 /// `e1`), or a two-number backend-node form (`1_0`). Anything else is treated
 /// as a human-visible label or intent that must be re-resolved at runtime.
@@ -680,7 +710,10 @@ fn windows_process_image_candidates(app_name: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{looks_like_cdp_uid, windows_process_image_candidates};
+    use super::{
+        collect_snapshot_candidates, looks_like_cdp_uid, parse_snapshot_uid,
+        windows_process_image_candidates,
+    };
 
     #[test]
     fn looks_like_cdp_uid_accepts_prefixed_form() {
@@ -730,5 +763,50 @@ mod tests {
             windows_process_image_candidates("Some App"),
             vec!["Some App.exe".to_string()]
         );
+    }
+
+    #[test]
+    fn parse_snapshot_uid_handles_both_formats() {
+        assert_eq!(
+            parse_snapshot_uid("[uid=\"a5\"] button \"Submit\""),
+            Some("a5".to_string())
+        );
+        assert_eq!(
+            parse_snapshot_uid("  uid=1_0 button \"Submit\""),
+            Some("1_0".to_string())
+        );
+        assert_eq!(parse_snapshot_uid("no uid here"), None);
+    }
+
+    #[test]
+    fn collect_snapshot_candidates_skips_leaf_text_nodes() {
+        let snapshot = concat!(
+            "[uid=\"a1\"] button \"Submit\"\n",
+            "[uid=\"a2\"] StaticText \"Submit\"\n",
+            "[uid=\"a3\"] InlineTextBox \"Submit\"\n",
+        );
+        let candidates = collect_snapshot_candidates(snapshot, "Submit");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].uid, "a1");
+    }
+
+    #[test]
+    fn collect_snapshot_candidates_matches_case_insensitively() {
+        let snapshot = "[uid=\"a1\"] button \"Submit\"";
+        assert_eq!(collect_snapshot_candidates(snapshot, "submit").len(), 1);
+        assert_eq!(collect_snapshot_candidates(snapshot, "SUBMIT").len(), 1);
+    }
+
+    #[test]
+    fn collect_snapshot_candidates_returns_all_matches_for_disambiguation() {
+        let snapshot = concat!(
+            "[uid=\"a1\"] button \"Save\"\n",
+            "[uid=\"a2\"] button \"Save\"\n",
+            "[uid=\"a3\"] button \"Save\"\n",
+        );
+        let candidates = collect_snapshot_candidates(snapshot, "Save");
+        assert_eq!(candidates.len(), 3);
+        let uids: Vec<_> = candidates.iter().map(|c| c.uid.as_str()).collect();
+        assert_eq!(uids, vec!["a1", "a2", "a3"]);
     }
 }
