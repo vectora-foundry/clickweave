@@ -190,7 +190,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                 "name": tool_call.function.name,
                                 "text": Self::truncate_for_trace(&result_text, 8192),
                                 "text_len": result_text.len(),
-                                "image_count": pending_images.len(),
+                                "image_count": tool_image_count,
                             }),
                         );
 
