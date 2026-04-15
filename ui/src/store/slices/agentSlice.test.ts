@@ -16,8 +16,6 @@ describe("agentSlice.startAgent", () => {
   });
 
   it("preserves the active run's state when invoke rejects with AlreadyRunning", async () => {
-    // Simulate an in-flight run: the original startAgent already installed
-    // a run ID and accumulated step/approval state.
     useStore.getState().setAgentRunId("run-prior");
     useStore.getState().setAgentStatus("running");
     useStore.getState().addAgentStep({

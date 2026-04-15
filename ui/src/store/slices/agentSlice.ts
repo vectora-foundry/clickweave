@@ -83,10 +83,11 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
           workflow_id: workflow.id,
         },
       });
-      // Only reset visible run state once the backend has accepted the
-      // request. If invoke rejects (e.g. AlreadyRunning) we must leave
-      // agentRunId, agentSteps, pendingApproval, and agentStatus alone
-      // so the original run's events continue to route to the UI.
+      // Reset visible run state only after the backend accepts. On
+      // rejection (e.g. AlreadyRunning from a duplicate click), leaving
+      // run-scoped state untouched keeps the still-live original run's
+      // events routing through useAgentEvents instead of being dropped
+      // as stale.
       set({
         agentStatus: "running",
         agentGoal: goal,
