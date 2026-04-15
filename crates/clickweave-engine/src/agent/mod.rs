@@ -1,4 +1,5 @@
 mod cache;
+mod completion_check;
 mod context;
 mod loop_runner;
 mod prompt;
@@ -34,6 +35,7 @@ pub struct AgentChannels {
 /// fresh screenshot via the VLM and may halt with a disagreement event
 /// when the VLM rejects completion.
 /// Returns both the final agent state and the (possibly updated) cache.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_agent_workflow<B: ChatBackend>(
     llm: &B,
     config: AgentConfig,

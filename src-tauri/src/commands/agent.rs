@@ -176,11 +176,8 @@ pub async fn run_agent(
         // post-done check only needs to emit YES/NO + a sentence. If the
         // endpoint cannot process images, the VLM call errors and the loop
         // falls through to normal completion instead of tanking the run.
-        let vision = clickweave_llm::LlmClient::new(
-            agent_config
-                .with_thinking(false)
-                .with_max_tokens(512),
-        );
+        let vision =
+            clickweave_llm::LlmClient::new(agent_config.with_thinking(false).with_max_tokens(512));
         let config = AgentConfig::default();
 
         // Begin storage execution and load cross-run state under a single lock.

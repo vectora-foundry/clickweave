@@ -9,6 +9,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+use super::completion_check::{VlmVerdict, build_completion_prompt, parse_yes_no};
 use super::context;
 use super::prompt;
 use super::recovery::{self, RecoveryAction};
@@ -534,6 +535,28 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                     }
                 }
                 StepOutcome::Done(summary) => {
+                    // Post-agent_done VLM check. A NO verdict halts the run
+                    // and surfaces a disagreement event for the user to
+                    // adjudicate; a YES verdict (or any verification error)
+                    // falls through to normal completion.
+                    let disagreement = self.verify_completion(&goal, summary, mcp).await;
+                    if let Some((screenshot_b64, vlm_reasoning)) = disagreement {
+                        warn!("VLM disagreed with agent_done — halting run for user review");
+                        self.emit_event(AgentEvent::CompletionDisagreement {
+                            screenshot_b64,
+                            vlm_reasoning: vlm_reasoning.clone(),
+                            agent_summary: summary.clone(),
+                        })
+                        .await;
+                        self.state.terminal_reason = Some(TerminalReason::CompletionDisagreement {
+                            agent_summary: summary.clone(),
+                            vlm_reasoning,
+                        });
+                        // Do not mark `completed` — the run halts pending
+                        // user decision instead of re-planning automatically.
+                        break;
+                    }
+
                     self.state.completed = true;
                     self.state.summary = Some(summary.clone());
                     self.state.terminal_reason = Some(TerminalReason::Completed {
@@ -817,6 +840,102 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         } else {
             warn!(tool = %tool_name, "Approval channel send failed");
             Some(ApprovalResult::Unavailable)
+        }
+    }
+
+    /// Verify agent-reported completion against a fresh screenshot via VLM.
+    ///
+    /// Returns the prepared base64 screenshot and full VLM reply only when
+    /// the VLM disagreed (verdict = NO) so the caller can surface a
+    /// disagreement event. When the VLM agrees, or when any step of the
+    /// check fails (no vision backend, screenshot failed, VLM call failed),
+    /// returns `None` and the caller falls through to the normal
+    /// `Completed` path. Verification errors must not tank the run.
+    async fn verify_completion(
+        &self,
+        goal: &str,
+        summary: &str,
+        mcp: &(impl Mcp + ?Sized),
+    ) -> Option<(String, String)> {
+        let vision = self.vision?;
+
+        // 1. Capture a screenshot. The agent may not have a known focused
+        //    app (e.g. web-only runs on CDP), so use the MCP tool's default
+        //    capture path without specifying `app_name`.
+        let screenshot_args = serde_json::json!({"include_ocr": false});
+        let result = match mcp
+            .call_tool("take_screenshot", Some(screenshot_args))
+            .await
+        {
+            Ok(r) if r.is_error != Some(true) => r,
+            Ok(r) => {
+                warn!(
+                    error = %extract_result_text(&r),
+                    "Completion verification: take_screenshot returned error, skipping VLM check",
+                );
+                return None;
+            }
+            Err(e) => {
+                warn!(error = %e, "Completion verification: take_screenshot failed, skipping VLM check");
+                return None;
+            }
+        };
+
+        let raw_b64 = result.content.iter().find_map(|c| match c {
+            clickweave_mcp::ToolContent::Image { data, .. } => Some(data.clone()),
+            _ => None,
+        });
+        let raw_b64 = match raw_b64 {
+            Some(b) => b,
+            None => {
+                warn!(
+                    "Completion verification: no image in take_screenshot result, skipping VLM check"
+                );
+                return None;
+            }
+        };
+
+        let (prepared_b64, mime) = match clickweave_llm::prepare_base64_image_for_vlm(
+            &raw_b64,
+            clickweave_llm::DEFAULT_MAX_DIMENSION,
+        ) {
+            Some(pair) => pair,
+            None => {
+                warn!(
+                    "Completion verification: failed to prepare screenshot for VLM, skipping check"
+                );
+                return None;
+            }
+        };
+
+        // 2. Ask the VLM whether the screenshot confirms the goal.
+        let prompt_text = build_completion_prompt(goal, summary);
+        let messages = vec![Message::user_with_images(
+            prompt_text,
+            vec![(prepared_b64.clone(), mime)],
+        )];
+        let reply = match vision.chat(&messages, None).await {
+            Ok(resp) => resp
+                .choices
+                .first()
+                .and_then(|c| c.message.content_text())
+                .unwrap_or("")
+                .to_string(),
+            Err(e) => {
+                warn!(error = %e, "Completion verification: VLM call failed, skipping check");
+                return None;
+            }
+        };
+
+        match parse_yes_no(&reply) {
+            VlmVerdict::Yes => {
+                info!("Completion verification: VLM confirmed goal");
+                None
+            }
+            VlmVerdict::No => {
+                info!(reply = %reply, "Completion verification: VLM rejected goal");
+                Some((prepared_b64, reply))
+            }
         }
     }
 
