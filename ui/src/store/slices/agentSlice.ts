@@ -36,6 +36,21 @@ function formatAgentError(err: unknown): string {
   return String(err);
 }
 
+/**
+ * True when the rejection is the backend's `AlreadyRunning` refusal —
+ * either the structured `{ kind: "AlreadyRunning" }` or the string
+ * form `"AlreadyRunning: ..."` that `Display` produces.
+ */
+function isAlreadyRunningError(err: unknown): boolean {
+  if (err && typeof err === "object" && "kind" in err) {
+    return (err as { kind?: unknown }).kind === "AlreadyRunning";
+  }
+  if (typeof err === "string") {
+    return err.startsWith("AlreadyRunning");
+  }
+  return false;
+}
+
 export interface AgentSlice {
   agentStatus: AgentStatus;
   agentGoal: string;
@@ -72,17 +87,48 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
   agentRunId: null,
 
   startAgent: async (goal) => {
-    const { pushLog, agentConfig, projectPath, workflow } = get();
-    set({
-      agentStatus: "running",
-      agentGoal: goal,
-      agentSteps: [],
-      agentError: null,
-      currentAgentStep: 0,
-      pendingApproval: null,
-      agentRunId: null,
-    });
-    pushLog(`Agent started with goal: ${goal}`);
+    const priorState = get();
+    const { pushLog, agentConfig, projectPath, workflow, agentStatus } =
+      priorState;
+    // If a run is already active, do not touch run-scoped state: the
+    // backend will reject with AlreadyRunning and the live run's events
+    // must keep routing through useAgentEvents. Otherwise optimistically
+    // reset into the "running" shape before awaiting invoke, so early
+    // terminal events (e.g. `agent://error` from a fast MCP-spawn
+    // failure) can flip status to "error" — their handler gates on
+    // `agentStatus === "running"`.
+    const wasActive = agentStatus === "running";
+    // Snapshot the prior run's visible state so we can restore it if
+    // the backend rejects with AlreadyRunning during its async cleanup
+    // window (handle still set but previous run has emitted its
+    // terminal event). Without this, a restart attempt in that window
+    // would wipe the terminal run's history and log it as "error".
+    const snapshot = {
+      agentStatus: priorState.agentStatus,
+      agentGoal: priorState.agentGoal,
+      agentSteps: priorState.agentSteps,
+      agentError: priorState.agentError,
+      currentAgentStep: priorState.currentAgentStep,
+      pendingApproval: priorState.pendingApproval,
+      agentRunId: priorState.agentRunId,
+    };
+    if (!wasActive) {
+      set({
+        agentStatus: "running",
+        agentGoal: goal,
+        agentSteps: [],
+        agentError: null,
+        currentAgentStep: 0,
+        pendingApproval: null,
+        // Clear the prior run's ID so any late in-flight events from it
+        // fail `isStaleRunId` (which drops events when active is null).
+        // `agent://started` from the new run will install the fresh ID;
+        // setting null here — not after invoke — avoids racing with that
+        // listener.
+        agentRunId: null,
+      });
+      pushLog(`Agent started with goal: ${goal}`);
+    }
     try {
       await invoke("run_agent", {
         request: {
@@ -95,8 +141,19 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       });
     } catch (err) {
       const msg = formatAgentError(err);
+      pushLog(`Agent start rejected: ${msg}`);
+      if (wasActive) {
+        // A live run was already active — its state was never touched,
+        // and its events must keep routing.
+        return;
+      }
+      if (isAlreadyRunningError(err)) {
+        // Backend is still tearing down the previous run. Restore its
+        // visible state so its terminal history is not lost.
+        set(snapshot);
+        return;
+      }
       set({ agentStatus: "error", agentError: msg });
-      pushLog(`Agent failed: ${msg}`);
     }
   },
 
