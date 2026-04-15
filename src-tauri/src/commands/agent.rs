@@ -170,7 +170,17 @@ pub async fn run_agent(
         // Thinking is explicitly enabled: small agent models need a
         // reasoning pass to avoid pattern-matching salient literals from the
         // goal text into tool arguments.
-        let llm = clickweave_llm::LlmClient::new(agent_config.with_thinking(true));
+        let llm = clickweave_llm::LlmClient::new(agent_config.clone().with_thinking(true));
+        // Vision backend: reuse the agent endpoint (the user already has this
+        // configured) with thinking disabled and a low token budget — the
+        // post-done check only needs to emit YES/NO + a sentence. If the
+        // endpoint cannot process images, the VLM call errors and the loop
+        // falls through to normal completion instead of tanking the run.
+        let vision = clickweave_llm::LlmClient::new(
+            agent_config
+                .with_thinking(false)
+                .with_max_tokens(512),
+        );
         let config = AgentConfig::default();
 
         // Begin storage execution and load cross-run state under a single lock.
@@ -213,6 +223,7 @@ pub async fn run_agent(
                 if variant_context.is_empty() { None } else { Some(&variant_context) },
                 Some(cache),
                 Some(channels),
+                Some(&vision),
             ) => res,
             _ = agent_token.cancelled() => {
                 let _ = emit_handle.emit(

@@ -74,6 +74,9 @@ pub struct AgentRunner<'a, B: ChatBackend> {
     cache: AgentCache,
     event_tx: Option<mpsc::Sender<AgentEvent>>,
     approval_gate: Option<ApprovalGate>,
+    /// Optional VLM backend used to verify `agent_done` against a fresh
+    /// screenshot. Disabled = legacy behaviour (agent's self-report wins).
+    vision: Option<&'a B>,
 }
 
 impl<'a, B: ChatBackend> AgentRunner<'a, B> {
@@ -86,6 +89,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             cache: AgentCache::default(),
             event_tx: None,
             approval_gate: None,
+            vision: None,
         }
     }
 
@@ -99,7 +103,19 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             cache,
             event_tx: None,
             approval_gate: None,
+            vision: None,
         }
+    }
+
+    /// Attach a VLM backend used to verify agent-reported completion.
+    ///
+    /// When attached, the loop will take a screenshot after `agent_done`
+    /// and ask the VLM whether the screenshot confirms the goal. A NO
+    /// verdict halts the run with `TerminalReason::CompletionDisagreement`
+    /// instead of falling through to `Completed`.
+    pub fn with_vision(mut self, vision: &'a B) -> Self {
+        self.vision = Some(vision);
+        self
     }
 
     /// Attach an event channel for live event emission.

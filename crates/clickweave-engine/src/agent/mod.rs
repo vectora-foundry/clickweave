@@ -30,15 +30,19 @@ pub struct AgentChannels {
 /// When `cache` is `Some`, the runner is seeded with cross-run decisions.
 /// When `channels` is `Some`, the runner emits live events and waits for
 /// approval before each tool execution.
+/// When `vision` is `Some`, the runner verifies `agent_done` against a
+/// fresh screenshot via the VLM and may halt with a disagreement event
+/// when the VLM rejects completion.
 /// Returns both the final agent state and the (possibly updated) cache.
-pub async fn run_agent_workflow(
-    llm: &impl ChatBackend,
+pub async fn run_agent_workflow<B: ChatBackend>(
+    llm: &B,
     config: AgentConfig,
     goal: String,
     mcp: &McpClient,
     variant_context: Option<&str>,
     cache: Option<AgentCache>,
     channels: Option<AgentChannels>,
+    vision: Option<&B>,
 ) -> anyhow::Result<(AgentState, AgentCache)> {
     let tools = mcp.tools_as_openai();
     let workflow = clickweave_core::Workflow::default();
@@ -50,6 +54,9 @@ pub async fn run_agent_workflow(
         runner = runner
             .with_events(ch.event_tx)
             .with_approval(ch.approval_tx);
+    }
+    if let Some(v) = vision {
+        runner = runner.with_vision(v);
     }
     let state = runner
         .run(goal, workflow, mcp, variant_context, tools)
