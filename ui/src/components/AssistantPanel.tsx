@@ -2,6 +2,8 @@ import { useState, useRef, useEffect } from "react";
 import type { AssistantMessage } from "../store/slices/assistantSlice";
 import { useHorizontalResize } from "../hooks/useHorizontalResize";
 import { useStore } from "../store/useAppStore";
+import { AmbiguityResolutionCard } from "./AmbiguityResolutionCard";
+import { AmbiguityResolutionModal } from "./AmbiguityResolutionModal";
 
 interface AssistantPanelProps {
   open: boolean;
@@ -28,6 +30,12 @@ export function AssistantPanel({
   const stopAgent = useStore((s) => s.stopAgent);
   const approveAction = useStore((s) => s.approveAction);
   const rejectAction = useStore((s) => s.rejectAction);
+  const ambiguityResolutions = useStore((s) => s.ambiguityResolutions);
+  const activeAmbiguityId = useStore((s) => s.activeAmbiguityId);
+  const openAmbiguityModal = useStore((s) => s.openAmbiguityModal);
+  const closeAmbiguityModal = useStore((s) => s.closeAmbiguityModal);
+  const activeAmbiguity =
+    ambiguityResolutions.find((r) => r.id === activeAmbiguityId) ?? null;
   const agentRunning = agentStatus === "running";
 
   // Auto-scroll to bottom when messages change
@@ -63,6 +71,7 @@ export function AssistantPanel({
   const hasMessages = messages.length > 0;
 
   return (
+    <>
     <div className="relative flex h-full flex-col border-l border-[var(--border)] bg-[var(--bg-panel)]" style={{ width, minWidth: width }}>
       {/* Resize handle */}
       <div
@@ -133,6 +142,15 @@ export function AssistantPanel({
           {error}
         </div>
       )}
+
+      {/* Ambiguity resolution cards — newest first, persists across runs. */}
+      {ambiguityResolutions.map((r) => (
+        <AmbiguityResolutionCard
+          key={r.id}
+          resolution={r}
+          onOpen={() => openAmbiguityModal(r.id)}
+        />
+      ))}
 
       {/* Approval card */}
       {pendingApproval && (
@@ -217,6 +235,13 @@ export function AssistantPanel({
         )}
       </div>
     </div>
+    {activeAmbiguity && (
+      <AmbiguityResolutionModal
+        resolution={activeAmbiguity}
+        onClose={closeAmbiguityModal}
+      />
+    )}
+    </>
   );
 }
 

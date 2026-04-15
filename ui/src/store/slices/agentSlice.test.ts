@@ -58,6 +58,63 @@ describe("agentSlice.startAgent", () => {
   });
 });
 
+describe("agentSlice ambiguity resolutions", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useStore.getState().clearAmbiguityResolutions();
+    useStore.getState().resetAgent();
+  });
+
+  const sample = {
+    id: "res-1",
+    nodeId: "node-1",
+    target: "Save",
+    candidates: [
+      {
+        uid: "a1",
+        snippet: '[uid="a1"] button "Save"',
+        rect: { x: 1, y: 2, width: 3, height: 4 },
+      },
+    ],
+    chosenUid: "a1",
+    reasoning: "only visible candidate",
+    screenshotPath: "ambiguity_abc.png",
+    screenshotBase64: "aaaa",
+    createdAt: 1,
+  };
+
+  it("prepends new resolutions so the newest shows first", () => {
+    useStore.getState().addAmbiguityResolution(sample);
+    useStore
+      .getState()
+      .addAmbiguityResolution({ ...sample, id: "res-2", target: "Delete" });
+    const list = useStore.getState().ambiguityResolutions;
+    expect(list.map((r) => r.id)).toEqual(["res-2", "res-1"]);
+  });
+
+  it("open/close modal toggles activeAmbiguityId", () => {
+    useStore.getState().addAmbiguityResolution(sample);
+    useStore.getState().openAmbiguityModal("res-1");
+    expect(useStore.getState().activeAmbiguityId).toBe("res-1");
+    useStore.getState().closeAmbiguityModal();
+    expect(useStore.getState().activeAmbiguityId).toBeNull();
+  });
+
+  it("resetAgent keeps ambiguity history intact for cross-run inspection", () => {
+    useStore.getState().addAmbiguityResolution(sample);
+    useStore.getState().resetAgent();
+    expect(useStore.getState().ambiguityResolutions.length).toBe(1);
+  });
+
+  it("clearAmbiguityResolutions empties the list and closes the modal", () => {
+    useStore.getState().addAmbiguityResolution(sample);
+    useStore.getState().openAmbiguityModal("res-1");
+    useStore.getState().clearAmbiguityResolutions();
+    expect(useStore.getState().ambiguityResolutions).toEqual([]);
+    expect(useStore.getState().activeAmbiguityId).toBeNull();
+  });
+});
+
 describe("agentSlice approval actions", () => {
   beforeEach(() => {
     invokeMock.mockReset();

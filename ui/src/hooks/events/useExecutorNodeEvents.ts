@@ -2,6 +2,17 @@ import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useStore } from "../../store/useAppStore";
 import type { NodeVerdict } from "../../store/slices/verdictSlice";
+import type { AmbiguityCandidateView } from "../../store/slices/agentSlice";
+
+interface AmbiguityResolvedPayload {
+  node_id: string;
+  target: string;
+  candidates: AmbiguityCandidateView[];
+  chosen_uid: string;
+  reasoning: string;
+  screenshot_path: string;
+  screenshot_base64: string;
+}
 
 /**
  * Subscribe to executor node lifecycle events:
@@ -47,6 +58,30 @@ export function useExecutorNodeEvents() {
       useStore.getState().setActiveNode(null);
       useStore.getState().pushLog(`Node failed: ${e.payload.node_id} - ${e.payload.error}`);
       useStore.getState().setLastRunStatus("failed");
+    }));
+    sub(listen<AmbiguityResolvedPayload>("executor://ambiguity_resolved", (e) => {
+      const p = e.payload;
+      const id = `${p.node_id}:${p.target}:${Date.now()}`;
+      useStore.getState().addAmbiguityResolution({
+        id,
+        nodeId: p.node_id,
+        target: p.target,
+        candidates: p.candidates.map((c) => ({
+          uid: c.uid,
+          snippet: c.snippet,
+          rect: c.rect ?? null,
+        })),
+        chosenUid: p.chosen_uid,
+        reasoning: p.reasoning,
+        screenshotPath: p.screenshot_path,
+        screenshotBase64: p.screenshot_base64,
+        createdAt: Date.now(),
+      });
+      useStore
+        .getState()
+        .pushLog(
+          `Resolved ambiguity on '${p.target}' — picked uid=${p.chosen_uid}`,
+        );
     }));
     sub(listen<NodeVerdict[]>("executor://checks_completed", (e) => {
       useStore.getState().setVerdicts(e.payload);

@@ -21,6 +21,36 @@ export interface PendingApproval {
   description: string;
 }
 
+export interface CandidateRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface AmbiguityCandidateView {
+  uid: string;
+  snippet: string;
+  rect: CandidateRect | null;
+}
+
+export interface AmbiguityResolution {
+  /** Client-side id so the UI can key modals/cards without relying on
+   *  backend-supplied node_id (multiple resolutions can fire per node). */
+  id: string;
+  nodeId: string;
+  target: string;
+  candidates: AmbiguityCandidateView[];
+  chosenUid: string;
+  reasoning: string;
+  /** Path relative to the node's `artifacts/` directory. */
+  screenshotPath: string;
+  /** Base64-encoded PNG data. Populated from the live executor event. */
+  screenshotBase64: string;
+  /** Epoch ms at which the resolution was observed on the UI side. */
+  createdAt: number;
+}
+
 /**
  * Tauri rejects with a structured `CommandError { kind, message }` for
  * typed failures (e.g. `AlreadyRunning`), but tauri-specta can also
@@ -45,6 +75,12 @@ export interface AgentSlice {
   pendingApproval: PendingApproval | null;
   /** Generation ID for the active run — used to reject stale events. */
   agentRunId: string | null;
+  /** Ambiguity resolution records, newest first. Persists across agent
+   *  completion so the user can inspect past resolutions. */
+  ambiguityResolutions: AmbiguityResolution[];
+  /** Active modal target for the ambiguity inspector, keyed by
+   *  AmbiguityResolution.id. */
+  activeAmbiguityId: string | null;
   startAgent: (goal: string) => Promise<void>;
   stopAgent: () => Promise<void>;
   addAgentStep: (step: AgentStep) => void;
@@ -57,6 +93,10 @@ export interface AgentSlice {
   setAgentError: (error: string | null) => void;
   setAgentRunId: (runId: string) => void;
   resetAgent: () => void;
+  addAmbiguityResolution: (resolution: AmbiguityResolution) => void;
+  openAmbiguityModal: (id: string) => void;
+  closeAmbiguityModal: () => void;
+  clearAmbiguityResolutions: () => void;
 }
 
 export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
@@ -70,6 +110,8 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
   currentAgentStep: 0,
   pendingApproval: null,
   agentRunId: null,
+  ambiguityResolutions: [],
+  activeAmbiguityId: null,
 
   startAgent: async (goal) => {
     const { pushLog, agentConfig, projectPath, workflow } = get();
@@ -175,5 +217,20 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       currentAgentStep: 0,
       pendingApproval: null,
       agentRunId: null,
+      // Ambiguity records are intentionally NOT cleared — they persist across
+      // runs so the user can still inspect past resolutions until they
+      // explicitly clear them or start a new project.
     }),
+
+  addAmbiguityResolution: (resolution) =>
+    set((s) => ({
+      ambiguityResolutions: [resolution, ...s.ambiguityResolutions],
+    })),
+
+  openAmbiguityModal: (id) => set({ activeAmbiguityId: id }),
+
+  closeAmbiguityModal: () => set({ activeAmbiguityId: null }),
+
+  clearAmbiguityResolutions: () =>
+    set({ ambiguityResolutions: [], activeAmbiguityId: null }),
 });
