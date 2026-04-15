@@ -93,6 +93,36 @@ describe("agentSlice.startAgent", () => {
 
     expect(useStore.getState().agentRunId).toBe("run-new");
   });
+
+  it("sets agentStatus to running before awaiting invoke on a fresh start", async () => {
+    // Early terminal events (e.g. agent://error from a fast MCP-spawn
+    // failure) can arrive while invoke is still in flight. The error
+    // listener gates on `agentStatus === "running"`, so the status must
+    // already be "running" by the time invoke is awaited.
+    let statusDuringInvoke: string | undefined;
+    invokeMock.mockImplementationOnce(async () => {
+      statusDuringInvoke = useStore.getState().agentStatus;
+    });
+
+    await useStore.getState().startAgent("fresh goal");
+
+    expect(statusDuringInvoke).toBe("running");
+  });
+
+  it("surfaces non-AlreadyRunning rejections as agentStatus=error on a fresh start", async () => {
+    invokeMock.mockRejectedValueOnce({
+      kind: "Internal",
+      message: "MCP binary not found",
+    });
+
+    await useStore.getState().startAgent("fresh goal");
+
+    const state = useStore.getState();
+    expect(state.agentStatus).toBe("error");
+    expect(state.agentError).toBe("MCP binary not found");
+    const lastLog = useStore.getState().logs.at(-1);
+    expect(lastLog).toContain("Agent start rejected");
+  });
 });
 
 describe("agentSlice approval actions", () => {

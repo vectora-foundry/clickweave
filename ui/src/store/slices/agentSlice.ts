@@ -72,7 +72,31 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
   agentRunId: null,
 
   startAgent: async (goal) => {
-    const { pushLog, agentConfig, projectPath, workflow } = get();
+    const { pushLog, agentConfig, projectPath, workflow, agentStatus } = get();
+    // If a run is already active, do not touch run-scoped state: the
+    // backend will reject with AlreadyRunning and the live run's events
+    // must keep routing through useAgentEvents. Otherwise optimistically
+    // reset into the "running" shape before awaiting invoke, so early
+    // terminal events (e.g. `agent://error` from a fast MCP-spawn
+    // failure) can flip status to "error" — their handler gates on
+    // `agentStatus === "running"`.
+    //
+    // `agentRunId` is intentionally left to `agent://started`: the
+    // backend emits that event before `run_agent` returns, and
+    // clobbering it here would race with the listener and leave every
+    // subsequent event looking stale under `isStaleRunId`.
+    const wasActive = agentStatus === "running";
+    if (!wasActive) {
+      set({
+        agentStatus: "running",
+        agentGoal: goal,
+        agentSteps: [],
+        agentError: null,
+        currentAgentStep: 0,
+        pendingApproval: null,
+      });
+      pushLog(`Agent started with goal: ${goal}`);
+    }
     try {
       await invoke("run_agent", {
         request: {
@@ -83,29 +107,15 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
           workflow_id: workflow.id,
         },
       });
-      // Reset visible run state only after the backend accepts. On
-      // rejection (e.g. AlreadyRunning from a duplicate click), leaving
-      // run-scoped state untouched keeps the still-live original run's
-      // events routing through useAgentEvents instead of being dropped
-      // as stale.
-      //
-      // Do NOT clobber `agentRunId` here. The backend emits
-      // `agent://started` synchronously *before* `run_agent` returns, so
-      // the listener may have already installed the new run's ID by the
-      // time this continuation runs. Overwriting it with null would race
-      // with that listener and leave every subsequent event looking
-      // stale under `isStaleRunId`.
-      set({
-        agentStatus: "running",
-        agentGoal: goal,
-        agentSteps: [],
-        agentError: null,
-        currentAgentStep: 0,
-        pendingApproval: null,
-      });
-      pushLog(`Agent started with goal: ${goal}`);
     } catch (err) {
-      pushLog(`Agent start rejected: ${formatAgentError(err)}`);
+      const msg = formatAgentError(err);
+      pushLog(`Agent start rejected: ${msg}`);
+      // Only surface the error into visible state if we optimistically
+      // flipped to "running". If a live run was already active, leave
+      // its state intact so its events continue to route.
+      if (!wasActive) {
+        set({ agentStatus: "error", agentError: msg });
+      }
     }
   },
 
