@@ -75,6 +75,14 @@ Implemented in `crates/clickweave-engine/src/agent/loop_runner.rs`:
 
 Decisions are cached in an `AgentCache` keyed by goal + observed element signature. Entries are persisted at `RunStorage::agent_cache_path()` — `agent_cache.json` at the **workflow** level (sibling to per-execution directories, not inside one), so the cache is shared across every run of that workflow and survives individual executions. Future runs against the same app state replay the decision without an LLM round-trip. Approval-gated tools are re-approved on replay. Observation-only tools (e.g., `take_screenshot`, `take_ax_snapshot`) are never cached.
 
+### Tool Exposure
+
+The tool list passed to the LLM is stable across the lifetime of a run. All tools — including CDP tools (`cdp_click`, `cdp_find_elements`, `cdp_type_text`, etc.) — are exposed up-front regardless of whether a CDP connection has been established yet. Tools that require a connection return a clean "not connected" error when called pre-connection, and the agent recovers by picking a different action on the next step.
+
+**Rationale.** Mid-conversation changes to the tool list invalidate every prior prompt-cache prefix. Before this policy, `maybe_cdp_connect` called `mcp.refresh_tools()` after each successful `launch_app` / `focus_window` against an Electron/Chrome target, which was a predictable cache miss on the most common workflow shape in Clickweave. Exposing the superset up-front trades an occasional wasted tool-call turn for a stable prompt prefix and higher cache hit rates across the run. This matches how modern agent runtimes handle tool surfaces.
+
+**Implications for contributors.** Do not add code paths that mutate the tool list mid-run. New tools should be exposed at run start via `mcp.tools_as_openai()` in `agent/mod.rs`. If a new capability genuinely needs runtime activation, prefer a guard inside the tool handler over refreshing the list.
+
 ### Events
 
 The loop emits events through an `AgentChannels` mpsc channel, forwarded as Tauri events by `commands/agent.rs`:
