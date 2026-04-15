@@ -96,7 +96,10 @@ The loop emits events through an `AgentChannels` mpsc channel, forwarded as Taur
 - `agent://sub_action` — automatic pre/post-tool hook ran (e.g., auto CDP connect)
 - `agent://warning` / `agent://error`
 - `agent://complete` — goal achieved; summary in payload
+- `agent://completion_disagreement` — `agent_done` fired but a post-run VLM screenshot check rejected the completion; payload carries the screenshot, VLM reasoning, and the agent's own summary so the UI can surface the disagreement for operator adjudication. This is the terminal event for that case — no matching `agent://stopped` is emitted.
 - `agent://stopped` — bounded exit (max_steps, max_errors_reached, approval_unavailable, cancelled)
+
+After `StepOutcome::Done`, the loop runs a VLM completion check when a vision backend is attached: it takes a screenshot via `take_screenshot`, sends it with the goal and agent summary, and parses YES/NO from the reply. YES lets the run complete normally (`Completed`). NO halts the run with `TerminalReason::CompletionDisagreement` and emits `agent://completion_disagreement`. Verification errors (no vision backend, screenshot failure, empty or failed VLM response) log a warning and fall through to the legacy `Completed` path — a broken verifier must not tank successful runs.
 
 All payloads carry the `run_id` so stale events from a prior run can be filtered on the UI side.
 

@@ -201,7 +201,7 @@ Shell for the assistant panel surface. No producer currently populates `messages
 - `executor://log`, `executor://state`, `executor://node_started`, `executor://node_completed`, `executor://node_failed`
 - `executor://checks_completed`, `executor://workflow_completed`
 - `executor://supervision_passed`, `executor://supervision_paused`
-- `agent://started`, `agent://step`, `agent://complete`, `agent://stopped`, `agent://error`, `agent://warning`, `agent://node_added`, `agent://edge_added`, `agent://approval_required`, `agent://cdp_connected`, `agent://step_failed`, `agent://sub_action`
+- `agent://started`, `agent://step`, `agent://complete`, `agent://completion_disagreement`, `agent://stopped`, `agent://error`, `agent://warning`, `agent://node_added`, `agent://edge_added`, `agent://approval_required`, `agent://cdp_connected`, `agent://step_failed`, `agent://sub_action`
 - `walkthrough://state`, `walkthrough://event`, `walkthrough://draft_ready`, `walkthrough://cdp-setup`
 - `recording-bar://action`
 - `menu://new`, `menu://open`, `menu://save`, `menu://toggle-sidebar`, `menu://toggle-logs`, `menu://run-workflow`, `menu://stop-workflow`

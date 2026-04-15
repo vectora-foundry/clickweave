@@ -904,15 +904,26 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             build_completion_prompt(goal, summary),
             vec![(prepared_b64.clone(), mime)],
         )];
-        let reply = match vision.chat(&messages, None).await {
+        // An empty/missing text body is treated as a verifier failure and
+        // falls through, not as an implicit NO. Many non-vision endpoints
+        // return empty content instead of erroring; halting the run in that
+        // case would punish successful agent_done calls for a broken
+        // verifier, which contradicts the fail-through contract.
+        let raw_reply = match vision.chat(&messages, None).await {
             Ok(resp) => resp
                 .choices
                 .first()
                 .and_then(|c| c.message.content_text())
-                .unwrap_or("")
-                .to_string(),
+                .map(str::to_owned),
             Err(e) => {
                 warn!(error = %e, "Completion verification: VLM call failed, skipping check");
+                return None;
+            }
+        };
+        let reply = match raw_reply {
+            Some(r) if !r.trim().is_empty() => r,
+            _ => {
+                warn!("Completion verification: VLM returned empty reply, skipping check");
                 return None;
             }
         };

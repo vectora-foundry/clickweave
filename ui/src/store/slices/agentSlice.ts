@@ -233,7 +233,15 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
 
   stopAgent: async () => {
     const { pushLog } = get();
-    set({ agentStatus: "stopped", pendingApproval: null });
+    // Clear the disagreement card as well. The engine has already halted
+    // when a CompletionDisagreement was raised, so the backend stop_agent
+    // call will often return "no agent is running"; we still clear the
+    // UI state locally so the Cancel button always dismisses the card.
+    set({
+      agentStatus: "stopped",
+      pendingApproval: null,
+      completionDisagreement: null,
+    });
     try {
       await invoke("stop_agent");
     } catch {

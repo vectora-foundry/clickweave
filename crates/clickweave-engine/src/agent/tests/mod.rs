@@ -1950,6 +1950,44 @@ async fn vlm_no_verdict_halts_run_and_emits_disagreement() {
 }
 
 #[tokio::test]
+async fn vlm_check_falls_through_when_reply_is_empty() {
+    // Non-vision endpoints commonly return an empty content body rather
+    // than erroring. The loop must treat that as a verifier failure and
+    // fall through to Completed, not halt with CompletionDisagreement.
+    let agent_backend = RoutingMockAgent::new(
+        vec![MockAgent::done_response("Done")],
+        vec![RoutingMockAgent::text_response("")],
+    );
+
+    let mcp = RoutingMockMcp::new(vec![cdp_empty_page_result()], vec![screenshot_result()]);
+
+    let config = AgentConfig {
+        max_steps: 5,
+        build_workflow: false,
+        use_cache: false,
+        ..Default::default()
+    };
+
+    let mut runner = AgentRunner::new(&agent_backend, config).with_vision(&agent_backend);
+    let workflow = clickweave_core::Workflow::new("VLM empty reply fallback");
+    let mcp_tools = mcp.tools_as_openai();
+
+    let state = runner
+        .run("Do it".to_string(), workflow, &mcp, None, mcp_tools)
+        .await
+        .unwrap();
+
+    assert!(
+        state.completed,
+        "Empty VLM reply must fall through to Completed"
+    );
+    assert!(matches!(
+        state.terminal_reason,
+        Some(TerminalReason::Completed { .. })
+    ));
+}
+
+#[tokio::test]
 async fn vlm_check_falls_through_when_screenshot_fails() {
     // Agent calls agent_done; take_screenshot returns an error. The loop
     // must complete normally rather than hang or halt.

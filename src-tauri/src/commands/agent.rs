@@ -244,21 +244,33 @@ pub async fn run_agent(
                     None => ("Stopped: unknown reason".to_string(), false),
                 };
 
-                let variant_entry = VariantEntry {
-                    execution_dir: storage
-                        .lock()
-                        .unwrap()
-                        .execution_dir_name()
-                        .unwrap_or("unknown")
-                        .to_string(),
-                    diverged_at_step: None,
-                    divergence_summary,
-                    success,
-                };
-                let _ = VariantIndex::append(
-                    &storage.lock().unwrap().variant_index_path(),
-                    &variant_entry,
+                // Skip the variant index write when the user still has to
+                // adjudicate a VLM completion disagreement — otherwise the
+                // run gets permanently recorded as failed and that stale
+                // `[failed] Completion verification disagreed: ...` entry
+                // leaks into every future run's agent context, even if the
+                // operator later overrides the VLM and marks it complete.
+                let is_disagreement = matches!(
+                    state.terminal_reason,
+                    Some(TerminalReason::CompletionDisagreement { .. })
                 );
+                if !is_disagreement {
+                    let variant_entry = VariantEntry {
+                        execution_dir: storage
+                            .lock()
+                            .unwrap()
+                            .execution_dir_name()
+                            .unwrap_or("unknown")
+                            .to_string(),
+                        diverged_at_step: None,
+                        divergence_summary,
+                        success,
+                    };
+                    let _ = VariantIndex::append(
+                        &storage.lock().unwrap().variant_index_path(),
+                        &variant_entry,
+                    );
+                }
 
                 // Emit truthful terminal event.
                 match &state.terminal_reason {
@@ -268,6 +280,12 @@ pub async fn run_agent(
                             serde_json::json!({ "run_id": task_run_id, "summary": summary }),
                         );
                     }
+                    // CompletionDisagreement has its own dedicated event
+                    // (agent://completion_disagreement) emitted in-band by
+                    // the event forwarder. Emitting agent://stopped here as
+                    // well would race the disagreement card against a stop
+                    // handler that clears the pending-approval UI state.
+                    Some(TerminalReason::CompletionDisagreement { .. }) => {}
                     Some(reason) => {
                         let mut payload = serde_json::to_value(reason).unwrap_or_default();
                         if let Some(obj) = payload.as_object_mut() {
