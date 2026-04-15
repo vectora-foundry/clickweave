@@ -130,6 +130,27 @@ async fn resolve_cdp_element_uid_surfaces_ambiguous_candidates() {
         .await
         .expect_err("ambiguous match must fail loudly");
 
+    // Display must expose uids and target but not the raw snapshot snippets —
+    // those are only reachable through the structured variant fields, so that
+    // always-on log/UI surfaces stay free of live page DOM text.
+    let display = err.to_string();
+    assert!(
+        display.contains("Save"),
+        "display should mention target: {display}"
+    );
+    assert!(
+        display.contains("a1"),
+        "display should list uids: {display}"
+    );
+    assert!(
+        !display.contains("button"),
+        "display must not leak snippet tokens: {display}"
+    );
+    assert!(
+        !display.contains("[uid="),
+        "display must not leak snippet tokens: {display}"
+    );
+
     let ExecutorError::CdpAmbiguousTarget { target, candidates } = err else {
         panic!("expected CdpAmbiguousTarget, got: {err:?}");
     };
