@@ -27,6 +27,10 @@ export function AssistantPanel({
 
   const agentStatus = useStore((s) => s.agentStatus);
   const pendingApproval = useStore((s) => s.pendingApproval);
+  const completionDisagreement = useStore((s) => s.completionDisagreement);
+  const confirmDisagreementAsComplete = useStore(
+    (s) => s.confirmDisagreementAsComplete,
+  );
   const stopAgent = useStore((s) => s.stopAgent);
   const approveAction = useStore((s) => s.approveAction);
   const rejectAction = useStore((s) => s.rejectAction);
@@ -151,6 +155,45 @@ export function AssistantPanel({
           onOpen={() => openAmbiguityModal(r.id)}
         />
       ))}
+
+      {/* VLM completion disagreement card.
+          The backend halts the run when the post-agent_done VLM check
+          rejects the agent's self-reported completion. The user sees the
+          screenshot + reasoning and either confirms (local override — see
+          confirmDisagreementAsComplete in the slice for the stub note) or
+          cancels the run via the existing stop_agent path. */}
+      {completionDisagreement && (
+        <div className="mx-3 mb-2 rounded-lg border border-orange-500/40 bg-orange-500/10 px-3 py-2.5">
+          <p className="text-[11px] font-medium text-orange-300 mb-1">
+            Completion check disagreed
+          </p>
+          <p className="text-[11px] text-[var(--text-secondary)] mb-2">
+            Agent said: {completionDisagreement.agentSummary}
+          </p>
+          <img
+            src={`data:image/jpeg;base64,${completionDisagreement.screenshotBase64}`}
+            alt="Screenshot captured when the agent reported completion"
+            className="mb-2 max-h-48 w-full rounded border border-[var(--border)] object-contain"
+          />
+          <p className="text-[11px] text-[var(--text-primary)] mb-2 whitespace-pre-wrap">
+            VLM: {completionDisagreement.vlmReasoning}
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={confirmDisagreementAsComplete}
+              className="rounded-lg bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-500"
+            >
+              Confirm complete
+            </button>
+            <button
+              onClick={stopAgent}
+              className="rounded-lg border border-red-500/50 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10"
+            >
+              Cancel run
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Approval card */}
       {pendingApproval && (

@@ -67,6 +67,12 @@ interface ApprovalRequiredPayload extends RunScoped {
   description: string;
 }
 
+interface CompletionDisagreementPayload extends RunScoped {
+  screenshot_b64: string;
+  vlm_reasoning: string;
+  agent_summary: string;
+}
+
 /**
  * Subscribe to agent backend events:
  * agent://started, agent://step, agent://complete, agent://stopped,
@@ -224,6 +230,28 @@ export function useAgentEvents() {
         setStatusIfActive("complete");
         useStore.getState().pushLog("Agent completed");
       }),
+    );
+
+    sub(
+      listen<CompletionDisagreementPayload>(
+        "agent://completion_disagreement",
+        (e) => {
+          if (isStale(e.payload.run_id)) return;
+          // Mark the run as stopped so the assistant panel switches out of
+          // its "running" UI while the disagreement card is displayed.
+          setStatusIfActive("stopped");
+          useStore.getState().setCompletionDisagreement({
+            screenshotBase64: e.payload.screenshot_b64,
+            vlmReasoning: e.payload.vlm_reasoning,
+            agentSummary: e.payload.agent_summary,
+          });
+          useStore
+            .getState()
+            .pushLog(
+              "Agent completion check disagreed — awaiting user decision",
+            );
+        },
+      ),
     );
 
     sub(

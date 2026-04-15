@@ -1654,7 +1654,8 @@ async fn tool_list_is_stable_across_cdp_connect_boundary() {
 /// Hardcoded 1x1 transparent PNG as base64 — used so `prepare_base64_image_for_vlm`
 /// has a genuinely decodable image without pulling the `image` crate into
 /// clickweave-engine's test deps.
-const TINY_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkAAIAAAoAAv/lxKUAAAAASUVORK5CYII=";
+const TINY_PNG_BASE64: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkAAIAAAoAAv/lxKUAAAAASUVORK5CYII=";
 
 /// MCP mock that dispatches by tool name — required for completion tests
 /// because the loop issues cdp_find_elements and take_screenshot in the
@@ -1828,10 +1829,7 @@ async fn vlm_yes_verdict_completes_run_normally() {
         )],
     );
 
-    let mcp = RoutingMockMcp::new(
-        vec![cdp_empty_page_result()],
-        vec![screenshot_result()],
-    );
+    let mcp = RoutingMockMcp::new(vec![cdp_empty_page_result()], vec![screenshot_result()]);
 
     let config = AgentConfig {
         max_steps: 5,
@@ -1854,7 +1852,10 @@ async fn vlm_yes_verdict_completes_run_normally() {
 
     assert!(state.completed, "YES should let the run complete");
     assert!(
-        matches!(state.terminal_reason, Some(TerminalReason::Completed { .. })),
+        matches!(
+            state.terminal_reason,
+            Some(TerminalReason::Completed { .. })
+        ),
         "Expected Completed, got {:?}",
         state.terminal_reason,
     );
@@ -1869,7 +1870,10 @@ async fn vlm_yes_verdict_completes_run_normally() {
         }
     }
     assert!(saw_goal_complete, "Expected GoalComplete event");
-    assert!(!saw_disagreement, "YES must not emit CompletionDisagreement");
+    assert!(
+        !saw_disagreement,
+        "YES must not emit CompletionDisagreement"
+    );
 }
 
 #[tokio::test]
@@ -1883,10 +1887,7 @@ async fn vlm_no_verdict_halts_run_and_emits_disagreement() {
         )],
     );
 
-    let mcp = RoutingMockMcp::new(
-        vec![cdp_empty_page_result()],
-        vec![screenshot_result()],
-    );
+    let mcp = RoutingMockMcp::new(vec![cdp_empty_page_result()], vec![screenshot_result()]);
 
     let config = AgentConfig {
         max_steps: 5,
@@ -1964,10 +1965,7 @@ async fn vlm_check_falls_through_when_screenshot_fails() {
         is_error: Some(true),
     };
 
-    let mcp = RoutingMockMcp::new(
-        vec![cdp_empty_page_result()],
-        vec![failing_screenshot],
-    );
+    let mcp = RoutingMockMcp::new(vec![cdp_empty_page_result()], vec![failing_screenshot]);
 
     let config = AgentConfig {
         max_steps: 5,

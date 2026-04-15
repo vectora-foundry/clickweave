@@ -56,6 +56,22 @@ export interface AmbiguityResolution {
 }
 
 /**
+ * VLM completion verification disagreement. Raised when the agent emitted
+ * `agent_done` but a post-run screenshot + VLM check rejected the
+ * completion. The run halts on the backend; the UI surfaces this to the
+ * user so they can confirm (treating it as complete locally) or cancel
+ * (invoking the backend stop path).
+ */
+export interface CompletionDisagreement {
+  /** Base64 JPEG payload ready to drop into a data-URL. */
+  screenshotBase64: string;
+  /** Full VLM reply text, first line is typically YES/NO followed by reasoning. */
+  vlmReasoning: string;
+  /** Summary the agent provided with `agent_done`. */
+  agentSummary: string;
+}
+
+/**
  * Tauri rejects with a structured `CommandError { kind, message }` for
  * typed failures (e.g. `AlreadyRunning`), but tauri-specta can also
  * surface plain strings when an error is serialized through `Display`.
@@ -92,6 +108,8 @@ export interface AgentSlice {
   agentError: string | null;
   currentAgentStep: number;
   pendingApproval: PendingApproval | null;
+  /** Set when the backend emits `agent://completion_disagreement`. */
+  completionDisagreement: CompletionDisagreement | null;
   /** Generation ID for the active run — used to reject stale events. */
   agentRunId: string | null;
   /** Ambiguity resolution records, newest first. Persists across agent
@@ -108,6 +126,13 @@ export interface AgentSlice {
   setPendingApproval: (approval: PendingApproval | null) => void;
   approveAction: () => Promise<void>;
   rejectAction: () => Promise<void>;
+  setCompletionDisagreement: (d: CompletionDisagreement | null) => void;
+  /**
+   * User acknowledged a VLM disagreement and asserted the run completed
+   * anyway. This is a front-end-only marker right now — a follow-up can
+   * wire it to a backend command so the decision is durable.
+   */
+  confirmDisagreementAsComplete: () => void;
   setAgentStatus: (status: AgentStatus) => void;
   setAgentError: (error: string | null) => void;
   setAgentRunId: (runId: string) => void;
@@ -128,6 +153,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
   agentError: null,
   currentAgentStep: 0,
   pendingApproval: null,
+  completionDisagreement: null,
   agentRunId: null,
   ambiguityResolutions: [],
   activeAmbiguityId: null,
@@ -156,6 +182,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       agentError: priorState.agentError,
       currentAgentStep: priorState.currentAgentStep,
       pendingApproval: priorState.pendingApproval,
+      completionDisagreement: priorState.completionDisagreement,
       agentRunId: priorState.agentRunId,
     };
     if (!wasActive) {
@@ -166,6 +193,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
         agentError: null,
         currentAgentStep: 0,
         pendingApproval: null,
+        completionDisagreement: null,
         // Clear the prior run's ID so any late in-flight events from it
         // fail `isStaleRunId` (which drops events when active is null).
         // `agent://started` from the new run will install the fresh ID;
@@ -263,6 +291,26 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
     }
   },
 
+  setCompletionDisagreement: (disagreement) =>
+    set({ completionDisagreement: disagreement }),
+
+  /**
+   * STUB: front-end-only acknowledgement. Marks the run locally as complete
+   * when the user decides the VLM was wrong. A follow-up should plumb this
+   * decision to the backend so it's durable across restarts and recorded
+   * in the run trace.
+   */
+  confirmDisagreementAsComplete: () => {
+    const { pushLog } = get();
+    set({
+      completionDisagreement: null,
+      agentStatus: "complete",
+    });
+    pushLog(
+      "Agent completion confirmed by user (VLM disagreed but user overrode)",
+    );
+  },
+
   setAgentStatus: (status) => set({ agentStatus: status }),
 
   setAgentError: (error) => set({ agentError: error }),
@@ -277,6 +325,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       agentError: null,
       currentAgentStep: 0,
       pendingApproval: null,
+      completionDisagreement: null,
       agentRunId: null,
       // Ambiguity records are intentionally NOT cleared — they persist across
       // runs so the user can still inspect past resolutions until they
