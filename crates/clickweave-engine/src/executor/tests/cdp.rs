@@ -180,6 +180,13 @@ async fn resolve_cdp_element_uid_surfaces_ambiguous_candidates() {
     );
 }
 
+const TEST_PID: i32 = 4242;
+const OTHER_PID: i32 = 4343;
+
+fn chrome_key(pid: i32) -> (String, i32) {
+    ("Chrome".to_string(), pid)
+}
+
 #[tokio::test]
 async fn restore_or_record_selected_page_records_current_when_no_prior_url() {
     // First connect: no remembered URL. The helper should take whatever page
@@ -191,13 +198,16 @@ async fn restore_or_record_selected_page_records_current_when_no_prior_url() {
         "Pages (2 total):\n  [0] https://a.example.com/\n  [1]* https://b.example.com/foo\n",
     );
 
-    exec.restore_or_record_selected_page("Chrome", &mcp).await;
+    exec.restore_or_record_selected_page("Chrome", TEST_PID, &mcp)
+        .await;
 
     let calls = mcp.take_calls();
     assert_eq!(calls.len(), 1, "only cdp_list_pages should fire: {calls:?}");
     assert_eq!(calls[0].0, "cdp_list_pages");
     assert_eq!(
-        exec.cdp_selected_pages.get("Chrome").map(String::as_str),
+        exec.cdp_selected_pages
+            .get(&chrome_key(TEST_PID))
+            .map(String::as_str),
         Some("https://b.example.com/foo")
     );
 }
@@ -209,7 +219,7 @@ async fn restore_or_record_selected_page_selects_matching_index_on_reconnect() {
     // must call cdp_select_page with B's index.
     let mut exec = make_test_executor();
     exec.cdp_selected_pages.insert(
-        "Chrome".to_string(),
+        chrome_key(TEST_PID),
         "https://b.example.com/foo".to_string(),
     );
 
@@ -221,7 +231,8 @@ async fn restore_or_record_selected_page_selects_matching_index_on_reconnect() {
     // cdp_select_page success
     mcp.push_text_response("Selected page [1]: https://b.example.com/foo");
 
-    exec.restore_or_record_selected_page("Chrome", &mcp).await;
+    exec.restore_or_record_selected_page("Chrome", TEST_PID, &mcp)
+        .await;
 
     let calls = mcp.take_calls();
     assert_eq!(calls.len(), 2, "list + select: {calls:?}");
@@ -229,8 +240,51 @@ async fn restore_or_record_selected_page_selects_matching_index_on_reconnect() {
     assert_eq!(calls[1].0, "cdp_select_page");
     assert_eq!(calls[1].1, Some(serde_json::json!({ "page_idx": 1 })));
     assert_eq!(
-        exec.cdp_selected_pages.get("Chrome").map(String::as_str),
+        exec.cdp_selected_pages
+            .get(&chrome_key(TEST_PID))
+            .map(String::as_str),
         Some("https://b.example.com/foo")
+    );
+}
+
+#[tokio::test]
+async fn restore_or_record_selected_page_isolates_same_name_instances_by_pid() {
+    // Two Chrome instances with different PIDs must have independent
+    // remembered tabs. A reconnect under one PID must not consume the
+    // other PID's remembered URL or overwrite it.
+    let mut exec = make_test_executor();
+    exec.cdp_selected_pages.insert(
+        chrome_key(OTHER_PID),
+        "https://other-instance.example.com/".to_string(),
+    );
+
+    let mcp = StubToolProvider::new();
+    mcp.push_text_response("Pages (1 total):\n  [0]* https://default-instance.example.com/\n");
+
+    // Reconnect under TEST_PID (first connect for this instance).
+    exec.restore_or_record_selected_page("Chrome", TEST_PID, &mcp)
+        .await;
+
+    let calls = mcp.take_calls();
+    assert_eq!(
+        calls.len(),
+        1,
+        "must not issue cdp_select_page using the other instance's URL: {calls:?}"
+    );
+    assert_eq!(calls[0].0, "cdp_list_pages");
+
+    // Each instance owns its own entry.
+    assert_eq!(
+        exec.cdp_selected_pages
+            .get(&chrome_key(TEST_PID))
+            .map(String::as_str),
+        Some("https://default-instance.example.com/")
+    );
+    assert_eq!(
+        exec.cdp_selected_pages
+            .get(&chrome_key(OTHER_PID))
+            .map(String::as_str),
+        Some("https://other-instance.example.com/")
     );
 }
 
@@ -240,14 +294,15 @@ async fn restore_or_record_selected_page_skips_select_when_already_on_target() {
     // the redundant cdp_select_page call.
     let mut exec = make_test_executor();
     exec.cdp_selected_pages
-        .insert("Chrome".to_string(), "https://a.example.com/".to_string());
+        .insert(chrome_key(TEST_PID), "https://a.example.com/".to_string());
 
     let mcp = StubToolProvider::new();
     mcp.push_text_response(
         "Pages (2 total):\n  [0]* https://a.example.com/\n  [1] https://b.example.com/foo\n",
     );
 
-    exec.restore_or_record_selected_page("Chrome", &mcp).await;
+    exec.restore_or_record_selected_page("Chrome", TEST_PID, &mcp)
+        .await;
 
     let calls = mcp.take_calls();
     assert_eq!(
@@ -265,7 +320,7 @@ async fn restore_or_record_selected_page_falls_back_when_remembered_tab_closed()
     // the auto-selected page.
     let mut exec = make_test_executor();
     exec.cdp_selected_pages.insert(
-        "Chrome".to_string(),
+        chrome_key(TEST_PID),
         "https://gone.example.com/".to_string(),
     );
 
@@ -274,7 +329,8 @@ async fn restore_or_record_selected_page_falls_back_when_remembered_tab_closed()
         "Pages (2 total):\n  [0]* https://a.example.com/\n  [1] https://b.example.com/\n",
     );
 
-    exec.restore_or_record_selected_page("Chrome", &mcp).await;
+    exec.restore_or_record_selected_page("Chrome", TEST_PID, &mcp)
+        .await;
 
     let calls = mcp.take_calls();
     assert_eq!(
@@ -285,7 +341,9 @@ async fn restore_or_record_selected_page_falls_back_when_remembered_tab_closed()
     // Remembered URL should be updated to the auto-selected one so subsequent
     // reconnects aim at the actually-available tab.
     assert_eq!(
-        exec.cdp_selected_pages.get("Chrome").map(String::as_str),
+        exec.cdp_selected_pages
+            .get(&chrome_key(TEST_PID))
+            .map(String::as_str),
         Some("https://a.example.com/")
     );
 }
@@ -297,7 +355,7 @@ async fn restore_or_record_selected_page_tolerates_list_pages_error() {
     // "keep the auto-selected tab" fallthrough.
     let mut exec = make_test_executor();
     exec.cdp_selected_pages
-        .insert("Chrome".to_string(), "https://a.example.com/".to_string());
+        .insert(chrome_key(TEST_PID), "https://a.example.com/".to_string());
 
     let mcp = StubToolProvider::new();
     mcp.push_response(clickweave_mcp::ToolCallResult {
@@ -307,13 +365,16 @@ async fn restore_or_record_selected_page_tolerates_list_pages_error() {
         is_error: Some(true),
     });
 
-    exec.restore_or_record_selected_page("Chrome", &mcp).await;
+    exec.restore_or_record_selected_page("Chrome", TEST_PID, &mcp)
+        .await;
 
     let calls = mcp.take_calls();
     assert_eq!(calls.len(), 1);
     // Remembered URL is left untouched.
     assert_eq!(
-        exec.cdp_selected_pages.get("Chrome").map(String::as_str),
+        exec.cdp_selected_pages
+            .get(&chrome_key(TEST_PID))
+            .map(String::as_str),
         Some("https://a.example.com/")
     );
 }
@@ -326,10 +387,13 @@ async fn snapshot_selected_page_url_remembers_current_selection() {
         "Pages (2 total):\n  [0] https://a.example.com/\n  [1]* https://b.example.com/foo\n",
     );
 
-    exec.snapshot_selected_page_url("Chrome", &mcp).await;
+    exec.snapshot_selected_page_url("Chrome", TEST_PID, &mcp)
+        .await;
 
     assert_eq!(
-        exec.cdp_selected_pages.get("Chrome").map(String::as_str),
+        exec.cdp_selected_pages
+            .get(&chrome_key(TEST_PID))
+            .map(String::as_str),
         Some("https://b.example.com/foo")
     );
 }
@@ -345,9 +409,10 @@ async fn snapshot_selected_page_url_is_silent_on_error() {
         is_error: Some(true),
     });
 
-    exec.snapshot_selected_page_url("Chrome", &mcp).await;
+    exec.snapshot_selected_page_url("Chrome", TEST_PID, &mcp)
+        .await;
 
-    assert!(!exec.cdp_selected_pages.contains_key("Chrome"));
+    assert!(!exec.cdp_selected_pages.contains_key(&chrome_key(TEST_PID)));
 }
 
 #[tokio::test]

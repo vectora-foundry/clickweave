@@ -239,10 +239,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         // Disconnect from any previously connected app.
-        if let Some((prev_name, _)) = self.cdp_connected_app.clone() {
+        if let Some((prev_name, prev_pid)) = self.cdp_connected_app.clone() {
             // Capture the currently-selected page URL before tearing down so
-            // a future reconnect to this app can restore the same tab.
-            self.snapshot_selected_page_url(&prev_name, mcp).await;
+            // a future reconnect to this app instance can restore the same tab.
+            self.snapshot_selected_page_url(&prev_name, prev_pid, mcp)
+                .await;
             let _ = mcp.call_tool("cdp_disconnect", None).await;
             self.cdp_connected_app = None;
         }
@@ -335,15 +336,20 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         // Restore the previously-selected tab (or remember whatever
         // `cdp_connect` auto-selected if we had no prior record).
-        self.restore_or_record_selected_page(app_name, mcp).await;
+        self.restore_or_record_selected_page(app_name, pid, mcp)
+            .await;
 
         Ok(())
     }
 
-    /// List pages, pick the best match for this app's remembered URL, and
-    /// call `cdp_select_page`. If no URL is remembered or no match is found,
-    /// record whichever page is currently marked as selected so the next
-    /// reconnect can restore it.
+    /// List pages, pick the best match for this app instance's remembered
+    /// URL, and call `cdp_select_page`. If no URL is remembered or no match
+    /// is found, record whichever page is currently marked as selected so
+    /// the next reconnect can restore it.
+    ///
+    /// Keyed by `(app_name, pid)` — two instances of the same-named app
+    /// (default Chrome vs. profile-scoped Chrome) must not overwrite each
+    /// other's remembered tab.
     ///
     /// Failure is logged but never propagated — the connection is already
     /// established; a bad select is strictly a "wrong tab" regression, not
@@ -352,6 +358,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(in crate::executor) async fn restore_or_record_selected_page(
         &mut self,
         app_name: &str,
+        pid: i32,
         mcp: &(impl Mcp + ?Sized),
     ) {
         use clickweave_core::cdp::{
@@ -386,7 +393,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             return;
         }
 
-        let remembered = self.cdp_selected_pages.get(app_name).cloned();
+        let key = (app_name.to_string(), pid);
+        let remembered = self.cdp_selected_pages.get(&key).cloned();
         if let Some(target_url) = remembered.as_deref()
             && let Some(target_index) = pick_page_index_for_url(&pages, target_url)
         {
@@ -397,7 +405,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 .is_some_and(|p| p.selected);
             if already_selected {
                 self.cdp_selected_pages
-                    .insert(app_name.to_string(), target_url.to_string());
+                    .insert(key.clone(), target_url.to_string());
                 return;
             }
 
@@ -414,7 +422,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         target_index, target_url, app_name
                     ));
                     self.cdp_selected_pages
-                        .insert(app_name.to_string(), target_url.to_string());
+                        .insert(key.clone(), target_url.to_string());
                     return;
                 }
                 Ok(r) => {
@@ -444,12 +452,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // currently-selected page so future reconnects have something to aim
         // at.
         if let Some(url) = current_selected_page_url(&pages) {
-            self.cdp_selected_pages.insert(app_name.to_string(), url);
+            self.cdp_selected_pages.insert(key, url);
         }
     }
 
-    /// Capture the currently-selected CDP page URL for `app_name` so it can
-    /// be restored on a future reconnect. Called immediately before
+    /// Capture the currently-selected CDP page URL for `(app_name, pid)` so
+    /// it can be restored on a future reconnect. Called immediately before
     /// `cdp_disconnect` to preserve the user's last-visible tab across the
     /// disconnect/reconnect cycle.
     ///
@@ -458,6 +466,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     pub(in crate::executor) async fn snapshot_selected_page_url(
         &mut self,
         app_name: &str,
+        pid: i32,
         mcp: &(impl Mcp + ?Sized),
     ) {
         use clickweave_core::cdp::{current_selected_page_url, parse_cdp_page_list};
@@ -472,7 +481,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         let text = Self::extract_result_text(&result);
         let pages = parse_cdp_page_list(&text);
         if let Some(url) = current_selected_page_url(&pages) {
-            self.cdp_selected_pages.insert(app_name.to_string(), url);
+            self.cdp_selected_pages
+                .insert((app_name.to_string(), pid), url);
         }
     }
 

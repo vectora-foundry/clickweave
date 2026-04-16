@@ -309,6 +309,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             *cdp_pid = real_pid;
         }
 
+        // Mirror the PID upgrade into `cdp_selected_pages`: any placeholder
+        // entry keyed by (name, 0) must migrate to (name, real_pid) so the
+        // next reconnect under the real PID still finds the remembered URL.
+        if let Some(url) = self.cdp_selected_pages.remove(&(name.clone(), 0)) {
+            self.cdp_selected_pages
+                .insert((name.clone(), real_pid), url);
+        }
+
         self.log(format!(
             "Refreshed focused app: \"{}\" kind={:?} pid={}",
             name, real_kind, real_pid

@@ -874,8 +874,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         let _ = mcp.call_tool("cdp_disconnect", None).await;
                         self.cdp_connected_app = None;
                         // The app was about to be killed for a profile
-                        // relaunch — a remembered tab URL is stale.
-                        self.cdp_selected_pages.remove(&prev_name);
+                        // relaunch — every remembered tab URL for any
+                        // instance of this app name is stale.
+                        self.cdp_selected_pages
+                            .retain(|(name, _), _| name != &prev_name);
                     }
                     self.ensure_cdp_connected(
                         node_id,
@@ -983,8 +985,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             {
                 self.cdp_connected_app = None;
             }
-            // Quitting the app invalidates any remembered tab URL.
-            self.cdp_selected_pages.remove(app_name.as_str());
+            // Quitting the app invalidates any remembered tab URL across
+            // all tracked PIDs for this app name.
+            self.cdp_selected_pages
+                .retain(|(name, _), _| name != app_name.as_str());
             self.write_app_cache().remove(app_name.as_str());
         }
 
