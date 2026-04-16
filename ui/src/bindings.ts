@@ -289,7 +289,17 @@ async approveAgentAction(approved: boolean) : Promise<Result<null, CommandError>
 /** user-defined types **/
 
 export type ActionConfidence = "High" | "Medium" | "Low"
-export type AgentRunRequest = { goal: string; agent: EndpointConfig; project_path: string | null; workflow_name: string; workflow_id: string }
+export type AgentRunRequest = { goal: string; agent: EndpointConfig; project_path: string | null; workflow_name: string; workflow_id: string; 
+/**
+ * Permission policy for this run. When `None`, the default policy
+ * (empty rules, allow_all=false, guardrail off) is used.
+ */
+permissions?: PermissionPolicyWire | null; 
+/**
+ * Halt the run after this many consecutive destructive tool calls.
+ * `0` disables the cap. `None` uses the engine default (3).
+ */
+consecutive_destructive_cap?: number | null }
 export type AiStepParams = { prompt: string; button_text: string | null; template_image: string | null; max_tool_calls: number | null; allowed_tools: string[] | null; timeout_ms?: number | null }
 export type AppDebugKitParams = { operation_name: string; parameters: JsonValue }
 /**
@@ -383,6 +393,25 @@ export type NodeType = ({ type: "FindText" } & FindTextParams) | ({ type: "FindI
  */
 { type: "Unknown" }
 export type NodeTypeInfo = { name: string; output_role: string; node_context: string; icon: string; node_type: NodeType }
+export type PermissionActionWire = "allow" | "ask" | "deny"
+/**
+ * Wire form of the permission policy the UI ships with every `run_agent`.
+ * `tools` is the per-tool override map from the existing 2-tier UI (ask
+ * / allow). It is mapped into `PermissionRule`s with the tool name as a
+ * literal pattern so the Rust side only needs one evaluator.
+ */
+export type PermissionPolicyWire = { rules?: PermissionRuleWire[]; allow_all?: boolean; require_confirm_destructive?: boolean; 
+/**
+ * Per-tool overrides: `{ "click": "allow" }`. Merged into the rule
+ * list as literal-pattern rules before the evaluator runs.
+ */
+per_tool?: Partial<{ [key in string]: PermissionActionWire }> }
+/**
+ * Wire form of a single permission rule. Mirrors
+ * `clickweave_engine::agent::PermissionRule` but with a `specta::Type`
+ * derive so the TypeScript bindings pick it up.
+ */
+export type PermissionRuleWire = { tool_pattern: string; args_pattern: string | null; action: PermissionActionWire }
 export type Position = { x: number; y: number }
 export type PressKeyParams = { key: string; modifiers: string[]; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type ProjectData = { path: string; workflow: Workflow }
