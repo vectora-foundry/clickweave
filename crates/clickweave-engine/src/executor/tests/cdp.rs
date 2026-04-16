@@ -221,11 +221,11 @@ async fn execute_cdp_action_returns_resolver_error_when_target_missing() {
 // `ensure_cdp_connected` skips the "reuse existing debug port" path and quits
 // the Electron app that was already debug-attached during the walkthrough.
 #[test]
-fn resolve_chrome_profile_path_for_kind_returns_none_for_electron() {
+fn resolve_chrome_profile_path_for_app_returns_none_for_electron() {
     let exec = make_test_executor_with_default_profile();
 
     let result = exec
-        .resolve_chrome_profile_path_for_kind(AppKind::ElectronApp, None)
+        .resolve_chrome_profile_path_for_app(AppKind::ElectronApp, "Slack", None)
         .expect("electron resolution should not error");
     assert_eq!(
         result, None,
@@ -234,34 +234,57 @@ fn resolve_chrome_profile_path_for_kind_returns_none_for_electron() {
 }
 
 #[test]
-fn resolve_chrome_profile_path_for_kind_returns_none_for_native() {
+fn resolve_chrome_profile_path_for_app_returns_none_for_native() {
     let exec = make_test_executor_with_default_profile();
 
     let result = exec
-        .resolve_chrome_profile_path_for_kind(AppKind::Native, None)
+        .resolve_chrome_profile_path_for_app(AppKind::Native, "Calculator", None)
         .expect("native resolution should not error");
     assert_eq!(result, None);
 }
 
 #[test]
-fn resolve_chrome_profile_path_for_kind_returns_path_for_chrome() {
+fn resolve_chrome_profile_path_for_app_returns_path_for_google_chrome() {
     let exec = make_test_executor_with_default_profile();
 
     let result = exec
-        .resolve_chrome_profile_path_for_kind(AppKind::ChromeBrowser, None)
+        .resolve_chrome_profile_path_for_app(AppKind::ChromeBrowser, "Google Chrome", None)
         .expect("chrome resolution should not error");
     assert!(
         result.is_some(),
-        "Chrome should fall back to the first available profile path"
+        "Google Chrome should fall back to the first available profile path"
     );
 }
 
+// Brave/Edge/Arc/Chromium are classified as ChromeBrowser for CDP purposes,
+// but the Chrome profile tooling can only spawn Google Chrome. Passing a
+// profile hint would disable debug-port reuse and force a spurious relaunch
+// with the wrong binary.
 #[test]
-fn resolve_chrome_profile_path_for_kind_propagates_unknown_profile_error_for_chrome() {
+fn resolve_chrome_profile_path_for_app_returns_none_for_non_google_chrome_family() {
+    let exec = make_test_executor_with_default_profile();
+
+    for name in ["Brave Browser", "Microsoft Edge", "Arc", "Chromium"] {
+        let result = exec
+            .resolve_chrome_profile_path_for_app(AppKind::ChromeBrowser, name, None)
+            .expect("chrome-family resolution should not error");
+        assert_eq!(
+            result, None,
+            "{name} must not receive a Google-Chrome profile path",
+        );
+    }
+}
+
+#[test]
+fn resolve_chrome_profile_path_for_app_propagates_unknown_profile_error_for_chrome() {
     let exec = make_test_executor_with_default_profile();
 
     let err = exec
-        .resolve_chrome_profile_path_for_kind(AppKind::ChromeBrowser, Some("no-such-profile"))
+        .resolve_chrome_profile_path_for_app(
+            AppKind::ChromeBrowser,
+            "Google Chrome",
+            Some("no-such-profile"),
+        )
         .expect_err("unknown Chrome profile must surface as an error");
     assert!(matches!(err, ExecutorError::ToolCall { .. }));
 }
@@ -269,11 +292,11 @@ fn resolve_chrome_profile_path_for_kind_propagates_unknown_profile_error_for_chr
 // Even when a bogus profile name is supplied for Electron (e.g. a stale field
 // in a legacy workflow), the helper must ignore it — Electron has no profiles.
 #[test]
-fn resolve_chrome_profile_path_for_kind_ignores_profile_name_for_electron() {
+fn resolve_chrome_profile_path_for_app_ignores_profile_name_for_electron() {
     let exec = make_test_executor_with_default_profile();
 
     let result = exec
-        .resolve_chrome_profile_path_for_kind(AppKind::ElectronApp, Some("no-such-profile"))
+        .resolve_chrome_profile_path_for_app(AppKind::ElectronApp, "Slack", Some("no-such-profile"))
         .expect("electron must not error on a stale Chrome-profile field");
     assert_eq!(result, None);
 }

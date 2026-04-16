@@ -325,20 +325,25 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
     }
 
-    /// Resolve a Chrome profile path for an app of the given kind.
+    /// Resolve a Chrome profile path for an app by kind and name.
     ///
-    /// Only Chrome-family browsers have profiles; returning `Some(path)` for
-    /// an Electron app would thread a Chrome-profile hint into
-    /// `ensure_cdp_connected`, which then skips "reuse existing debug port"
-    /// on the assumption the running instance belongs to a different profile
-    /// — forcing an Electron app to quit/relaunch even when it was already
-    /// debug-attached during the walkthrough.
-    pub(crate) fn resolve_chrome_profile_path_for_kind(
+    /// The profile store only launches Google Chrome (`spawn_chrome` hardcodes
+    /// `/Applications/Google Chrome.app/...` on macOS and `chrome`/`google-chrome`
+    /// on Windows/Linux). Threading a profile hint into `ensure_cdp_connected`
+    /// for anything else — an Electron app, Chromium, or another
+    /// `AppKind::ChromeBrowser` variant like Brave, Edge, or Arc — would skip
+    /// the "reuse existing debug port" path and force a quit/relaunch with a
+    /// Google-Chrome binary the caller never asked for.
+    ///
+    /// Returns `None` unless `app_kind == ChromeBrowser` **and** `app_name`
+    /// looks like Google Chrome (see `is_google_chrome_app_name`).
+    pub(crate) fn resolve_chrome_profile_path_for_app(
         &self,
         app_kind: AppKind,
+        app_name: &str,
         chrome_profile_name: Option<&str>,
     ) -> ExecutorResult<Option<PathBuf>> {
-        if app_kind != AppKind::ChromeBrowser {
+        if app_kind != AppKind::ChromeBrowser || !is_google_chrome_app_name(app_name) {
             return Ok(None);
         }
         self.resolve_chrome_profile_path(chrome_profile_name)
@@ -429,5 +434,60 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     /// VLM nor supervisor is configured.
     pub(crate) fn vision_backend(&self) -> Option<&C> {
         self.fast.as_ref().or(self.supervision.as_ref())
+    }
+}
+
+/// Whether an app name denotes Google Chrome — the only app the Chrome-profile
+/// launcher (`spawn_chrome`) can actually start.
+///
+/// Matches "Google Chrome", "Google Chrome Canary", etc., but *not* Chromium
+/// (classified as `AppKind::ChromeBrowser` but shipped as its own binary),
+/// Brave, Edge, or Arc. Those must pass `None` for the profile path so
+/// `ensure_cdp_connected` can (a) reuse an already-running debug port and
+/// (b) fall through to the MCP `launch_app` relaunch branch that respects
+/// the real binary name.
+pub(crate) fn is_google_chrome_app_name(app_name: &str) -> bool {
+    let lower = app_name.to_ascii_lowercase();
+    // Exclude Chromium first — it contains the "chrome" substring but is a
+    // separate product `spawn_chrome` cannot launch.
+    if lower.contains("chromium") {
+        return false;
+    }
+    lower.contains("chrome")
+}
+
+#[cfg(test)]
+mod app_name_tests {
+    use super::is_google_chrome_app_name;
+
+    #[test]
+    fn matches_google_chrome_family() {
+        assert!(is_google_chrome_app_name("Google Chrome"));
+        assert!(is_google_chrome_app_name("Google Chrome Canary"));
+        assert!(is_google_chrome_app_name("chrome"));
+    }
+
+    #[test]
+    fn rejects_chromium() {
+        // Chromium is `AppKind::ChromeBrowser` but `spawn_chrome` cannot
+        // launch it — it hardcodes the Google Chrome binary.
+        assert!(!is_google_chrome_app_name("Chromium"));
+        assert!(!is_google_chrome_app_name("chromium"));
+    }
+
+    #[test]
+    fn rejects_other_chrome_family_browsers() {
+        // These are classified as `AppKind::ChromeBrowser` but have no
+        // Chrome-profile tooling in this codebase.
+        assert!(!is_google_chrome_app_name("Brave Browser"));
+        assert!(!is_google_chrome_app_name("Microsoft Edge"));
+        assert!(!is_google_chrome_app_name("Arc"));
+    }
+
+    #[test]
+    fn rejects_electron_and_native_apps() {
+        assert!(!is_google_chrome_app_name("Slack"));
+        assert!(!is_google_chrome_app_name("Visual Studio Code"));
+        assert!(!is_google_chrome_app_name("Calculator"));
     }
 }
