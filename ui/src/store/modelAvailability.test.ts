@@ -26,6 +26,8 @@ function makeSettings(overrides: Partial<PersistedSettings> = {}): PersistedSett
         hoverDwellThreshold: 2000,
         supervisionDelayMs: 500,
         toolPermissions: DEFAULT_TOOL_PERMISSIONS,
+        traceRetentionDays: 30,
+        storeTraces: true,
         ...overrides,
     };
 }

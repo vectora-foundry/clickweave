@@ -71,7 +71,7 @@ function App() {
     })),
   );
 
-  const { supervisorConfig, agentConfig, fastConfig, fastEnabled, maxRepairAttempts, hoverDwellThreshold, supervisionDelayMs, toolPermissions } = useStore(
+  const { supervisorConfig, agentConfig, fastConfig, fastEnabled, maxRepairAttempts, hoverDwellThreshold, supervisionDelayMs, toolPermissions, traceRetentionDays, storeTraces } = useStore(
     useShallow((s) => ({
       supervisorConfig: s.supervisorConfig,
       agentConfig: s.agentConfig,
@@ -81,6 +81,8 @@ function App() {
       hoverDwellThreshold: s.hoverDwellThreshold,
       supervisionDelayMs: s.supervisionDelayMs,
       toolPermissions: s.toolPermissions,
+      traceRetentionDays: s.traceRetentionDays,
+      storeTraces: s.storeTraces,
     })),
   );
 
@@ -127,6 +129,8 @@ function App() {
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
   const setSupervisionDelayMs = useStore((s) => s.setSupervisionDelayMs);
+  const setTraceRetentionDays = useStore((s) => s.setTraceRetentionDays);
+  const setStoreTraces = useStore((s) => s.setStoreTraces);
 
   // ── Workflow mutations ───────────────────────────────────────────
   const {
@@ -301,6 +305,8 @@ function App() {
         hoverDwellThreshold={hoverDwellThreshold}
         supervisionDelayMs={supervisionDelayMs}
         toolPermissions={toolPermissions}
+        traceRetentionDays={traceRetentionDays}
+        storeTraces={storeTraces}
         onClose={() => setShowSettings(false)}
         onSupervisorConfigChange={setSupervisorConfig}
         onAgentConfigChange={setAgentConfig}
@@ -311,6 +317,8 @@ function App() {
         onSupervisionDelayMsChange={setSupervisionDelayMs}
         onToolPermissionsChange={setToolPermissions}
         onToolPermissionChange={setToolPermission}
+        onTraceRetentionDaysChange={setTraceRetentionDays}
+        onStoreTracesChange={setStoreTraces}
       />
 
       <VerdictModal />

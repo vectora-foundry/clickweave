@@ -36,7 +36,14 @@ export interface PersistedSettings {
   hoverDwellThreshold: number;
   supervisionDelayMs: number;
   toolPermissions: ToolPermissions;
+  /** Privacy: retention window for run traces. 0 = never delete. */
+  traceRetentionDays: number;
+  /** Privacy: global kill switch for on-disk run traces. */
+  storeTraces: boolean;
 }
+
+export const DEFAULT_TRACE_RETENTION_DAYS = 30;
+export const DEFAULT_STORE_TRACES = true;
 
 const SETTINGS_DEFAULTS: PersistedSettings = {
   supervisorConfig: DEFAULT_ENDPOINT,
@@ -47,6 +54,8 @@ const SETTINGS_DEFAULTS: PersistedSettings = {
   hoverDwellThreshold: 2000,
   supervisionDelayMs: 500,
   toolPermissions: DEFAULT_TOOL_PERMISSIONS,
+  traceRetentionDays: DEFAULT_TRACE_RETENTION_DAYS,
+  storeTraces: DEFAULT_STORE_TRACES,
 };
 
 export async function loadSettings(): Promise<PersistedSettings> {
@@ -107,6 +116,9 @@ export async function loadSettings(): Promise<PersistedSettings> {
     await store.save();
   }
 
+  const traceRetentionDays = await store.get<number>("traceRetentionDays");
+  const storeTraces = await store.get<boolean>("storeTraces");
+
   return {
     supervisorConfig,
     agentConfig: agentConfig ?? fallback,
@@ -116,6 +128,8 @@ export async function loadSettings(): Promise<PersistedSettings> {
     hoverDwellThreshold: hoverDwellThreshold ?? SETTINGS_DEFAULTS.hoverDwellThreshold,
     supervisionDelayMs: supervisionDelayMs ?? SETTINGS_DEFAULTS.supervisionDelayMs,
     toolPermissions: toolPermissions ?? SETTINGS_DEFAULTS.toolPermissions,
+    traceRetentionDays: traceRetentionDays ?? SETTINGS_DEFAULTS.traceRetentionDays,
+    storeTraces: storeTraces ?? SETTINGS_DEFAULTS.storeTraces,
   };
 }
 

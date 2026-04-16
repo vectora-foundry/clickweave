@@ -2,7 +2,12 @@ import type { StateCreator } from "zustand";
 import type { EndpointConfig, PermissionLevel, ToolPermissions } from "../state";
 import { DEFAULT_ENDPOINT, DEFAULT_TOOL_PERMISSIONS, DEFAULT_FAST_ENABLED } from "../state";
 import { formatModelStatus, verifyConfiguredModels } from "../modelAvailability";
-import { loadSettings, saveSetting } from "../settings";
+import {
+  DEFAULT_STORE_TRACES,
+  DEFAULT_TRACE_RETENTION_DAYS,
+  loadSettings,
+  saveSetting,
+} from "../settings";
 import type { PersistedSettings } from "../settings";
 import type { StoreState } from "./types";
 
@@ -15,6 +20,8 @@ export interface SettingsSlice {
   hoverDwellThreshold: number;
   supervisionDelayMs: number;
   toolPermissions: ToolPermissions;
+  traceRetentionDays: number;
+  storeTraces: boolean;
   _settingsLoaded: boolean;
 
   loadSettingsFromDisk: () => void;
@@ -27,6 +34,8 @@ export interface SettingsSlice {
   setSupervisionDelayMs: (ms: number) => void;
   setToolPermissions: (perms: ToolPermissions) => void;
   setToolPermission: (toolName: string, level: PermissionLevel) => Promise<void>;
+  setTraceRetentionDays: (days: number) => void;
+  setStoreTraces: (enabled: boolean) => void;
 }
 
 function persistSetting<K extends keyof PersistedSettings>(
@@ -55,6 +64,8 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
   hoverDwellThreshold: 2000,
   supervisionDelayMs: 500,
   toolPermissions: DEFAULT_TOOL_PERMISSIONS,
+  traceRetentionDays: DEFAULT_TRACE_RETENTION_DAYS,
+  storeTraces: DEFAULT_STORE_TRACES,
   _settingsLoaded: false,
 
   loadSettingsFromDisk: () => {
@@ -71,6 +82,13 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
           hoverDwellThreshold: clampInt(s.hoverDwellThreshold, 100, 10000, 2000),
           supervisionDelayMs: clampInt(s.supervisionDelayMs, 0, 10000, 500),
           toolPermissions: s.toolPermissions,
+          traceRetentionDays: clampInt(
+            s.traceRetentionDays,
+            0,
+            3650,
+            DEFAULT_TRACE_RETENTION_DAYS,
+          ),
+          storeTraces: s.storeTraces,
         });
         verifyConfiguredModels(s)
           .then((results) => {
@@ -97,4 +115,11 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
     const updated = { ...current, tools: { ...current.tools, [toolName]: level } };
     return persistSetting("toolPermissions", updated, set);
   },
+  setTraceRetentionDays: (days) =>
+    persistSetting(
+      "traceRetentionDays",
+      clampInt(days, 0, 3650, DEFAULT_TRACE_RETENTION_DAYS),
+      set,
+    ),
+  setStoreTraces: (enabled) => persistSetting("storeTraces", enabled, set),
 });

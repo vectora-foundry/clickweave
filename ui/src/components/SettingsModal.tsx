@@ -6,6 +6,7 @@ import type { PermissionLevel, ToolPermissions } from "../store/state";
 import { Modal } from "./Modal";
 import { ExecutionTab } from "./ExecutionTab";
 import { PermissionsTab } from "./PermissionsTab";
+import { PrivacyTab } from "./PrivacyTab";
 
 type HealthState = "idle" | "pending" | "checking" | "ok" | "error";
 
@@ -53,7 +54,7 @@ function EndpointStatus({ baseUrl, apiKey, model }: { baseUrl: string; apiKey?: 
   );
 }
 
-type SettingsTab = "general" | "execution" | "permissions";
+type SettingsTab = "general" | "execution" | "permissions" | "privacy";
 
 interface SettingsModalProps {
   open: boolean;
@@ -65,6 +66,8 @@ interface SettingsModalProps {
   hoverDwellThreshold: number;
   supervisionDelayMs: number;
   toolPermissions: ToolPermissions;
+  traceRetentionDays: number;
+  storeTraces: boolean;
   onClose: () => void;
   onSupervisorConfigChange: (config: EndpointConfig) => void;
   onAgentConfigChange: (config: EndpointConfig) => void;
@@ -75,6 +78,8 @@ interface SettingsModalProps {
   onSupervisionDelayMsChange: (ms: number) => void;
   onToolPermissionsChange: (perms: ToolPermissions) => void;
   onToolPermissionChange: (toolName: string, level: PermissionLevel) => void;
+  onTraceRetentionDaysChange: (days: number) => void;
+  onStoreTracesChange: (enabled: boolean) => void;
 }
 
 const inputClass =
@@ -257,6 +262,8 @@ export function SettingsModal({
   hoverDwellThreshold,
   supervisionDelayMs,
   toolPermissions,
+  traceRetentionDays,
+  storeTraces,
   onClose,
   onSupervisorConfigChange,
   onAgentConfigChange,
@@ -267,6 +274,8 @@ export function SettingsModal({
   onSupervisionDelayMsChange,
   onToolPermissionsChange,
   onToolPermissionChange,
+  onTraceRetentionDaysChange,
+  onStoreTracesChange,
 }: SettingsModalProps) {
   const [tab, setTab] = useState<SettingsTab>("general");
 
@@ -286,7 +295,7 @@ export function SettingsModal({
 
         {/* Tab bar */}
         <div className="flex border-b border-[var(--border)]">
-          {(["general", "execution", "permissions"] as const).map((t) => (
+          {(["general", "execution", "permissions", "privacy"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -313,6 +322,13 @@ export function SettingsModal({
             supervisionDelayMs={supervisionDelayMs}
             onMaxRepairAttemptsChange={onMaxRepairAttemptsChange}
             onSupervisionDelayMsChange={onSupervisionDelayMsChange}
+          />
+        ) : tab === "privacy" ? (
+          <PrivacyTab
+            traceRetentionDays={traceRetentionDays}
+            storeTraces={storeTraces}
+            onTraceRetentionDaysChange={onTraceRetentionDaysChange}
+            onStoreTracesChange={onStoreTracesChange}
           />
         ) : (
         <div className="space-y-4 p-4">

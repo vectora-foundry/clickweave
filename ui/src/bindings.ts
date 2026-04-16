@@ -307,7 +307,14 @@ permissions?: PermissionPolicyWire | null;
  * Halt the run after this many consecutive destructive tool calls.
  * `0` disables the cap. `None` uses the engine default (3).
  */
-consecutive_destructive_cap?: number | null }
+consecutive_destructive_cap?: number | null; 
+/**
+ * Privacy kill switch: when false, the run is entirely in-memory.
+ * No `.clickweave/runs/` directory is created and no trace files
+ * or cache files are written. When `None`, persistence is on —
+ * matches the UI default (`storeTraces: true`).
+ */
+store_traces?: boolean | null }
 export type AiStepParams = { prompt: string; button_text: string | null; template_image: string | null; max_tool_calls: number | null; allowed_tools: string[] | null; timeout_ms?: number | null }
 export type AppDebugKitParams = { operation_name: string; parameters: JsonValue }
 /**
@@ -435,7 +442,13 @@ export type RunRequest = { workflow: Workflow; project_path: string | null; agen
 /**
  * Supervisor LLM used for step verdict in Test mode.
  */
-supervisor: EndpointConfig | null; execution_mode: ExecutionMode; supervision_delay_ms?: number }
+supervisor: EndpointConfig | null; execution_mode: ExecutionMode; supervision_delay_ms?: number; 
+/**
+ * Privacy kill switch: when false, the run is entirely in-memory
+ * and no files are written under `.clickweave/runs/`. When missing,
+ * persistence is on — matches the UI default (`storeTraces: true`).
+ */
+store_traces?: boolean | null }
 export type RunStatus = "Ok" | "Failed" | "Stopped" | "Cancelled"
 export type RunsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string }
 /**

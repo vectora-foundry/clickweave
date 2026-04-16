@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { normalizeToolPermissions, toEndpoint } from "./settings";
+import {
+  DEFAULT_STORE_TRACES,
+  DEFAULT_TRACE_RETENTION_DAYS,
+  normalizeToolPermissions,
+  toEndpoint,
+} from "./settings";
 
 describe("toEndpoint", () => {
   it("maps camelCase UI config to snake_case backend config", () => {
@@ -54,5 +59,15 @@ describe("normalizeToolPermissions", () => {
     };
     const result = normalizeToolPermissions(stored);
     expect(result).toEqual(stored);
+  });
+});
+
+describe("privacy defaults", () => {
+  it("keeps trace retention at 30 days by default", () => {
+    expect(DEFAULT_TRACE_RETENTION_DAYS).toBe(30);
+  });
+
+  it("keeps the store-traces kill switch on by default", () => {
+    expect(DEFAULT_STORE_TRACES).toBe(true);
   });
 });

@@ -217,6 +217,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       workflow,
       agentStatus,
       toolPermissions,
+      storeTraces,
     } = priorState;
     // If a run is already active, do not touch run-scoped state: the
     // backend will reject with AlreadyRunning and the live run's events
@@ -272,6 +273,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
           permissions: toPermissionPolicyWire(toolPermissions),
           consecutive_destructive_cap:
             toolPermissions.consecutiveDestructiveCap,
+          store_traces: storeTraces,
         },
       });
     } catch (err) {

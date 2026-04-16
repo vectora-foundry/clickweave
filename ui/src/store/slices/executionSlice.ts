@@ -59,7 +59,18 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
   },
 
   runWorkflow: async () => {
-    const { workflow, projectPath, agentConfig, fastConfig, fastEnabled, supervisorConfig, executionMode, supervisionDelayMs, pushLog } = get();
+    const {
+      workflow,
+      projectPath,
+      agentConfig,
+      fastConfig,
+      fastEnabled,
+      supervisorConfig,
+      executionMode,
+      supervisionDelayMs,
+      storeTraces,
+      pushLog,
+    } = get();
 
     const graphErrors = validateSingleGraph(workflow.nodes, workflow.edges);
     if (graphErrors.length > 0) {
@@ -77,6 +88,7 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
       supervisor: toEndpoint(supervisorConfig),
       execution_mode: executionMode,
       supervision_delay_ms: supervisionDelayMs,
+      store_traces: storeTraces,
     };
     const result = await commands.runWorkflow(request);
     if (result.status === "error") {
