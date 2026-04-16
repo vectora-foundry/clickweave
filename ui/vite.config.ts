@@ -26,5 +26,11 @@ export default defineConfig({
     watch: {
       ignored: ["**/src-tauri/**"],
     },
+    fs: {
+      // CDP injected-JS sources live in the Rust crate so both Rust and the
+      // vitest suites read the exact same bytes. Vite 6 defaults strictly
+      // deny imports outside the workspace root, so allow just that dir.
+      allow: [".", "../crates/clickweave-core/src/walkthrough/cdp_scripts"],
+    },
   },
 });
