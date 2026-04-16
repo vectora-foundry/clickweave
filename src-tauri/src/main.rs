@@ -122,6 +122,7 @@ fn main() {
         run_agent,
         stop_agent,
         approve_agent_action,
+        resolve_completion_disagreement,
     ]);
 
     #[cfg(debug_assertions)]

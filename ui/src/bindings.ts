@@ -275,6 +275,14 @@ async approveAgentAction(approved: boolean) : Promise<Result<null, CommandError>
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async resolveCompletionDisagreement(action: CompletionDisagreementActionWire) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resolve_completion_disagreement", { action }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -358,6 +366,12 @@ export type ClickTarget = { type: "Text"; text: string } | { type: "Coordinates"
  * Structured error type for Tauri IPC commands.
  */
 export type CommandError = { kind: ErrorKind; message: string }
+/**
+ * Wire form for `resolve_completion_disagreement`. Mirrors
+ * `DisagreementResolutionAction` but derives `specta::Type` so the
+ * TypeScript binding picks it up.
+ */
+export type CompletionDisagreementActionWire = "confirm" | "cancel"
 export type ConfirmableTool = { name: string; description: string }
 /**
  * A running app detected as Electron or Chrome, returned to the frontend for CDP selection.

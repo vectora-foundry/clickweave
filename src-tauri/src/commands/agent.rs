@@ -2,8 +2,9 @@ use super::error::CommandError;
 use super::types::*;
 use clickweave_core::variant_index::{VariantEntry, VariantIndex};
 use clickweave_engine::agent::{
-    AgentCache, AgentChannels, AgentConfig, AgentEvent, ApprovalRequest, PermissionAction,
-    PermissionPolicy, PermissionRule,
+    AgentCache, AgentChannels, AgentConfig, AgentEvent, ApprovalRequest,
+    DisagreementResolutionAction, PermissionAction, PermissionPolicy, PermissionRule,
+    TerminalReason,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -124,6 +125,13 @@ pub struct AgentHandle {
     task_handle: Option<tauri::async_runtime::JoinHandle<()>>,
     /// Pending approval oneshot sender — set when the agent is waiting for approval.
     pending_approval_tx: Option<tokio::sync::oneshot::Sender<bool>>,
+    /// Pending disagreement-resolution oneshot sender — set after the
+    /// engine halts on `CompletionDisagreement` and the Tauri task is
+    /// waiting for the operator to confirm or cancel via
+    /// `resolve_completion_disagreement`. Consumed by that command or by
+    /// `force_stop` (which resolves it as Cancel so the stop path still
+    /// writes a truthful terminal record).
+    pending_disagreement_tx: Option<tokio::sync::oneshot::Sender<DisagreementResolutionAction>>,
     /// Generation ID for the current run. Used to tag events and reject stale ones.
     run_id: Option<String>,
 }
@@ -145,8 +153,99 @@ impl AgentHandle {
         if let Some(tx) = self.pending_approval_tx.take() {
             let _ = tx.send(false);
         }
+        // Same contract for the pending disagreement-resolution oneshot:
+        // send an explicit Cancel so the Tauri task records a truthful
+        // `DisagreementCancelled` terminal reason. Dropping the sender
+        // would make the task fall through to "unknown", leaving the
+        // variant index + events.jsonl without a proper record of the
+        // operator's stop decision.
+        if let Some(tx) = self.pending_disagreement_tx.take() {
+            let _ = tx.send(DisagreementResolutionAction::Cancel);
+        }
         had_task
     }
+}
+
+// ── Disagreement resolution ─────────────────────────────────────
+
+/// Install a pending-disagreement oneshot in `AgentHandle` and wait for
+/// the operator's decision. Races the wait against the run's
+/// cancellation token so `stop_agent` fired *before* `resolve_completion_disagreement`
+/// installs its sender still unblocks the task.
+///
+/// On resolution, appends a `CompletionDisagreementResolved` event to the
+/// run's `events.jsonl` (durable trace) and returns the synthesized
+/// `TerminalReason` so the caller can write the variant-index entry and
+/// emit the final Tauri event from a single place.
+///
+/// Returns `None` when neither path fires (sender dropped cleanly) —
+/// callers emit `agent://stopped { reason: cancelled }` in that case.
+async fn await_disagreement_resolution(
+    app: &tauri::AppHandle,
+    cancel_token: &CancellationToken,
+    storage: &Arc<Mutex<clickweave_core::storage::RunStorage>>,
+    run_id: &str,
+    agent_summary: String,
+    vlm_reasoning: String,
+) -> Option<TerminalReason> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<DisagreementResolutionAction>();
+    {
+        let handle = app.state::<Mutex<AgentHandle>>();
+        let mut guard = handle.lock().unwrap();
+        guard.pending_disagreement_tx = Some(tx);
+    }
+
+    // Wait for the operator's decision, racing the run's cancellation
+    // token so `stop_agent` during the adjudication window unblocks.
+    let action = tokio::select! {
+        res = rx => res.ok(),
+        _ = cancel_token.cancelled() => {
+            // Clear any stale sender the force_stop path did not consume
+            // (theoretically impossible because force_stop always takes
+            // it, but defensive is cheap here).
+            let handle = app.state::<Mutex<AgentHandle>>();
+            let mut guard = handle.lock().unwrap();
+            guard.pending_disagreement_tx = None;
+            Some(DisagreementResolutionAction::Cancel)
+        }
+    };
+
+    let action = action?;
+
+    // Persist the resolution to the durable run trace before any
+    // terminal-emit side-effects. The Tauri event forwarder has already
+    // exited by this point (the event_tx handle was dropped when the
+    // engine returned), so we append directly via RunStorage.
+    let resolved_event = AgentEvent::CompletionDisagreementResolved {
+        action,
+        agent_summary: agent_summary.clone(),
+        vlm_reasoning: vlm_reasoning.clone(),
+    };
+    let _ = storage.lock().unwrap().append_agent_event(&resolved_event);
+    // Also surface the decision as a lightweight Tauri event so UIs
+    // outside the assistant panel (logs drawer, telemetry) observe the
+    // resolution. This is in addition to the definitive `agent://complete`
+    // / `agent://stopped` emission the caller performs next.
+    let _ = app.emit(
+        "agent://completion_disagreement_resolved",
+        serde_json::json!({
+            "run_id": run_id,
+            "action": match action {
+                DisagreementResolutionAction::Confirm => "confirm",
+                DisagreementResolutionAction::Cancel => "cancel",
+            },
+        }),
+    );
+
+    Some(match action {
+        DisagreementResolutionAction::Confirm => {
+            TerminalReason::DisagreementConfirmed { agent_summary }
+        }
+        DisagreementResolutionAction::Cancel => TerminalReason::DisagreementCancelled {
+            agent_summary,
+            vlm_reasoning,
+        },
+    })
 }
 
 // ── Commands ────────────────────────────────────────────────────
@@ -206,9 +305,13 @@ pub async fn run_agent(
     let event_emit_handle = app.clone();
     let approval_emit_handle = app.clone();
     let cleanup_handle = app.clone();
+    let disagreement_handle = app.clone();
     let goal = request.goal.clone();
     let task_storage = storage.clone();
     let event_storage = storage.clone();
+    // Separate clone for the main-task disagreement-resolution helper,
+    // since `event_storage` is moved into the event forwarder coroutine.
+    let main_task_storage = storage.clone();
     let task_run_id = run_id.clone();
     let event_run_id = run_id.clone();
     let approval_run_id = run_id.clone();
@@ -336,55 +439,85 @@ pub async fn run_agent(
                 // Persist the updated cache
                 let _ = updated_cache.save_to_path(&storage.lock().unwrap().agent_cache_path());
 
-                // Derive variant metadata from terminal reason
-                use clickweave_engine::agent::TerminalReason;
-                let (divergence_summary, success) = match &state.terminal_reason {
+                // If the engine halted on a pending VLM disagreement, block
+                // here until the operator resolves it (confirm / cancel) via
+                // `resolve_completion_disagreement`, or until `stop_agent`
+                // fires `force_stop` which resolves the oneshot as Cancel.
+                // This keeps the Tauri task alive during adjudication so
+                // the variant-index + events.jsonl writes happen exactly
+                // once per run, against the final operator decision.
+                let resolved_terminal = match state.terminal_reason {
+                    Some(TerminalReason::CompletionDisagreement {
+                        agent_summary,
+                        vlm_reasoning,
+                    }) => {
+                        await_disagreement_resolution(
+                            &disagreement_handle,
+                            &agent_token,
+                            &main_task_storage,
+                            &task_run_id,
+                            agent_summary,
+                            vlm_reasoning,
+                        )
+                        .await
+                    }
+                    other => other,
+                };
+
+                // Derive variant metadata from the resolved terminal reason.
+                let (divergence_summary, success) = match &resolved_terminal {
                     Some(reason) => (reason.divergence_summary(), reason.is_completed()),
                     None => ("Stopped: unknown reason".to_string(), false),
                 };
 
-                // Skip the variant index write when the user still has to
-                // adjudicate a VLM completion disagreement — otherwise the
-                // run gets permanently recorded as failed and that stale
-                // `[failed] Completion verification disagreed: ...` entry
-                // leaks into every future run's agent context, even if the
-                // operator later overrides the VLM and marks it complete.
-                let is_disagreement = matches!(
-                    state.terminal_reason,
-                    Some(TerminalReason::CompletionDisagreement { .. })
+                // Write the variant-index entry for every resolved run —
+                // including the post-resolution disagreement paths. The
+                // only case we must not write is when the operator's
+                // decision is still pending, but by this point the
+                // `await_disagreement_resolution` call has already
+                // collapsed that state into a concrete terminal reason
+                // (or a cancellation below).
+                let variant_entry = VariantEntry {
+                    execution_dir: storage
+                        .lock()
+                        .unwrap()
+                        .execution_dir_name()
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    diverged_at_step: None,
+                    divergence_summary,
+                    success,
+                };
+                let _ = VariantIndex::append(
+                    &storage.lock().unwrap().variant_index_path(),
+                    &variant_entry,
                 );
-                if !is_disagreement {
-                    let variant_entry = VariantEntry {
-                        execution_dir: storage
-                            .lock()
-                            .unwrap()
-                            .execution_dir_name()
-                            .unwrap_or("unknown")
-                            .to_string(),
-                        diverged_at_step: None,
-                        divergence_summary,
-                        success,
-                    };
-                    let _ = VariantIndex::append(
-                        &storage.lock().unwrap().variant_index_path(),
-                        &variant_entry,
-                    );
-                }
 
-                // Emit truthful terminal event.
-                match &state.terminal_reason {
-                    Some(TerminalReason::Completed { summary }) => {
+                // Emit the truthful terminal event. If no resolved
+                // terminal is available (force_stop fired during the
+                // adjudication window *before* the oneshot was installed
+                // — a race that `await_disagreement_resolution` already
+                // handles) we fall back to `agent://stopped { reason:
+                // cancelled }`.
+                match &resolved_terminal {
+                    Some(TerminalReason::Completed { summary })
+                    | Some(TerminalReason::DisagreementConfirmed {
+                        agent_summary: summary,
+                    }) => {
                         let _ = emit_handle.emit(
                             "agent://complete",
                             serde_json::json!({ "run_id": task_run_id, "summary": summary }),
                         );
                     }
-                    // CompletionDisagreement has its own dedicated event
-                    // (agent://completion_disagreement) emitted in-band by
-                    // the event forwarder. Emitting agent://stopped here as
-                    // well would race the disagreement card against a stop
-                    // handler that clears the pending-approval UI state.
-                    Some(TerminalReason::CompletionDisagreement { .. }) => {}
+                    Some(TerminalReason::DisagreementCancelled { .. }) => {
+                        let _ = emit_handle.emit(
+                            "agent://stopped",
+                            serde_json::json!({
+                                "run_id": task_run_id,
+                                "reason": "user_cancelled_disagreement",
+                            }),
+                        );
+                    }
                     Some(reason) => {
                         let mut payload = serde_json::to_value(reason).unwrap_or_default();
                         if let Some(obj) = payload.as_object_mut() {
@@ -395,7 +528,7 @@ pub async fn run_agent(
                     None => {
                         let _ = emit_handle.emit(
                             "agent://stopped",
-                            serde_json::json!({ "run_id": task_run_id, "reason": "unknown" }),
+                            serde_json::json!({ "run_id": task_run_id, "reason": "cancelled" }),
                         );
                     }
                 }
@@ -538,6 +671,12 @@ pub async fn run_agent(
                                         }),
                                     );
                                 }
+                                // `CompletionDisagreementResolved` is
+                                // emitted by the Tauri layer (not the
+                                // engine), so the agent loop never sends
+                                // it through this channel. Persisting it
+                                // is handled in `await_disagreement_resolution`.
+                                AgentEvent::CompletionDisagreementResolved { .. } => {}
                             }
                         }
                         None => break,
@@ -620,6 +759,7 @@ pub async fn run_agent(
         guard.cancel_token = None;
         guard.task_handle = None;
         guard.pending_approval_tx = None;
+        guard.pending_disagreement_tx = None;
         guard.run_id = None;
     });
 
@@ -653,6 +793,51 @@ pub async fn approve_agent_action(
 
     tx.send(approved).map_err(|_| {
         CommandError::validation("Approval channel closed — agent task may have ended")
+    })
+}
+
+/// Wire form for `resolve_completion_disagreement`. Mirrors
+/// `DisagreementResolutionAction` but derives `specta::Type` so the
+/// TypeScript binding picks it up.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "lowercase")]
+pub enum CompletionDisagreementActionWire {
+    Confirm,
+    Cancel,
+}
+
+impl From<CompletionDisagreementActionWire> for DisagreementResolutionAction {
+    fn from(a: CompletionDisagreementActionWire) -> Self {
+        match a {
+            CompletionDisagreementActionWire::Confirm => DisagreementResolutionAction::Confirm,
+            CompletionDisagreementActionWire::Cancel => DisagreementResolutionAction::Cancel,
+        }
+    }
+}
+
+/// Resolve a pending VLM completion disagreement. The operator picks
+/// either `confirm` (override the VLM, mark the run complete) or
+/// `cancel` (agree with the VLM, halt the run). The backend records the
+/// decision to `events.jsonl` + `variant_index.jsonl` and emits the
+/// appropriate terminal Tauri event.
+#[tauri::command]
+#[specta::specta]
+pub async fn resolve_completion_disagreement(
+    app: tauri::AppHandle,
+    action: CompletionDisagreementActionWire,
+) -> Result<(), CommandError> {
+    let handle = app.state::<Mutex<AgentHandle>>();
+    let mut guard = handle.lock().unwrap();
+    let tx = guard
+        .pending_disagreement_tx
+        .take()
+        .ok_or(CommandError::validation(
+            "No pending completion disagreement",
+        ))?;
+    drop(guard);
+
+    tx.send(action.into()).map_err(|_| {
+        CommandError::validation("Disagreement channel closed — agent task may have ended")
     })
 }
 
@@ -730,6 +915,34 @@ mod tests {
         assert!(
             !had_task,
             "force_stop must return false when no run is active"
+        );
+    }
+
+    /// When a VLM completion disagreement is pending, `force_stop` must
+    /// resolve the oneshot as `Cancel` — not drop it. Dropping would
+    /// surface as a receiver error in the Tauri task, leaving the run
+    /// without a truthful terminal record (variant index + events.jsonl
+    /// entry both missing).
+    #[test]
+    fn force_stop_resolves_pending_disagreement_as_cancel() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<DisagreementResolutionAction>();
+        let mut handle = AgentHandle {
+            cancel_token: Some(CancellationToken::new()),
+            pending_disagreement_tx: Some(tx),
+            ..Default::default()
+        };
+
+        let had_task = handle.force_stop();
+
+        assert!(
+            had_task,
+            "force_stop must report true when a pending disagreement is installed"
+        );
+        assert_eq!(
+            rx.blocking_recv(),
+            Ok(DisagreementResolutionAction::Cancel),
+            "force_stop must send explicit Cancel through the disagreement channel, \
+             not drop the oneshot (drops cause ambiguous `unknown` terminal records)"
         );
     }
 }
