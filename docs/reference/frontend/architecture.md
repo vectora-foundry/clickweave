@@ -148,7 +148,7 @@ The agent slice owns the live state of the observe-act agent loop. The loop emit
 - `pendingApproval: PendingApproval | null` — populated when the agent asks the user to approve the next tool invocation
 - `completionDisagreement: CompletionDisagreement | null` — populated when the backend emits `agent://completion_disagreement`; holds the screenshot, VLM reasoning, and agent summary surfaced by the assistant panel's disagreement card
 - `agentRunId: string | null` — per-run generation ID used to drop stale events from a prior run
-- actions: `startAgent(goal)`, `stopAgent`, `addAgentStep`, `addAgentNode`, `addAgentEdge`, `setPendingApproval`, `approveAction`, `rejectAction`, `setCompletionDisagreement`, `confirmDisagreementAsComplete` (front-end-only acknowledge — no backend decision is recorded yet), `setAgentStatus`, `setAgentError`, `setAgentRunId`, `resetAgent`
+- actions: `startAgent(goal)`, `stopAgent`, `addAgentStep`, `addAgentNode`, `addAgentEdge`, `setPendingApproval`, `approveAction`, `rejectAction`, `setCompletionDisagreement`, `confirmDisagreementAsComplete` (invokes `resolve_completion_disagreement` with `"confirm"` — backend writes the durable record and emits `agent://complete`), `cancelDisagreement` (invokes with `"cancel"` — backend emits `agent://stopped { reason: "user_cancelled_disagreement" }`), `setAgentStatus`, `setAgentError`, `setAgentRunId`, `resetAgent`
 
 **AssistantSlice** (`assistantSlice.ts`)
 
@@ -202,7 +202,7 @@ Shell for the assistant panel surface. No producer currently populates `messages
 - `executor://log`, `executor://state`, `executor://node_started`, `executor://node_completed`, `executor://node_failed`
 - `executor://checks_completed`, `executor://workflow_completed`
 - `executor://supervision_passed`, `executor://supervision_paused`
-- `agent://started`, `agent://step`, `agent://complete`, `agent://completion_disagreement`, `agent://stopped`, `agent://error`, `agent://warning`, `agent://node_added`, `agent://edge_added`, `agent://approval_required`, `agent://cdp_connected`, `agent://step_failed`, `agent://sub_action`
+- `agent://started`, `agent://step`, `agent://complete`, `agent://completion_disagreement`, `agent://completion_disagreement_resolved`, `agent://stopped`, `agent://error`, `agent://warning`, `agent://node_added`, `agent://edge_added`, `agent://approval_required`, `agent://cdp_connected`, `agent://step_failed`, `agent://sub_action`
 - `walkthrough://state`, `walkthrough://event`, `walkthrough://draft_ready`, `walkthrough://cdp-setup`
 - `recording-bar://action`
 - `menu://new`, `menu://open`, `menu://save`, `menu://toggle-sidebar`, `menu://toggle-logs`, `menu://run-workflow`, `menu://stop-workflow`

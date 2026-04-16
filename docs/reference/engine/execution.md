@@ -96,8 +96,9 @@ The loop emits events through an `AgentChannels` mpsc channel, forwarded as Taur
 - `agent://sub_action` — automatic pre/post-tool hook ran (e.g., auto CDP connect)
 - `agent://warning` / `agent://error`
 - `agent://complete` — goal achieved; summary in payload
-- `agent://completion_disagreement` — `agent_done` fired but a post-run VLM screenshot check rejected the completion; payload carries the screenshot, VLM reasoning, and the agent's own summary so the UI can surface the disagreement for operator adjudication. This is the terminal event for that case — no matching `agent://stopped` is emitted.
-- `agent://stopped` — bounded exit (max_steps, max_errors_reached, approval_unavailable, cancelled)
+- `agent://completion_disagreement` — `agent_done` fired but a post-run VLM screenshot check rejected the completion; payload carries the screenshot, VLM reasoning, and the agent's own summary so the UI can surface the disagreement for operator adjudication. The Tauri task holds the run open on a per-run oneshot (`AgentHandle::pending_disagreement_tx`) until the operator resolves the disagreement via `resolve_completion_disagreement` (or the Stop button, which `force_stop`s the oneshot with `Cancel`). The resolution is persisted to `events.jsonl` and `variant_index.jsonl`, then the task emits the definitive terminal event below.
+- `agent://completion_disagreement_resolved` — ancillary event emitted after the operator's decision lands; payload `{ run_id, action: "confirm" | "cancel" }`. Logs-drawer-and-telemetry grade; not the definitive terminal event.
+- `agent://stopped` — bounded exit (`max_steps_reached`, `max_errors_reached`, `approval_unavailable`, `cancelled`, `user_cancelled_disagreement`, `consecutive_destructive_cap`). The `user_cancelled_disagreement` variant is the terminal emission for the Cancel path of a VLM disagreement. The confirm path emits `agent://complete` instead.
 
 After `StepOutcome::Done`, the loop runs a VLM completion check when a vision backend is attached: it takes a screenshot via `take_screenshot`, sends it with the goal and agent summary, and parses YES/NO from the reply. YES lets the run complete normally (`Completed`). NO halts the run with `TerminalReason::CompletionDisagreement` and emits `agent://completion_disagreement`. Verification errors (no vision backend, screenshot failure, empty or failed VLM response) log a warning and fall through to the legacy `Completed` path — a broken verifier must not tank successful runs.
 
@@ -105,6 +106,7 @@ All payloads carry the `run_id` so stale events from a prior run can be filtered
 
 ### Operator Controls
 
-- `stop_agent` — cancels the running loop; sends an explicit rejection through any pending approval so the engine returns `Ok(false)` instead of "approval unavailable".
+- `stop_agent` — cancels the running loop; sends an explicit rejection through any pending approval so the engine returns `Ok(false)` instead of "approval unavailable". Also resolves a pending VLM-disagreement oneshot as `Cancel` so the run still records a truthful `DisagreementCancelled` terminal reason (instead of an ambiguous `unknown`).
 - `approve_agent_action { approved: bool }` — responds to the current pending approval.
+- `resolve_completion_disagreement { action: "confirm" | "cancel" }` — resolves a pending VLM completion disagreement. `confirm` records the run as successful with a `DisagreementConfirmed` terminal reason and emits `agent://complete`. `cancel` records it as failed with a `DisagreementCancelled` reason and emits `agent://stopped { reason: "user_cancelled_disagreement" }`. Both paths append a `CompletionDisagreementResolved` entry to `events.jsonl` and a `VariantEntry` with a distinct `divergence_summary`.
 
