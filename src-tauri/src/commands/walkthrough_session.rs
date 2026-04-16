@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use clickweave_core::AppKind;
 use clickweave_core::app_detection::{bundle_path_from_pid, classify_app, classify_app_by_pid};
+use clickweave_core::cdp::{parse_cdp_page_list, pick_page_index_for_url};
 use clickweave_core::walkthrough::enrichment::parse_cdp_click_data;
 use clickweave_core::walkthrough::session::{
     self as session_lib, CDP_CHECK_AND_REINJECT_JS, CDP_CLICK_LISTENER_JS, CDP_HOVER_LISTENER_JS,
@@ -47,6 +48,19 @@ use std::sync::RwLock;
 /// `Arc` pointer bump instead of a 64 KB memcpy.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 type ScreenshotBuffer = Arc<RwLock<Option<Arc<CursorRegionCapture>>>>;
+
+/// Per-app CDP session info captured during `setup_cdp_apps` and consumed by
+/// the walkthrough event loop when reconnecting to retrieve click/hover data.
+///
+/// `selected_page_url` is the URL of the page on which the click/hover JS
+/// listeners were injected. Future reconnects call `cdp_select_page` with the
+/// matching index so retrieval always hits the right tab even when the
+/// browser has multiple tabs open or added new ones during recording.
+#[derive(Debug, Clone)]
+struct CdpAppState {
+    port: u16,
+    selected_page_url: Option<String>,
+}
 
 // CachedApp is imported from clickweave_core::walkthrough::session.
 
@@ -150,7 +164,7 @@ pub(super) async fn process_capture_events(
     let mcp_raw = spawn_mcp(&mcp_binary_path).await;
 
     // Set up CDP connections for selected apps before wrapping in Arc.
-    let cdp_state: HashMap<String, u16> = if !cdp_apps.is_empty() {
+    let cdp_state: HashMap<String, CdpAppState> = if !cdp_apps.is_empty() {
         if let Some(ref mcp) = mcp_raw {
             setup_cdp_apps(&cdp_apps, mcp, &app, &mut cancel, hover_dwell_ms).await
         } else {
@@ -240,6 +254,10 @@ pub(super) async fn process_capture_events(
     // entries.  A single consumer task drains this channel in FIFO order.
     struct CdpClickRequest {
         port: u16,
+        /// URL of the tab the click/hover listeners were injected into —
+        /// restored after reconnect so retrieval hits the same page even if
+        /// the browser has multiple tabs open.
+        selected_page_url: Option<String>,
         click_event_id: Uuid,
         click_timestamp: u64,
     }
@@ -297,6 +315,7 @@ pub(super) async fn process_capture_events(
                     cdp_retrieve_click(
                         mcp,
                         req.port,
+                        req.selected_page_url.as_deref(),
                         &app_for_cdp,
                         &storage_for_cdp,
                         &dir_for_cdp,
@@ -415,12 +434,13 @@ pub(super) async fn process_capture_events(
 
                     // Queue CDP click retrieval (processed sequentially to
                     // preserve FIFO ordering with the JS click listener).
-                    if let Some(&port) = task_app_name
+                    if let Some(app_state) = task_app_name
                         .as_deref()
                         .and_then(|name| cdp_state.get(name))
                     {
                         let _ = cdp_tx.send(CdpClickRequest {
-                            port,
+                            port: app_state.port,
+                            selected_page_url: app_state.selected_page_url.clone(),
                             click_event_id: click_event.id,
                             click_timestamp: capture.timestamp,
                         });
@@ -658,7 +678,8 @@ pub(super) async fn process_capture_events(
     // listener has been tracking element transitions in real-time; we now
     // stop it, flush any pending dwell, and retrieve the collected entries.
     if let Some(ref mcp) = mcp {
-        for (app_name, &port) in &cdp_state {
+        for (app_name, app_state) in &cdp_state {
+            let port = app_state.port;
             // Reconnect to this app's CDP port.
             match mcp
                 .call_tool("cdp_connect", Some(serde_json::json!({"port": port})))
@@ -675,6 +696,11 @@ pub(super) async fn process_capture_events(
                     continue;
                 }
                 Ok(_) => {}
+            }
+
+            // Restore the tab the hover listener was injected into.
+            if let Some(url) = app_state.selected_page_url.as_deref() {
+                restore_selected_page(mcp, url).await;
             }
 
             // Stop the hover interval + flush pending dwell.
@@ -853,8 +879,8 @@ async fn setup_cdp_apps(
     app: &tauri::AppHandle,
     cancel: &mut tokio::sync::watch::Receiver<bool>,
     hover_dwell_ms: u64,
-) -> HashMap<String, u16> {
-    let mut state: HashMap<String, u16> = HashMap::new();
+) -> HashMap<String, CdpAppState> {
+    let mut state: HashMap<String, CdpAppState> = HashMap::new();
 
     if !mcp.has_tool("cdp_connect") {
         tracing::warn!(
@@ -1054,12 +1080,23 @@ async fn setup_cdp_apps(
                     }
                 }
 
+                // Capture the page URL the listeners were injected into so
+                // later reconnects can restore that tab rather than relying
+                // on `cdp_connect`'s first-non-extension auto-select.
+                let selected_page_url = current_selected_page_url(mcp).await;
+
                 // Disconnect so the next app can connect.
                 let _ = mcp.call_tool("cdp_disconnect", None).await;
 
                 if inject_ok {
                     emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Ready);
-                    state.insert(cdp_app.name.clone(), port);
+                    state.insert(
+                        cdp_app.name.clone(),
+                        CdpAppState {
+                            port,
+                            selected_page_url,
+                        },
+                    );
                 } else {
                     emit_cdp_progress(
                         app,
@@ -1118,6 +1155,85 @@ async fn poll_cdp_ready(mcp: &McpClient, port: u16, timeout_secs: u64) -> Result
     }
 }
 
+/// Fetch the URL of the currently-selected CDP page, or `None` if the
+/// selected page cannot be identified. Used to remember which tab was active
+/// at listener-injection time so reconnects can restore it.
+async fn current_selected_page_url(mcp: &McpClient) -> Option<String> {
+    let result = mcp
+        .call_tool("cdp_list_pages", Some(serde_json::json!({})))
+        .await
+        .ok()?;
+    if result.is_error == Some(true) {
+        return None;
+    }
+    let text: String = result.content.iter().filter_map(|c| c.as_text()).collect();
+    let pages = parse_cdp_page_list(&text);
+    pages
+        .iter()
+        .find(|p| p.selected)
+        .or_else(|| pages.first())
+        .map(|p| p.url.clone())
+        .filter(|u| !u.is_empty())
+}
+
+/// Restore the previously-selected CDP page by matching URL. If no page
+/// matches (tab closed, same origin unreachable), log at debug and leave
+/// whatever `cdp_connect` auto-selected — a wrong tab is preferable to
+/// halting retrieval.
+async fn restore_selected_page(mcp: &McpClient, target_url: &str) {
+    let list_result = match mcp
+        .call_tool("cdp_list_pages", Some(serde_json::json!({})))
+        .await
+    {
+        Ok(r) if r.is_error != Some(true) => r,
+        _ => {
+            tracing::debug!("Walkthrough CDP restore: cdp_list_pages failed or errored");
+            return;
+        }
+    };
+    let text: String = list_result
+        .content
+        .iter()
+        .filter_map(|c| c.as_text())
+        .collect();
+    let pages = parse_cdp_page_list(&text);
+    let Some(target_index) = pick_page_index_for_url(&pages, target_url) else {
+        tracing::debug!(
+            "Walkthrough CDP restore: no page matched remembered URL {target_url}; \
+             falling back to auto-selected tab"
+        );
+        return;
+    };
+
+    // Skip the call when the auto-selected tab already matches.
+    if pages
+        .iter()
+        .find(|p| p.index == target_index)
+        .is_some_and(|p| p.selected)
+    {
+        return;
+    }
+
+    match mcp
+        .call_tool(
+            "cdp_select_page",
+            Some(serde_json::json!({ "page_idx": target_index })),
+        )
+        .await
+    {
+        Ok(r) if r.is_error != Some(true) => {
+            tracing::debug!("Walkthrough CDP restore: selected page [{target_index}] {target_url}");
+        }
+        Ok(r) => {
+            let err: String = r.content.iter().filter_map(|c| c.as_text()).collect();
+            tracing::debug!("Walkthrough CDP restore: cdp_select_page rejected: {err}");
+        }
+        Err(e) => {
+            tracing::debug!("Walkthrough CDP restore: cdp_select_page call failed: {e}");
+        }
+    }
+}
+
 pub(super) fn emit_cdp_progress(app: &tauri::AppHandle, app_name: &str, status: CdpSetupStatus) {
     let _ = app.emit(
         "walkthrough://cdp-setup",
@@ -1132,9 +1248,11 @@ pub(super) fn emit_cdp_progress(app: &tauri::AppHandle, app_name: &str, status: 
 ///
 /// Returns a `CdpClickResolved` event if data is available, or None if the
 /// click landed outside the CDP app / listener was lost.
+#[allow(clippy::too_many_arguments)]
 async fn cdp_retrieve_click(
     mcp: &McpClient,
     port: u16,
+    selected_page_url: Option<&str>,
     app: &tauri::AppHandle,
     storage: &WalkthroughStorage,
     session_dir: &std::path::Path,
@@ -1155,6 +1273,13 @@ async fn cdp_retrieve_click(
             return;
         }
         Ok(_) => {}
+    }
+
+    // Restore the tab the listener was injected into. `cdp_connect` auto-
+    // selects the first non-extension page, which may not be the user's
+    // working tab when multiple tabs are open.
+    if let Some(url) = selected_page_url {
+        restore_selected_page(mcp, url).await;
     }
 
     // Poll the click queue with retries.  The macOS event tap fires before the

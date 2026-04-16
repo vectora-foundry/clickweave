@@ -347,7 +347,7 @@ async fn snapshot_selected_page_url_is_silent_on_error() {
 
     exec.snapshot_selected_page_url("Chrome", &mcp).await;
 
-    assert!(exec.cdp_selected_pages.get("Chrome").is_none());
+    assert!(!exec.cdp_selected_pages.contains_key("Chrome"));
 }
 
 #[tokio::test]
