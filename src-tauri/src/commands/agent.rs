@@ -305,13 +305,9 @@ pub async fn run_agent(
     let event_emit_handle = app.clone();
     let approval_emit_handle = app.clone();
     let cleanup_handle = app.clone();
-    let disagreement_handle = app.clone();
     let goal = request.goal.clone();
     let task_storage = storage.clone();
     let event_storage = storage.clone();
-    // Separate clone for the main-task disagreement-resolution helper,
-    // since `event_storage` is moved into the event forwarder coroutine.
-    let main_task_storage = storage.clone();
     let task_run_id = run_id.clone();
     let event_run_id = run_id.clone();
     let approval_run_id = run_id.clone();
@@ -452,9 +448,9 @@ pub async fn run_agent(
                         vlm_reasoning,
                     }) => {
                         await_disagreement_resolution(
-                            &disagreement_handle,
+                            &emit_handle,
                             &agent_token,
-                            &main_task_storage,
+                            &storage,
                             &task_run_id,
                             agent_summary,
                             vlm_reasoning,
