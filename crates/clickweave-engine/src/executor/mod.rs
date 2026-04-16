@@ -325,6 +325,25 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
     }
 
+    /// Resolve a Chrome profile path for an app of the given kind.
+    ///
+    /// Only Chrome-family browsers have profiles; returning `Some(path)` for
+    /// an Electron app would thread a Chrome-profile hint into
+    /// `ensure_cdp_connected`, which then skips "reuse existing debug port"
+    /// on the assumption the running instance belongs to a different profile
+    /// — forcing an Electron app to quit/relaunch even when it was already
+    /// debug-attached during the walkthrough.
+    pub(crate) fn resolve_chrome_profile_path_for_kind(
+        &self,
+        app_kind: AppKind,
+        chrome_profile_name: Option<&str>,
+    ) -> ExecutorResult<Option<PathBuf>> {
+        if app_kind != AppKind::ChromeBrowser {
+            return Ok(None);
+        }
+        self.resolve_chrome_profile_path(chrome_profile_name)
+    }
+
     // ── Convenience accessors ────────────────────────────────────────────
 
     pub(crate) fn focused_app_name(&self) -> Option<String> {

@@ -49,6 +49,20 @@ pub(super) fn make_test_executor() -> WorkflowExecutor<StubBackend> {
     )
 }
 
+/// Helper that seeds the executor with a single default Chrome profile, the
+/// same way the real constructor does via `ensure_profiles`. Mirrors the
+/// production invariant that `chrome_profiles` is never empty — the condition
+/// under which the Electron-relaunch bug surfaces.
+pub(super) fn make_test_executor_with_default_profile() -> WorkflowExecutor<StubBackend> {
+    let mut exec = make_test_executor();
+    exec.chrome_profiles = vec![clickweave_core::chrome_profiles::ChromeProfile {
+        id: "profile-1".to_string(),
+        name: "Profile 1".to_string(),
+        google_email: None,
+    }];
+    exec
+}
+
 /// A ChatBackend that returns a queue of scripted responses.
 /// Used to test flows that call the LLM (e.g. resolve_element_name).
 pub(super) struct ScriptedBackend {

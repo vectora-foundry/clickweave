@@ -680,8 +680,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             // Lazy CDP connection for Electron/Chrome apps.
             if app_kind.uses_cdp() && mcp.has_tool("cdp_connect") {
-                let profile_path =
-                    self.resolve_chrome_profile_path(p.chrome_profile_id.as_deref())?;
+                let profile_path = self.resolve_chrome_profile_path_for_kind(
+                    app_kind,
+                    p.chrome_profile_id.as_deref(),
+                )?;
                 self.ensure_cdp_connected(
                     node_id,
                     &app.name,
@@ -941,7 +943,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             // Lazy CDP connection for Electron/Chrome apps (same as FocusWindow path).
             if detected_kind.uses_cdp() && mcp.has_tool("cdp_connect") {
-                let profile_path = self.resolve_chrome_profile_path(None)?;
+                let profile_path =
+                    self.resolve_chrome_profile_path_for_kind(detected_kind, None)?;
                 self.ensure_cdp_connected(
                     node_id,
                     name,

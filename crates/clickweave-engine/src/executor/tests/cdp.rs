@@ -1,6 +1,6 @@
 use super::helpers::*;
 use crate::executor::ExecutorError;
-use clickweave_core::CdpTarget;
+use clickweave_core::{AppKind, CdpTarget};
 
 #[tokio::test]
 async fn resolve_cdp_element_uid_rejects_empty_target() {
@@ -215,4 +215,65 @@ async fn execute_cdp_action_returns_resolver_error_when_target_missing() {
             .all(|(name, _)| name != "click" && name != "move_mouse"),
         "execute_cdp_action must not silently fall back to native click: {calls:?}"
     );
+}
+
+// Electron CDP reconnect must NOT receive a Chrome-profile hint — otherwise
+// `ensure_cdp_connected` skips the "reuse existing debug port" path and quits
+// the Electron app that was already debug-attached during the walkthrough.
+#[test]
+fn resolve_chrome_profile_path_for_kind_returns_none_for_electron() {
+    let exec = make_test_executor_with_default_profile();
+
+    let result = exec
+        .resolve_chrome_profile_path_for_kind(AppKind::ElectronApp, None)
+        .expect("electron resolution should not error");
+    assert_eq!(
+        result, None,
+        "Electron apps must never get a Chrome-profile path, even when one is available",
+    );
+}
+
+#[test]
+fn resolve_chrome_profile_path_for_kind_returns_none_for_native() {
+    let exec = make_test_executor_with_default_profile();
+
+    let result = exec
+        .resolve_chrome_profile_path_for_kind(AppKind::Native, None)
+        .expect("native resolution should not error");
+    assert_eq!(result, None);
+}
+
+#[test]
+fn resolve_chrome_profile_path_for_kind_returns_path_for_chrome() {
+    let exec = make_test_executor_with_default_profile();
+
+    let result = exec
+        .resolve_chrome_profile_path_for_kind(AppKind::ChromeBrowser, None)
+        .expect("chrome resolution should not error");
+    assert!(
+        result.is_some(),
+        "Chrome should fall back to the first available profile path"
+    );
+}
+
+#[test]
+fn resolve_chrome_profile_path_for_kind_propagates_unknown_profile_error_for_chrome() {
+    let exec = make_test_executor_with_default_profile();
+
+    let err = exec
+        .resolve_chrome_profile_path_for_kind(AppKind::ChromeBrowser, Some("no-such-profile"))
+        .expect_err("unknown Chrome profile must surface as an error");
+    assert!(matches!(err, ExecutorError::ToolCall { .. }));
+}
+
+// Even when a bogus profile name is supplied for Electron (e.g. a stale field
+// in a legacy workflow), the helper must ignore it — Electron has no profiles.
+#[test]
+fn resolve_chrome_profile_path_for_kind_ignores_profile_name_for_electron() {
+    let exec = make_test_executor_with_default_profile();
+
+    let result = exec
+        .resolve_chrome_profile_path_for_kind(AppKind::ElectronApp, Some("no-such-profile"))
+        .expect("electron must not error on a stale Chrome-profile field");
+    assert_eq!(result, None);
 }
