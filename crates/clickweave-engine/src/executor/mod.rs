@@ -173,6 +173,11 @@ pub struct WorkflowExecutor<C: ChatBackend = LlmClient> {
     /// The app name and PID for which a CDP connection is active (via cdp_connect).
     /// PID is used to distinguish same-name app instances within a single execution.
     cdp_connected_app: Option<(String, i32)>,
+    /// Per-app last-observed page URL, used to restore the selected tab after
+    /// a CDP reconnect. In-memory only (not persisted to the decision cache):
+    /// URLs are session-specific and a stale cached URL is worse than the
+    /// default first-page fallback. Keyed by `app_name`.
+    cdp_selected_pages: HashMap<String, String>,
     cancel_token: CancellationToken,
     /// Store for Chrome user-data-dir profiles (resolves profile names to paths).
     chrome_profile_store: ChromeProfileStore,
@@ -226,6 +231,7 @@ impl WorkflowExecutor {
             context: RuntimeContext::new(),
             decision_cache: RwLock::new(decision_cache),
             cdp_connected_app: None,
+            cdp_selected_pages: HashMap::new(),
             cancel_token,
             chrome_profile_store,
             chrome_profiles,

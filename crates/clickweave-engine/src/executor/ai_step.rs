@@ -220,6 +220,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                                         {
                                             self.cdp_connected_app = None;
                                         }
+                                        // Quitting the app invalidates any
+                                        // remembered tab URL for it.
+                                        self.cdp_selected_pages.remove(app.as_str());
                                     }
                                 }
                                 _ => {}

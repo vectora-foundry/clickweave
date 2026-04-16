@@ -239,7 +239,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         // Disconnect from any previously connected app.
-        if self.cdp_connected_app.is_some() {
+        if let Some((prev_name, _)) = self.cdp_connected_app.clone() {
+            // Capture the currently-selected page URL before tearing down so
+            // a future reconnect to this app can restore the same tab.
+            self.snapshot_selected_page_url(&prev_name, mcp).await;
             let _ = mcp.call_tool("cdp_disconnect", None).await;
             self.cdp_connected_app = None;
         }
@@ -329,7 +332,158 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         );
 
         self.cdp_connected_app = Some((app_name.to_string(), pid));
+
+        // Restore the previously-selected tab (or remember whatever
+        // `cdp_connect` auto-selected if we had no prior record).
+        self.restore_or_record_selected_page(app_name, mcp).await;
+
         Ok(())
+    }
+
+    /// List pages, pick the best match for this app's remembered URL, and
+    /// call `cdp_select_page`. If no URL is remembered or no match is found,
+    /// record whichever page is currently marked as selected so the next
+    /// reconnect can restore it.
+    ///
+    /// Failure is logged but never propagated — the connection is already
+    /// established; a bad select is strictly a "wrong tab" regression, not
+    /// a hard failure. Callers fall through to the first-page auto-selection
+    /// that `cdp_connect` already performed.
+    pub(in crate::executor) async fn restore_or_record_selected_page(
+        &mut self,
+        app_name: &str,
+        mcp: &(impl Mcp + ?Sized),
+    ) {
+        use clickweave_core::cdp::{parse_cdp_page_list, pick_page_index_for_url};
+
+        let list_result = match mcp
+            .call_tool("cdp_list_pages", Some(serde_json::json!({})))
+            .await
+        {
+            Ok(r) if r.is_error != Some(true) => r,
+            Ok(r) => {
+                self.log(format!(
+                    "CDP page restore: cdp_list_pages returned error for '{}': {}",
+                    app_name,
+                    Self::extract_result_text(&r)
+                ));
+                return;
+            }
+            Err(e) => {
+                self.log(format!(
+                    "CDP page restore: cdp_list_pages call failed for '{}': {}",
+                    app_name, e
+                ));
+                return;
+            }
+        };
+
+        let list_text = Self::extract_result_text(&list_result);
+        let pages = parse_cdp_page_list(&list_text);
+        if pages.is_empty() {
+            return;
+        }
+
+        let remembered = self.cdp_selected_pages.get(app_name).cloned();
+        if let Some(target_url) = remembered.as_deref()
+            && let Some(target_index) = pick_page_index_for_url(&pages, target_url)
+        {
+            // Already on the right page — skip the no-op call.
+            let already_selected = pages
+                .iter()
+                .find(|p| p.index == target_index)
+                .is_some_and(|p| p.selected);
+            if already_selected {
+                self.cdp_selected_pages
+                    .insert(app_name.to_string(), target_url.to_string());
+                return;
+            }
+
+            match mcp
+                .call_tool(
+                    "cdp_select_page",
+                    Some(serde_json::json!({ "page_idx": target_index })),
+                )
+                .await
+            {
+                Ok(r) if r.is_error != Some(true) => {
+                    self.log(format!(
+                        "CDP: restored page [{}] {} for '{}'",
+                        target_index, target_url, app_name
+                    ));
+                    self.cdp_selected_pages
+                        .insert(app_name.to_string(), target_url.to_string());
+                    return;
+                }
+                Ok(r) => {
+                    self.log(format!(
+                        "CDP page restore: cdp_select_page rejected for '{}': {}",
+                        app_name,
+                        Self::extract_result_text(&r)
+                    ));
+                }
+                Err(e) => {
+                    self.log(format!(
+                        "CDP page restore: cdp_select_page call failed for '{}': {}",
+                        app_name, e
+                    ));
+                }
+            }
+            // Select failed — fall through to recording whatever is selected.
+        } else if remembered.is_some() {
+            self.log(format!(
+                "CDP page restore: no match for remembered URL on '{}' (tab closed or navigated away); \
+                 using auto-selected page",
+                app_name
+            ));
+        }
+
+        // No prior record (first connect) or restore failed — snapshot the
+        // currently-selected page so future reconnects have something to aim
+        // at. Falls back to the first page if none is marked selected.
+        let observed = pages
+            .iter()
+            .find(|p| p.selected)
+            .or_else(|| pages.first())
+            .map(|p| p.url.clone());
+        if let Some(url) = observed
+            && !url.is_empty()
+        {
+            self.cdp_selected_pages.insert(app_name.to_string(), url);
+        }
+    }
+
+    /// Capture the currently-selected CDP page URL for `app_name` so it can
+    /// be restored on a future reconnect. Called immediately before
+    /// `cdp_disconnect` to preserve the user's last-visible tab across the
+    /// disconnect/reconnect cycle.
+    ///
+    /// Silent on any failure — a missed snapshot just falls through to the
+    /// default first-page selection next time.
+    pub(in crate::executor) async fn snapshot_selected_page_url(
+        &mut self,
+        app_name: &str,
+        mcp: &(impl Mcp + ?Sized),
+    ) {
+        use clickweave_core::cdp::parse_cdp_page_list;
+
+        let result = match mcp
+            .call_tool("cdp_list_pages", Some(serde_json::json!({})))
+            .await
+        {
+            Ok(r) if r.is_error != Some(true) => r,
+            _ => return,
+        };
+        let text = Self::extract_result_text(&result);
+        let pages = parse_cdp_page_list(&text);
+        if let Some(url) = pages
+            .iter()
+            .find(|p| p.selected)
+            .map(|p| p.url.clone())
+            .filter(|u| !u.is_empty())
+        {
+            self.cdp_selected_pages.insert(app_name.to_string(), url);
+        }
     }
 
     /// Connect to CDP with retries (the debug endpoint may not be ready

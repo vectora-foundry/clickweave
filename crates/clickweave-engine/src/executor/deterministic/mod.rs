@@ -870,9 +870,12 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     // connection is stale. Without this, ensure_cdp_connected
                     // short-circuits on the app name match and never connects
                     // to the new profile's Chrome instance.
-                    if self.cdp_connected_app.is_some() {
+                    if let Some((prev_name, _)) = self.cdp_connected_app.clone() {
                         let _ = mcp.call_tool("cdp_disconnect", None).await;
                         self.cdp_connected_app = None;
+                        // The app was about to be killed for a profile
+                        // relaunch — a remembered tab URL is stale.
+                        self.cdp_selected_pages.remove(&prev_name);
                     }
                     self.ensure_cdp_connected(
                         node_id,
@@ -980,6 +983,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             {
                 self.cdp_connected_app = None;
             }
+            // Quitting the app invalidates any remembered tab URL.
+            self.cdp_selected_pages.remove(app_name.as_str());
             self.write_app_cache().remove(app_name.as_str());
         }
 

@@ -181,6 +181,176 @@ async fn resolve_cdp_element_uid_surfaces_ambiguous_candidates() {
 }
 
 #[tokio::test]
+async fn restore_or_record_selected_page_records_current_when_no_prior_url() {
+    // First connect: no remembered URL. The helper should take whatever page
+    // is currently selected and remember it so the next reconnect can
+    // restore it.
+    let mut exec = make_test_executor();
+    let mcp = StubToolProvider::new();
+    mcp.push_text_response(
+        "Pages (2 total):\n  [0] https://a.example.com/\n  [1]* https://b.example.com/foo\n",
+    );
+
+    exec.restore_or_record_selected_page("Chrome", &mcp).await;
+
+    let calls = mcp.take_calls();
+    assert_eq!(calls.len(), 1, "only cdp_list_pages should fire: {calls:?}");
+    assert_eq!(calls[0].0, "cdp_list_pages");
+    assert_eq!(
+        exec.cdp_selected_pages.get("Chrome").map(String::as_str),
+        Some("https://b.example.com/foo")
+    );
+}
+
+#[tokio::test]
+async fn restore_or_record_selected_page_selects_matching_index_on_reconnect() {
+    // Prior run remembered tab B. After reconnect, pages arrive in a
+    // different order and a different tab is auto-selected — the helper
+    // must call cdp_select_page with B's index.
+    let mut exec = make_test_executor();
+    exec.cdp_selected_pages.insert(
+        "Chrome".to_string(),
+        "https://b.example.com/foo".to_string(),
+    );
+
+    let mcp = StubToolProvider::new();
+    // list_pages: [0] a (auto-selected by cdp_connect), [1] b (the user's tab)
+    mcp.push_text_response(
+        "Pages (2 total):\n  [0]* https://a.example.com/\n  [1] https://b.example.com/foo\n",
+    );
+    // cdp_select_page success
+    mcp.push_text_response("Selected page [1]: https://b.example.com/foo");
+
+    exec.restore_or_record_selected_page("Chrome", &mcp).await;
+
+    let calls = mcp.take_calls();
+    assert_eq!(calls.len(), 2, "list + select: {calls:?}");
+    assert_eq!(calls[0].0, "cdp_list_pages");
+    assert_eq!(calls[1].0, "cdp_select_page");
+    assert_eq!(calls[1].1, Some(serde_json::json!({ "page_idx": 1 })));
+    assert_eq!(
+        exec.cdp_selected_pages.get("Chrome").map(String::as_str),
+        Some("https://b.example.com/foo")
+    );
+}
+
+#[tokio::test]
+async fn restore_or_record_selected_page_skips_select_when_already_on_target() {
+    // Prior run remembered tab A, and the auto-select landed on A. Avoid
+    // the redundant cdp_select_page call.
+    let mut exec = make_test_executor();
+    exec.cdp_selected_pages
+        .insert("Chrome".to_string(), "https://a.example.com/".to_string());
+
+    let mcp = StubToolProvider::new();
+    mcp.push_text_response(
+        "Pages (2 total):\n  [0]* https://a.example.com/\n  [1] https://b.example.com/foo\n",
+    );
+
+    exec.restore_or_record_selected_page("Chrome", &mcp).await;
+
+    let calls = mcp.take_calls();
+    assert_eq!(
+        calls.len(),
+        1,
+        "no redundant cdp_select_page expected: {calls:?}"
+    );
+    assert_eq!(calls[0].0, "cdp_list_pages");
+}
+
+#[tokio::test]
+async fn restore_or_record_selected_page_falls_back_when_remembered_tab_closed() {
+    // Prior run remembered a tab that no longer exists — the helper must
+    // skip cdp_select_page entirely (no fabricated index) and fall back to
+    // the auto-selected page.
+    let mut exec = make_test_executor();
+    exec.cdp_selected_pages.insert(
+        "Chrome".to_string(),
+        "https://gone.example.com/".to_string(),
+    );
+
+    let mcp = StubToolProvider::new();
+    mcp.push_text_response(
+        "Pages (2 total):\n  [0]* https://a.example.com/\n  [1] https://b.example.com/\n",
+    );
+
+    exec.restore_or_record_selected_page("Chrome", &mcp).await;
+
+    let calls = mcp.take_calls();
+    assert_eq!(
+        calls.len(),
+        1,
+        "cdp_select_page must not be called with an arbitrary index: {calls:?}"
+    );
+    // Remembered URL should be updated to the auto-selected one so subsequent
+    // reconnects aim at the actually-available tab.
+    assert_eq!(
+        exec.cdp_selected_pages.get("Chrome").map(String::as_str),
+        Some("https://a.example.com/")
+    );
+}
+
+#[tokio::test]
+async fn restore_or_record_selected_page_tolerates_list_pages_error() {
+    // A failed cdp_list_pages must not panic or update state — the caller
+    // has already established the CDP connection; a bad list is strictly a
+    // "keep the auto-selected tab" fallthrough.
+    let mut exec = make_test_executor();
+    exec.cdp_selected_pages
+        .insert("Chrome".to_string(), "https://a.example.com/".to_string());
+
+    let mcp = StubToolProvider::new();
+    mcp.push_response(clickweave_mcp::ToolCallResult {
+        content: vec![clickweave_mcp::ToolContent::Text {
+            text: "boom".to_string(),
+        }],
+        is_error: Some(true),
+    });
+
+    exec.restore_or_record_selected_page("Chrome", &mcp).await;
+
+    let calls = mcp.take_calls();
+    assert_eq!(calls.len(), 1);
+    // Remembered URL is left untouched.
+    assert_eq!(
+        exec.cdp_selected_pages.get("Chrome").map(String::as_str),
+        Some("https://a.example.com/")
+    );
+}
+
+#[tokio::test]
+async fn snapshot_selected_page_url_remembers_current_selection() {
+    let mut exec = make_test_executor();
+    let mcp = StubToolProvider::new();
+    mcp.push_text_response(
+        "Pages (2 total):\n  [0] https://a.example.com/\n  [1]* https://b.example.com/foo\n",
+    );
+
+    exec.snapshot_selected_page_url("Chrome", &mcp).await;
+
+    assert_eq!(
+        exec.cdp_selected_pages.get("Chrome").map(String::as_str),
+        Some("https://b.example.com/foo")
+    );
+}
+
+#[tokio::test]
+async fn snapshot_selected_page_url_is_silent_on_error() {
+    let mut exec = make_test_executor();
+    let mcp = StubToolProvider::new();
+    mcp.push_response(clickweave_mcp::ToolCallResult {
+        content: vec![clickweave_mcp::ToolContent::Text {
+            text: "boom".to_string(),
+        }],
+        is_error: Some(true),
+    });
+
+    exec.snapshot_selected_page_url("Chrome", &mcp).await;
+
+    assert!(exec.cdp_selected_pages.get("Chrome").is_none());
+}
+
+#[tokio::test]
 async fn execute_cdp_action_returns_resolver_error_when_target_missing() {
     // The deterministic executor no longer carries a silent native-click
     // fallback for elements absent from the CDP accessibility tree — the

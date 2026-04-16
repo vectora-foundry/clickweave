@@ -273,6 +273,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             context: RuntimeContext::new(),
             decision_cache: RwLock::new(decision_cache),
             cdp_connected_app: None,
+            cdp_selected_pages: HashMap::new(),
             cancel_token,
             chrome_profile_store: clickweave_core::chrome_profiles::ChromeProfileStore::new(
                 std::env::temp_dir().join("clickweave_test_profiles"),
