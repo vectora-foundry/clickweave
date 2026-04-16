@@ -162,11 +162,23 @@ export interface AgentSlice {
     d: ConsecutiveDestructiveCapHit | null,
   ) => void;
   /**
-   * User acknowledged a VLM disagreement and asserted the run completed
-   * anyway. This is a front-end-only marker right now — a follow-up can
-   * wire it to a backend command so the decision is durable.
+   * User confirmed a pending VLM disagreement — the agent really did
+   * complete the goal. Invokes the backend resolver so the decision is
+   * written to `events.jsonl` + the variant index and the final
+   * `agent://complete` terminal event fires. The optimistic UI update
+   * (clears the card, flips status to `complete`) is reverted if the
+   * invoke rejects because no resolver is pending.
    */
-  confirmDisagreementAsComplete: () => void;
+  confirmDisagreementAsComplete: () => Promise<void>;
+  /**
+   * User agreed with the VLM that the agent did not complete the goal.
+   * Invokes the backend resolver which records `DisagreementCancelled`
+   * and emits `agent://stopped { reason: user_cancelled_disagreement }`.
+   * If no resolver is pending (the backend has already torn the run
+   * down), falls back to the local-only stop path so the card is still
+   * dismissed.
+   */
+  cancelDisagreement: () => Promise<void>;
   setAgentStatus: (status: AgentStatus) => void;
   setAgentError: (error: string | null) => void;
   setAgentRunId: (runId: string) => void;
@@ -353,20 +365,57 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
     set({ consecutiveDestructiveCapHit: hit }),
 
   /**
-   * STUB: front-end-only acknowledgement. Marks the run locally as complete
-   * when the user decides the VLM was wrong. A follow-up should plumb this
-   * decision to the backend so it's durable across restarts and recorded
-   * in the run trace.
+   * Confirm a pending VLM disagreement. The UI is updated optimistically
+   * (card dismissed, status flipped to `complete`) before the invoke so
+   * the buttons feel responsive; the backend then writes the durable
+   * record and emits the truthful `agent://complete` terminal event.
+   *
+   * If the invoke rejects — typically because a stale run was already
+   * torn down — we still leave the UI in its optimistic state so the
+   * card doesn't resurrect itself. The backend-side record won't exist
+   * for that run, which matches every other "we lost the race" outcome.
    */
-  confirmDisagreementAsComplete: () => {
+  confirmDisagreementAsComplete: async () => {
     const { pushLog } = get();
     set({
       completionDisagreement: null,
       agentStatus: "complete",
     });
-    pushLog(
-      "Agent completion confirmed by user (VLM disagreed but user overrode)",
-    );
+    try {
+      await invoke("resolve_completion_disagreement", { action: "confirm" });
+      pushLog(
+        "Agent completion confirmed by user (VLM disagreed but user overrode)",
+      );
+    } catch (err) {
+      pushLog(
+        `Completion confirm invoke rejected: ${formatAgentError(err)}`,
+      );
+    }
+  },
+
+  /**
+   * Cancel a pending VLM disagreement. Clears the card and flips status
+   * to `stopped` optimistically, then invokes the backend resolver so
+   * the run trace records a `DisagreementCancelled` terminal reason.
+   *
+   * If the invoke rejects (e.g. the run was already torn down), we fall
+   * through silently — the local state still reflects the user's choice.
+   */
+  cancelDisagreement: async () => {
+    const { pushLog } = get();
+    set({
+      completionDisagreement: null,
+      agentStatus: "stopped",
+      pendingApproval: null,
+    });
+    try {
+      await invoke("resolve_completion_disagreement", { action: "cancel" });
+      pushLog("Agent run cancelled by user (VLM disagreement)");
+    } catch (err) {
+      pushLog(
+        `Completion cancel invoke rejected: ${formatAgentError(err)}`,
+      );
+    }
   },
 
   setAgentStatus: (status) => set({ agentStatus: status }),

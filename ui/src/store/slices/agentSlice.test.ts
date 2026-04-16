@@ -289,3 +289,95 @@ describe("agentSlice approval actions", () => {
     expect(lastLog).not.toContain("[object Object]");
   });
 });
+
+describe("agentSlice.confirmDisagreementAsComplete", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useStore.getState().resetAgent();
+  });
+
+  it("invokes resolve_completion_disagreement with 'confirm' and flips status to complete", async () => {
+    useStore.getState().setCompletionDisagreement({
+      screenshotBase64: "abc",
+      vlmReasoning: "button still visible",
+      agentSummary: "clicked submit",
+    });
+    useStore.getState().setAgentStatus("stopped");
+    invokeMock.mockResolvedValueOnce(undefined);
+
+    await useStore.getState().confirmDisagreementAsComplete();
+
+    expect(invokeMock).toHaveBeenCalledWith("resolve_completion_disagreement", {
+      action: "confirm",
+    });
+    const state = useStore.getState();
+    expect(state.completionDisagreement).toBeNull();
+    expect(state.agentStatus).toBe("complete");
+  });
+
+  it("keeps the optimistic UI state when invoke rejects (stale run tore down)", async () => {
+    useStore.getState().setCompletionDisagreement({
+      screenshotBase64: "abc",
+      vlmReasoning: "button still visible",
+      agentSummary: "clicked submit",
+    });
+    invokeMock.mockRejectedValueOnce({
+      kind: "Validation",
+      message: "No pending completion disagreement",
+    });
+
+    await useStore.getState().confirmDisagreementAsComplete();
+
+    const state = useStore.getState();
+    // Card is still dismissed and status still `complete` — the local
+    // record of the user's choice outlives a lost race with cleanup.
+    expect(state.completionDisagreement).toBeNull();
+    expect(state.agentStatus).toBe("complete");
+    const lastLog = useStore.getState().logs.at(-1);
+    expect(lastLog).toContain("No pending completion disagreement");
+  });
+});
+
+describe("agentSlice.cancelDisagreement", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useStore.getState().resetAgent();
+  });
+
+  it("invokes resolve_completion_disagreement with 'cancel' and flips status to stopped", async () => {
+    useStore.getState().setCompletionDisagreement({
+      screenshotBase64: "abc",
+      vlmReasoning: "modal still visible",
+      agentSummary: "clicked submit",
+    });
+    useStore.getState().setAgentStatus("stopped");
+    invokeMock.mockResolvedValueOnce(undefined);
+
+    await useStore.getState().cancelDisagreement();
+
+    expect(invokeMock).toHaveBeenCalledWith("resolve_completion_disagreement", {
+      action: "cancel",
+    });
+    const state = useStore.getState();
+    expect(state.completionDisagreement).toBeNull();
+    expect(state.agentStatus).toBe("stopped");
+  });
+
+  it("swallows rejection silently and still dismisses the card", async () => {
+    useStore.getState().setCompletionDisagreement({
+      screenshotBase64: "abc",
+      vlmReasoning: "modal still visible",
+      agentSummary: "clicked submit",
+    });
+    invokeMock.mockRejectedValueOnce({
+      kind: "Validation",
+      message: "No pending completion disagreement",
+    });
+
+    await useStore.getState().cancelDisagreement();
+
+    const state = useStore.getState();
+    expect(state.completionDisagreement).toBeNull();
+    expect(state.agentStatus).toBe("stopped");
+  });
+});

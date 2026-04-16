@@ -37,6 +37,7 @@ export function AssistantPanel({
   const confirmDisagreementAsComplete = useStore(
     (s) => s.confirmDisagreementAsComplete,
   );
+  const cancelDisagreement = useStore((s) => s.cancelDisagreement);
   const stopAgent = useStore((s) => s.stopAgent);
   const approveAction = useStore((s) => s.approveAction);
   const rejectAction = useStore((s) => s.rejectAction);
@@ -164,10 +165,11 @@ export function AssistantPanel({
 
       {/* VLM completion disagreement card.
           The backend halts the run when the post-agent_done VLM check
-          rejects the agent's self-reported completion. The user sees the
-          screenshot + reasoning and either confirms (local override — see
-          confirmDisagreementAsComplete in the slice for the stub note) or
-          cancels the run via the existing stop_agent path. */}
+          rejects the agent's self-reported completion. Both buttons
+          invoke `resolve_completion_disagreement` so the operator's
+          decision is persisted to events.jsonl + the variant index and
+          the final terminal `agent://complete` / `agent://stopped` event
+          fires server-side. */}
       {completionDisagreement && (
         <div className="mx-3 mb-2 rounded-lg border border-orange-500/40 bg-orange-500/10 px-3 py-2.5">
           <p className="text-[11px] font-medium text-orange-300 mb-1">
@@ -192,7 +194,7 @@ export function AssistantPanel({
               Confirm complete
             </button>
             <button
-              onClick={stopAgent}
+              onClick={cancelDisagreement}
               className="rounded-lg border border-red-500/50 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10"
             >
               Cancel run

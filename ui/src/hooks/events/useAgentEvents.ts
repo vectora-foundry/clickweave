@@ -286,7 +286,21 @@ export function useAgentEvents() {
     sub(
       listen<AgentStoppedPayload>("agent://stopped", (e) => {
         if (isStale(e.payload.run_id)) return;
+        // A `stopped` for `user_cancelled_disagreement` arrives after the
+        // operator's Cancel button optimistically flipped status to
+        // `stopped`; the disagreement card is already dismissed. Keep
+        // the status coalescer so we don't accidentally re-enter
+        // `stopped` over a newly-`complete` race (not possible today,
+        // but cheap future-proofing).
         setStatusIfActive("stopped");
+        // Also clear the disagreement card when the terminal event is
+        // the resolver's `user_cancelled_disagreement` — this catches
+        // the path where the Stop button was pressed (force_stop
+        // resolves as Cancel) without going through the slice's own
+        // card-dismiss side-effect.
+        if (e.payload.reason === "user_cancelled_disagreement") {
+          useStore.getState().setCompletionDisagreement(null);
+        }
         const detail =
           e.payload.reason === "max_steps_reached"
             ? `after ${e.payload.steps_executed} steps`
@@ -294,9 +308,29 @@ export function useAgentEvents() {
               ? `after ${e.payload.consecutive_errors} consecutive errors`
               : e.payload.reason === "approval_unavailable"
                 ? "approval system unavailable"
-                : e.payload.reason;
+                : e.payload.reason === "user_cancelled_disagreement"
+                  ? "user cancelled after VLM disagreement"
+                  : e.payload.reason;
         useStore.getState().pushLog(`Agent stopped: ${detail}`);
       }),
+    );
+
+    sub(
+      listen<RunScoped & { action: "confirm" | "cancel" }>(
+        "agent://completion_disagreement_resolved",
+        (e) => {
+          if (isStale(e.payload.run_id)) return;
+          // The definitive status change rides on the terminal
+          // `agent://complete` or `agent://stopped` that fires right
+          // after this event. This subscriber exists so the log drawer
+          // records the resolution for any run where the operator used
+          // the Stop path without the assistant panel's Cancel button
+          // having already logged it.
+          useStore
+            .getState()
+            .pushLog(`Completion disagreement resolved: ${e.payload.action}`);
+        },
+      ),
     );
 
     sub(
