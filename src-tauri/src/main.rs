@@ -124,6 +124,10 @@ fn main() {
         stop_agent,
         approve_agent_action,
         resolve_completion_disagreement,
+        commands::agent_chat::load_agent_chat,
+        commands::agent_chat::save_agent_chat,
+        commands::agent_chat::prune_agent_cache_for_nodes,
+        commands::agent_chat::clear_agent_conversation,
     ]);
 
     #[cfg(debug_assertions)]

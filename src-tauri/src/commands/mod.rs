@@ -1,4 +1,5 @@
 mod agent;
+pub mod agent_chat;
 mod chrome_profiles;
 pub mod error;
 mod executor;
