@@ -126,7 +126,6 @@ function App() {
   const setWalkthroughPanelOpen = useStore((s) => s.setWalkthroughPanelOpen);
   const skipIntentEntry = useStore((s) => s.skipIntentEntry);
   const startAgent = useStore((s) => s.startAgent);
-  const pushAssistantMessage = useStore((s) => s.pushAssistantMessage);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
   const setSupervisionDelayMs = useStore((s) => s.setSupervisionDelayMs);
@@ -194,7 +193,6 @@ function App() {
               onGenerate={(intent) => {
                 setAssistantOpen(true);
                 skipIntentEntry();
-                pushAssistantMessage("user", intent);
                 startAgent(intent);
               }}
               onSkip={skipIntentEntry}
@@ -267,10 +265,7 @@ function App() {
                 open={assistantOpen}
                 error={assistantError}
                 messages={messages}
-                onSendMessage={(goal) => {
-                  pushAssistantMessage("user", goal);
-                  startAgent(goal);
-                }}
+                onSendMessage={startAgent}
                 onClose={() => setAssistantOpen(false)}
               />
 

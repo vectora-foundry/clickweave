@@ -109,10 +109,11 @@ describe("agentSlice.startAgent", () => {
     expect(statusDuringInvoke).toBe("running");
   });
 
-  it("clears a leftover agentRunId on a fresh start so stale events from the prior run are dropped", async () => {
+  it("replaces a leftover agentRunId on a fresh start so stale events from the prior run are dropped", async () => {
     // After a run reaches a terminal state, `agentRunId` is not cleared
     // automatically — terminal event handlers leave it in place. A fresh
-    // start from "complete"/"stopped"/"error" must null it out so any
+    // start from "complete"/"stopped"/"error" must install the new
+    // run's ID (client-generated, per D1.M1) before the invoke so any
     // late in-flight event from the prior run fails `isStaleRunId`
     // instead of being accepted into the new run's state.
     useStore.getState().setAgentRunId("run-prior");
@@ -124,7 +125,9 @@ describe("agentSlice.startAgent", () => {
 
     await useStore.getState().startAgent("fresh goal");
 
-    expect(runIdDuringInvoke).toBeNull();
+    expect(runIdDuringInvoke).not.toBe("run-prior");
+    expect(typeof runIdDuringInvoke).toBe("string");
+    expect(runIdDuringInvoke?.length).toBeGreaterThan(0);
   });
 
   it("surfaces non-AlreadyRunning rejections as agentStatus=error on a fresh start", async () => {

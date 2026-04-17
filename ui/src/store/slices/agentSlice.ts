@@ -4,6 +4,7 @@ import type { Node, Edge } from "../../bindings";
 import { toEndpoint } from "../settings";
 import type { PermissionRule, ToolPermissions } from "../state";
 import type { StoreState } from "./types";
+import { buildPriorTurns } from "../../utils/priorTurns";
 
 export interface AgentStep {
   summary: string;
@@ -218,6 +219,8 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       agentStatus,
       toolPermissions,
       storeTraces,
+      messages,
+      pushAssistantMessage,
     } = priorState;
     // If a run is already active, do not touch run-scoped state: the
     // backend will reject with AlreadyRunning and the live run's events
@@ -243,6 +246,35 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       consecutiveDestructiveCapHit: priorState.consecutiveDestructiveCapHit,
       agentRunId: priorState.agentRunId,
     };
+
+    // Client-side run ID (D1.M1) so the user bubble can be tagged
+    // before `agent://started` arrives and the backend can echo it.
+    const runId = crypto.randomUUID();
+
+    // Anchor = most recent workflow node with a source_run_id. Used
+    // by the engine to seed `last_node_id` so the first emitted edge
+    // connects from the prior chain into the new run's first node.
+    let anchor: string | null = null;
+    for (let i = workflow.nodes.length - 1; i >= 0; i -= 1) {
+      const n = workflow.nodes[i] as {
+        id: string;
+        source_run_id?: string | null;
+      };
+      if (n.source_run_id) {
+        anchor = n.id;
+        break;
+      }
+    }
+
+    // Build the prior-turn payload from the current chat + surviving
+    // agent nodes. `buildPriorTurns` filters to pairs whose runId
+    // still has live nodes on the canvas.
+    const priorTurns = buildPriorTurns(messages, workflow).map((t) => ({
+      goal: t.goal,
+      summary: t.summary,
+      run_id: t.run_id,
+    }));
+
     if (!wasActive) {
       set({
         agentStatus: "running",
@@ -253,13 +285,15 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
         pendingApproval: null,
         completionDisagreement: null,
         consecutiveDestructiveCapHit: null,
-        // Clear the prior run's ID so any late in-flight events from it
-        // fail `isStaleRunId` (which drops events when active is null).
-        // `agent://started` from the new run will install the fresh ID;
-        // setting null here — not after invoke — avoids racing with that
-        // listener.
-        agentRunId: null,
+        // Install the new run's ID immediately so the user bubble
+        // and any late in-flight events from the prior run (which
+        // carry a different run_id) get rejected by `isStaleRunId`.
+        agentRunId: runId,
       });
+      // Push the user bubble stamped with the new run ID. This is
+      // the single producer for the user side of the conversation —
+      // App.tsx no longer pushes it separately.
+      pushAssistantMessage("user", goal, runId);
       pushLog(`Agent started with goal: ${goal}`);
     }
     try {
@@ -274,6 +308,9 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
           consecutive_destructive_cap:
             toolPermissions.consecutiveDestructiveCap,
           store_traces: storeTraces,
+          run_id: runId,
+          anchor_node_id: anchor,
+          prior_turns: priorTurns,
         },
       });
     } catch (err) {
