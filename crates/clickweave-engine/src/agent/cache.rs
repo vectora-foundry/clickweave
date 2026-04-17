@@ -37,11 +37,53 @@ impl AgentCache {
             arguments: serde_json::Value::Null,
             element_fingerprint: String::new(),
             hit_count: 0,
+            produced_node_ids: Vec::new(),
         });
         entry.tool_name = tool_name;
         entry.arguments = arguments;
         entry.element_fingerprint = fp;
         entry.hit_count += 1;
+    }
+
+    /// Store a decision in the cache and record the node UUID it produced.
+    /// Prefer this over `store` — it keeps cache-lineage Vec correct so
+    /// `evict_for_node` can prune the right entries later.
+    pub fn store_with_node(
+        &mut self,
+        goal: &str,
+        elements: &[CdpFindElementMatch],
+        tool_name: String,
+        arguments: serde_json::Value,
+        produced_node_id: uuid::Uuid,
+    ) {
+        let key = cache_key(goal, elements);
+        let fp = page_fingerprint(elements);
+        let entry = self.entries.entry(key).or_insert_with(|| CachedDecision {
+            tool_name: String::new(),
+            arguments: serde_json::Value::Null,
+            element_fingerprint: String::new(),
+            hit_count: 0,
+            produced_node_ids: Vec::new(),
+        });
+        entry.tool_name = tool_name;
+        entry.arguments = arguments;
+        entry.element_fingerprint = fp;
+        entry.hit_count += 1;
+        entry.produced_node_ids.push(produced_node_id);
+    }
+
+    /// Remove a node-id from any cache entry that tracks it. When an
+    /// entry's `produced_node_ids` Vec becomes empty the whole entry is
+    /// evicted. Called by Clear-conversation and Selective-delete.
+    ///
+    /// Legacy entries whose `produced_node_ids` was already empty from
+    /// disk are also dropped on first call — per D1.M2 they are harmless
+    /// to orphan and Clear-conversation wipes the file anyway.
+    pub fn evict_for_node(&mut self, node_id: uuid::Uuid) {
+        self.entries.retain(|_, entry| {
+            entry.produced_node_ids.retain(|id| *id != node_id);
+            !entry.produced_node_ids.is_empty()
+        });
     }
 
     /// Remove a cached decision for the given goal and elements.
@@ -207,5 +249,88 @@ mod tests {
 
         let cached = cache.lookup("login", &elements).unwrap();
         assert_eq!(cached.hit_count, 2);
+    }
+
+    #[test]
+    fn store_with_node_appends_produced_node_id() {
+        let mut cache = AgentCache::default();
+        let elements = make_elements();
+        let node_id = uuid::Uuid::new_v4();
+
+        cache.store_with_node(
+            "login",
+            &elements,
+            "click".to_string(),
+            serde_json::json!({"uid": "1_0"}),
+            node_id,
+        );
+
+        let cached = cache.lookup("login", &elements).unwrap();
+        assert_eq!(cached.produced_node_ids, vec![node_id]);
+    }
+
+    #[test]
+    fn store_with_node_accumulates_multiple_nodes() {
+        let mut cache = AgentCache::default();
+        let elements = make_elements();
+        let n1 = uuid::Uuid::new_v4();
+        let n2 = uuid::Uuid::new_v4();
+
+        cache.store_with_node("g", &elements, "click".into(), serde_json::json!({}), n1);
+        cache.store_with_node("g", &elements, "click".into(), serde_json::json!({}), n2);
+
+        let cached = cache.lookup("g", &elements).unwrap();
+        assert_eq!(cached.produced_node_ids, vec![n1, n2]);
+        assert_eq!(cached.hit_count, 2);
+    }
+
+    #[test]
+    fn evict_for_node_removes_only_matching_entry() {
+        let mut cache = AgentCache::default();
+        let elements = make_elements();
+        let n = uuid::Uuid::new_v4();
+        cache.store_with_node("g", &elements, "click".into(), serde_json::json!({}), n);
+
+        cache.evict_for_node(n);
+
+        assert!(
+            cache.lookup("g", &elements).is_none(),
+            "entry whose only node was evicted must be removed"
+        );
+    }
+
+    #[test]
+    fn evict_for_node_keeps_entry_while_other_nodes_remain() {
+        let mut cache = AgentCache::default();
+        let elements = make_elements();
+        let n1 = uuid::Uuid::new_v4();
+        let n2 = uuid::Uuid::new_v4();
+        cache.store_with_node("g", &elements, "click".into(), serde_json::json!({}), n1);
+        cache.store_with_node("g", &elements, "click".into(), serde_json::json!({}), n2);
+
+        cache.evict_for_node(n1);
+
+        let cached = cache
+            .lookup("g", &elements)
+            .expect("entry should survive while n2 still references it");
+        assert_eq!(cached.produced_node_ids, vec![n2]);
+    }
+
+    #[test]
+    fn evict_for_node_is_noop_when_no_match() {
+        let mut cache = AgentCache::default();
+        let elements = make_elements();
+        let stored = uuid::Uuid::new_v4();
+        cache.store_with_node(
+            "g",
+            &elements,
+            "click".into(),
+            serde_json::json!({}),
+            stored,
+        );
+
+        cache.evict_for_node(uuid::Uuid::new_v4()); // unrelated id
+
+        assert!(cache.lookup("g", &elements).is_some());
     }
 }

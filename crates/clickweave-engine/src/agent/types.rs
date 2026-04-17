@@ -339,6 +339,12 @@ pub struct CachedDecision {
     pub element_fingerprint: String,
     /// Number of times this cache entry has been used.
     pub hit_count: u32,
+    /// Node UUIDs this cached decision has produced over its lifetime.
+    /// A single decision can produce multiple nodes when replayed across
+    /// runs. Eviction-on-delete removes the decision only when this Vec
+    /// becomes empty. Legacy entries deserialize as empty.
+    #[serde(default)]
+    pub produced_node_ids: Vec<Uuid>,
 }
 
 /// In-memory cache mapping page fingerprints to past decisions.
@@ -438,5 +444,33 @@ mod tests {
             let parsed: DisagreementResolutionAction = serde_json::from_str(&s).unwrap();
             assert_eq!(parsed, expected);
         }
+    }
+
+    #[test]
+    fn cached_decision_default_produced_node_ids_is_empty() {
+        let d = CachedDecision {
+            tool_name: "click".to_string(),
+            arguments: serde_json::Value::Null,
+            element_fingerprint: String::new(),
+            hit_count: 0,
+            produced_node_ids: Vec::new(),
+        };
+        assert!(d.produced_node_ids.is_empty());
+    }
+
+    #[test]
+    fn cached_decision_missing_produced_node_ids_defaults_to_empty() {
+        // Legacy cache entries have no produced_node_ids field.
+        let json = r#"{
+            "tool_name": "click",
+            "arguments": {"uid": "1_0"},
+            "element_fingerprint": "abc",
+            "hit_count": 1
+        }"#;
+        let d: CachedDecision = serde_json::from_str(json).unwrap();
+        assert!(
+            d.produced_node_ids.is_empty(),
+            "legacy cache entries must deserialize with empty produced_node_ids"
+        );
     }
 }
