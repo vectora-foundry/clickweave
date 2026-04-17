@@ -299,7 +299,11 @@ describe("agentSlice.confirmDisagreementAsComplete", () => {
     useStore.getState().resetAgent();
   });
 
-  it("invokes resolve_completion_disagreement with 'confirm' and flips status to complete", async () => {
+  it("invokes resolve_completion_disagreement with 'confirm' without clearing the card locally", async () => {
+    // The card is now cleared by the terminal `agent://complete`
+    // event handler (see useAgentEvents) — not by this action —
+    // so the `isAgentActive` gates stay armed until the backend
+    // task finishes its final cache/variant-index writes.
     useStore.getState().setCompletionDisagreement({
       screenshotBase64: "abc",
       vlmReasoning: "button still visible",
@@ -314,11 +318,14 @@ describe("agentSlice.confirmDisagreementAsComplete", () => {
       action: "confirm",
     });
     const state = useStore.getState();
-    expect(state.completionDisagreement).toBeNull();
-    expect(state.agentStatus).toBe("complete");
+    // Card stays — terminal event clears it.
+    expect(state.completionDisagreement).not.toBeNull();
+    // Status is unchanged — the backend's terminal event is the
+    // authoritative status transition.
+    expect(state.agentStatus).toBe("stopped");
   });
 
-  it("rolls status back to the pre-click state when the backend rejects the confirm", async () => {
+  it("dismisses the card when the backend rejects the confirm (run already torn down)", async () => {
     useStore.getState().setCompletionDisagreement({
       screenshotBase64: "abc",
       vlmReasoning: "button still visible",
@@ -336,9 +343,8 @@ describe("agentSlice.confirmDisagreementAsComplete", () => {
     await useStore.getState().confirmDisagreementAsComplete();
 
     const state = useStore.getState();
-    // Card stays dismissed so the user isn't re-prompted, but status
-    // reverts to `stopped` so the UI does not falsely show a run as
-    // complete when the backend actually recorded it differently.
+    // Resolver is gone — the card is dropped so the user isn't
+    // re-prompted in a never-going-to-end state.
     expect(state.completionDisagreement).toBeNull();
     expect(state.agentStatus).toBe("stopped");
     const lastLog = useStore.getState().logs.at(-1);
@@ -352,7 +358,7 @@ describe("agentSlice.cancelDisagreement", () => {
     useStore.getState().resetAgent();
   });
 
-  it("invokes resolve_completion_disagreement with 'cancel' and flips status to stopped", async () => {
+  it("invokes resolve_completion_disagreement with 'cancel' without clearing the card locally", async () => {
     useStore.getState().setCompletionDisagreement({
       screenshotBase64: "abc",
       vlmReasoning: "modal still visible",
@@ -367,11 +373,12 @@ describe("agentSlice.cancelDisagreement", () => {
       action: "cancel",
     });
     const state = useStore.getState();
-    expect(state.completionDisagreement).toBeNull();
+    // Card stays — terminal `agent://stopped` event clears it.
+    expect(state.completionDisagreement).not.toBeNull();
     expect(state.agentStatus).toBe("stopped");
   });
 
-  it("swallows rejection silently and still dismisses the card", async () => {
+  it("dismisses the card when the backend rejects the cancel (run already torn down)", async () => {
     useStore.getState().setCompletionDisagreement({
       screenshotBase64: "abc",
       vlmReasoning: "modal still visible",
@@ -397,7 +404,7 @@ describe("confirmDisagreementAsComplete — active-gate preservation", () => {
     useStore.getState().resetAgent();
   });
 
-  it("keeps completionDisagreement non-null while the resolver is in flight", async () => {
+  it("keeps completionDisagreement non-null across the resolver return so the terminal event can clear it", async () => {
     useStore.getState().setCompletionDisagreement({
       screenshotBase64: "abc",
       vlmReasoning: "r",
@@ -405,22 +412,18 @@ describe("confirmDisagreementAsComplete — active-gate preservation", () => {
     });
     useStore.getState().setAgentStatus("stopped");
 
-    let disagreementDuringInvoke: unknown = "NOT-CHECKED";
-    invokeMock.mockImplementationOnce(async () => {
-      // The backend is still writing cache/variant-index entries —
-      // the UI MUST still advertise the agent as active so project
-      // switches, deletes, and Clear-conversation don't race the
-      // final writes. Clearing the card before the await resolves
-      // would reopen those gates too early.
-      disagreementDuringInvoke =
-        useStore.getState().completionDisagreement;
-    });
+    invokeMock.mockResolvedValueOnce(undefined);
 
     await useStore.getState().confirmDisagreementAsComplete();
 
-    expect(disagreementDuringInvoke).not.toBeNull();
-    // Card is dismissed after the resolver returns.
-    expect(useStore.getState().completionDisagreement).toBeNull();
+    // Card is STILL set — `resolve_completion_disagreement` only
+    // forwards the operator choice into the pending oneshot; the
+    // original agent task keeps running until its final
+    // cache/variant-index/terminal-event work completes. The
+    // terminal `agent://complete` handler in useAgentEvents is the
+    // one that finally drops the card, so `isAgentActive` stays
+    // true from Confirm until the backend is actually done.
+    expect(useStore.getState().completionDisagreement).not.toBeNull();
   });
 });
 
@@ -430,7 +433,7 @@ describe("cancelDisagreement — active-gate preservation", () => {
     useStore.getState().resetAgent();
   });
 
-  it("keeps completionDisagreement non-null while the resolver is in flight", async () => {
+  it("keeps completionDisagreement non-null across the resolver return so the terminal event can clear it", async () => {
     useStore.getState().setCompletionDisagreement({
       screenshotBase64: "abc",
       vlmReasoning: "r",
@@ -438,16 +441,51 @@ describe("cancelDisagreement — active-gate preservation", () => {
     });
     useStore.getState().setAgentStatus("stopped");
 
-    let disagreementDuringInvoke: unknown = "NOT-CHECKED";
-    invokeMock.mockImplementationOnce(async () => {
-      disagreementDuringInvoke =
-        useStore.getState().completionDisagreement;
-    });
+    invokeMock.mockResolvedValueOnce(undefined);
 
     await useStore.getState().cancelDisagreement();
 
-    expect(disagreementDuringInvoke).not.toBeNull();
-    expect(useStore.getState().completionDisagreement).toBeNull();
+    expect(useStore.getState().completionDisagreement).not.toBeNull();
+  });
+});
+
+describe("stopAgent — preserves completionDisagreement for terminal event", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useStore.getState().resetAgent();
+  });
+
+  it("does not clear completionDisagreement when a disagreement is pending", async () => {
+    useStore.getState().setCompletionDisagreement({
+      screenshotBase64: "abc",
+      vlmReasoning: "r",
+      agentSummary: "s",
+    });
+    invokeMock.mockResolvedValueOnce(undefined);
+
+    await useStore.getState().stopAgent();
+
+    // Stop is fire-and-forget on the backend (`force_stop` returns
+    // before the agent task finishes cleanup). The disagreement
+    // card stays visible until the terminal `agent://stopped`
+    // event arrives, so `isAgentActive` gates stay armed until
+    // the backend task is actually done.
+    expect(useStore.getState().completionDisagreement).not.toBeNull();
+    expect(useStore.getState().agentStatus).toBe("stopped");
+  });
+
+  it("still clears pendingApproval so the engine oneshot unblocks", async () => {
+    useStore.getState().setPendingApproval({
+      stepIndex: 0,
+      toolName: "click",
+      arguments: {},
+      description: "",
+    });
+    invokeMock.mockResolvedValueOnce(undefined);
+
+    await useStore.getState().stopAgent();
+
+    expect(useStore.getState().pendingApproval).toBeNull();
   });
 });
 

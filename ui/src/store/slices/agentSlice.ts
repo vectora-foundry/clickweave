@@ -352,16 +352,17 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
 
   stopAgent: async () => {
     const { pushLog } = get();
-    // Clear the disagreement card as well. When a CompletionDisagreement
-    // is raised the backend holds the run open on a pending-disagreement
-    // oneshot, and `stop_agent` → `force_stop` resolves that oneshot as
-    // Cancel so the run still gets a truthful `DisagreementCancelled`
-    // terminal record. We also clear the UI card locally so the Stop
-    // button always dismisses it without waiting for the terminal event.
+    // Clear the pending approval so the agent task's oneshot receives
+    // a rejection (force_stop also sends false on the approval
+    // channel). Do NOT clear `completionDisagreement` here — the
+    // backend task is still alive writing its final cache / variant-
+    // index / events state, and the frontend `isAgentActive` gates
+    // must stay armed until the terminal event handler clears the
+    // card. Flipping `agentStatus` to "stopped" is safe because
+    // `isAgentActive` also watches the disagreement card.
     set({
       agentStatus: "stopped",
       pendingApproval: null,
-      completionDisagreement: null,
       consecutiveDestructiveCapHit: null,
     });
     try {
@@ -429,16 +430,17 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
 
   /**
    * Confirm a pending VLM disagreement. Invokes the backend resolver
-   * synchronously — the disagreement card stays up while the backend
-   * finishes writing the durable record, because clearing it early
-   * would drop `isAgentActive` to false and reopen every gate that
-   * depends on the backend task still being alive (cross-project,
-   * mid-run-delete, Clear). Once the resolver returns we flip
-   * `agentStatus` to `complete` and dismiss the card; the backend's
-   * terminal `agent://complete` event is the authoritative status.
+   * which forwards the operator's choice into the agent task. Does
+   * NOT clear `completionDisagreement` locally — the terminal
+   * `agent://complete` / `agent://stopped` / `agent://error` event
+   * handlers clear it, so the `isAgentActive` gates (cross-project,
+   * mid-run-delete, Clear) stay armed until the Tauri task has
+   * actually finished its final cache + variant-index + events
+   * writes. That was the real source of the post-Confirm race.
    *
-   * If the invoke rejects we still dismiss the card (the resolver is
-   * gone) but log the failure so the run trace records the mismatch.
+   * If the resolver invoke rejects the backend run was already
+   * gone — the card is dismissed explicitly so the user isn't
+   * re-prompted in a never-going-to-end state.
    */
   confirmDisagreementAsComplete: async () => {
     const { pushLog } = get();
@@ -447,7 +449,8 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       pushLog(
         "Agent completion confirmed by user (VLM disagreed but user overrode)",
       );
-      set({ completionDisagreement: null, agentStatus: "complete" });
+      // Card and agent status are cleared by the terminal event
+      // handler in useAgentEvents when `agent://complete` arrives.
     } catch (err) {
       set({ completionDisagreement: null });
       pushLog(
@@ -457,26 +460,18 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
   },
 
   /**
-   * Cancel a pending VLM disagreement. Invokes the backend resolver
-   * synchronously so the run trace records a `DisagreementCancelled`
-   * terminal reason, then dismisses the card. Keeps the card up
-   * during the await so `isAgentActive` stays true until the backend
-   * task has finished.
-   *
-   * If the invoke rejects (e.g. the run was already torn down), we
-   * still dismiss the card — the local state reflects the user's
-   * choice even though the backend couldn't be informed.
+   * Cancel a pending VLM disagreement. Same contract as
+   * `confirmDisagreementAsComplete` — forwards the decision and lets
+   * the terminal-event handler drop the active-run marker so the
+   * frontend gates stay armed until the backend task finishes.
    */
   cancelDisagreement: async () => {
     const { pushLog } = get();
     try {
       await invoke("resolve_completion_disagreement", { action: "cancel" });
       pushLog("Agent run cancelled by user (VLM disagreement)");
-      set({
-        completionDisagreement: null,
-        agentStatus: "stopped",
-        pendingApproval: null,
-      });
+      // Card and agent status are cleared by the terminal event
+      // handler in useAgentEvents when `agent://stopped` arrives.
     } catch (err) {
       set({
         completionDisagreement: null,

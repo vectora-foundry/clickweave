@@ -235,6 +235,13 @@ export function useAgentEvents() {
       listen<RunScoped & { summary?: string }>("agent://complete", (e) => {
         if (isStale(e.payload.run_id)) return;
         setStatusIfActive("complete");
+        // Terminal event: the backend task has finished all of its
+        // variant-index / cache / events.jsonl writes. Drop the
+        // active-run marker (disagreement card) so the `isAgentActive`
+        // gates reopen — previously Confirm/Cancel cleared the card
+        // optimistically and reopened the guards before the backend
+        // was actually done.
+        useStore.getState().setCompletionDisagreement(null);
         useStore.getState().pushLog("Agent completed");
         const summary = e.payload.summary?.trim();
         useStore
@@ -301,14 +308,11 @@ export function useAgentEvents() {
         // `stopped` over a newly-`complete` race (not possible today,
         // but cheap future-proofing).
         setStatusIfActive("stopped");
-        // Also clear the disagreement card when the terminal event is
-        // the resolver's `user_cancelled_disagreement` — this catches
-        // the path where the Stop button was pressed (force_stop
-        // resolves as Cancel) without going through the slice's own
-        // card-dismiss side-effect.
-        if (e.payload.reason === "user_cancelled_disagreement") {
-          useStore.getState().setCompletionDisagreement(null);
-        }
+        // Terminal event: backend task finished. Always drop the
+        // disagreement card (whatever reason the run ended for) so
+        // the `isAgentActive` gates reopen only after the backend
+        // has actually completed its final cache/variant-index writes.
+        useStore.getState().setCompletionDisagreement(null);
         const detail =
           e.payload.reason === "max_steps_reached"
             ? `after ${e.payload.steps_executed} steps`
@@ -369,6 +373,10 @@ export function useAgentEvents() {
           useStore.getState().setAgentError(e.payload.message);
           useStore.getState().setAgentStatus("error");
         }
+        // Terminal event: clear the disagreement card so
+        // `isAgentActive` drops to false now that the backend task
+        // has signalled it is done.
+        useStore.getState().setCompletionDisagreement(null);
         useStore
           .getState()
           .pushLog(`Agent error: ${e.payload.message}`);
