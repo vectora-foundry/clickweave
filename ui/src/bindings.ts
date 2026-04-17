@@ -276,9 +276,60 @@ async approveAgentAction(approved: boolean) : Promise<Result<null, CommandError>
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Resolve a pending VLM completion disagreement. The operator picks
+ * either `confirm` (override the VLM, mark the run complete) or
+ * `cancel` (agree with the VLM, halt the run). The backend records the
+ * decision to `events.jsonl` + `variant_index.jsonl` and emits the
+ * appropriate terminal Tauri event.
+ * 
+ * Concurrency note: the AgentHandle lock is held across the oneshot
+ * send on purpose. `force_stop` (the Stop button) also locks the
+ * AgentHandle, cancels the run's CancellationToken, and takes the
+ * disagreement sender from the same slot. If this command released
+ * the lock after `.take()` but before `.send()`, a concurrent
+ * `force_stop` could trip the cancel token in the gap and the
+ * `tokio::select!` in `await_disagreement_resolution` would pick the
+ * cancel branch before the confirm ever arrived — silently losing
+ * the operator's decision. `oneshot::Sender::send` is synchronous
+ * and infallible except for a dropped receiver, so holding the
+ * `std::sync::Mutex` across it is cheap and race-closing.
+ */
 async resolveCompletionDisagreement(action: CompletionDisagreementActionWire) : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("resolve_completion_disagreement", { action }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async loadAgentChat(request: LoadAgentChatRequest) : Promise<Result<AgentChat, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_agent_chat", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async saveAgentChat(request: SaveAgentChatRequest) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_agent_chat", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async pruneAgentCacheForNodes(request: PruneAgentCacheRequest) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("prune_agent_cache_for_nodes", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async clearAgentConversation(request: ClearAgentConversationRequest) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("clear_agent_conversation", { request }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -297,6 +348,14 @@ async resolveCompletionDisagreement(action: CompletionDisagreementActionWire) : 
 /** user-defined types **/
 
 export type ActionConfidence = "High" | "Medium" | "Low"
+/**
+ * Persisted transcript — a sibling file to `agent_cache.json`.
+ * Kept deliberately minimal (no schema version) until the format
+ * changes; versioning is added lazily when it matters.
+ */
+export type AgentChat = { messages: AgentChatMessage[] }
+export type AgentChatMessage = { role: AgentChatRole; content: string; timestamp: string; run_id?: string | null }
+export type AgentChatRole = "user" | "assistant" | "system"
 export type AgentRunRequest = { goal: string; agent: EndpointConfig; project_path: string | null; workflow_name: string; workflow_id: string; 
 /**
  * Permission policy for this run. When `None`, the default policy
@@ -314,7 +373,24 @@ consecutive_destructive_cap?: number | null;
  * or cache files are written. When `None`, persistence is on —
  * matches the UI default (`storeTraces: true`).
  */
-store_traces?: boolean | null }
+store_traces?: boolean | null; 
+/**
+ * Frontend-generated run ID. The engine stamps every node built
+ * this run with this ID, and `agent://*` events echo it back.
+ * When omitted (legacy callers / tests), a UUID is generated here.
+ */
+run_id?: string | null; 
+/**
+ * Anchor node to seed `last_node_id` from. When present, the
+ * run's first emitted edge is from `anchor_node_id` to whatever
+ * first node the agent builds.
+ */
+anchor_node_id?: string | null; 
+/**
+ * Prior conversation turns (goal + summary + run_id) injected
+ * inline above the current goal. Runtime order = chronological.
+ */
+prior_turns?: PriorTurnWire[] }
 export type AiStepParams = { prompt: string; button_text: string | null; template_image: string | null; max_tool_calls: number | null; allowed_tools: string[] | null; timeout_ms?: number | null }
 export type AppDebugKitParams = { operation_name: string; parameters: JsonValue }
 /**
@@ -367,6 +443,7 @@ export type CdpTarget =
 export type CdpTypeParams = { text: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type CdpWaitParams = { text: string; timeout_ms?: number }
 export type ChromeProfile = { id: string; name: string; google_email: string | null }
+export type ClearAgentConversationRequest = { project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
 export type ClickParams = { target: ClickTarget | null; button: MouseButton; click_count: number; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type ClickTarget = { type: "Text"; text: string } | { type: "Coordinates"; x: number; y: number } | { type: "WindowControl"; action: WindowControlAction }
 /**
@@ -398,10 +475,19 @@ export type HoverParams = { target: ClickTarget | null; dwell_ms: number; verifi
 export type ImportedAsset = { relative_path: string; absolute_path: string }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 export type LaunchAppParams = { app_name: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type LoadAgentChatRequest = { project_path: string | null; workflow_name: string; workflow_id: string }
 export type MatchMode = "Contains" | "Exact"
 export type McpToolCallParams = { tool_name: string; arguments: JsonValue }
 export type MouseButton = "Left" | "Right" | "Center"
-export type Node = { id: string; node_type: NodeType; position: Position; name: string; description?: string | null; auto_id?: string; enabled: boolean; timeout_ms: number | null; settle_ms: number | null; retries: number; supervision_retries?: number; trace_level: TraceLevel; role?: NodeRole; expected_outcome: string | null }
+export type Node = { id: string; node_type: NodeType; position: Position; name: string; description?: string | null; auto_id?: string; enabled: boolean; timeout_ms: number | null; settle_ms: number | null; retries: number; supervision_retries?: number; trace_level: TraceLevel; role?: NodeRole; expected_outcome: string | null; 
+/**
+ * Provenance stamp: the agent generation ID that produced this node.
+ * `None` for nodes added by the user, by deterministic walkthrough
+ * synthesis, or loaded from a pre-upgrade workflow file. Used by
+ * Clear-conversation and selective-delete to scope operations to
+ * agent-built nodes only.
+ */
+source_run_id?: string | null }
 export type NodeGroup = { id: string; name: string; color: string; node_ids: string[]; parent_group_id: string | null }
 export type NodeRename = { node_id: string; new_name: string }
 export type NodeRole = "Default" | "Verification"
@@ -435,7 +521,13 @@ per_tool?: Partial<{ [key in string]: PermissionActionWire }> }
 export type PermissionRuleWire = { tool_pattern: string; args_pattern: string | null; action: PermissionActionWire }
 export type Position = { x: number; y: number }
 export type PressKeyParams = { key: string; modifiers: string[]; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+/**
+ * Wire form of a prior-turn entry (matches
+ * `clickweave_engine::agent::PriorTurn` with string UUIDs for JSON).
+ */
+export type PriorTurnWire = { goal: string; summary: string; run_id: string }
 export type ProjectData = { path: string; workflow: Workflow }
+export type PruneAgentCacheRequest = { project_path: string | null; workflow_name: string; workflow_id: string; node_ids: string[]; store_traces: boolean }
 export type QuitAppParams = { app_name: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
 export type RunEventsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string; execution_dir: string | null; run_id: string }
 export type RunRequest = { workflow: Workflow; project_path: string | null; agent: EndpointConfig; fast: EndpointConfig | null; 
@@ -451,6 +543,7 @@ supervisor: EndpointConfig | null; execution_mode: ExecutionMode; supervision_de
 store_traces?: boolean | null }
 export type RunStatus = "Ok" | "Failed" | "Stopped" | "Cancelled"
 export type RunsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string }
+export type SaveAgentChatRequest = { project_path: string | null; workflow_name: string; workflow_id: string; chat: AgentChat; store_traces: boolean }
 /**
  * Screenshot coordinate metadata for mapping screen coordinates to image pixels.
  * 
