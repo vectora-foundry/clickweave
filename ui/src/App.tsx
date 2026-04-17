@@ -20,6 +20,7 @@ import { useUndoRedoKeyboard } from "./hooks/useUndoRedoKeyboard";
 import { useWorkflowActions } from "./hooks/useWorkflowActions";
 import { useExecutorEvents } from "./hooks/useExecutorEvents";
 import { buildAppKindMap } from "./hooks/useNodeSync";
+import { useHandleDeleteNodes } from "./hooks/useHandleDeleteNodes";
 import { isWalkthroughBusy } from "./store/slices/walkthroughSlice";
 
 function App() {
@@ -139,6 +140,10 @@ function App() {
     renameGroup, recolorGroup, addNodesToGroup, removeNodesFromGroup,
   } = useWorkflowActions();
 
+  // Conversational side-effects: prune cache, annotate, redact on
+  // agent-node deletion. User-owned nodes fall through untouched.
+  const handleDeleteNodes = useHandleDeleteNodes(removeNodes);
+
   // ── Derived state ────────────────────────────────────────────────
   const selectedNodeData = useMemo(
     () =>
@@ -227,7 +232,7 @@ function App() {
                     setWorkflow({ ...workflow, edges });
                   }}
                   onConnect={addEdge}
-                  onDeleteNodes={removeNodes}
+                  onDeleteNodes={handleDeleteNodes}
                   onRemoveExtraEdges={removeEdgesOnly}
                   onBeforeNodeDrag={() => pushHistory("Move Nodes")}
                   onCreateGroup={createGroup}
