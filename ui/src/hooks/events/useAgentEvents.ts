@@ -234,7 +234,17 @@ export function useAgentEvents() {
     sub(
       listen<RunScoped & { summary?: string }>("agent://complete", (e) => {
         if (isStale(e.payload.run_id)) return;
-        setStatusIfActive("complete");
+        // A confirmed disagreement demotes status to `stopped` for the
+        // card UI but the backend still emits `agent://complete` on
+        // resolution. Accept the promotion from either `running` or
+        // a pending-disagreement `stopped` so a confirmed completion
+        // isn't left stuck in the post-card status.
+        const current = useStore.getState().agentStatus;
+        const hadDisagreement =
+          useStore.getState().completionDisagreement != null;
+        if (current === "running" || hadDisagreement) {
+          useStore.getState().setAgentStatus("complete");
+        }
         // Terminal event: the backend task has finished all of its
         // variant-index / cache / events.jsonl writes. Drop the
         // active-run marker (disagreement card) so the `isAgentActive`
