@@ -232,10 +232,14 @@ export function useAgentEvents() {
     };
 
     sub(
-      listen<RunScoped>("agent://complete", (e) => {
+      listen<RunScoped & { summary?: string }>("agent://complete", (e) => {
         if (isStale(e.payload.run_id)) return;
         setStatusIfActive("complete");
         useStore.getState().pushLog("Agent completed");
+        const summary = e.payload.summary?.trim();
+        useStore
+          .getState()
+          .pushAssistantMessage("assistant", summary || "Goal completed.");
       }),
     );
 
@@ -310,8 +314,13 @@ export function useAgentEvents() {
                 ? "approval system unavailable"
                 : e.payload.reason === "user_cancelled_disagreement"
                   ? "user cancelled after VLM disagreement"
-                  : e.payload.reason;
+                  : e.payload.reason === "loop_detected"
+                    ? "the same tool call kept failing — stopped to avoid looping"
+                    : e.payload.reason;
         useStore.getState().pushLog(`Agent stopped: ${detail}`);
+        useStore
+          .getState()
+          .pushAssistantMessage("assistant", `Stopped: ${detail}`);
       }),
     );
 
@@ -355,6 +364,9 @@ export function useAgentEvents() {
         useStore
           .getState()
           .pushLog(`Agent error: ${e.payload.message}`);
+        useStore
+          .getState()
+          .pushAssistantMessage("assistant", `Error: ${e.payload.message}`);
       }),
     );
 

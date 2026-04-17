@@ -2,11 +2,6 @@ import type { StateCreator } from "zustand";
 import { isWalkthroughActive } from "./walkthroughSlice";
 import type { StoreState } from "./types";
 
-/**
- * Minimal message shape for the assistant panel. No producer currently
- * populates this array; kept as a shell so the UI surface can be re-wired
- * when an assistant backend returns.
- */
 export interface AssistantMessage {
   role: "user" | "assistant";
   content: string;
@@ -21,6 +16,7 @@ export interface AssistantSlice {
   setAssistantOpen: (open: boolean) => void;
   toggleAssistant: () => void;
   setAssistantError: (error: string | null) => void;
+  pushAssistantMessage: (role: AssistantMessage["role"], content: string) => void;
 }
 
 export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSlice> = (set, get) => ({
@@ -53,4 +49,15 @@ export const createAssistantSlice: StateCreator<StoreState, [], [], AssistantSli
   },
 
   setAssistantError: (error) => set({ assistantError: error }),
+
+  pushAssistantMessage: (role, content) => {
+    const trimmed = content.trim();
+    if (!trimmed) return;
+    set((s) => ({
+      messages: [
+        ...s.messages,
+        { role, content: trimmed, timestamp: new Date().toISOString() },
+      ],
+    }));
+  },
 });
