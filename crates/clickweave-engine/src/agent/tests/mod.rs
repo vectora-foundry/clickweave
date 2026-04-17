@@ -205,6 +205,8 @@ impl Mcp for MockMcp {
 // Tests
 // ---------------------------------------------------------------------------
 
+mod conversational_extend;
+
 #[tokio::test]
 async fn agent_executes_single_click_and_completes() {
     let agent_llm = MockAgent::new(vec![
