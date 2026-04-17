@@ -359,6 +359,13 @@ impl RunStorage {
         self.base_path.join("variant_index.jsonl")
     }
 
+    /// Path to the per-workflow conversational-agent chat transcript.
+    /// Sibling to `agent_cache_path()`. Loaded by the UI on project
+    /// open, saved on every assistant message push.
+    pub fn agent_chat_path(&self) -> PathBuf {
+        self.base_path.join("agent_chat.json")
+    }
+
     /// Append a serializable agent event to the execution-level events.jsonl.
     ///
     /// No-op when persistence is disabled — the agent run still requires
@@ -862,6 +869,20 @@ mod tests {
             storage.base_path,
             PathBuf::from("/tmp/my-project/.clickweave/runs/open-calculator")
         );
+    }
+
+    #[test]
+    fn agent_chat_path_is_sibling_to_agent_cache_path() {
+        let project_dir = PathBuf::from("/tmp/my-project");
+        let storage = RunStorage::new(&project_dir, "My Workflow");
+        let cache = storage.agent_cache_path();
+        let chat = storage.agent_chat_path();
+        assert_eq!(
+            cache.parent(),
+            chat.parent(),
+            "agent_chat.json must live beside agent_cache.json"
+        );
+        assert_eq!(chat.file_name().unwrap(), "agent_chat.json");
     }
 
     #[test]
