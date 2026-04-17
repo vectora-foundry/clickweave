@@ -233,6 +233,8 @@ async fn agent_executes_single_click_and_completes() {
             &mcp,
             None,
             mcp_tools,
+            None,
+            &[],
         )
         .await
         .unwrap();
@@ -276,7 +278,15 @@ async fn agent_stops_at_max_steps() {
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
-        .run("Click forever".to_string(), workflow, &mcp, None, mcp_tools)
+        .run(
+            "Click forever".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
         .await
         .unwrap();
 
@@ -314,7 +324,15 @@ async fn agent_handles_text_only_response() {
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
-        .run("Do something".to_string(), workflow, &mcp, None, mcp_tools)
+        .run(
+            "Do something".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
         .await
         .unwrap();
 
@@ -357,6 +375,8 @@ async fn agent_replan_does_not_complete() {
             &mcp,
             None,
             mcp_tools,
+            None,
+            &[],
         )
         .await
         .unwrap();
@@ -383,7 +403,15 @@ async fn agent_state_reports_completed_reason_on_done() {
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
-        .run("Do it".to_string(), workflow, &mcp, None, mcp_tools)
+        .run(
+            "Do it".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
         .await
         .unwrap();
 
@@ -420,7 +448,15 @@ async fn agent_state_reports_max_steps_reason() {
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
-        .run("Click forever".to_string(), workflow, &mcp, None, mcp_tools)
+        .run(
+            "Click forever".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
         .await
         .unwrap();
 
@@ -503,7 +539,15 @@ async fn agent_state_reports_max_errors_reason() {
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
-        .run("Click it".to_string(), workflow, &mcp, None, mcp_tools)
+        .run(
+            "Click it".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
         .await
         .unwrap();
 
@@ -583,7 +627,15 @@ async fn agent_state_reports_loop_detected_on_identical_repeat_failure() {
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
-        .run("Click it".to_string(), workflow, &mcp, None, mcp_tools)
+        .run(
+            "Click it".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
         .await
         .unwrap();
 
@@ -638,7 +690,15 @@ async fn approval_success_allows_execution() {
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
-        .run("Click it".to_string(), workflow, &mcp, None, mcp_tools)
+        .run(
+            "Click it".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
         .await
         .unwrap();
 
@@ -683,7 +743,15 @@ async fn approval_rejection_triggers_replan() {
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
-        .run("Click it".to_string(), workflow, &mcp, None, mcp_tools)
+        .run(
+            "Click it".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
         .await
         .unwrap();
 
@@ -724,7 +792,15 @@ async fn approval_channel_failure_terminates_agent() {
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
-        .run("Click it".to_string(), workflow, &mcp, None, mcp_tools)
+        .run(
+            "Click it".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
         .await
         .unwrap();
 
@@ -895,6 +971,8 @@ async fn cache_replay_creates_workflow_nodes() {
             &mcp,
             None,
             mcp_tools,
+            None,
+            &[],
         )
         .await
         .unwrap();
@@ -1016,6 +1094,8 @@ async fn cache_replay_reconstructs_transcript() {
             &mcp,
             None,
             mcp_tools,
+            None,
+            &[],
         )
         .await
         .unwrap();
@@ -1117,6 +1197,8 @@ async fn multi_tool_response_only_executes_first() {
             &mcp,
             None,
             mcp_tools,
+            None,
+            &[],
         )
         .await
         .unwrap();
@@ -1194,6 +1276,8 @@ async fn malformed_tool_call_json_returns_error() {
             &mcp,
             None,
             mcp_tools,
+            None,
+            &[],
         )
         .await
         .unwrap();
@@ -1315,6 +1399,8 @@ async fn retained_history_stays_bounded_across_snapshot_heavy_steps() {
             &mcp,
             None,
             mcp_tools,
+            None,
+            &[],
         )
         .await
         .unwrap();
@@ -1675,6 +1761,8 @@ async fn tool_list_is_stable_across_cdp_connect_boundary() {
             &mcp,
             None,
             mcp_tools,
+            None,
+            &[],
         )
         .await
         .unwrap();
@@ -1941,7 +2029,15 @@ async fn vlm_yes_verdict_completes_run_normally() {
     runner = runner.with_events(event_tx);
 
     let state = runner
-        .run("Open settings".to_string(), workflow, &mcp, None, mcp_tools)
+        .run(
+            "Open settings".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
         .await
         .unwrap();
 
@@ -1999,7 +2095,15 @@ async fn vlm_no_verdict_halts_run_and_emits_disagreement() {
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
-        .run("Open settings".to_string(), workflow, &mcp, None, mcp_tools)
+        .run(
+            "Open settings".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
         .await
         .unwrap();
 
@@ -2068,7 +2172,15 @@ async fn vlm_check_falls_through_when_reply_is_empty() {
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
-        .run("Do it".to_string(), workflow, &mcp, None, mcp_tools)
+        .run(
+            "Do it".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
         .await
         .unwrap();
 
@@ -2112,7 +2224,15 @@ async fn vlm_check_falls_through_when_screenshot_fails() {
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
-        .run("Do it".to_string(), workflow, &mcp, None, mcp_tools)
+        .run(
+            "Do it".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
         .await
         .unwrap();
 
@@ -2260,7 +2380,15 @@ async fn policy_deny_fails_step_without_prompting() {
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
-        .run("Click".to_string(), workflow, &mcp, None, mcp_tools)
+        .run(
+            "Click".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
         .await
         .unwrap();
 
@@ -2313,7 +2441,15 @@ async fn policy_allow_skips_approval_prompt() {
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
-        .run("Click".to_string(), workflow, &mcp, None, mcp_tools)
+        .run(
+            "Click".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
         .await
         .unwrap();
 
@@ -2368,7 +2504,15 @@ async fn destructive_guardrail_still_prompts_when_tool_allowed() {
     let mcp_tools = mcp.tools_as_openai();
 
     let _state = runner
-        .run("Delete".to_string(), workflow, &mcp, None, mcp_tools)
+        .run(
+            "Delete".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
         .await
         .unwrap();
 
@@ -2458,7 +2602,15 @@ async fn consecutive_destructive_cap_halts_after_three_calls() {
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
-        .run("Cleanup".to_string(), workflow, &mcp, None, mcp_tools)
+        .run(
+            "Cleanup".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
         .await
         .unwrap();
 
@@ -2578,7 +2730,15 @@ async fn non_destructive_tool_resets_consecutive_destructive_counter() {
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
-        .run("Mix".to_string(), workflow, &mcp, None, mcp_tools)
+        .run(
+            "Mix".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
         .await
         .unwrap();
 
@@ -2633,7 +2793,15 @@ async fn consecutive_destructive_cap_of_zero_disables_feature() {
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
-        .run("Many".to_string(), workflow, &mcp, None, mcp_tools)
+        .run(
+            "Many".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
         .await
         .unwrap();
 

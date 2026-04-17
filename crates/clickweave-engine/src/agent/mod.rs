@@ -53,6 +53,9 @@ pub async fn run_agent_workflow<B: ChatBackend>(
     channels: Option<AgentChannels>,
     vision: Option<&B>,
     permissions: Option<PermissionPolicy>,
+    run_id: uuid::Uuid,
+    anchor_node_id: Option<uuid::Uuid>,
+    prior_turns: Vec<prior_turns::PriorTurn>,
 ) -> anyhow::Result<(AgentState, AgentCache)> {
     let tools = mcp.tools_as_openai();
     let workflow = clickweave_core::Workflow::default();
@@ -60,6 +63,7 @@ pub async fn run_agent_workflow<B: ChatBackend>(
         Some(c) => AgentRunner::with_cache(llm, config, c),
         None => AgentRunner::new(llm, config),
     };
+    runner = runner.with_run_id(run_id);
     if let Some(ch) = channels {
         runner = runner
             .with_events(ch.event_tx)
@@ -72,7 +76,15 @@ pub async fn run_agent_workflow<B: ChatBackend>(
         runner = runner.with_permissions(policy);
     }
     let state = runner
-        .run(goal, workflow, mcp, variant_context, tools)
+        .run(
+            goal,
+            workflow,
+            mcp,
+            variant_context,
+            tools,
+            anchor_node_id,
+            &prior_turns,
+        )
         .await?;
     Ok((state, runner.into_cache()))
 }

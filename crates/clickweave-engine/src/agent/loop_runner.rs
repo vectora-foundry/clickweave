@@ -108,6 +108,11 @@ pub struct AgentRunner<'a, B: ChatBackend> {
     /// require_confirm_destructive = false, which reproduces the previous
     /// behaviour (every approval-gated tool goes through the prompt).
     permissions: PermissionPolicy,
+    /// Generation ID for this run. Stamped on every `Node` produced by
+    /// `add_workflow_node` so the UI can scope selective-delete and
+    /// Clear-conversation to agent-built nodes. Defaults to a fresh UUID
+    /// when `with_run_id` is not called.
+    run_id: uuid::Uuid,
 }
 
 impl<'a, B: ChatBackend> AgentRunner<'a, B> {
@@ -122,6 +127,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             approval_gate: None,
             vision: None,
             permissions: PermissionPolicy::default(),
+            run_id: uuid::Uuid::new_v4(),
         }
     }
 
@@ -137,7 +143,15 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             approval_gate: None,
             vision: None,
             permissions: PermissionPolicy::default(),
+            run_id: uuid::Uuid::new_v4(),
         }
+    }
+
+    /// Stamp this run with a caller-provided generation ID. When
+    /// omitted, a fresh UUID is generated at construction.
+    pub fn with_run_id(mut self, run_id: uuid::Uuid) -> Self {
+        self.run_id = run_id;
+        self
     }
 
     /// Attach a permission policy. When set, the policy is evaluated for
@@ -272,6 +286,14 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     /// * `mcp` - MCP client for tool execution.
     /// * `variant_context` - Optional context about the current variant.
     /// * `mcp_tools` - Pre-fetched MCP tool definitions in OpenAI format.
+    /// * `anchor_node_id` - When `Some`, seeds `last_node_id` so the
+    ///   runner's first emitted edge connects into an existing workflow
+    ///   chain (conversational Extend mode).
+    /// * `prior_turns` - Chat history (goal/summary pairs) from prior
+    ///   agent runs. Inlined above the current goal so the LLM has the
+    ///   conversational context without adding a message slot that
+    ///   would break `compact_step_summaries`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run(
         &mut self,
         goal: String,
@@ -279,8 +301,11 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         mcp: &(impl Mcp + ?Sized),
         variant_context: Option<&str>,
         mcp_tools: Vec<Value>,
+        anchor_node_id: Option<uuid::Uuid>,
+        prior_turns: &[super::prior_turns::PriorTurn],
     ) -> Result<AgentState> {
         self.state = AgentState::new(workflow);
+        self.state.last_node_id = anchor_node_id;
 
         // Build conversation: system instructions + goal as a user message.
         // The goal is kept out of the system prompt so user-controlled text
@@ -289,9 +314,14 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         if let Some(ctx) = variant_context {
             system_text.push_str(&format!("\n\nVariant context: {}", ctx));
         }
+        // Inline the prior-turn log inside the goal string so that
+        // `compact_step_summaries` (which treats messages[1] as the goal)
+        // preserves the log across context compaction.
+        let composed_goal =
+            super::prior_turns::build_goal_with_prior_turns(&goal, prior_turns, 1000);
         self.messages = vec![
             Message::system(system_text),
-            Message::user(prompt::goal_message(&goal)),
+            Message::user(prompt::goal_message(&composed_goal)),
         ];
 
         // Build the tool list: MCP tools + agent_done + agent_replan.
@@ -485,9 +515,20 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                                 // Rebuild workflow node for this run — the cache
                                 // stores decisions across runs, so the current
                                 // workflow needs the replayed action as a node.
-                                if self.config.build_workflow {
+                                let produced_node_id_on_replay = if self.config.build_workflow {
                                     self.add_workflow_node(&cached_tool, &cached_args, &mcp_tools)
-                                        .await;
+                                        .await
+                                } else {
+                                    None
+                                };
+                                // Append the replayed node to the cached entry's
+                                // lineage so selective delete can still evict the
+                                // right entry later.
+                                if let Some(node_id) = produced_node_id_on_replay
+                                    && let Some(entry) = self.cache.entries.get_mut(&current_key)
+                                {
+                                    entry.produced_node_ids.push(node_id);
+                                    entry.hit_count += 1;
                                 }
 
                                 // Reconstruct transcript so the LLM sees the full
@@ -673,6 +714,14 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                         ..
                     } = &command
                     {
+                        // Build the workflow node first so we know the node id
+                        // to stamp onto the cache entry (for eviction-on-delete).
+                        let produced_node_id = if self.config.build_workflow {
+                            self.add_workflow_node(tool_name, arguments, &mcp_tools)
+                                .await
+                        } else {
+                            None
+                        };
                         // Only cache action tools, never observation tools.
                         // Observation tools provide fresh environmental evidence
                         // that must not be replayed from stale cache entries.
@@ -680,16 +729,29 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                             && !Self::OBSERVATION_TOOLS.contains(&tool_name.as_str())
                             && !elements.is_empty()
                         {
-                            self.cache.store(
-                                &goal,
-                                &elements,
-                                tool_name.clone(),
-                                arguments.clone(),
-                            );
-                        }
-                        if self.config.build_workflow {
-                            self.add_workflow_node(tool_name, arguments, &mcp_tools)
-                                .await;
+                            match produced_node_id {
+                                Some(node_id) => {
+                                    self.cache.store_with_node(
+                                        &goal,
+                                        &elements,
+                                        tool_name.clone(),
+                                        arguments.clone(),
+                                        node_id,
+                                    );
+                                }
+                                None => {
+                                    // No workflow node built (mapping failed or
+                                    // build_workflow off). Keep the decision in
+                                    // cache but without a node stamp — it will
+                                    // survive until Clear wipes the whole file.
+                                    self.cache.store(
+                                        &goal,
+                                        &elements,
+                                        tool_name.clone(),
+                                        arguments.clone(),
+                                    );
+                                }
+                            }
                         }
                         cap_hit =
                             self.record_destructive_and_check_cap(tool_name, &annotations_by_tool);
@@ -1402,16 +1464,18 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         "android_list_devices",
     ];
 
-    /// Add a workflow node for the executed tool call.
+    /// Add a workflow node for the executed tool call. Returns the UUID
+    /// of the produced node, or `None` if the tool was observation-only
+    /// or the tool-to-node-type mapping failed.
     /// Skips observation-only tools that the agent uses for perception.
     async fn add_workflow_node(
         &mut self,
         tool_name: &str,
         arguments: &Value,
         known_tools: &[Value],
-    ) {
+    ) -> Option<uuid::Uuid> {
         if Self::OBSERVATION_TOOLS.contains(&tool_name) {
-            return;
+            return None;
         }
         let node_type = match tool_invocation_to_node_type(tool_name, arguments, known_tools) {
             Ok(nt) => nt,
@@ -1421,7 +1485,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                     message: format!("Failed to map tool '{}' to workflow node: {}", tool_name, e),
                 })
                 .await;
-                return;
+                return None;
             }
         };
 
@@ -1429,7 +1493,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             x: 0.0,
             y: (self.state.workflow.nodes.len() as f32) * 120.0,
         };
-        let node = Node::new(node_type, position, tool_name, "");
+        let node = Node::new(node_type, position, tool_name, "").with_run_id(self.run_id);
         let node_id = node.id;
 
         // Emit live node event before pushing (clone for the event)
@@ -1452,5 +1516,30 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         }
 
         self.state.last_node_id = Some(node_id);
+        Some(node_id)
+    }
+}
+
+#[cfg(test)]
+mod run_anchor_tests {
+    use super::*;
+    use uuid::Uuid;
+
+    #[test]
+    fn new_state_seeds_last_node_id_from_anchor() {
+        // `AgentState::new` starts with `last_node_id = None`. The run()
+        // method then overwrites it from the caller-supplied anchor so
+        // the first emitted edge links into an existing chain.
+        let anchor = Uuid::new_v4();
+        let mut state = AgentState::new(Workflow::default());
+        assert!(state.last_node_id.is_none());
+        state.last_node_id = Some(anchor);
+        assert_eq!(state.last_node_id, Some(anchor));
+    }
+
+    #[test]
+    fn no_anchor_leaves_last_node_id_none() {
+        let state = AgentState::new(Workflow::default());
+        assert!(state.last_node_id.is_none());
     }
 }

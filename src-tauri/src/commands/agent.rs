@@ -113,6 +113,29 @@ pub struct AgentRunRequest {
     /// matches the UI default (`storeTraces: true`).
     #[serde(default)]
     pub store_traces: Option<bool>,
+    /// Frontend-generated run ID. The engine stamps every node built
+    /// this run with this ID, and `agent://*` events echo it back.
+    /// When omitted (legacy callers / tests), a UUID is generated here.
+    #[serde(default)]
+    pub run_id: Option<String>,
+    /// Anchor node to seed `last_node_id` from. When present, the
+    /// run's first emitted edge is from `anchor_node_id` to whatever
+    /// first node the agent builds.
+    #[serde(default)]
+    pub anchor_node_id: Option<String>,
+    /// Prior conversation turns (goal + summary + run_id) injected
+    /// inline above the current goal. Runtime order = chronological.
+    #[serde(default)]
+    pub prior_turns: Vec<PriorTurnWire>,
+}
+
+/// Wire form of a prior-turn entry (matches
+/// `clickweave_engine::agent::PriorTurn` with string UUIDs for JSON).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct PriorTurnWire {
+    pub goal: String,
+    pub summary: String,
+    pub run_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -304,7 +327,40 @@ pub async fn run_agent(
 
     // Generate a per-run generation ID so event consumers can reject
     // stale events from a previous run that drain after stop/restart.
-    let run_id = uuid::Uuid::new_v4().to_string();
+    // The frontend may supply its own run_id so the user message bubble
+    // can be tagged before `agent://started` arrives — honor it when
+    // present and syntactically valid.
+    let run_id = request
+        .run_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let run_uuid: uuid::Uuid = run_id
+        .parse()
+        .map_err(|_| CommandError::validation("Invalid run_id"))?;
+
+    let anchor_uuid: Option<uuid::Uuid> = match request.anchor_node_id.as_deref() {
+        Some(s) if !s.is_empty() => Some(
+            s.parse()
+                .map_err(|_| CommandError::validation("Invalid anchor_node_id"))?,
+        ),
+        _ => None,
+    };
+
+    let prior_turns: Vec<clickweave_engine::agent::PriorTurn> = request
+        .prior_turns
+        .iter()
+        .map(|t| {
+            let run_id: uuid::Uuid = t
+                .run_id
+                .parse()
+                .map_err(|_| CommandError::validation("Invalid prior_turn.run_id"))?;
+            Ok::<_, CommandError>(clickweave_engine::agent::PriorTurn {
+                goal: t.goal.clone(),
+                summary: t.summary.clone(),
+                run_id,
+            })
+        })
+        .collect::<Result<_, CommandError>>()?;
 
     let permission_policy: Option<PermissionPolicy> = request.permissions.map(Into::into);
     let consecutive_destructive_cap = request.consecutive_destructive_cap;
@@ -447,6 +503,9 @@ pub async fn run_agent(
                 // (empty-rules, allow_all=false, guardrail off)" which
                 // reproduces the Phase-1 behaviour.
                 permission_policy.clone(),
+                run_uuid,
+                anchor_uuid,
+                prior_turns,
             ) => res,
             _ = agent_token.cancelled() => {
                 let _ = emit_handle.emit(

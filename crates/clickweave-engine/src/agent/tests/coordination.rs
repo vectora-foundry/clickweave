@@ -138,7 +138,15 @@ async fn stop_during_approval_wait_sends_rejection_not_channel_drop() {
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
-        .run("Click it".to_string(), workflow, &mcp, None, mcp_tools)
+        .run(
+            "Click it".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
         .await
         .unwrap();
 
@@ -183,6 +191,8 @@ async fn buffered_events_do_not_leak_between_runs() {
             &mcp_a,
             None,
             mcp_a.tools_as_openai(),
+            None,
+            &[],
         )
         .await
         .unwrap();
@@ -208,6 +218,8 @@ async fn buffered_events_do_not_leak_between_runs() {
             &mcp_b,
             None,
             mcp_b.tools_as_openai(),
+            None,
+            &[],
         )
         .await
         .unwrap();
@@ -327,6 +339,8 @@ async fn cached_launch_app_replay_requests_approval_and_runs_post_tool_hook() {
             &mcp,
             None,
             mcp_tools,
+            None,
+            &[],
         )
         .await
         .unwrap();
@@ -418,6 +432,8 @@ async fn empty_elements_skips_cache_read_and_write() {
             &mcp,
             None,
             mcp_tools,
+            None,
+            &[],
         )
         .await
         .unwrap();
@@ -501,6 +517,8 @@ async fn workflow_mapping_miss_emits_warning_and_run_continues() {
             &mcp,
             None,
             mcp_tools,
+            None,
+            &[],
         )
         .await
         .unwrap();
