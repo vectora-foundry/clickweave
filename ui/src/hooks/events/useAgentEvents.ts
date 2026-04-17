@@ -239,7 +239,11 @@ export function useAgentEvents() {
         const summary = e.payload.summary?.trim();
         useStore
           .getState()
-          .pushAssistantMessage("assistant", summary || "Goal completed.");
+          .pushAssistantMessage(
+            "assistant",
+            summary || "Goal completed.",
+            e.payload.run_id,
+          );
       }),
     );
 
@@ -320,7 +324,11 @@ export function useAgentEvents() {
         useStore.getState().pushLog(`Agent stopped: ${detail}`);
         useStore
           .getState()
-          .pushAssistantMessage("assistant", `Stopped: ${detail}`);
+          .pushAssistantMessage(
+            "assistant",
+            `Stopped: ${detail}`,
+            e.payload.run_id,
+          );
       }),
     );
 
@@ -366,7 +374,11 @@ export function useAgentEvents() {
           .pushLog(`Agent error: ${e.payload.message}`);
         useStore
           .getState()
-          .pushAssistantMessage("assistant", `Error: ${e.payload.message}`);
+          .pushAssistantMessage(
+            "assistant",
+            `Error: ${e.payload.message}`,
+            e.payload.run_id,
+          );
       }),
     );
 
