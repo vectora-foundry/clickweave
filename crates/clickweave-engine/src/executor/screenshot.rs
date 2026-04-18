@@ -12,6 +12,7 @@
 use super::Mcp;
 use clickweave_mcp::ToolContent;
 use serde_json::Value;
+use tracing::warn;
 
 /// Capture scope for a screenshot used as VLM input.
 #[derive(Debug, Clone)]
@@ -22,10 +23,6 @@ pub(crate) enum ScreenshotScope {
     /// Capture the full screen (mode=screen). Used by fallback paths that
     /// have no focused app to anchor on.
     Screen,
-    /// Capture whatever the MCP tool's default is (include_ocr=false). Matches
-    /// the agent-loop completion-verification call shape, which deliberately
-    /// leaves scope unset so the MCP server picks the focused window.
-    Focused,
 }
 
 impl ScreenshotScope {
@@ -39,9 +36,6 @@ impl ScreenshotScope {
             }),
             ScreenshotScope::Screen => serde_json::json!({
                 "mode": "screen",
-                "include_ocr": false,
-            }),
-            ScreenshotScope::Focused => serde_json::json!({
                 "include_ocr": false,
             }),
         }
@@ -69,14 +63,30 @@ pub(crate) async fn capture_raw_image_with_args(
     mcp: &(impl Mcp + ?Sized),
     args: Value,
 ) -> Option<String> {
-    let result = mcp.call_tool("take_screenshot", Some(args)).await.ok()?;
+    let result = match mcp.call_tool("take_screenshot", Some(args.clone())).await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, tool_args = %args, "take_screenshot transport failed");
+            return None;
+        }
+    };
     if result.is_error == Some(true) {
+        let err_text = result
+            .content
+            .iter()
+            .find_map(ToolContent::as_text)
+            .unwrap_or("<no error text>");
+        warn!(error = %err_text, tool_args = %args, "take_screenshot returned error");
         return None;
     }
-    result.content.iter().find_map(|content| match content {
+    let image = result.content.iter().find_map(|content| match content {
         ToolContent::Image { data, .. } => Some(data.clone()),
         _ => None,
-    })
+    });
+    if image.is_none() {
+        warn!(tool_args = %args, "take_screenshot returned no image block");
+    }
+    image
 }
 
 /// Call `take_screenshot`, extract the first image block, and prepare it
@@ -168,14 +178,6 @@ mod tests {
         assert!(payload.get("app_name").is_none());
     }
 
-    #[test]
-    fn focused_scope_payload_uses_mcp_default() {
-        let payload = ScreenshotScope::Focused.to_arguments();
-        assert!(payload.get("mode").is_none());
-        assert!(payload.get("app_name").is_none());
-        assert_eq!(payload["include_ocr"], false);
-    }
-
     #[tokio::test]
     async fn capture_returns_prepared_image_on_success() {
         let mcp = ScriptedMcp::new(vec![ToolCallResult {
@@ -185,7 +187,7 @@ mod tests {
             }],
             is_error: None,
         }]);
-        let out = capture_screenshot_for_vlm(&mcp, ScreenshotScope::Focused).await;
+        let out = capture_screenshot_for_vlm(&mcp, ScreenshotScope::Screen).await;
         assert!(out.is_some(), "happy path must succeed");
         let (b64, mime) = out.expect("payload present");
         assert!(!b64.is_empty(), "prepared base64 must not be empty");
@@ -221,7 +223,7 @@ mod tests {
             }],
             is_error: None,
         }]);
-        let out = capture_screenshot_for_vlm(&mcp, ScreenshotScope::Focused).await;
+        let out = capture_screenshot_for_vlm(&mcp, ScreenshotScope::Screen).await;
         assert!(out.is_none(), "missing image block must surface as None");
     }
 }

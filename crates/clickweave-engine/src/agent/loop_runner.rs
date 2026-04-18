@@ -9,7 +9,9 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use super::completion_check::{VlmVerdict, build_completion_prompt, parse_yes_no};
+use super::completion_check::{
+    VlmVerdict, build_completion_prompt, parse_yes_no, pick_completion_screenshot_scope,
+};
 use super::context;
 use super::permissions::{PermissionAction, PermissionPolicy, ToolAnnotations, evaluate};
 use super::prompt::{self, truncate_summary};
@@ -17,7 +19,7 @@ use super::recovery::{self, RecoveryAction};
 use super::transition;
 use super::types::*;
 use crate::executor::Mcp;
-use crate::executor::screenshot::{ScreenshotScope, capture_screenshot_for_vlm};
+use crate::executor::screenshot::capture_screenshot_for_vlm;
 
 /// Internal error type for the agent loop.
 /// Distinguishes approval-system failure from other runtime errors.
@@ -1424,14 +1426,13 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     ) -> Option<(String, String)> {
         let vision = self.vision?;
 
-        // The agent may not have a known focused app (e.g. web-only runs on
-        // CDP) — rely on the MCP tool's default capture path. Any capture
-        // failure falls through to the normal Completed path, per the
-        // fail-through contract documented on `verify_completion`.
-        let Some((prepared_b64, mime)) =
-            capture_screenshot_for_vlm(mcp, ScreenshotScope::Focused).await
+        let scope = pick_completion_screenshot_scope(self.cdp_state.connected_app.as_ref());
+        let Some((prepared_b64, mime)) = capture_screenshot_for_vlm(mcp, scope.clone()).await
         else {
-            warn!("Completion verification: screenshot capture or prep failed, skipping VLM check",);
+            warn!(
+                scope = ?scope,
+                "Completion verification: screenshot capture or prep failed, skipping VLM check",
+            );
             return None;
         };
 
@@ -1465,7 +1466,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
 
         match parse_yes_no(&reply) {
             VlmVerdict::Yes => {
-                info!("Completion verification: VLM confirmed goal");
+                info!(reply = %reply, "Completion verification: VLM confirmed goal");
                 None
             }
             VlmVerdict::No => {

@@ -6,8 +6,11 @@
 //! disagreement event so the user can decide what to do.
 //!
 //! This module contains the *pure* pieces (prompt construction, YES/NO
-//! parsing) so they can be unit tested with synthetic inputs. The
-//! orchestration that calls into MCP and the VLM lives in `loop_runner`.
+//! parsing, screenshot-scope selection) so they can be unit tested with
+//! synthetic inputs. The orchestration that calls into MCP and the VLM
+//! lives in `loop_runner`.
+
+use crate::executor::screenshot::ScreenshotScope;
 
 /// The VLM verdict derived from a completion-check reply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,6 +19,25 @@ pub(crate) enum VlmVerdict {
     Yes,
     /// Screenshot does NOT confirm the goal — halt and surface to the user.
     No,
+}
+
+/// Pick the screenshot scope for completion verification from the CDP
+/// lifecycle state.
+///
+/// When a CDP session is bound to a named app, capture that app's window —
+/// this matches the shape the executor's action/supervision verifiers use
+/// and avoids the `mode=window` / missing `app_name` MCP error that the
+/// generic "focused window" default hits when nothing is tracked. When no
+/// CDP session is active (native-only runs or pre-connect), fall back to a
+/// full-screen capture: noisier for the VLM, but a valid request the MCP
+/// server will always accept.
+pub(crate) fn pick_completion_screenshot_scope(
+    connected_app: Option<&(String, i32)>,
+) -> ScreenshotScope {
+    match connected_app {
+        Some((name, _pid)) => ScreenshotScope::Window(name.clone()),
+        None => ScreenshotScope::Screen,
+    }
 }
 
 /// Build the user-facing prompt text sent to the VLM alongside the screenshot.
@@ -148,5 +170,21 @@ mod tests {
             parse_yes_no("YES, but the modal is still open"),
             VlmVerdict::Yes
         );
+    }
+
+    #[test]
+    fn scope_uses_connected_app_window() {
+        let connected = ("Signal".to_string(), 16024);
+        let scope = pick_completion_screenshot_scope(Some(&connected));
+        match scope {
+            ScreenshotScope::Window(name) => assert_eq!(name, "Signal"),
+            other => panic!("expected Window(Signal), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn scope_falls_back_to_screen_without_connection() {
+        let scope = pick_completion_screenshot_scope(None);
+        assert!(matches!(scope, ScreenshotScope::Screen));
     }
 }
