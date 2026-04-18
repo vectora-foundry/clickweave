@@ -39,5 +39,5 @@ pub async fn check_endpoint(
 ) -> Result<(), error::CommandError> {
     clickweave_llm::check_endpoint(&base_url, api_key.as_deref(), model.as_deref())
         .await
-        .map_err(error::CommandError::validation)
+        .map_err(|e| error::CommandError::validation(e.to_string()))
 }

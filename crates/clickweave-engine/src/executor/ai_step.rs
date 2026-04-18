@@ -125,20 +125,20 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     "Tool call arguments"
                 );
 
-                let args: Option<Value> = match serde_json::from_str(&tool_call.function.arguments)
-                {
-                    Ok(v) => Some(v),
-                    Err(e) => {
+                let args: Option<Value> = match &tool_call.function.arguments {
+                    Value::String(raw) => {
                         self.log(format!(
                             "Malformed tool call arguments for {}: {} — skipping",
-                            tool_call.function.name, e
+                            tool_call.function.name, raw
                         ));
                         messages.push(Message::tool_result(
                             &tool_call.id,
-                            format!("Error: invalid arguments — {}", e),
+                            format!("Error: invalid arguments — {}", raw),
                         ));
                         continue;
                     }
+                    Value::Null => None,
+                    other => Some(other.clone()),
                 };
                 let args = self.resolve_image_paths(args);
 

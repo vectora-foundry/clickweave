@@ -166,7 +166,7 @@ pub(crate) async fn screenshot_verdict<C: ChatBackend>(
             let text = response
                 .choices
                 .first()
-                .and_then(|c| c.message.text_content())
+                .and_then(|c| c.message.content_text())
                 .unwrap_or("");
             let cleaned = text
                 .trim()

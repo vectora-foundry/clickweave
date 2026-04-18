@@ -559,7 +559,9 @@ pub(super) fn mark_click_point(png_bytes: &[u8], px: f64, py: f64) -> Option<Str
     let (b64, _mime) = clickweave_llm::prepare_dynimage_for_vlm(
         image::DynamicImage::ImageRgba8(rgba),
         clickweave_llm::DEFAULT_MAX_DIMENSION,
-    );
+    )
+    .inspect_err(|e| tracing::warn!("VLM: failed to JPEG-encode click-marked screenshot: {e}"))
+    .ok()?;
     Some(b64)
 }
 

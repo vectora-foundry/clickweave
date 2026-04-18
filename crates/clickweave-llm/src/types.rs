@@ -8,8 +8,6 @@ pub struct ChatRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<&'a [Value]>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_choice: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
@@ -111,17 +109,6 @@ impl Message {
         }
     }
 
-    pub fn text_content(&self) -> Option<&str> {
-        match &self.content {
-            Some(Content::Text(s)) => Some(s),
-            Some(Content::Parts(parts)) => parts.iter().find_map(|p| match p {
-                ContentPart::Text { text } => Some(text.as_str()),
-                _ => None,
-            }),
-            None => None,
-        }
-    }
-
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
             content: Some(Content::Text(content.into())),
@@ -161,14 +148,32 @@ pub struct ToolCall {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionCall {
     pub name: String,
-    /// Tool call arguments as a JSON string.
-    /// Some providers (e.g. vLLM/llama.cpp) return this as an object instead
-    /// of a string — the custom deserializer handles both.
-    #[serde(deserialize_with = "deserialize_arguments")]
-    pub arguments: String,
+    /// Tool call arguments as a JSON value.
+    /// The OpenAI wire format sends this as a JSON-encoded string, but some
+    /// providers (e.g. vLLM/llama.cpp) return an object directly. Deserialization
+    /// accepts both and always yields a `Value`; serialization emits the
+    /// OpenAI-compatible stringified form so echoed tool calls round-trip
+    /// correctly to strict backends.
+    #[serde(
+        deserialize_with = "deserialize_arguments",
+        serialize_with = "serialize_arguments"
+    )]
+    pub arguments: Value,
 }
 
-fn deserialize_arguments<'de, D>(deserializer: D) -> Result<String, D::Error>
+fn serialize_arguments<S>(value: &Value, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match value {
+        Value::String(s) => serializer.serialize_str(s),
+        Value::Null => serializer.serialize_str(""),
+        other => serializer
+            .serialize_str(&serde_json::to_string(other).map_err(serde::ser::Error::custom)?),
+    }
+}
+
+fn deserialize_arguments<'de, D>(deserializer: D) -> Result<Value, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -177,24 +182,29 @@ where
     struct ArgsVisitor;
 
     impl<'de> de::Visitor<'de> for ArgsVisitor {
-        type Value = String;
+        type Value = Value;
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
             formatter.write_str("a JSON string or object for tool call arguments")
         }
 
-        fn visit_str<E: de::Error>(self, v: &str) -> Result<String, E> {
-            Ok(v.to_string())
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Value, E> {
+            if v.is_empty() {
+                return Ok(Value::Null);
+            }
+            // Fall back to the raw string when the payload isn't valid JSON so
+            // downstream code can surface the malformed arguments instead of
+            // failing the whole response deserialization.
+            Ok(serde_json::from_str(v).unwrap_or_else(|_| Value::String(v.to_string())))
         }
 
-        fn visit_string<E: de::Error>(self, v: String) -> Result<String, E> {
-            Ok(v)
+        fn visit_string<E: de::Error>(self, v: String) -> Result<Value, E> {
+            self.visit_str(&v)
         }
 
-        fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<String, M::Error> {
-            let obj = serde_json::Value::deserialize(de::value::MapAccessDeserializer::new(map))
-                .map_err(de::Error::custom)?;
-            serde_json::to_string(&obj).map_err(de::Error::custom)
+        fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Value, M::Error> {
+            Value::deserialize(de::value::MapAccessDeserializer::new(map))
+                .map_err(de::Error::custom)
         }
     }
 

@@ -26,6 +26,8 @@ impl MockAgent {
 
     /// Convenience: build a ChatResponse with a single tool call.
     fn tool_call_response(tool_name: &str, arguments: &str, tool_call_id: &str) -> ChatResponse {
+        let parsed: Value = serde_json::from_str(arguments)
+            .unwrap_or_else(|_| Value::String(arguments.to_string()));
         ChatResponse {
             id: "mock-resp".to_string(),
             choices: vec![Choice {
@@ -35,7 +37,7 @@ impl MockAgent {
                     call_type: "function".to_string(),
                     function: FunctionCall {
                         name: tool_name.to_string(),
-                        arguments: arguments.to_string(),
+                        arguments: parsed,
                     },
                 }]),
                 finish_reason: Some("tool_calls".to_string()),
@@ -48,7 +50,7 @@ impl MockAgent {
     fn done_response(summary: &str) -> ChatResponse {
         Self::tool_call_response(
             "agent_done",
-            &serde_json::json!({"summary": summary}).to_string(),
+            &serde_json::json!({ "summary": summary }).to_string(),
             "call_done",
         )
     }
@@ -1161,7 +1163,7 @@ async fn multi_tool_response_only_executes_first() {
                         call_type: "function".to_string(),
                         function: FunctionCall {
                             name: "click".to_string(),
-                            arguments: r#"{"x": 10, "y": 20}"#.to_string(),
+                            arguments: serde_json::json!({ "x": 10, "y": 20 }),
                         },
                     },
                     ToolCall {
@@ -1169,7 +1171,7 @@ async fn multi_tool_response_only_executes_first() {
                         call_type: "function".to_string(),
                         function: FunctionCall {
                             name: "click".to_string(),
-                            arguments: r#"{"x": 300, "y": 400}"#.to_string(),
+                            arguments: serde_json::json!({ "x": 300, "y": 400 }),
                         },
                     },
                 ]),
@@ -1249,7 +1251,7 @@ async fn malformed_tool_call_json_returns_error() {
                     call_type: "function".to_string(),
                     function: FunctionCall {
                         name: "click".to_string(),
-                        arguments: "not valid json{{{".to_string(),
+                        arguments: Value::String("not valid json{{{".to_string()),
                     },
                 }]),
                 finish_reason: Some("tool_calls".to_string()),

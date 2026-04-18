@@ -1,7 +1,7 @@
 use super::error::CommandError;
 use super::types::*;
+use clickweave_core::permissions::CONFIRMABLE_TOOLS;
 use clickweave_core::{NodeType, Workflow, validate_workflow};
-use clickweave_llm::CONFIRMABLE_TOOLS;
 use std::path::PathBuf;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;

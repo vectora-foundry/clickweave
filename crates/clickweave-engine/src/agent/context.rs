@@ -1,6 +1,7 @@
 use super::prompt::summarize_steps;
 use super::types::AgentStep;
 use clickweave_llm::{Content, Message};
+use serde_json::Value;
 
 /// Rough token estimate: ~4 characters per token for English text.
 const CHARS_PER_TOKEN: usize = 4;
@@ -72,12 +73,33 @@ pub fn estimate_messages_tokens(messages: &[Message]) -> usize {
             let content_len = m.content_text().map_or(0, |t| t.len());
             let tool_calls_len = m.tool_calls.as_ref().map_or(0, |tcs| {
                 tcs.iter()
-                    .map(|tc| tc.function.name.len() + tc.function.arguments.len())
+                    .map(|tc| tc.function.name.len() + json_value_len(&tc.function.arguments))
                     .sum()
             });
             (content_len + tool_calls_len).div_ceil(CHARS_PER_TOKEN)
         })
         .sum()
+}
+
+/// Approximate serialized length of a JSON `Value` without allocating the
+/// string form. Used only for token-budget estimation, so exactness is not
+/// required; avoid the full `to_string()` formatter on the hot agent path.
+fn json_value_len(value: &Value) -> usize {
+    match value {
+        Value::Null => 4,
+        Value::Bool(true) => 4,
+        Value::Bool(false) => 5,
+        Value::Number(n) => n.to_string().len(),
+        Value::String(s) => s.len() + 2,
+        Value::Array(a) => a.iter().map(json_value_len).sum::<usize>() + a.len().max(1) + 1,
+        Value::Object(map) => {
+            map.iter()
+                .map(|(k, v)| k.len() + 3 + json_value_len(v))
+                .sum::<usize>()
+                + map.len().max(1)
+                + 1
+        }
+    }
 }
 
 /// Collapse snapshot-producing tool-result payloads that have been superseded
@@ -455,7 +477,7 @@ mod tests {
             call_type: "function".to_string(),
             function: FunctionCall {
                 name: tool_name.to_string(),
-                arguments: "{}".to_string(),
+                arguments: serde_json::json!({}),
             },
         }]);
         let result = Message::tool_result(call_id, big_body);

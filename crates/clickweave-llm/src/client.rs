@@ -1,9 +1,15 @@
 use crate::types::*;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tracing::{debug, error, info, trace};
+use std::time::Duration;
+use tracing::{debug, error, info, trace, warn};
+
+/// Default request timeout applied to `LlmClient`'s shared HTTP client.
+/// Prevents hung chat completions from stalling the executor indefinitely
+/// while still leaving room for slow local models on CPU.
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Per-call overrides for a single `chat` invocation. Any field left at `None`
 /// falls back to the backend's configured default.
@@ -108,9 +114,14 @@ pub struct LlmClient {
 
 impl LlmClient {
     pub fn new(config: LlmConfig) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(DEFAULT_REQUEST_TIMEOUT)
+            .build()
+            .expect("reqwest::Client builder failed");
+
         Self {
             config,
-            http: reqwest::Client::new(),
+            http,
             context_length: AtomicU64::new(0),
         }
     }
@@ -207,7 +218,6 @@ impl ChatBackend for LlmClient {
             model: &self.config.model,
             messages,
             tools,
-            tool_choice: None,
             temperature: options.temperature.or(self.config.temperature),
             max_tokens: options.max_tokens.or(self.config.max_tokens),
             extra_body: &self.config.extra_body,
@@ -220,7 +230,8 @@ impl ChatBackend for LlmClient {
             "LLM request"
         );
         trace!(
-            request_body = %serde_json::to_string(&request).unwrap_or_default(),
+            request_body = %serde_json::to_string(&request)
+                .unwrap_or_else(|e| format!("<serialization failed: {e}>")),
             "LLM request body"
         );
 
@@ -316,7 +327,7 @@ impl ChatBackend for LlmClient {
         // Try endpoints in order of richness:
         // 1. LM Studio /api/v0/models (has context length, arch, quantization)
         // 2. OpenAI-compatible /v1/models (minimal, but widely supported)
-        let base_origin = base.find("/v1").map(|i| &base[..i]).unwrap_or(base);
+        let base_origin = base.strip_suffix("/v1").unwrap_or(base);
 
         let endpoints = [
             format!("{}/api/v0/models", base_origin),
@@ -324,6 +335,7 @@ impl ChatBackend for LlmClient {
         ];
 
         let mut fallback: Option<ModelInfo> = None;
+        let mut had_error = false;
 
         for endpoint in &endpoints {
             match self.try_models_endpoint(endpoint, model_id).await {
@@ -339,9 +351,17 @@ impl ChatBackend for LlmClient {
                 }
                 Ok(None) => continue,
                 Err(e) => {
+                    had_error = true;
                     debug!(endpoint = %endpoint, error = %e, "Endpoint failed");
                 }
             }
+        }
+
+        if fallback.is_none() && had_error {
+            warn!(
+                base_url = %self.config.base_url,
+                "All model-info endpoints failed; context length unavailable"
+            );
         }
 
         Ok(fallback)
@@ -355,12 +375,12 @@ pub async fn check_endpoint(
     base_url: &str,
     api_key: Option<&str>,
     model: Option<&str>,
-) -> Result<(), String> {
+) -> Result<()> {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
+        .timeout(Duration::from_secs(5))
         .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
+        .context("HTTP client error")?;
 
     let mut req = client.get(&url);
     if let Some(key) = api_key {
@@ -370,14 +390,18 @@ pub async fn check_endpoint(
     let resp = match req.send().await {
         Ok(resp) if resp.status().is_success() => resp,
         Ok(resp) => {
-            return Err(format!(
+            anyhow::bail!(
                 "Endpoint responded with status {} at {}",
                 resp.status(),
                 url
-            ));
+            );
         }
-        Err(e) if e.is_timeout() => return Err(format!("Endpoint timed out after 5s at {}", url)),
-        Err(e) => return Err(format!("Cannot reach endpoint at {}: {}", url, e)),
+        Err(e) if e.is_timeout() => {
+            anyhow::bail!("Endpoint timed out after 5s at {}", url);
+        }
+        Err(e) => {
+            return Err(anyhow!(e)).with_context(|| format!("Cannot reach endpoint at {}", url));
+        }
     };
 
     // If a model name is provided, verify it exists in the response
@@ -386,12 +410,9 @@ pub async fn check_endpoint(
         _ => return Ok(()),
     };
 
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read response: {}", e))?;
-    let json: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|_| "Endpoint did not return valid JSON".to_string())?;
+    let body = resp.text().await.context("Failed to read response")?;
+    let json: serde_json::Value =
+        serde_json::from_str(&body).map_err(|_| anyhow!("Endpoint did not return valid JSON"))?;
 
     // Fuzzy match: server may report a prefixed or suffixed ID
     // (e.g. "/models/Qwen3-27B" or "Qwen3-27B.gguf") vs bare config name.
@@ -417,12 +438,12 @@ pub async fn check_endpoint(
     if has_model {
         Ok(())
     } else {
-        Err(format!("Model '{}' not found on endpoint", model))
+        Err(anyhow!("Model '{}' not found on endpoint", model))
     }
 }
 
 /// System prompt for the agent (text-only, no images).
-pub fn workflow_system_prompt() -> String {
+pub fn workflow_system_prompt() -> &'static str {
     r#"You are a UI automation assistant executing an AI Step node within a workflow.
 
 You have access to MCP tools for native UI interaction:
@@ -463,11 +484,10 @@ If you cannot complete the step:
 
 Be precise with coordinates. Always verify actions when the outcome matters.
 Only use tool parameters that exist in the tool schema. Do not invent parameters."#
-        .to_string()
 }
 
 /// System prompt for the VLM (vision model).
-pub fn vlm_system_prompt() -> String {
+pub fn vlm_system_prompt() -> &'static str {
     r#"You are a visual analyst for UI automation. You receive screenshots and images from tool results and produce structured descriptions for an agent model that cannot see images.
 
 Output ONLY a JSON object with these fields:
@@ -483,7 +503,6 @@ Rules:
 - Include coordinates only if they are clearly visible (e.g. OCR overlay).
 - Do NOT suggest actions or next steps — the agent decides.
 - If nothing notable is on screen, keep fields empty but still return valid JSON."#
-        .to_string()
 }
 
 /// Build the user prompt for a VLM image analysis call.
@@ -674,6 +693,36 @@ mod tests {
         let prompt = build_vlm_prompt("click the login button", "take_screenshot");
         assert!(prompt.contains("click the login button"));
         assert!(prompt.contains("take_screenshot"));
+    }
+
+    #[test]
+    fn build_step_prompt_returns_prompt_when_no_extras() {
+        let prompt = build_step_prompt("Click the save icon", None, None);
+        assert_eq!(prompt, "Click the save icon");
+    }
+
+    #[test]
+    fn build_step_prompt_appends_button_text_when_present() {
+        let prompt = build_step_prompt("Click the save icon", Some("Save"), None);
+        assert!(prompt.starts_with("Click the save icon"));
+        assert!(prompt.contains("Button to find: \"Save\""));
+        assert!(!prompt.contains("Image to find"));
+    }
+
+    #[test]
+    fn build_step_prompt_appends_image_path_when_present() {
+        let prompt = build_step_prompt("Click the logo", None, Some("./logo.png"));
+        assert!(prompt.starts_with("Click the logo"));
+        assert!(prompt.contains("Image to find: ./logo.png"));
+        assert!(!prompt.contains("Button to find"));
+    }
+
+    #[test]
+    fn build_step_prompt_appends_both_hints_when_present() {
+        let prompt = build_step_prompt("Confirm the action", Some("OK"), Some("./ok.png"));
+        assert!(prompt.starts_with("Confirm the action"));
+        assert!(prompt.contains("Button to find: \"OK\""));
+        assert!(prompt.contains("Image to find: ./ok.png"));
     }
 
     #[test]

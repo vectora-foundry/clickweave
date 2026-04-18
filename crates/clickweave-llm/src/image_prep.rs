@@ -6,22 +6,28 @@ pub const DEFAULT_MAX_DIMENSION: u32 = 1280;
 /// Downscale and JPEG-encode raw image bytes for VLM consumption.
 ///
 /// - Decodes from any format the `image` crate supports (PNG, JPEG, etc.)
-/// - Downscales proportionally so the longest edge ≤ `max_dimension`
+/// - Downscales proportionally so the longest edge <= `max_dimension`
 ///   (no-op if already within bounds)
 /// - Re-encodes as JPEG
 /// - Returns `(base64_data, "image/jpeg")`
 ///
-/// Returns `None` if the image cannot be decoded.
+/// Returns `None` if the image cannot be decoded or the JPEG encode fails.
 pub fn prepare_image_for_vlm(image_bytes: &[u8], max_dimension: u32) -> Option<(String, String)> {
     let img = image::load_from_memory(image_bytes).ok()?;
-    Some(prepare_dynimage_for_vlm(img, max_dimension))
+    prepare_dynimage_for_vlm(img, max_dimension).ok()
 }
 
 /// Downscale and JPEG-encode an already-decoded image for VLM consumption.
 ///
 /// Use this when you already have a `DynamicImage` in memory to avoid a
-/// redundant encode→decode round-trip through `prepare_image_for_vlm`.
-pub fn prepare_dynimage_for_vlm(img: image::DynamicImage, max_dimension: u32) -> (String, String) {
+/// redundant encode -> decode round-trip through `prepare_image_for_vlm`.
+///
+/// Returns an error if the JPEG encoder rejects the image (e.g. unsupported
+/// color types, dimensions exceeding `u16::MAX`, or allocation failures).
+pub fn prepare_dynimage_for_vlm(
+    img: image::DynamicImage,
+    max_dimension: u32,
+) -> Result<(String, String), image::ImageError> {
     let (w, h) = (img.width(), img.height());
     let longest = w.max(h);
 
@@ -40,11 +46,9 @@ pub fn prepare_dynimage_for_vlm(img: image::DynamicImage, max_dimension: u32) ->
     };
 
     let mut buf = std::io::Cursor::new(Vec::new());
-    // JPEG encode cannot fail for valid DynamicImage buffers.
-    img.write_to(&mut buf, image::ImageFormat::Jpeg)
-        .expect("JPEG encoding failed");
+    img.write_to(&mut buf, image::ImageFormat::Jpeg)?;
 
-    (STANDARD.encode(buf.into_inner()), "image/jpeg".to_string())
+    Ok((STANDARD.encode(buf.into_inner()), "image/jpeg".to_string()))
 }
 
 /// Convenience wrapper: decode base64 image data, prepare for VLM.

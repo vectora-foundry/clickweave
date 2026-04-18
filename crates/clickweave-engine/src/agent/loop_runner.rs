@@ -539,8 +539,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                                         call_type: "function".to_string(),
                                         function: clickweave_llm::FunctionCall {
                                             name: cached_tool.clone(),
-                                            arguments: serde_json::to_string(&cached_args)
-                                                .unwrap_or_default(),
+                                            arguments: cached_args.clone(),
                                         },
                                     },
                                 ]));
@@ -1452,26 +1451,23 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 );
             }
             if let Some(tc) = tool_calls.first() {
-                let args: Value = match serde_json::from_str(&tc.function.arguments) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        warn!(
-                            tool = %tc.function.name,
-                            error = %e,
-                            raw = %tc.function.arguments,
-                            "Malformed tool-call arguments from LLM"
-                        );
-                        let command = AgentCommand::ToolCall {
-                            tool_name: tc.function.name.clone(),
-                            arguments: Value::Null,
-                            tool_call_id: tc.id.clone(),
-                        };
-                        return Ok((
-                            command,
-                            StepOutcome::Error(format!("Malformed tool arguments: {}", e)),
-                        ));
-                    }
-                };
+                if let Value::String(raw) = &tc.function.arguments {
+                    warn!(
+                        tool = %tc.function.name,
+                        raw = %raw,
+                        "Malformed tool-call arguments from LLM"
+                    );
+                    let command = AgentCommand::ToolCall {
+                        tool_name: tc.function.name.clone(),
+                        arguments: Value::Null,
+                        tool_call_id: tc.id.clone(),
+                    };
+                    return Ok((
+                        command,
+                        StepOutcome::Error(format!("Malformed tool arguments: {}", raw)),
+                    ));
+                }
+                let args: Value = tc.function.arguments.clone();
 
                 // Handle pseudo-tools
                 match tc.function.name.as_str() {

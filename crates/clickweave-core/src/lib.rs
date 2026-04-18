@@ -6,6 +6,7 @@ pub mod chrome_profiles;
 pub mod decision_cache;
 mod node_params;
 pub mod output_schema;
+pub mod permissions;
 pub mod runtime;
 pub mod sanitize;
 pub mod storage;
