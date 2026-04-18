@@ -20,11 +20,3 @@ pub use node_params::*;
 pub use output_schema::*;
 pub use walkthrough::*;
 pub use workflow::*;
-
-/// Basic workflow validation: ensures the workflow has at least one node.
-pub fn validate_workflow(workflow: &Workflow) -> Result<(), String> {
-    if workflow.nodes.is_empty() {
-        return Err("Workflow has no nodes".to_string());
-    }
-    Ok(())
-}

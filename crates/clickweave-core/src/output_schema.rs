@@ -210,22 +210,6 @@ pub fn full_output_schema(
     }
 }
 
-/// Add the fixup_auto_ids method to Workflow.
-impl crate::Workflow {
-    /// Ensure next_id_counters are at least as high as the max auto_id seen
-    /// in the workflow. Raises counters but never lowers them, preserving the
-    /// monotonic high-water mark so deleted nodes don't release their IDs.
-    pub fn fixup_auto_ids(&mut self) {
-        let ids: Vec<&str> = self
-            .nodes
-            .iter()
-            .filter(|n| !n.auto_id.is_empty())
-            .map(|n| n.auto_id.as_str())
-            .collect();
-        crate::auto_id::fixup_counters(&ids, &mut self.next_id_counters);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

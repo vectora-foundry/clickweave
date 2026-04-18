@@ -2,7 +2,25 @@ use crate::node_params::*;
 use crate::output_schema::{NodeContext, OutputRole};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use thiserror::Error;
 use uuid::Uuid;
+
+/// Typed errors produced by [`validate_workflow`]. Kept as an enum so new
+/// validation checks (cycle detection, dangling edges, duplicate auto-ids,
+/// etc.) can be added without churning the downstream `Display` surface.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum WorkflowValidationError {
+    #[error("Workflow has no nodes")]
+    Empty,
+}
+
+/// Basic workflow validation: ensures the workflow has at least one node.
+pub fn validate_workflow(workflow: &Workflow) -> Result<(), WorkflowValidationError> {
+    if workflow.nodes.is_empty() {
+        return Err(WorkflowValidationError::Empty);
+    }
+    Ok(())
+}
 
 const DEFAULT_SUPERVISION_RETRIES: u32 = 2;
 fn default_supervision_retries() -> u32 {
@@ -163,42 +181,17 @@ impl Workflow {
         self.edges.retain(|e| !(e.from == from && e.to == to));
     }
 
-    /// Find entry points: nodes with no incoming edges.
-    fn entry_points(&self) -> Vec<Uuid> {
-        let targets: std::collections::HashSet<Uuid> = self.edges.iter().map(|e| e.to).collect();
-
-        self.nodes
+    /// Ensure `next_id_counters` are at least as high as the max `auto_id`
+    /// seen in the workflow. Raises counters but never lowers them, preserving
+    /// the monotonic high-water mark so deleted nodes don't release their IDs.
+    pub fn fixup_auto_ids(&mut self) {
+        let ids: Vec<&str> = self
+            .nodes
             .iter()
-            .filter(|n| !targets.contains(&n.id))
-            .map(|n| n.id)
-            .collect()
-    }
-
-    /// Get execution order by walking edges from entry points linearly.
-    ///
-    /// Note: This only handles linear workflows. For workflows with control
-    /// flow (If, Switch, Loop), use the graph walker in the engine instead.
-    pub fn execution_order(&self) -> Vec<Uuid> {
-        let entries = self.entry_points();
-        if entries.is_empty() {
-            return self.nodes.iter().map(|n| n.id).collect();
-        }
-
-        let mut order = Vec::new();
-        let mut visited = std::collections::HashSet::new();
-
-        for entry in entries {
-            let mut current = entry;
-            while visited.insert(current) {
-                order.push(current);
-                match self.edges.iter().find(|e| e.from == current) {
-                    Some(edge) => current = edge.to,
-                    None => break,
-                }
-            }
-        }
-
-        order
+            .filter(|n| !n.auto_id.is_empty())
+            .map(|n| n.auto_id.as_str())
+            .collect();
+        crate::auto_id::fixup_counters(&ids, &mut self.next_id_counters);
     }
 }
 
@@ -643,6 +636,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn validate_workflow_rejects_empty() {
+        let workflow = Workflow::new("Empty");
+        let err = validate_workflow(&workflow).expect_err("expected Empty error");
+        assert_eq!(err, WorkflowValidationError::Empty);
+        assert_eq!(err.to_string(), "Workflow has no nodes");
+    }
+
+    #[test]
+    fn validate_workflow_accepts_non_empty() {
+        let mut workflow = Workflow::new("With nodes");
+        workflow.add_node(
+            NodeType::TakeScreenshot(TakeScreenshotParams::default()),
+            Position { x: 0.0, y: 0.0 },
+        );
+        assert!(validate_workflow(&workflow).is_ok());
+    }
+
+    #[test]
     fn test_node_type_serialization_roundtrip() {
         for nt in NodeType::all_defaults() {
             let json = serde_json::to_string(&nt).expect("serialize");
@@ -734,69 +745,6 @@ mod tests {
         assert!(NodeType::AppDebugKitOp(AppDebugKitParams::default()).is_deterministic());
         assert!(NodeType::CdpClick(CdpClickParams::default()).is_deterministic());
         assert!(NodeType::CdpWait(CdpWaitParams::default()).is_deterministic());
-    }
-
-    #[test]
-    fn test_execution_order_single_entry() {
-        let mut wf = Workflow::default();
-        let a = wf.add_node(
-            NodeType::Click(ClickParams::default()),
-            Position { x: 0.0, y: 0.0 },
-        );
-        let b = wf.add_node(
-            NodeType::TypeText(TypeTextParams::default()),
-            Position { x: 100.0, y: 0.0 },
-        );
-        let c = wf.add_node(
-            NodeType::Scroll(ScrollParams::default()),
-            Position { x: 200.0, y: 0.0 },
-        );
-        wf.add_edge(a, b);
-        wf.add_edge(b, c);
-
-        let order = wf.execution_order();
-        assert_eq!(order, vec![a, b, c]);
-    }
-
-    #[test]
-    fn test_execution_order_no_nodes() {
-        let wf = Workflow::default();
-        assert!(wf.execution_order().is_empty());
-    }
-
-    #[test]
-    fn test_execution_order_disconnected() {
-        let mut wf = Workflow::default();
-        let a = wf.add_node(
-            NodeType::Click(ClickParams::default()),
-            Position { x: 0.0, y: 0.0 },
-        );
-        let b = wf.add_node(
-            NodeType::TypeText(TypeTextParams::default()),
-            Position { x: 100.0, y: 0.0 },
-        );
-        let order = wf.execution_order();
-        assert_eq!(order.len(), 2);
-        assert!(order.contains(&a));
-        assert!(order.contains(&b));
-    }
-
-    #[test]
-    fn test_execution_order_cycle_safety() {
-        let mut wf = Workflow::default();
-        let a = wf.add_node(
-            NodeType::Click(ClickParams::default()),
-            Position { x: 0.0, y: 0.0 },
-        );
-        let b = wf.add_node(
-            NodeType::TypeText(TypeTextParams::default()),
-            Position { x: 100.0, y: 0.0 },
-        );
-        wf.add_edge(a, b);
-        wf.add_edge(b, a);
-
-        let order = wf.execution_order();
-        assert!(order.len() <= 2);
     }
 
     #[test]

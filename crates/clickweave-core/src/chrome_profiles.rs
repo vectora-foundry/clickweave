@@ -67,12 +67,10 @@ impl ChromeProfileStore {
     }
 
     fn save_entries(&self, entries: &[ProfileEntry]) -> std::io::Result<()> {
-        std::fs::create_dir_all(&self.base_dir)?;
         let file = ProfilesFile {
             profiles: entries.to_vec(),
         };
-        let json = serde_json::to_string_pretty(&file).map_err(std::io::Error::other)?;
-        std::fs::write(self.base_dir.join("profiles.json"), json)
+        crate::storage::write_json_atomic(&self.base_dir.join("profiles.json"), &file)
     }
 
     pub fn create_profile(&self, name: &str) -> std::io::Result<ChromeProfile> {

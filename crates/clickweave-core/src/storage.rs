@@ -25,11 +25,53 @@ pub fn format_timestamped_dirname(started_at_ms: u64, id: Uuid) -> String {
     format!("{}_{short_id}", dt.format("%Y-%m-%d_%H-%M-%S"))
 }
 
-/// Serializes a value as pretty-printed JSON and writes it to a file.
+/// Serialize `value` as pretty-printed JSON to a temp file alongside `path`
+/// and atomically rename it into place. A crash or power loss mid-write leaves
+/// either the previous content or the new content on disk — never a truncated
+/// mix. The temp file is removed on serialization failure so it does not
+/// accumulate beside the destination.
+pub fn write_json_atomic<T: Serialize + ?Sized>(path: &Path, value: &T) -> std::io::Result<()> {
+    let json = serde_json::to_string_pretty(value).map_err(std::io::Error::other)?;
+
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let tmp_path = tmp_path_for(path);
+    if let Err(e) = std::fs::write(&tmp_path, json.as_bytes()) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
+    match std::fs::rename(&tmp_path, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            Err(e)
+        }
+    }
+}
+
+/// Serialize `value` as pretty-printed JSON to `path`, crash-atomically.
+///
+/// Thin wrapper over [`write_json_atomic`] that converts `io::Error` into the
+/// `anyhow::Error` flavor used by `RunStorage`'s public methods.
 pub fn write_json_pretty<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<()> {
-    let json = serde_json::to_string_pretty(value).context("Failed to serialize JSON")?;
-    std::fs::write(path, json).with_context(|| format!("Failed to write {}", path.display()))?;
-    Ok(())
+    write_json_atomic(path, value).with_context(|| format!("Failed to write {}", path.display()))
+}
+
+fn tmp_path_for(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    name.push(".tmp");
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(name),
+        _ => PathBuf::from(name),
+    }
 }
 
 /// Appends a single JSON line to a file (newline-delimited JSON).
@@ -56,11 +98,6 @@ pub fn sanitize_name(name: &str) -> String {
     crate::sanitize::sanitize_for_path(name)
 }
 
-/// Formats an execution directory name as `YYYY-MM-DD_HH-MM-SS_<short_uuid>`.
-fn format_execution_dirname(started_at_ms: u64, run_id: Uuid) -> String {
-    format_timestamped_dirname(started_at_ms, run_id)
-}
-
 /// Parses the `YYYY-MM-DD_HH-MM-SS` prefix of an execution directory name
 /// back into a UTC datetime. Returns `None` when the prefix does not match
 /// the expected format (e.g. unrelated directories under the runs root).
@@ -74,10 +111,11 @@ pub fn parse_execution_dir_timestamp(dir_name: &str) -> Option<DateTime<Utc>> {
         return None;
     }
     let (prefix, rest) = dir_name.split_at(19);
-    // Require the separator so unrelated dirnames whose first 19 chars
-    // happen to parse as a timestamp (unlikely but cheap to guard) are
-    // rejected.
-    if !rest.starts_with('_') {
+    // Require the separator plus at least one short-uuid char so
+    // partially-written names like `2026-04-16_10-00-00_` do not
+    // pass as valid execution dirs.
+    let suffix = rest.strip_prefix('_')?;
+    if suffix.is_empty() {
         return None;
     }
     let naive = NaiveDateTime::parse_from_str(prefix, "%Y-%m-%d_%H-%M-%S").ok()?;
@@ -421,7 +459,7 @@ impl RunStorage {
     pub fn begin_execution(&mut self) -> Result<String> {
         let exec_id = Uuid::new_v4();
         let started_at = Self::now_millis();
-        let dirname = format_execution_dirname(started_at, exec_id);
+        let dirname = format_timestamped_dirname(started_at, exec_id);
         if self.persistent {
             std::fs::create_dir_all(self.base_path.join(&dirname))
                 .context("Failed to create execution directory")?;
@@ -475,14 +513,25 @@ impl RunStorage {
             if !node_dir.exists() {
                 continue;
             }
-            // Check if run.json in this node dir matches the run_id
             let run_json = node_dir.join("run.json");
-            if run_json.exists()
-                && let Ok(data) = std::fs::read_to_string(&run_json)
-                && let Ok(run) = serde_json::from_str::<NodeRun>(&data)
-                && run.run_id == run_id
-            {
-                return Ok(node_dir);
+            if !run_json.exists() {
+                continue;
+            }
+            match std::fs::read_to_string(&run_json) {
+                Ok(data) => match serde_json::from_str::<NodeRun>(&data) {
+                    Ok(run) if run.run_id == run_id => return Ok(node_dir),
+                    Ok(_) => continue,
+                    Err(e) => warn!(
+                        path = %run_json.display(),
+                        error = %e,
+                        "run.json exists but failed to parse while scanning for run",
+                    ),
+                },
+                Err(e) => warn!(
+                    path = %run_json.display(),
+                    error = %e,
+                    "failed to read run.json while scanning for run",
+                ),
             }
         }
 
@@ -569,8 +618,7 @@ impl RunStorage {
         let dir = self.run_dir(run);
         std::fs::create_dir_all(&dir).context("Failed to create run directory")?;
 
-        let json = serde_json::to_string_pretty(run).context("Failed to serialize run")?;
-        std::fs::write(dir.join("run.json"), json).context("Failed to write run.json")?;
+        write_json_atomic(&dir.join("run.json"), run).context("Failed to write run.json")?;
         Ok(())
     }
 
@@ -846,7 +894,7 @@ mod tests {
         let ts_ms = 1_771_000_200_000u64;
         let run_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
 
-        let dirname = format_execution_dirname(ts_ms, run_id);
+        let dirname = format_timestamped_dirname(ts_ms, run_id);
         assert_eq!(dirname, "2026-02-13_16-30-00_550e8400-e29");
     }
 
@@ -974,7 +1022,7 @@ mod tests {
     fn parse_execution_dir_timestamp_round_trips_with_formatter() {
         let ts_ms = 1_771_000_200_000u64;
         let run_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-        let dirname = format_execution_dirname(ts_ms, run_id);
+        let dirname = format_timestamped_dirname(ts_ms, run_id);
 
         let parsed = parse_execution_dir_timestamp(&dirname).expect("parse timestamp");
         let expected = DateTime::<Utc>::from_timestamp_millis(ts_ms as i64).unwrap();
@@ -992,6 +1040,8 @@ mod tests {
         assert!(parse_execution_dir_timestamp("2026-13-16_10-00-00_abc").is_none());
         // Unrelated prefix
         assert!(parse_execution_dir_timestamp("decisions.json_abc").is_none());
+        // Separator present but no short-uuid suffix → reject
+        assert!(parse_execution_dir_timestamp("2026-04-16_10-00-00_").is_none());
     }
 
     #[test]
@@ -1294,5 +1344,62 @@ mod tests {
         assert!(runs.join("wf").join(fresh_exec).exists());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── write_json_atomic ───────────────────────────────────────
+
+    #[test]
+    fn write_json_atomic_leaves_no_temp_file_on_success() {
+        let dir = std::env::temp_dir()
+            .join("clickweave_atomic_write_success")
+            .join(Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("data.json");
+
+        write_json_atomic(&path, &serde_json::json!({"ok": true})).expect("atomic write");
+
+        assert!(path.exists(), "destination file must exist after success");
+        let tmp = tmp_path_for(&path);
+        assert!(
+            !tmp.exists(),
+            "temp file {} must not linger after a successful write",
+            tmp.display(),
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_json_atomic_preserves_existing_file_when_write_fails() {
+        let dir = std::env::temp_dir()
+            .join("clickweave_atomic_write_preserve")
+            .join(Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("data.json");
+
+        let original = r#"{"before":"untouched"}"#;
+        std::fs::write(&path, original).unwrap();
+
+        // Force an I/O failure by asking the helper to write through an
+        // existing file (treating it as a parent dir). The failure must
+        // leave the pre-existing destination byte-identical and must not
+        // leave a stray temp file beside it.
+        let unwritable = path.join("cannot-write-inside-a-file");
+        let err = write_json_atomic(&unwritable, &serde_json::json!({"x": 1}));
+        assert!(err.is_err(), "writing through a file path must fail");
+
+        let preserved = std::fs::read_to_string(&path).expect("read after failure");
+        assert_eq!(
+            preserved, original,
+            "pre-existing destination must survive a failed write",
+        );
+
+        let tmp = tmp_path_for(&unwritable);
+        assert!(
+            !tmp.exists(),
+            "temp file must be cleaned up after a failure",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -87,13 +87,8 @@ impl DecisionCache {
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create cache dir: {}", e))?;
-        }
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("Failed to serialize cache: {}", e))?;
-        std::fs::write(path, json).map_err(|e| format!("Failed to write cache: {}", e))
+        crate::storage::write_json_atomic(path, self)
+            .map_err(|e| format!("Failed to write cache: {}", e))
     }
 }
 

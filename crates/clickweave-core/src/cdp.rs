@@ -27,15 +27,13 @@ pub struct CdpFindElementMatch {
 }
 
 /// Pick a random port in the ephemeral range (49152-65535).
+///
+/// Backed by the thread-local CSPRNG in `rand`, so two calls on the same
+/// sub-second boundary do not collide the way a nanosecond-seeded LCG
+/// would. The range is inclusive on both ends.
 pub fn rand_ephemeral_port() -> u16 {
-    use std::time::SystemTime;
-    let seed = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    let raw = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-    let range = 65535 - 49152;
-    49152 + (raw % range) as u16
+    use rand::Rng;
+    rand::rng().random_range(49152..=65535)
 }
 
 /// A single page entry parsed from `cdp_list_pages` output.
@@ -377,6 +375,17 @@ mod page_selection_tests {
         assert_eq!(origin_of("https://a.com/foo?x=1#z"), "https://a.com");
         assert_eq!(origin_of("https://a.com:8080/foo"), "https://a.com:8080");
         assert_eq!(origin_of("no-scheme.example"), "");
+    }
+
+    #[test]
+    fn rand_ephemeral_port_is_in_range() {
+        for _ in 0..256 {
+            let port = rand_ephemeral_port();
+            assert!(
+                (49152..=65535).contains(&port),
+                "port {port} outside ephemeral range"
+            );
+        }
     }
 
     #[test]
