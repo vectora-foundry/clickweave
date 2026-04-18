@@ -16,11 +16,16 @@ export function isAppAnchorNode(n: WfNode | undefined): boolean {
 /** Extract the app name from an anchor node (FocusWindow or launch_app McpToolCall). */
 export function anchorAppName(n: WfNode): string | null {
   if (n.node_type.type === "FocusWindow") {
-    return n.node_type.value;
+    // Treat an empty AppName value as unconfigured. A freshly-dropped
+    // FocusWindow node has `value: ""`, which otherwise surfaces as a
+    // blank-labelled app group in the graph.
+    const value = n.node_type.value;
+    return value && value.length > 0 ? value : null;
   }
   if (n.node_type.type === "McpToolCall") {
     const appName = jsonField(n.node_type.arguments, "app_name");
-    return typeof appName === "string" ? appName : null;
+    if (typeof appName !== "string") return null;
+    return appName.length > 0 ? appName : null;
   }
   return null;
 }

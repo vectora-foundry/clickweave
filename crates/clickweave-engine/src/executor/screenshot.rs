@@ -1,19 +1,13 @@
-//! Shared screenshot-for-VLM capture helper.
+//! Shared `take_screenshot` helpers for in-engine callers.
 //!
-//! Four sites in the engine call `take_screenshot`, unpack the first
-//! `ToolContent::Image` block, and run it through
-//! [`clickweave_llm::prepare_base64_image_for_vlm`] before feeding the
-//! result into a VLM prompt. This module hosts the one shared path so all
-//! four callers agree on scope argument shapes, error handling, and the
-//! `(prepared_base64, mime)` return contract.
+//! The functions are pure I/O — no retries, no UI delay, no log spam —
+//! so callers layer their own retry/log policy on top (e.g.
+//! [`WorkflowExecutor::capture_verification_screenshot`] retries the
+//! underlying call three times before giving up).
 //!
-//! The helper is pure I/O — no retries, no UI delay, no log spam — so
-//! callers can wrap it with whatever retry/log policy they need (e.g.
-//! [`WorkflowExecutor::capture_verification_screenshot`] retries the call
-//! three times and logs app-window failures). Returning `Option` rather
-//! than `Result` matches the existing "fail-through" contract: a missing
-//! screenshot must not tank the surrounding flow, and the caller already
-//! handles the `None` branch by falling back to text-only verification.
+//! Returning `Option` rather than `Result` is intentional: a missing
+//! screenshot must not tank the surrounding flow, and callers already
+//! handle the `None` branch by falling back to text-only verification.
 
 use super::Mcp;
 use clickweave_mcp::ToolContent;
@@ -54,6 +48,37 @@ impl ScreenshotScope {
     }
 }
 
+/// Call `take_screenshot` and extract the first image block as raw base64.
+///
+/// Returns `Some(raw_base64)` on success, or `None` on any of: tool error,
+/// missing image block, or transport failure. Callers that need a
+/// VLM-ready payload should use [`capture_screenshot_for_vlm`], which
+/// chains [`clickweave_llm::prepare_base64_image_for_vlm`] on top.
+pub(crate) async fn capture_raw_image(
+    mcp: &(impl Mcp + ?Sized),
+    scope: ScreenshotScope,
+) -> Option<String> {
+    capture_raw_image_with_args(mcp, scope.to_arguments()).await
+}
+
+/// Lower-level variant of [`capture_raw_image`] for callers that need to
+/// pass a hand-rolled argument payload (e.g. an explicit `format` override
+/// not expressed by [`ScreenshotScope`]). Shares the same contract:
+/// `Some(raw_base64)` on success, `None` on any failure.
+pub(crate) async fn capture_raw_image_with_args(
+    mcp: &(impl Mcp + ?Sized),
+    args: Value,
+) -> Option<String> {
+    let result = mcp.call_tool("take_screenshot", Some(args)).await.ok()?;
+    if result.is_error == Some(true) {
+        return None;
+    }
+    result.content.iter().find_map(|content| match content {
+        ToolContent::Image { data, .. } => Some(data.clone()),
+        _ => None,
+    })
+}
+
 /// Call `take_screenshot`, extract the first image block, and prepare it
 /// for VLM consumption.
 ///
@@ -65,17 +90,7 @@ pub(crate) async fn capture_screenshot_for_vlm(
     mcp: &(impl Mcp + ?Sized),
     scope: ScreenshotScope,
 ) -> Option<(String, String)> {
-    let result = mcp
-        .call_tool("take_screenshot", Some(scope.to_arguments()))
-        .await
-        .ok()?;
-    if result.is_error == Some(true) {
-        return None;
-    }
-    let raw_b64 = result.content.iter().find_map(|content| match content {
-        ToolContent::Image { data, .. } => Some(data.clone()),
-        _ => None,
-    })?;
+    let raw_b64 = capture_raw_image(mcp, scope).await?;
     clickweave_llm::prepare_base64_image_for_vlm(&raw_b64, clickweave_llm::DEFAULT_MAX_DIMENSION)
 }
 

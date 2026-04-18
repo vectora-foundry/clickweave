@@ -77,14 +77,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 })?;
 
             if snapshot_result.is_error == Some(true) {
-                let error_text = Self::extract_result_text(&snapshot_result);
+                let error_text = cdp_lifecycle::extract_text(&snapshot_result);
                 return Err(ExecutorError::CdpSnapshotFailed(format!(
                     "take_snapshot error: {}",
                     error_text
                 )));
             }
 
-            let snapshot_text = Self::extract_result_text(&snapshot_result);
+            let snapshot_text = cdp_lifecycle::extract_text(&snapshot_result);
             let mut candidates = collect_snapshot_candidates(&snapshot_text, target);
 
             if candidates.is_empty() {
@@ -127,20 +127,20 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .await?;
 
         self.log(format!("CDP: {} element uid='{}'", action, uid));
+        let tool_name = format!("cdp_{action}");
         let result = mcp
-            .call_tool(
-                &format!("cdp_{action}"),
-                Some(serde_json::json!({ "uid": uid })),
-            )
+            .call_tool(&tool_name, Some(serde_json::json!({ "uid": uid })))
             .await
-            .map_err(|e| ExecutorError::Cdp(format!("{} failed: {e}", action)))?;
+            .map_err(|e| ExecutorError::ToolCall {
+                tool: tool_name.clone(),
+                message: e.to_string(),
+            })?;
 
         if result.is_error == Some(true) {
-            return Err(ExecutorError::Cdp(format!(
-                "{} error: {}",
-                action,
-                Self::extract_result_text(&result)
-            )));
+            return Err(ExecutorError::ToolCall {
+                tool: tool_name,
+                message: cdp_lifecycle::extract_text(&result),
+            });
         }
 
         // `action` is always "click" or "hover" from this private helper —
@@ -157,7 +157,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             serde_json::json!({ "target": target, "uid": uid }),
         );
 
-        Ok(Self::extract_result_text(&result))
+        Ok(cdp_lifecycle::extract_text(&result))
     }
 
     /// Resolve a CDP element and click it. Returns the click result text.
@@ -256,7 +256,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         // Disconnect from any previously connected app.
-        if let Some((prev_name, prev_pid)) = self.cdp_state.connected_app.clone() {
+        if let Some((prev_name, prev_pid)) = self.cdp_state.take_connected() {
             // Capture the currently-selected page URL before tearing down so
             // a future reconnect to this app instance can restore the same tab.
             self.snapshot_selected_page_url(&prev_name, prev_pid, mcp)
@@ -268,7 +268,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 "ensure_cdp_connected: pre-disconnect before new connect",
             )
             .await;
-            self.cdp_state.connected_app = None;
         }
 
         let port = if self.execution_mode == ExecutionMode::Test {
@@ -326,7 +325,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 .get(app_name)
                 .map(|e| e.port)
                 .ok_or_else(|| {
-                    ExecutorError::Cdp(format!(
+                    ExecutorError::Validation(format!(
                         "No cached CDP port for '{}'. Run in Test mode first.",
                         app_name
                     ))
@@ -397,7 +396,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 self.log(format!(
                     "CDP page restore: cdp_list_pages returned error for '{}': {}",
                     app_name,
-                    Self::extract_result_text(&r)
+                    cdp_lifecycle::extract_text(&r)
                 ));
                 return;
             }
@@ -410,7 +409,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
         };
 
-        let list_text = Self::extract_result_text(&list_result);
+        let list_text = cdp_lifecycle::extract_text(&list_result);
         let pages = parse_cdp_page_list(&list_text);
         if pages.is_empty() {
             return;
@@ -454,7 +453,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     self.log(format!(
                         "CDP page restore: cdp_select_page rejected for '{}': {}",
                         app_name,
-                        Self::extract_result_text(&r)
+                        cdp_lifecycle::extract_text(&r)
                     ));
                 }
                 Err(e) => {
@@ -482,32 +481,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     }
 
     /// Capture the currently-selected CDP page URL for `(app_name, pid)` so
-    /// it can be restored on a future reconnect. Called immediately before
-    /// `cdp_disconnect` to preserve the user's last-visible tab across the
-    /// disconnect/reconnect cycle.
-    ///
-    /// Silent on any failure — a missed snapshot just falls through to the
-    /// default first-page selection next time.
+    /// it can be restored on a future reconnect. Delegates to the shared
+    /// [`cdp_lifecycle::snapshot_selected_page_url`] helper.
     pub(in crate::executor) async fn snapshot_selected_page_url(
         &mut self,
         app_name: &str,
         pid: i32,
         mcp: &(impl Mcp + ?Sized),
     ) {
-        use clickweave_core::cdp::{current_selected_page_url, parse_cdp_page_list};
-
-        let result = match mcp
-            .call_tool("cdp_list_pages", Some(serde_json::json!({})))
-            .await
-        {
-            Ok(r) if r.is_error != Some(true) => r,
-            _ => return,
-        };
-        let text = Self::extract_result_text(&result);
-        let pages = parse_cdp_page_list(&text);
-        if let Some(url) = current_selected_page_url(&pages) {
-            self.cdp_state.record_selected_page(app_name, pid, url);
-        }
+        cdp_lifecycle::snapshot_selected_page_url(mcp, &mut self.cdp_state, app_name, pid).await;
     }
 
     /// Connect to CDP with retries (the debug endpoint may not be ready
@@ -534,7 +516,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 .await;
         match ready {
             Ok(()) => Ok(()),
-            Err(msg) => Err(ExecutorError::Cdp(msg)),
+            // The connect handshake itself returned Ok, but the server
+            // never reported a page within the readiness window — same
+            // user-visible failure shape as a connect timeout.
+            Err(msg) => Err(ExecutorError::CdpConnectTimeout {
+                app_name: app_name.to_string(),
+                attempts: CDP_CONNECT_MAX_ATTEMPTS,
+                last_error: msg,
+            }),
         }
     }
 

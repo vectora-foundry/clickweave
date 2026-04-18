@@ -36,10 +36,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             if err_text.contains("imeout") || err_text.contains("not found") {
                 return Ok(serde_json::json!({"found": false}));
             }
-            return Err(ExecutorError::Cdp(format!(
-                "cdp_wait_for failed: {}",
-                err_text
-            )));
+            return Err(ExecutorError::ToolCall {
+                tool: "cdp_wait_for".into(),
+                message: err_text.to_string(),
+            });
         }
 
         Ok(serde_json::json!({"found": true}))

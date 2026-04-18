@@ -515,7 +515,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .await
         {
             Ok(r) if r.is_error != Some(true) => {
-                let text = Self::extract_result_text(&r);
+                let text = crate::cdp_lifecycle::extract_text(&r);
                 // Only use the baseline if it contains at least one
                 // parseable page entry. An empty map would cause every
                 // HTTP tab in the next poll to look "new".
@@ -552,7 +552,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 message: e.to_string(),
             })?;
         Self::check_tool_error(&result, "press_key")?;
-        let result_text = Self::extract_result_text(&result);
+        let result_text = crate::cdp_lifecycle::extract_text(&result);
         self.record_event(
             node_run,
             "tool_result",
@@ -594,7 +594,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     .await
                     && r.is_error != Some(true)
                 {
-                    let text = Self::extract_result_text(&r);
+                    let text = crate::cdp_lifecycle::extract_text(&r);
                     if cdp_pages_show_navigation_progress(baseline, &text) {
                         self.log("Chrome URL navigation: page URL changed");
                         break;
@@ -686,7 +686,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             })?;
 
         Self::check_tool_error(&result, &inv.name)?;
-        let result_text = Self::extract_result_text(&result);
+        let result_text = crate::cdp_lifecycle::extract_text(&result);
 
         self.record_event(
             node_run.as_deref(),
@@ -729,7 +729,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     message: e.to_string(),
                 })?;
         Self::check_tool_error(&result, "cdp_fill")?;
-        let result_text = Self::extract_result_text(&result);
+        let result_text = crate::cdp_lifecycle::extract_text(&result);
         self.record_event(
             node_run,
             "tool_result",
@@ -764,7 +764,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 message: e.to_string(),
             })?;
         Self::check_tool_error(&result, "cdp_type_text")?;
-        let result_text = Self::extract_result_text(&result);
+        let result_text = crate::cdp_lifecycle::extract_text(&result);
         self.record_event(
             node_run,
             "tool_result",
@@ -802,7 +802,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 message: e.to_string(),
             })?;
         Self::check_tool_error(&result, "cdp_press_key")?;
-        let result_text = Self::extract_result_text(&result);
+        let result_text = crate::cdp_lifecycle::extract_text(&result);
         self.record_event(
             node_run,
             "tool_result",
@@ -842,7 +842,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     message: e.to_string(),
                 })?;
         Self::check_tool_error(&result, &p.operation_name)?;
-        let result_text = Self::extract_result_text(&result);
+        let result_text = crate::cdp_lifecycle::extract_text(&result);
         self.record_event(
             node_run,
             "tool_result",
@@ -983,22 +983,18 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             // if the resolver now reports a different PID (typical after
             // a relaunch that picked up a new process), rebind the
             // stored identity to the new PID so later lookups match.
-            if let Some((name, cdp_pid)) = self.cdp_state.connected_app.as_mut()
-                && name.as_str() == app.name.as_str()
-            {
-                *cdp_pid = app.pid;
-            }
+            self.cdp_state.rebind_pid(&app.name, app.pid);
         }
 
         *self.write_focused_app() = Some((app.name.clone(), app_kind, app.pid));
 
-        // `app.pid` is i32 from the MCP app listing; coerce to u32 for
-        // the typed target. Negative/overflow values fall back to
-        // `FocusTarget::None` — the executor already treats that as
-        // "no target" downstream.
+        // `app.pid` is i32 from the MCP app listing; coerce to u32 for the
+        // typed target. Negative/overflow values fall back to the resolved
+        // app name so the downstream tool mapping still targets the correct
+        // app (the executor treats an empty AppName as "no target" only).
         let pid_target = u32::try_from(app.pid)
             .map(FocusTarget::Pid)
-            .unwrap_or(FocusTarget::None);
+            .unwrap_or_else(|_| FocusTarget::AppName(app.name.clone()));
         Ok(Some(NodeType::FocusWindow(FocusWindowParams {
             target: pid_target,
             bring_to_front: p.bring_to_front,
@@ -1187,7 +1183,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         let images = self.save_result_images(&result, "result", &mut node_run);
-        let result_text = Self::extract_result_text(&result);
+        let result_text = crate::cdp_lifecycle::extract_text(&result);
 
         // For find_text: if empty matches + available_elements, resolve element name via LLM and retry.
         let find_text_empty = tool_name == "find_text"
@@ -1280,7 +1276,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 // connection is stale. Without this, ensure_cdp_connected
                 // short-circuits on the app name match and never connects
                 // to the new profile's Chrome instance.
-                if let Some((prev_name, _)) = self.cdp_state.connected_app.clone() {
+                if let Some((prev_name, _)) = self.cdp_state.take_connected() {
                     best_effort::best_effort_tool_call(
                         mcp,
                         "cdp_disconnect",
@@ -1289,9 +1285,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     )
                     .await;
                     // The app was about to be killed for a profile
-                    // relaunch — forget the active connection and every
-                    // remembered tab URL for any instance of this app
-                    // name; they're all stale after the kill.
+                    // relaunch — forget every remembered tab URL for any
+                    // instance of this app name; they're all stale after
+                    // the kill. The active-connection slot was already
+                    // cleared by `take_connected`.
                     self.cdp_state.mark_app_quit(&prev_name);
                 }
                 self.ensure_cdp_connected(
@@ -1317,7 +1314,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
     pub(crate) fn check_tool_error(result: &ToolCallResult, tool_name: &str) -> ExecutorResult<()> {
         if result.is_error == Some(true) {
-            let error_text = Self::extract_result_text(result);
+            let error_text = crate::cdp_lifecycle::extract_text(result);
             return Err(ExecutorError::ToolCall {
                 tool: tool_name.to_string(),
                 message: error_text,

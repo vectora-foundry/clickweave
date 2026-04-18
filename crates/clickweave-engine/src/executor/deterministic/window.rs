@@ -75,7 +75,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .map_err(|e| ExecutorError::ClickTarget(format!("list_windows failed: {}", e)))?;
         Self::check_tool_error(&result, "list_windows")?;
 
-        let result_text = Self::extract_result_text(&result);
+        let result_text = crate::cdp_lifecycle::extract_text(&result);
         let windows: Vec<Value> = serde_json::from_str(&result_text).map_err(|e| {
             ExecutorError::ClickTarget(format!("Failed to parse list_windows response: {e}"))
         })?;

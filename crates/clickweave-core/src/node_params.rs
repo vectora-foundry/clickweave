@@ -312,16 +312,24 @@ impl_verification_deser!(
 /// Legacy workflow files that stored the window id or pid as a stringified
 /// number still deserialize correctly via the custom `Deserialize` impl on
 /// `FocusWindowParams`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "method", content = "value")]
 pub enum FocusTarget {
     AppName(String),
     WindowId(u64),
     Pid(u32),
-    /// No target selected. Serializes as `{"method": "None"}` with no `value`.
-    #[default]
-    None,
+}
+
+impl Default for FocusTarget {
+    /// Unconfigured focus targets default to an empty app-name string. This
+    /// keeps the UI editor — which enumerates `AppName | WindowId | Pid` —
+    /// and the `focus_window` tool mapping (empty name produces `args: {}`)
+    /// behavior-compatible with the legacy `FocusMethod::AppName + value: None`
+    /// shape.
+    fn default() -> Self {
+        FocusTarget::AppName(String::new())
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -341,7 +349,7 @@ pub struct FocusWindowParams {
 impl Default for FocusWindowParams {
     fn default() -> Self {
         Self {
-            target: FocusTarget::None,
+            target: FocusTarget::default(),
             bring_to_front: true,
             app_kind: AppKind::Native,
             chrome_profile_id: None,
@@ -404,13 +412,16 @@ fn parse_focus_target(
     method: Option<&str>,
     value: &serde_json::Value,
 ) -> Result<FocusTarget, String> {
+    // Legacy unconfigured nodes: no method, or method=AppName with null/empty
+    // value. Map to the default (empty-string AppName) so the UI editor
+    // receives `method: "AppName"` as it always has.
     let Some(method) = method else {
-        return Ok(FocusTarget::None);
+        return Ok(FocusTarget::default());
     };
     match method {
         "AppName" => match value {
-            serde_json::Value::Null => Ok(FocusTarget::None),
-            serde_json::Value::String(s) if s.is_empty() => Ok(FocusTarget::None),
+            serde_json::Value::Null => Ok(FocusTarget::default()),
+            serde_json::Value::String(s) if s.is_empty() => Ok(FocusTarget::default()),
             serde_json::Value::String(s) => Ok(FocusTarget::AppName(s.clone())),
             other => Err(format!(
                 "FocusWindowParams: expected string 'value' for AppName, got {other}"
@@ -422,7 +433,9 @@ fn parse_focus_target(
         "Pid" => coerce_u32(value)
             .map(FocusTarget::Pid)
             .map_err(|msg| format!("FocusWindowParams.value (Pid): {msg}")),
-        "None" => Ok(FocusTarget::None),
+        // Legacy {"method":"None"} workflow files — still migrate to the
+        // empty AppName default rather than a dedicated None variant.
+        "None" => Ok(FocusTarget::default()),
         other => Err(format!("FocusWindowParams: unknown method '{other}'")),
     }
 }
@@ -916,10 +929,33 @@ pub enum TraceEventKind {
 
 impl From<&str> for TraceEventKind {
     fn from(s: &str) -> Self {
-        // Go through serde so this stays in lock-step with the derived
-        // rename_all = "snake_case" mapping — no manual string match to drift.
-        serde_json::from_value(serde_json::Value::String(s.to_string()))
-            .unwrap_or(TraceEventKind::Unknown)
+        // Direct match table inverse of [`TraceEventKind::as_str`]. A round-
+        // trip test locks the two halves together so new variants surface as
+        // test failures rather than silently routing through `Unknown`.
+        match s {
+            "node_started" => Self::NodeStarted,
+            "tool_call" => Self::ToolCall,
+            "tool_result" => Self::ToolResult,
+            "step_completed" => Self::StepCompleted,
+            "step_failed" => Self::StepFailed,
+            "branch_evaluated" => Self::BranchEvaluated,
+            "loop_iteration" => Self::LoopIteration,
+            "target_resolved" => Self::TargetResolved,
+            "action_verification" => Self::ActionVerification,
+            "ambiguity_resolved" => Self::AmbiguityResolved,
+            "element_resolved" => Self::ElementResolved,
+            "match_disambiguated" => Self::MatchDisambiguated,
+            "app_resolved" => Self::AppResolved,
+            "cdp_connected" => Self::CdpConnected,
+            "cdp_click" => Self::CdpClick,
+            "cdp_hover" => Self::CdpHover,
+            "cdp_fill" => Self::CdpFill,
+            "vision_summary" => Self::VisionSummary,
+            "variable_set" => Self::VariableSet,
+            "retry" => Self::Retry,
+            "supervision_retry" => Self::SupervisionRetry,
+            _ => Self::Unknown,
+        }
     }
 }
 
@@ -1142,10 +1178,23 @@ mod tests {
     }
 
     #[test]
-    fn focus_window_params_legacy_null_value_becomes_none() {
+    fn focus_window_params_legacy_null_value_preserves_app_name_method() {
+        // Legacy shape: {method:"AppName", value:null} — the UI editor only
+        // admits {AppName,WindowId,Pid}, so unconfigured nodes must decode
+        // back to an empty-string AppName. Regression guard against an earlier
+        // refactor that mapped them to a dedicated None variant (UI-unsafe).
         let json = r#"{"method":"AppName","value":null,"bring_to_front":true}"#;
         let params: FocusWindowParams = serde_json::from_str(json).unwrap();
-        assert_eq!(params.target, FocusTarget::None);
+        assert_eq!(params.target, FocusTarget::AppName(String::new()));
+    }
+
+    #[test]
+    fn focus_window_params_legacy_none_method_becomes_app_name_default() {
+        // Legacy shape: {method:"None"} — we removed the None variant from
+        // the tagged enum, but workflow files that used it must still load.
+        let json = r#"{"method":"None","bring_to_front":true}"#;
+        let params: FocusWindowParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.target, FocusTarget::AppName(String::new()));
     }
 
     #[test]
@@ -1261,5 +1310,46 @@ mod tests {
             let kind: ArtifactKind = serde_json::from_str(legacy).unwrap();
             assert_eq!(kind, ArtifactKind::Other);
         }
+    }
+
+    /// Lock the `From<&str>` match table to `as_str` so a new variant
+    /// added to only one half surfaces as a test failure instead of
+    /// silently routing through `Unknown`.
+    #[test]
+    fn trace_event_kind_from_str_round_trips_as_str() {
+        let all = [
+            TraceEventKind::NodeStarted,
+            TraceEventKind::ToolCall,
+            TraceEventKind::ToolResult,
+            TraceEventKind::StepCompleted,
+            TraceEventKind::StepFailed,
+            TraceEventKind::BranchEvaluated,
+            TraceEventKind::LoopIteration,
+            TraceEventKind::TargetResolved,
+            TraceEventKind::ActionVerification,
+            TraceEventKind::AmbiguityResolved,
+            TraceEventKind::ElementResolved,
+            TraceEventKind::MatchDisambiguated,
+            TraceEventKind::AppResolved,
+            TraceEventKind::CdpConnected,
+            TraceEventKind::CdpClick,
+            TraceEventKind::CdpHover,
+            TraceEventKind::CdpFill,
+            TraceEventKind::VisionSummary,
+            TraceEventKind::VariableSet,
+            TraceEventKind::Retry,
+            TraceEventKind::SupervisionRetry,
+        ];
+        for kind in all {
+            let s = kind.as_str();
+            let round_tripped: TraceEventKind = s.into();
+            assert_eq!(
+                round_tripped, kind,
+                "From<&str> and as_str disagree for '{s}'",
+            );
+        }
+        // Unknown strings must land in Unknown.
+        let unknown: TraceEventKind = "some_future_event".into();
+        assert_eq!(unknown, TraceEventKind::Unknown);
     }
 }

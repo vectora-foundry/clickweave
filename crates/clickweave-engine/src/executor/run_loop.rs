@@ -870,7 +870,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             if let Some(ref name) = self.focused_app_name() {
                 args["app_name"] = serde_json::Value::String(name.clone());
             }
-            let screenshot_b64 = self.extract_screenshot_image(mcp, args).await;
+            let screenshot_b64 = super::screenshot::capture_raw_image_with_args(mcp, args).await;
             match screenshot_b64 {
                 Some(img) => {
                     let verdict = if let Some(ref vb) = self.verdict_fast {

@@ -169,7 +169,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         }
                         pending_images.extend(images);
 
-                        let result_text = Self::extract_result_text(&result);
+                        let result_text = crate::cdp_lifecycle::extract_text(&result);
 
                         self.log(format!(
                             "Tool result ({} chars, {} images): {}",

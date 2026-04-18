@@ -1,21 +1,17 @@
 //! Shared CDP lifecycle primitives used by both the deterministic executor
 //! and the agent runner.
 //!
-//! The CDP "probe → quit → poll for exit → force-quit → relaunch with
-//! `--remote-debugging-port` → connect with retries" state machine was
-//! previously duplicated across `executor::deterministic::cdp` and
-//! `agent::loop_runner`. A fix in one path silently diverged from the other
-//! — most visibly, the agent lost the selected-tab tracking that the
-//! executor maintains via `cdp_selected_pages`.
-//!
 //! This module owns:
-//! - [`CdpState`]: the bookkeeping shared by both callers (connected app
-//!   identity and last-observed page URL per app instance).
-//! - Free async functions for each lifecycle step, taking an [`Mcp`] handle
-//!   and — where required — a `&mut CdpState`. The caller is still
-//!   responsible for any side channels it wants to surface around each
-//!   step (UI events, decision-cache updates, chrome-profile-specific
-//!   relaunch paths) because those differ between agent and executor.
+//! - [`CdpState`]: bookkeeping for the active CDP session — connected app
+//!   identity and last-observed page URL per `(app_name, pid)` instance.
+//! - Free async functions implementing each lifecycle step
+//!   (probe / quit / poll / force-quit / relaunch with
+//!   `--remote-debugging-port` / connect-with-retries / readiness-poll),
+//!   taking an [`Mcp`] handle and — where required — a `&mut CdpState`.
+//!
+//! Callers layer their own concerns (UI events, decision-cache updates,
+//! chrome-profile-specific relaunch paths) on top; those differ between
+//! agent and executor and deliberately stay outside this module.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -24,11 +20,6 @@ use serde_json::Value;
 
 use crate::executor::Mcp;
 use clickweave_mcp::{ToolCallResult, ToolContent};
-
-// ── Retry / timing constants ────────────────────────────────────────────
-// Previously lived in `executor/deterministic/cdp.rs`. Kept `pub(crate)`
-// so existing re-export sites (and new call sites in the agent loop) can
-// continue to reference them from a single source of truth.
 
 /// Maximum attempts for `cdp_connect` before giving up.
 pub(crate) const CDP_CONNECT_MAX_ATTEMPTS: u32 = 10;
@@ -139,6 +130,38 @@ impl CdpState {
         self.connected_app = Some((app_name.to_string(), pid));
     }
 
+    /// Clear the active connection identity and return what was there
+    /// (the `(app_name, pid)` pair, or `None` if no session was active).
+    ///
+    /// Selected-page bookkeeping is left alone — callers that truly want
+    /// to forget a specific app's tabs should reach for
+    /// [`Self::mark_app_quit`] instead.
+    pub(crate) fn take_connected(&mut self) -> Option<(String, i32)> {
+        self.connected_app.take()
+    }
+
+    /// Rebind the active connection's PID when the resolver reports a
+    /// different process for the same app name (typical after a relaunch
+    /// that picked up a new process). Any remembered-tab entries keyed on
+    /// `(app_name, <stale_pid>)` are dropped — their URLs are session-
+    /// specific and would be misleading if carried across PIDs.
+    ///
+    /// No-op when the active connection is not for `app_name` or when the
+    /// stored PID already matches.
+    pub(crate) fn rebind_pid(&mut self, app_name: &str, pid: i32) {
+        let Some((name, stored_pid)) = self.connected_app.as_mut() else {
+            return;
+        };
+        if name.as_str() != app_name || *stored_pid == pid {
+            return;
+        }
+        *stored_pid = pid;
+        // Drop stale tab URLs for this app that aren't keyed on the new
+        // PID — they came from the old process and likely no longer exist.
+        self.selected_pages
+            .retain(|(n, p), _| n != app_name || *p == pid);
+    }
+
     /// Record the URL currently selected for `(app_name, pid)`.
     pub(crate) fn record_selected_page(&mut self, app_name: &str, pid: i32, url: String) {
         self.selected_pages.insert((app_name.to_string(), pid), url);
@@ -154,9 +177,16 @@ impl CdpState {
 
 /// Pull the first text block out of an MCP tool result.
 ///
-/// Mirrors [`crate::executor::WorkflowExecutor::extract_result_text`] but
-/// lives here as a free function so lifecycle primitives don't need a
-/// generic executor type parameter.
+/// Returns the **first** `Text` block verbatim and ignores any trailing
+/// blocks (additional text, images, or unknown content). The rest of
+/// the executor feeds this string directly to JSON parsers
+/// (`serde_json::from_str`), and concatenating additional text
+/// blocks — e.g. a JSON payload followed by trailing prose — would
+/// silently fail those parses. Callers that need visibility into all
+/// blocks should iterate [`ToolCallResult::content`] directly.
+///
+/// An empty string is returned when the result carries no text blocks
+/// (image-only responses, unknown content, or an empty content list).
 pub(crate) fn extract_text(result: &ToolCallResult) -> String {
     result
         .content
@@ -166,6 +196,35 @@ pub(crate) fn extract_text(result: &ToolCallResult) -> String {
             _ => None,
         })
         .unwrap_or_default()
+}
+
+/// Capture the currently-selected CDP page URL for `(app_name, pid)` so
+/// it can be restored on a future reconnect. Called immediately before
+/// `cdp_disconnect` to preserve the user's last-visible tab across the
+/// disconnect/reconnect cycle.
+///
+/// Silent on any failure — a missed snapshot just falls through to the
+/// default first-page selection next time.
+pub(crate) async fn snapshot_selected_page_url(
+    mcp: &(impl Mcp + ?Sized),
+    state: &mut CdpState,
+    app_name: &str,
+    pid: i32,
+) {
+    use clickweave_core::cdp::{current_selected_page_url, parse_cdp_page_list};
+
+    let result = match mcp
+        .call_tool("cdp_list_pages", Some(serde_json::json!({})))
+        .await
+    {
+        Ok(r) if r.is_error != Some(true) => r,
+        _ => return,
+    };
+    let text = extract_text(&result);
+    let pages = parse_cdp_page_list(&text);
+    if let Some(url) = current_selected_page_url(&pages) {
+        state.record_selected_page(app_name, pid, url);
+    }
 }
 
 /// Outcome of a graceful-quit poll.
@@ -589,6 +648,140 @@ mod tests {
         state.connected_app = Some(("Chrome".to_string(), 4242));
         assert!(!state.is_connected_to("Chrome", 9999));
         assert!(state.is_connected_to("Chrome", 4242));
+    }
+
+    #[test]
+    fn take_connected_clears_slot_and_returns_previous() {
+        let mut state = CdpState::new();
+        state.connected_app = Some(("Chrome".to_string(), 4242));
+        state
+            .selected_pages
+            .insert(("Chrome".to_string(), 4242), "url".into());
+
+        let taken = state.take_connected();
+
+        assert_eq!(taken, Some(("Chrome".to_string(), 4242)));
+        assert!(state.connected_app.is_none());
+        // take_connected must NOT touch selected_pages — that belongs to
+        // mark_app_quit.
+        assert_eq!(state.selected_pages.len(), 1);
+    }
+
+    #[test]
+    fn take_connected_when_empty_returns_none() {
+        let mut state = CdpState::new();
+        assert!(state.take_connected().is_none());
+    }
+
+    #[test]
+    fn rebind_pid_updates_matching_connection_and_drops_stale_pages() {
+        let mut state = CdpState::new();
+        state.connected_app = Some(("Chrome".to_string(), 4242));
+        state
+            .selected_pages
+            .insert(("Chrome".to_string(), 4242), "stale".into());
+        state
+            .selected_pages
+            .insert(("Chrome".to_string(), 9999), "also-stale".into());
+        state
+            .selected_pages
+            .insert(("Slack".to_string(), 1), "unrelated".into());
+
+        state.rebind_pid("Chrome", 5150);
+
+        assert_eq!(state.connected_app, Some(("Chrome".to_string(), 5150)));
+        // Stale Chrome entries gone; unrelated Slack entry survives.
+        assert!(
+            !state
+                .selected_pages
+                .keys()
+                .any(|(n, p)| n == "Chrome" && *p != 5150)
+        );
+        assert_eq!(
+            state
+                .selected_pages
+                .get(&("Slack".to_string(), 1))
+                .map(String::as_str),
+            Some("unrelated"),
+        );
+    }
+
+    #[test]
+    fn rebind_pid_is_noop_for_unrelated_app() {
+        let mut state = CdpState::new();
+        state.connected_app = Some(("Safari".to_string(), 1));
+        state.rebind_pid("Chrome", 5150);
+        assert_eq!(state.connected_app, Some(("Safari".to_string(), 1)));
+    }
+
+    #[test]
+    fn rebind_pid_is_noop_when_pid_already_matches() {
+        let mut state = CdpState::new();
+        state.connected_app = Some(("Chrome".to_string(), 4242));
+        state
+            .selected_pages
+            .insert(("Chrome".to_string(), 4242), "keep".into());
+        state.rebind_pid("Chrome", 4242);
+        assert_eq!(state.connected_app, Some(("Chrome".to_string(), 4242)));
+        assert_eq!(
+            state
+                .selected_pages
+                .get(&("Chrome".to_string(), 4242))
+                .map(String::as_str),
+            Some("keep"),
+        );
+    }
+
+    fn result_with(content: Vec<ToolContent>) -> ToolCallResult {
+        ToolCallResult {
+            content,
+            is_error: None,
+        }
+    }
+
+    #[test]
+    fn extract_text_returns_first_text_block_when_multiple_present() {
+        // "First text only" is the chosen contract — concatenating later
+        // blocks would break the many JSON parsers that feed on the
+        // returned string (find_text, find_image, cdp_find_elements,…).
+        let r = result_with(vec![
+            ToolContent::Text {
+                text: "[{\"x\": 1}]".to_string(),
+            },
+            ToolContent::Text {
+                text: "some trailing prose".to_string(),
+            },
+        ]);
+        assert_eq!(extract_text(&r), "[{\"x\": 1}]");
+    }
+
+    #[test]
+    fn extract_text_skips_non_text_until_first_text() {
+        let r = result_with(vec![
+            ToolContent::Image {
+                data: "b64=".to_string(),
+                mime_type: "image/png".to_string(),
+            },
+            ToolContent::Text {
+                text: "the answer".to_string(),
+            },
+        ]);
+        assert_eq!(extract_text(&r), "the answer");
+    }
+
+    #[test]
+    fn extract_text_empty_when_no_text_block_present() {
+        let r = result_with(vec![ToolContent::Image {
+            data: "b64=".to_string(),
+            mime_type: "image/png".to_string(),
+        }]);
+        assert_eq!(extract_text(&r), "");
+    }
+
+    #[test]
+    fn extract_text_empty_when_content_empty() {
+        let r = result_with(vec![]);
+        assert_eq!(extract_text(&r), "");
     }
 
     #[tokio::test]

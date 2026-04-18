@@ -73,7 +73,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         Self::check_tool_error(&find_result, "find_text")?;
 
-        let result_text = Self::extract_result_text(&find_result);
+        let result_text = crate::cdp_lifecycle::extract_text(&find_result);
         let mut matches: Vec<Value> = serde_json::from_str(&result_text).unwrap_or_default();
 
         // Fallback: if no matches but available_elements present, ask LLM to resolve
@@ -218,7 +218,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         if retry_result.is_error == Some(true) {
             return None;
         }
-        Some(Self::extract_result_text(&retry_result))
+        Some(crate::cdp_lifecycle::extract_text(&retry_result))
     }
 
     /// Parse available_elements from a failed find_text response, resolve the

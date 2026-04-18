@@ -144,29 +144,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
     }
 
-    /// Extract the first text block from an MCP tool result.
-    ///
-    /// Returns the **first** `Text` block verbatim and ignores any trailing
-    /// blocks (additional text, images, or unknown content). The rest of
-    /// the executor feeds this string directly to JSON parsers
-    /// (`serde_json::from_str`), and concatenating additional text
-    /// blocks — e.g. a JSON payload followed by trailing prose — would
-    /// silently fail those parses. Callers that need visibility into all
-    /// blocks should iterate [`ToolCallResult::content`] directly.
-    ///
-    /// An empty string is returned when the result carries no text blocks
-    /// (image-only responses, unknown content, or an empty content list).
-    pub(crate) fn extract_result_text(result: &ToolCallResult) -> String {
-        result
-            .content
-            .iter()
-            .find_map(|c| match c {
-                ToolContent::Text { text } => Some(text.clone()),
-                _ => None,
-            })
-            .unwrap_or_default()
-    }
-
     /// Truncate text to a max byte length, snapping to a char boundary.
     pub(crate) fn truncate_for_trace(text: &str, max_bytes: usize) -> String {
         crate::agent::truncate_summary(text, max_bytes)
@@ -273,76 +250,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
 #[cfg(test)]
 mod extract_result_text_tests {
-    //! `WorkflowExecutor::extract_result_text` is an associated fn with no
-    //! `self` parameter so it's trivially callable via any concrete
-    //! instantiation.
-    use super::*;
-    use clickweave_llm::LlmClient;
-
     #[test]
     fn trace_write_failure_threshold_is_three() {
         assert_eq!(super::super::TRACE_WRITE_FAILURE_THRESHOLD, 3);
-    }
-
-    /// Synthesize a `ToolCallResult` with the given content blocks.
-    fn result_with(content: Vec<ToolContent>) -> ToolCallResult {
-        ToolCallResult {
-            content,
-            is_error: None,
-        }
-    }
-
-    #[test]
-    fn returns_first_text_block_when_multiple_present() {
-        // "First text only" is the chosen contract — concatenating later
-        // blocks would break the many JSON parsers that feed on the
-        // returned string (find_text, find_image, cdp_find_elements,…).
-        let r = result_with(vec![
-            ToolContent::Text {
-                text: "[{\"x\": 1}]".to_string(),
-            },
-            ToolContent::Text {
-                text: "some trailing prose".to_string(),
-            },
-        ]);
-        assert_eq!(
-            WorkflowExecutor::<LlmClient>::extract_result_text(&r),
-            "[{\"x\": 1}]"
-        );
-    }
-
-    #[test]
-    fn skips_non_text_until_first_text() {
-        // When the first block is an image followed by text, we return
-        // the text verbatim — the VLM consumers already pick out images
-        // separately via `save_result_images`.
-        let r = result_with(vec![
-            ToolContent::Image {
-                data: "b64=".to_string(),
-                mime_type: "image/png".to_string(),
-            },
-            ToolContent::Text {
-                text: "the answer".to_string(),
-            },
-        ]);
-        assert_eq!(
-            WorkflowExecutor::<LlmClient>::extract_result_text(&r),
-            "the answer"
-        );
-    }
-
-    #[test]
-    fn empty_when_no_text_block_present() {
-        let r = result_with(vec![ToolContent::Image {
-            data: "b64=".to_string(),
-            mime_type: "image/png".to_string(),
-        }]);
-        assert_eq!(WorkflowExecutor::<LlmClient>::extract_result_text(&r), "");
-    }
-
-    #[test]
-    fn empty_when_content_empty() {
-        let r = result_with(vec![]);
-        assert_eq!(WorkflowExecutor::<LlmClient>::extract_result_text(&r), "");
     }
 }

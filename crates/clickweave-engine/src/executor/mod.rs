@@ -378,18 +378,17 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
     }
 
-    /// Read-only access to the shared CDP lifecycle state. Currently only
-    /// consumed by tests; retained behind `pub(crate)` + `#[allow(dead_code)]`
-    /// so production callers reach into `self.cdp_state` directly (the same
-    /// convention used for other executor fields).
-    #[allow(dead_code)]
+    /// Read-only access to the shared CDP lifecycle state. Test-only;
+    /// production callers reach into `self.cdp_state` directly, matching
+    /// the convention used for other executor fields.
+    #[cfg(test)]
     pub(crate) fn cdp_state(&self) -> &crate::cdp_lifecycle::CdpState {
         &self.cdp_state
     }
 
-    /// Mutable access to the shared CDP lifecycle state. Same usage profile
-    /// as [`Self::cdp_state`] — test-only today.
-    #[allow(dead_code)]
+    /// Mutable access to the shared CDP lifecycle state. Test-only —
+    /// same usage profile as [`Self::cdp_state`].
+    #[cfg(test)]
     pub(crate) fn cdp_state_mut(&mut self) -> &mut crate::cdp_lifecycle::CdpState {
         &mut self.cdp_state
     }

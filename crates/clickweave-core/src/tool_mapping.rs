@@ -156,7 +156,7 @@ pub fn node_type_to_tool_invocation(
                 FocusTarget::Pid(pid) => {
                     args["pid"] = serde_json::json!(pid);
                 }
-                FocusTarget::AppName(_) | FocusTarget::None => {}
+                FocusTarget::AppName(_) => {}
             }
             if p.app_kind.uses_cdp() {
                 args["app_kind"] = serde_json::json!(p.app_kind);

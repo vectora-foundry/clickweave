@@ -1,25 +1,15 @@
 //! Typed wrapper over an MCP tool's textual result plus its JSON parse.
 //!
-//! Before this type, [`parse_result_text`] returned one of three shapes —
-//! `Value::Null` when empty, `Value::String(raw)` when the text was not
-//! valid JSON, and a parsed `Value` otherwise — and `RetryContext` stored
-//! the raw text separately as `last_tool_result: Option<String>`. Callers
-//! routinely branched on the shape of the `Value` to decide whether to
-//! reach for the original text again; the string form was effectively
-//! duplicated across both stores.
+//! `raw_text` always carries the concatenated MCP text blocks (empty
+//! string for null results); `parsed` carries the optional JSON
+//! interpretation. Callers that need structured variable extraction
+//! consult `parsed`; callers that want the original text (supervision
+//! prompts, logging) reach for `raw_text` directly.
 //!
-//! [`ToolResult`] makes the pair explicit: `raw_text` always carries the
-//! concatenated MCP text blocks (empty string for null results) and
-//! `parsed` carries the optional JSON interpretation. Callers that need
-//! structured variable extraction consult `parsed`; callers that want the
-//! original text (supervision prompts, logging) reach for `raw_text`
-//! directly.
-//!
-//! Serialization to [`serde_json::Value`] preserves the legacy semantics
-//! so downstream consumers of `execute_deterministic`'s return value do
-//! not observe a breaking wire change: an empty result serializes to
-//! `Value::Null`, a non-JSON text becomes `Value::String`, and a parsed
-//! object/array/number/bool/null round-trips through its JSON form.
+//! [`Self::into_value`] preserves the wire-compatible projection used
+//! throughout the executor: empty → `Value::Null`, non-JSON → `Value::
+//! String`, valid JSON → the parsed value. Downstream consumers of
+//! `execute_deterministic`'s return value depend on that exact shape.
 
 use serde_json::Value;
 

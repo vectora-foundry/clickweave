@@ -1,9 +1,9 @@
 use super::Mcp;
 use super::WorkflowExecutor;
 use super::retry_context::RetryContext;
+use super::screenshot::{ScreenshotScope, capture_raw_image};
 use clickweave_core::NodeType;
 use clickweave_llm::{ChatBackend, ChatOptions, Message};
-use clickweave_mcp::ToolContent;
 use serde_json::Value;
 use tracing::debug;
 
@@ -196,12 +196,20 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         retry_ctx
             .supervision_history
             .push(Message::user(step_message));
-        let messages = retry_ctx.supervision_history.clone();
 
         // Deterministic verdicts: the supervisor's pass/fail output must not
         // drift between retries of the same step for stable replay.
+        //
+        // Borrow the history as a slice rather than cloning the whole Vec —
+        // the ChatBackend contract only reads from it, and the borrow is
+        // released as soon as the await returns, leaving `retry_ctx`
+        // available for the assistant-reply push below.
         let result = match backend
-            .chat_with_options(&messages, None, &ChatOptions::with_temperature(0.0))
+            .chat_with_options(
+                &retry_ctx.supervision_history,
+                None,
+                &ChatOptions::with_temperature(0.0),
+            )
             .await
         {
             Ok(response) => {
@@ -241,11 +249,16 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         result
     }
 
-    /// Capture a screenshot for verification. Returns base64-encoded image data.
+    /// Capture a screenshot for verification. Returns raw base64-encoded image data.
     ///
     /// Waits briefly for UI animations to settle, then tries an app-scoped
-    /// window screenshot up to 3 times with 500ms delays (the window may not
-    /// be ready right after `launch_app`).
+    /// window screenshot (falling back to full-screen when no app is
+    /// focused) up to 3 times with 500ms delays — the window may not be
+    /// ready right after `launch_app`.
+    ///
+    /// Raw base64 is returned because downstream callers feed it through
+    /// `prepare_base64_image_for_vlm` themselves and also need to persist
+    /// the unprepared payload for trace artifacts.
     pub(crate) async fn capture_verification_screenshot(
         &self,
         mcp: &(impl Mcp + ?Sized),
@@ -256,40 +269,21 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
         }
 
-        let app_name = self.focused_app_name();
-        let mut args = serde_json::json!({ "mode": "window" });
-        if let Some(ref name) = app_name {
-            args["app_name"] = Value::String(name.clone());
-        }
+        let scope = match self.focused_app_name() {
+            Some(name) => ScreenshotScope::Window(name),
+            None => ScreenshotScope::Screen,
+        };
 
         // Retry window screenshot — the app window may take a moment to appear.
         for attempt in 0..3 {
             if attempt > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
-            if let Some(image) = self.extract_screenshot_image(mcp, args.clone()).await {
+            if let Some(image) = capture_raw_image(mcp, scope.clone()).await {
                 return Some(image);
             }
         }
 
-        None
-    }
-
-    /// Call `take_screenshot` and extract the base64-encoded image from the result.
-    pub(crate) async fn extract_screenshot_image(
-        &self,
-        mcp: &(impl Mcp + ?Sized),
-        args: Value,
-    ) -> Option<String> {
-        let result = mcp.call_tool("take_screenshot", Some(args)).await.ok()?;
-        if result.is_error == Some(true) {
-            return None;
-        }
-        for content in &result.content {
-            if let ToolContent::Image { data, .. } = content {
-                return Some(data.clone());
-            }
-        }
         None
     }
 }

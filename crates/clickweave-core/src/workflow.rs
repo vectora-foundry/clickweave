@@ -433,7 +433,7 @@ impl NodeType {
                 }
                 FocusTarget::WindowId(id) => format!("Focused window id {}", id),
                 FocusTarget::Pid(pid) => format!("Focused window pid {}", pid),
-                FocusTarget::AppName(_) | FocusTarget::None => "Focused window".to_string(),
+                FocusTarget::AppName(_) => "Focused window".to_string(),
             },
             NodeType::LaunchApp(p) => format!("Launched app '{}'", p.app_name),
             NodeType::QuitApp(p) => format!("Quit app '{}'", p.app_name),

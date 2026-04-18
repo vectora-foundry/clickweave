@@ -127,8 +127,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .await
             .map_err(|e| ExecutorError::AppResolution(format!("Failed to list windows: {}", e)))?;
 
-        let apps_text = Self::extract_result_text(&apps_result);
-        let windows_text = Self::extract_result_text(&windows_result);
+        let apps_text = crate::cdp_lifecycle::extract_text(&apps_result);
+        let windows_text = crate::cdp_lifecycle::extract_text(&windows_result);
 
         // Short-circuit: if no apps are running, don't ask the LLM — it will hallucinate.
         let apps_trimmed = apps_text.trim();
@@ -275,7 +275,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             )
             .await
             .map_err(|e| ExecutorError::AppResolution(format!("Failed to list apps: {}", e)))?;
-        let text = Self::extract_result_text(&result);
+        let text = crate::cdp_lifecycle::extract_text(&result);
         let apps: Vec<Value> = serde_json::from_str(&text).unwrap_or_default();
         for app in &apps {
             if app["name"].as_str() == Some(app_name)

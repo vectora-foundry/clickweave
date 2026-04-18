@@ -76,6 +76,35 @@ describe("buildAppNameMap", () => {
     expect(map.has("b")).toBe(false);
   });
 
+  it("ignores FocusWindow with empty app name (palette default)", () => {
+    // Freshly-dropped FocusWindow nodes default to {method:"AppName",value:""}.
+    // Treating them as a group anchor would surface a blank-labelled app
+    // group in the graph. anchorAppName filters empty values to null.
+    const wf = makeWorkflow(
+      [
+        node("fw1", "FocusWindow", { method: "AppName", value: "", bring_to_front: true }),
+        node("c1", "Click"),
+      ],
+      [edge("fw1", "c1")],
+    );
+    const map = buildAppNameMap(wf);
+    expect(map.get("fw1")).toBeNull();
+    expect(map.get("c1")).toBeNull();
+  });
+
+  it("ignores launch_app McpToolCall with empty app_name argument", () => {
+    const wf = makeWorkflow(
+      [
+        node("la1", "McpToolCall", { tool_name: "launch_app", arguments: { app_name: "" } }),
+        node("c1", "Click"),
+      ],
+      [edge("la1", "c1")],
+    );
+    const map = buildAppNameMap(wf);
+    expect(map.get("la1")).toBeNull();
+    expect(map.get("c1")).toBeNull();
+  });
+
 });
 
 describe("computeAppMembers", () => {

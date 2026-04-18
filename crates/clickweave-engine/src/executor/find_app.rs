@@ -18,7 +18,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 message: e.to_string(),
             })?;
         Self::check_tool_error(&result, "list_apps")?;
-        let text = Self::extract_result_text(&result);
+        let text = crate::cdp_lifecycle::extract_text(&result);
 
         // Parse the list_apps output — it returns a list of app objects
         let apps: Value = serde_json::from_str(&text).unwrap_or(Value::Array(vec![]));

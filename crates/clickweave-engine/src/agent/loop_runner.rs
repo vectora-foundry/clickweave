@@ -33,30 +33,29 @@ impl From<anyhow::Error> for LoopError {
     }
 }
 
-/// Extract the first text block from an MCP tool result.
+/// Extract a text representation from an MCP tool result for the agent
+/// transcript.
 ///
-/// Returns only the **first** `Text` block — additional text blocks are
-/// ignored. Executor-wide JSON parsing assumes single-text responses, and
-/// concatenating "JSON payload + trailing prose" would silently break
-/// those parses. When the result has no text blocks (image-only,
-/// unknown-only, or empty content), a single bracketed placeholder is
-/// returned so the agent-facing reply is never empty.
+/// All `Text` blocks are joined with `\n` so the agent sees the full tool
+/// response — stripping later blocks silently hides data from the LLM and
+/// from cache replay. Image and unknown blocks are rendered as compact
+/// placeholders so the agent-facing reply is never empty. JSON-parsing
+/// call sites use `cdp_lifecycle::extract_text` instead, which has
+/// first-block-only semantics for structured payloads.
 fn extract_result_text(result: &clickweave_mcp::ToolCallResult) -> String {
+    let mut parts: Vec<String> = Vec::with_capacity(result.content.len());
     for content in &result.content {
-        if let clickweave_mcp::ToolContent::Text { text } = content {
-            return text.clone();
+        match content {
+            clickweave_mcp::ToolContent::Text { text } => parts.push(text.clone()),
+            clickweave_mcp::ToolContent::Image { mime_type, .. } => {
+                parts.push(format!("[image: {}]", mime_type));
+            }
+            clickweave_mcp::ToolContent::Unknown(_) => {
+                parts.push("[unknown content]".to_string());
+            }
         }
     }
-    // No text block — fall back to a compact placeholder that describes the
-    // first non-text block. Agents otherwise receive an empty reply after a
-    // successful image/unknown-only tool call.
-    match result.content.first() {
-        Some(clickweave_mcp::ToolContent::Image { mime_type, .. }) => {
-            format!("[image: {}]", mime_type)
-        }
-        Some(clickweave_mcp::ToolContent::Unknown(_)) => "[unknown content]".to_string(),
-        _ => String::new(),
-    }
+    parts.join("\n")
 }
 
 /// Result of requesting user approval for a tool action.
@@ -1116,7 +1115,9 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             .await
         {
             Ok(result) if result.is_error != Some(true) => {
-                let text = extract_result_text(&result);
+                // JSON payload: the first text block holds structured data.
+                // Joining later prose blocks with \n breaks serde_json parsing.
+                let text = crate::cdp_lifecycle::extract_text(&result);
                 match serde_json::from_str::<CdpFindElementsResponse>(&text) {
                     Ok(parsed) => {
                         self.state.current_url = parsed.page_url;
@@ -1351,33 +1352,16 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     }
 
     /// Capture whichever page is currently selected for `(app_name, pid)`
-    /// and record it so future reconnects can restore it.
-    ///
-    /// Mirrors [`crate::executor::WorkflowExecutor::snapshot_selected_page_url`]
-    /// but against the agent's own [`CdpState`]. Silent on any failure —
-    /// a missed snapshot just falls through to the default first-page
-    /// selection on the next reconnect, so the agent observe-act loop
-    /// never stalls because of a bad list.
+    /// and record it so future reconnects can restore it. Delegates to the
+    /// shared [`crate::cdp_lifecycle::snapshot_selected_page_url`] helper.
     async fn snapshot_selected_page_url(
         &mut self,
         app_name: &str,
         pid: i32,
         mcp: &(impl Mcp + ?Sized),
     ) {
-        use clickweave_core::cdp::{current_selected_page_url, parse_cdp_page_list};
-
-        let result = match mcp
-            .call_tool("cdp_list_pages", Some(serde_json::json!({})))
-            .await
-        {
-            Ok(r) if r.is_error != Some(true) => r,
-            _ => return,
-        };
-        let text = extract_result_text(&result);
-        let pages = parse_cdp_page_list(&text);
-        if let Some(url) = current_selected_page_url(&pages) {
-            self.cdp_state.record_selected_page(app_name, pid, url);
-        }
+        crate::cdp_lifecycle::snapshot_selected_page_url(mcp, &mut self.cdp_state, app_name, pid)
+            .await;
     }
 
     /// Request user approval for a tool action. Returns `None` if no
@@ -1594,7 +1578,9 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 .await
             {
                 Ok(r) if r.is_error != Some(true) => {
-                    let text = extract_result_text(&r);
+                    // JSON payload from list_apps — use first-text-block
+                    // semantics so trailing prose blocks don't break parsing.
+                    let text = crate::cdp_lifecycle::extract_text(&r);
                     if let Ok(entries) = serde_json::from_str::<Vec<Value>>(&text)
                         && let Some(name) = entries.iter().find_map(|entry| {
                             if entry["pid"].as_u64() == Some(pid) {
@@ -1630,7 +1616,8 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 .await
             {
                 Ok(r) if r.is_error != Some(true) => {
-                    let text = extract_result_text(&r);
+                    // JSON payload from list_windows — first-text-block only.
+                    let text = crate::cdp_lifecycle::extract_text(&r);
                     if let Ok(entries) = serde_json::from_str::<Vec<Value>>(&text)
                         && let Some(name) = entries.iter().find_map(|entry| {
                             if entry["id"].as_u64() == Some(window_id) {
@@ -2062,6 +2049,55 @@ mod resolve_cdp_target_tests {
         let resolved = resolve(arguments, &result_text).await;
         assert_eq!(resolved, Some(("Chrome".to_string(), None)));
     }
+
+    /// MCP stub that returns a fixed multi-text-block `list_apps` response.
+    /// Pins the contract that the `pid → list_apps` CDP resolution path
+    /// parses only the first text block: regression guard for a past bug
+    /// where joining blocks with `\n` broke serde_json parsing whenever a
+    /// server returned a JSON payload plus trailing prose.
+    struct MultiBlockListAppsMcp;
+
+    impl Mcp for MultiBlockListAppsMcp {
+        async fn call_tool(
+            &self,
+            name: &str,
+            _arguments: Option<Value>,
+        ) -> anyhow::Result<ToolCallResult> {
+            assert_eq!(name, "list_apps");
+            Ok(ToolCallResult {
+                content: vec![
+                    clickweave_mcp::ToolContent::Text {
+                        text: r#"[{"name":"Signal","pid":16024}]"#.to_string(),
+                    },
+                    clickweave_mcp::ToolContent::Text {
+                        text: "(rendered from cached process table)".to_string(),
+                    },
+                ],
+                is_error: None,
+            })
+        }
+        fn has_tool(&self, name: &str) -> bool {
+            name == "list_apps"
+        }
+        fn tools_as_openai(&self) -> Vec<Value> {
+            Vec::new()
+        }
+        async fn refresh_server_tool_list(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn pid_resolves_to_app_name_even_with_trailing_prose_block() {
+        let arguments = serde_json::json!({ "pid": 16024 });
+        let resolved = AgentRunner::<UnusedBackend>::resolve_cdp_target(
+            &arguments,
+            "Window focused successfully",
+            &MultiBlockListAppsMcp,
+        )
+        .await;
+        assert_eq!(resolved, Some(("Signal".to_string(), None)));
+    }
 }
 
 #[cfg(test)]
@@ -2180,10 +2216,11 @@ mod observation_union_tests {
     }
 
     #[test]
-    fn extract_result_text_returns_first_text_block_only() {
-        // Two text blocks: the helper must return the first verbatim and
-        // ignore the second. Joining with \n would silently break JSON
-        // parsers downstream when the second block is trailing prose.
+    fn extract_result_text_joins_all_text_blocks_for_transcript() {
+        // Agent transcript must see every text block the tool returned.
+        // Dropping later blocks silently hides data from the LLM and from
+        // cache replay. JSON-parse sites use cdp_lifecycle::extract_text
+        // instead.
         let result = clickweave_mcp::ToolCallResult {
             content: vec![
                 clickweave_mcp::ToolContent::Text {
@@ -2195,7 +2232,10 @@ mod observation_union_tests {
             ],
             is_error: None,
         };
-        assert_eq!(super::extract_result_text(&result), "[{\"x\": 1}]");
+        assert_eq!(
+            super::extract_result_text(&result),
+            "[{\"x\": 1}]\ntrailing commentary"
+        );
     }
 
     #[test]

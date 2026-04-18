@@ -91,3 +91,24 @@ impl RetryContext {
         self.supervision_history.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clickweave_llm::Message;
+
+    #[test]
+    fn reset_supervision_history_clears_accumulated_messages() {
+        // Pins the per-node history scope: a long workflow must not accumulate
+        // prior nodes' supervision exchanges into later verdicts. The run
+        // loop calls this at the top of every node.
+        let mut ctx = RetryContext::new();
+        ctx.supervision_history
+            .push(Message::user("observation from node 1"));
+        ctx.supervision_history.push(Message::assistant("YES"));
+        assert_eq!(ctx.supervision_history.len(), 2);
+
+        ctx.reset_supervision_history();
+        assert!(ctx.supervision_history.is_empty());
+    }
+}
