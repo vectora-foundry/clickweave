@@ -6,7 +6,7 @@ use clickweave_llm::{
     ChatBackend, Message, analyze_images, build_step_prompt, workflow_system_prompt,
 };
 use serde_json::Value;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::debug;
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
@@ -59,7 +59,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
         loop {
             if let Some(timeout) = timeout_ms
-                && step_start.elapsed().as_millis() as u64 > timeout
+                && step_start.elapsed() > Duration::from_millis(timeout)
             {
                 self.log("Timeout reached");
                 break;

@@ -9,6 +9,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::context::estimate_tokens;
+
 /// A prior-turn record passed from the UI on every new `run_agent`
 /// request. Summary may be redacted by the caller when some of the
 /// turn's nodes were deleted (see `AssistantSlice::clearConversation`
@@ -18,12 +20,6 @@ pub struct PriorTurn {
     pub goal: String,
     pub summary: String,
     pub run_id: Uuid,
-}
-
-/// Rough token estimate — matches the heuristic used by
-/// `context::estimate_messages_tokens` (4 chars ≈ 1 token).
-pub(crate) fn estimate_tokens(s: &str) -> usize {
-    s.len().div_ceil(4)
 }
 
 /// Build the text that will be inlined above the user's current goal.

@@ -1,10 +1,33 @@
 use std::path::Path;
+use std::time::Duration;
 
 use super::super::retry_context::RetryContext;
 use super::super::{CdpCandidate, ExecutorError, ExecutorResult, Mcp, WorkflowExecutor};
 use clickweave_core::NodeRun;
 use clickweave_llm::ChatBackend;
 use uuid::Uuid;
+
+// ── CDP retry/timing tuning ──────────────────────────────────────────────
+// Named so tuning stays in one place instead of being scattered across the
+// connect/quit/relaunch helpers.
+
+/// Maximum attempts for `cdp_connect` before giving up.
+pub(crate) const CDP_CONNECT_MAX_ATTEMPTS: u32 = 10;
+/// Delay between `cdp_connect` retry attempts.
+pub(crate) const CDP_CONNECT_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+/// Maximum poll iterations waiting for a graceful app quit.
+/// Paired with `APP_QUIT_POLL_INTERVAL`, this gives a ~10s graceful window.
+pub(crate) const APP_QUIT_MAX_ATTEMPTS: u32 = 20;
+/// Poll interval while waiting for `list_apps` to report the app has exited.
+pub(crate) const APP_QUIT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+/// Sleep after a force-kill to let the OS reap the process.
+pub(crate) const APP_FORCE_QUIT_GRACE: Duration = Duration::from_secs(2);
+/// Sleep after relaunching with `--remote-debugging-port` before connecting.
+pub(crate) const APP_RELAUNCH_WARMUP: Duration = Duration::from_secs(3);
+/// Timeout for `poll_cdp_ready` after a fresh relaunch.
+const CDP_READY_TIMEOUT_AFTER_RELAUNCH_SECS: u64 = 30;
+/// Timeout for `poll_cdp_ready` when reusing an existing debug port.
+const CDP_READY_TIMEOUT_REUSE_SECS: u64 = 5;
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Simple element resolution: take a snapshot, find the first matching
@@ -244,7 +267,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             // a future reconnect to this app instance can restore the same tab.
             self.snapshot_selected_page_url(&prev_name, prev_pid, mcp)
                 .await;
-            let _ = mcp.call_tool("cdp_disconnect", None).await;
+            super::best_effort::best_effort_tool_call(
+                mcp,
+                "cdp_disconnect",
+                None,
+                "ensure_cdp_connected: pre-disconnect before new connect",
+            )
+            .await;
             self.cdp_connected_app = None;
         }
 
@@ -496,16 +525,18 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
     ) -> ExecutorResult<()> {
         let connect_args = serde_json::json!({"port": port});
         let mut last_err = String::new();
-        for attempt in 0..10 {
+        for attempt in 0..CDP_CONNECT_MAX_ATTEMPTS {
             if attempt > 0 {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                tokio::time::sleep(CDP_CONNECT_RETRY_INTERVAL).await;
             }
             match mcp
                 .call_tool("cdp_connect", Some(connect_args.clone()))
                 .await
             {
                 Ok(r) if r.is_error != Some(true) => {
-                    return self.poll_cdp_ready(app_name, mcp, 30).await;
+                    return self
+                        .poll_cdp_ready(app_name, mcp, CDP_READY_TIMEOUT_AFTER_RELAUNCH_SECS)
+                        .await;
                 }
                 Ok(r) => {
                     last_err = Self::extract_result_text(&r);
@@ -527,10 +558,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 }
             }
         }
-        Err(ExecutorError::Cdp(format!(
-            "Failed to connect CDP for '{}' after 10 attempts: {}",
-            app_name, last_err
-        )))
+        Err(ExecutorError::CdpConnectTimeout {
+            app_name: app_name.to_string(),
+            attempts: CDP_CONNECT_MAX_ATTEMPTS,
+            last_error: last_err,
+        })
     }
 
     /// Try to connect CDP to an app, returning true on success.
@@ -544,10 +576,20 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         if !ok {
             return false;
         }
-        if self.poll_cdp_ready(app_name, mcp, 5).await.is_ok() {
+        if self
+            .poll_cdp_ready(app_name, mcp, CDP_READY_TIMEOUT_REUSE_SECS)
+            .await
+            .is_ok()
+        {
             true
         } else {
-            let _ = mcp.call_tool("cdp_disconnect", None).await;
+            super::best_effort::best_effort_tool_call(
+                mcp,
+                "cdp_disconnect",
+                None,
+                "try_cdp_connect: disconnect after poll_cdp_ready timeout",
+            )
+            .await;
             false
         }
     }
@@ -575,11 +617,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             super::launch_chrome_with_profile_and_debug_port(&dir, port)
                 .await
-                .map_err(|e| {
-                    ExecutorError::Cdp(format!(
-                        "Failed to launch '{}' with debug port: {}",
-                        app_name, e
-                    ))
+                .map_err(|e| ExecutorError::CdpRelaunchFailed {
+                    app_name: app_name.to_string(),
+                    message: format!("Failed to launch with debug port: {}", e),
                 })?;
         } else {
             let quit_args = serde_json::json!({ "app_name": app_name });
@@ -592,8 +632,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             let poll_args = serde_json::json!({ "app_name": app_name, "user_apps_only": true });
             let mut quit_confirmed = false;
-            for _ in 0..20 {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            for _ in 0..APP_QUIT_MAX_ATTEMPTS {
+                tokio::time::sleep(APP_QUIT_POLL_INTERVAL).await;
                 if let Ok(r) = mcp.call_tool("list_apps", Some(poll_args.clone())).await {
                     let text = Self::extract_result_text(&r);
                     if text.trim() == "[]" {
@@ -609,8 +649,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     app_name
                 ));
                 let force_args = serde_json::json!({ "app_name": app_name, "force": true });
-                let _ = mcp.call_tool("quit_app", Some(force_args)).await;
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                super::best_effort::best_effort_tool_call(
+                    mcp,
+                    "quit_app",
+                    Some(force_args),
+                    "relaunch_with_debug_port: force-quit after graceful quit timed out",
+                )
+                .await;
+                tokio::time::sleep(APP_FORCE_QUIT_GRACE).await;
             }
 
             kill_all_processes(app_name).await;
@@ -623,24 +669,21 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let result = mcp
                 .call_tool("launch_app", Some(launch_args))
                 .await
-                .map_err(|e| {
-                    ExecutorError::Cdp(format!(
-                        "Failed to launch '{}' with debug port: {}",
-                        app_name, e
-                    ))
+                .map_err(|e| ExecutorError::CdpRelaunchFailed {
+                    app_name: app_name.to_string(),
+                    message: format!("Failed to launch with debug port: {}", e),
                 })?;
 
             if result.is_error == Some(true) {
-                return Err(ExecutorError::Cdp(format!(
-                    "launch_app error for '{}': {}",
-                    app_name,
-                    Self::extract_result_text(&result)
-                )));
+                return Err(ExecutorError::CdpRelaunchFailed {
+                    app_name: app_name.to_string(),
+                    message: format!("launch_app error: {}", Self::extract_result_text(&result)),
+                });
             }
         }
 
         // Wait for the app to start up.
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        tokio::time::sleep(APP_RELAUNCH_WARMUP).await;
         Ok(())
     }
 
@@ -693,7 +736,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 )));
             }
 
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            tokio::time::sleep(CDP_CONNECT_RETRY_INTERVAL).await;
         }
     }
 }

@@ -25,15 +25,6 @@ fn make_verdict(
     }
 }
 
-/// Returns `true` when every check in the verdict passed.
-#[allow(dead_code)]
-pub(crate) fn verdict_passed(verdict: &NodeVerdict) -> bool {
-    verdict
-        .check_results
-        .iter()
-        .all(|r| r.verdict != CheckVerdict::Fail)
-}
-
 /// Create a deterministic NodeVerdict for a Verification-role node based on its
 /// runtime result. Handles:
 /// - Array results (FindText/FindImage with flat array)
@@ -88,13 +79,17 @@ pub(crate) fn deterministic_verdict(
     )
 }
 
-const SCREENSHOT_VERIFICATION_PROMPT: &str = "\
-You are verifying whether a UI automation step produced the expected visual result. \
+fn screenshot_verification_prompt() -> String {
+    format!(
+        "You are verifying whether a UI automation step produced the expected visual result. \
 You will receive a screenshot taken after the step completed and a description of \
 what should be visible.\n\n\
-Respond with ONLY a JSON object (no markdown fences):\n\
-{\"verdict\": \"pass\" or \"fail\", \"reasoning\": \"...\"}\n\n\
-Be precise: only mark 'pass' if the screenshot clearly shows what was expected.";
+{}\n\
+Schema: {{\"verdict\": \"pass\" or \"fail\", \"reasoning\": \"...\"}}\n\n\
+Be precise: only mark 'pass' if the screenshot clearly shows what was expected.",
+        super::prompts::JSON_ONLY_INSTRUCTION,
+    )
+}
 
 #[derive(serde::Deserialize)]
 struct VlmVerdict {
@@ -159,7 +154,7 @@ pub(crate) async fn screenshot_verdict<C: ChatBackend>(
         vec![(prepared_b64, mime)],
     );
 
-    let messages = vec![Message::system(SCREENSHOT_VERIFICATION_PROMPT), user_msg];
+    let messages = vec![Message::system(screenshot_verification_prompt()), user_msg];
 
     let (verdict, reasoning) = match backend.chat(&messages, None).await {
         Ok(response) => {
@@ -168,21 +163,17 @@ pub(crate) async fn screenshot_verdict<C: ChatBackend>(
                 .first()
                 .and_then(|c| c.message.content_text())
                 .unwrap_or("");
-            let cleaned = text
-                .trim()
-                .trim_start_matches("```json")
-                .trim_start_matches("```")
-                .trim_end_matches("```")
-                .trim();
-            match serde_json::from_str::<VlmVerdict>(cleaned) {
-                Ok(v) => {
+            let parsed = super::app_resolve::parse_llm_json_response(text)
+                .and_then(|s| serde_json::from_str::<VlmVerdict>(s).ok());
+            match parsed {
+                Some(v) => {
                     let verdict = match v.verdict.to_lowercase().as_str() {
                         "pass" => CheckVerdict::Pass,
                         _ => CheckVerdict::Fail,
                     };
                     (verdict, v.reasoning)
                 }
-                Err(_) => (
+                None => (
                     CheckVerdict::Fail,
                     format!("Failed to parse VLM response: {}", text),
                 ),

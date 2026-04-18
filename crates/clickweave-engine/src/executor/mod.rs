@@ -8,6 +8,7 @@ mod element_resolve;
 pub mod error;
 mod find_app;
 mod graph_nav;
+mod prompts;
 pub(crate) mod retry_context;
 mod run_loop;
 mod supervision;
@@ -56,7 +57,12 @@ pub(crate) trait Mcp: Send + Sync {
     /// agent's LLM-visible tool list — the latter is seeded once per run
     /// in `agent/mod.rs` and kept stable for prompt-cache stability. See
     /// the "Tool Exposure" policy in `docs/reference/engine/execution.md`.
-    fn refresh_tools(&self) -> impl Future<Output = anyhow::Result<()>> + Send;
+    ///
+    /// Named for the client-vs-server distinction: this reloads the
+    /// **server** tool list into the client cache; reach for it only when
+    /// a prior tool call (e.g. `cdp_connect`) changes which server-side
+    /// tools are valid.
+    fn refresh_server_tool_list(&self) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
 impl Mcp for clickweave_mcp::McpClient {
@@ -76,7 +82,7 @@ impl Mcp for clickweave_mcp::McpClient {
         clickweave_mcp::McpClient::tools_as_openai(self)
     }
 
-    fn refresh_tools(&self) -> impl Future<Output = anyhow::Result<()>> + Send {
+    fn refresh_server_tool_list(&self) -> impl Future<Output = anyhow::Result<()>> + Send {
         clickweave_mcp::McpClient::refresh_tools(self)
     }
 }
@@ -379,11 +385,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .unwrap_or(AppKind::Native)
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn focused_app_pid(&self) -> Option<i32> {
-        self.read_focused_app().as_ref().map(|(_, _, pid)| *pid)
-    }
-
     /// Check whether a CDP connection is active for the currently focused app.
     /// Uses PID to distinguish same-name instances within a single execution.
     pub(crate) fn cdp_connected_to_focused_app(&self) -> bool {
@@ -462,13 +463,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 /// (b) fall through to the MCP `launch_app` relaunch branch that respects
 /// the real binary name.
 pub(crate) fn is_google_chrome_app_name(app_name: &str) -> bool {
-    let lower = app_name.to_ascii_lowercase();
-    // Exclude Chromium first — it contains the "chrome" substring but is a
-    // separate product `spawn_chrome` cannot launch.
-    if lower.contains("chromium") {
-        return false;
-    }
-    lower.contains("chrome")
+    let lower = app_name.trim().to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "chrome"
+            | "google chrome"
+            | "google chrome canary"
+            | "google chrome beta"
+            | "google chrome dev"
+    )
 }
 
 #[cfg(test)]

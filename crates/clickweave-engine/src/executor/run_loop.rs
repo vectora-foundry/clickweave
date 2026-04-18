@@ -40,7 +40,14 @@ async fn wait_for_supervision_command(
         cmd = command_rx.recv() => match cmd {
             Some(ExecutorCommand::Resume) => SupervisionAction::Retry,
             Some(ExecutorCommand::Skip) => SupervisionAction::Skip,
-            Some(ExecutorCommand::Abort) | None => SupervisionAction::Abort,
+            Some(ExecutorCommand::Abort) => SupervisionAction::Abort,
+            None => {
+                // Distinguishes a caller-side drop (e.g. Tauri side crashed,
+                // orphaning the run) from an explicit user abort. The caller
+                // logs surface this in post-run diagnostics.
+                tracing::warn!("supervision command channel closed — treating as abort");
+                SupervisionAction::Abort
+            }
         },
     }
 }
@@ -149,7 +156,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
 
             match result {
                 Ok(value) => {
-                    retry_ctx.force_resolve = false;
+                    retry_ctx.cache_mode = super::app_resolve::CacheMode::UseCache;
                     return Ok(value);
                 }
                 Err(e) if attempt < retries => {
@@ -168,7 +175,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     retry_ctx.write_tried_cdp_uids().clear();
                     retry_ctx.write_cdp_ambiguity_overrides().clear();
                     self.evict_caches_for_node(node_type);
-                    retry_ctx.force_resolve = true;
+                    retry_ctx.cache_mode = super::app_resolve::CacheMode::Bypass;
                     self.record_event(
                         node_run.as_ref(),
                         "retry",
@@ -313,7 +320,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         let verification = self.verify_step(node_name, node_type, mcp, ctx).await;
                         if verification.passed {
                             ctx.supervision_hint = None;
-                            ctx.force_resolve = false;
+                            ctx.cache_mode = super::app_resolve::CacheMode::UseCache;
                             // Consume the URL navigation intent now that
                             // supervision confirmed the step succeeded.
                             ctx.last_typed_url = None;
@@ -340,7 +347,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                             // short-circuit on the stale override.
                             ctx.write_cdp_ambiguity_overrides().clear();
                             self.evict_caches_for_node(node_type);
-                            ctx.force_resolve = true;
+                            ctx.cache_mode = super::app_resolve::CacheMode::Bypass;
                             self.record_event(
                                 node_run.as_ref(),
                                 "supervision_retry",

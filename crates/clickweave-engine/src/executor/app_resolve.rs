@@ -7,6 +7,25 @@ use serde_json::Value;
 use tracing::debug;
 use uuid::Uuid;
 
+/// Whether a resolver may read a previously cached decision or must re-run
+/// the resolution step from scratch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum CacheMode {
+    /// Normal path: consult in-memory and decision caches before resolving.
+    #[default]
+    UseCache,
+    /// Skip the persistent decision cache (the in-memory cache is still
+    /// consulted for the current execution) so the resolver re-runs via
+    /// the LLM. Set after an eviction on retry.
+    Bypass,
+}
+
+impl CacheMode {
+    pub(crate) fn is_bypass(self) -> bool {
+        matches!(self, Self::Bypass)
+    }
+}
+
 impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Resolve a user-provided app name (e.g. "chrome", "my editor") to a concrete
     /// running application by asking the orchestrator LLM to match against the
@@ -18,7 +37,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         user_input: &str,
         mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
-        force_resolve: bool,
+        cache_mode: CacheMode,
     ) -> ExecutorResult<ResolvedApp> {
         // Check in-memory cache first (populated during this execution).
         // Clone the cached value out before any .await to avoid holding the
@@ -63,11 +82,11 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         // Check persistent decision cache (replays Test-mode app name decisions).
-        // Skip when force_resolve is set so a retry after eviction re-resolves via LLM.
+        // Skip in Bypass mode so a retry after eviction re-resolves via LLM.
         // Clone the cached value out before any .await to avoid holding the
         // RwLockReadGuard across an await point (which breaks Send).
         let ck = decision_cache::cache_key(node_id, user_input, None);
-        let cached_app = if force_resolve {
+        let cached_app = if cache_mode.is_bypass() {
             None
         } else {
             self.read_decision_cache().app_resolution.get(&ck).cloned()
@@ -125,6 +144,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             )));
         }
 
+        let json_only = super::prompts::JSON_ONLY_INSTRUCTION;
         let prompt = format!(
             "You are resolving an application name. The user wrote: \"{user_input}\"\n\
              \n\
@@ -134,7 +154,8 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
              Visible windows:\n\
              {windows_text}\n\
              \n\
-             Which running application does the user mean? Return ONLY a JSON object:\n\
+             Which running application does the user mean? {json_only}\n\
+             Schema:\n\
              {{\"name\": \"<exact app name from the list above>\", \"pid\": <pid>}}\n\
              \n\
              IMPORTANT: The name MUST be an exact match from the Running apps list above.\n\
@@ -347,6 +368,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         // still contains the correct app name.
         let (element_target, explicit_app) = match node_type {
             NodeType::Click(p) => (p.target.as_ref().map(|t| t.text()), None),
+            NodeType::Hover(p) => (p.target.as_ref().map(|t| t.text()), None),
             NodeType::CdpClick(p) => (Some(p.target.as_str()), None),
             NodeType::CdpHover(p) => (Some(p.target.as_str()), None),
             NodeType::FindText(p) => (Some(p.search_text.as_str()), p.scope.as_deref()),

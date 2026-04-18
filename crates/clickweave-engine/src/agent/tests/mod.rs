@@ -198,7 +198,7 @@ impl Mcp for MockMcp {
         self.tools.clone()
     }
 
-    async fn refresh_tools(&self) -> anyhow::Result<()> {
+    async fn refresh_server_tool_list(&self) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -1510,7 +1510,7 @@ impl ChatBackend for ToolCapturingAgent {
 
 /// Mock MCP that models the real `McpClient` cache semantics: a single
 /// tool snapshot backs both `has_tool` and `tools_as_openai`, and it only
-/// updates when `refresh_tools` is called. The server's "true" tool set
+/// updates when `refresh_server_tool_list` is called. The server's "true" tool set
 /// grows after `cdp_connect` (the extras become available), but the mock
 /// will keep returning the stale snapshot until refreshed — matching what
 /// the production client does.
@@ -1520,7 +1520,7 @@ struct ShiftingToolsMcp {
     extra_tools: Vec<Value>,
     /// Server-side visibility: flips to true on `cdp_connect`.
     cdp_connected: std::sync::atomic::AtomicBool,
-    /// Client-side cached snapshot of tools; only updated by `refresh_tools`.
+    /// Client-side cached snapshot of tools; only updated by `refresh_server_tool_list`.
     cached_tools: Mutex<Vec<Value>>,
 }
 
@@ -1585,7 +1585,7 @@ impl Mcp for ShiftingToolsMcp {
         self.cached_tools.lock().unwrap().clone()
     }
 
-    async fn refresh_tools(&self) -> anyhow::Result<()> {
+    async fn refresh_server_tool_list(&self) -> anyhow::Result<()> {
         *self.cached_tools.lock().unwrap() = self.server_visible_tools();
         Ok(())
     }
@@ -1618,7 +1618,7 @@ async fn tool_list_is_stable_across_cdp_connect_boundary() {
     //   post-hook list  -> list_apps (empty so quit is considered done)
     //   post-hook relaunch -> launch_app
     //   post-hook connect  -> cdp_connect (flips the server's tool set)
-    //   (refresh_tools reloads the client cache after connect)
+    //   (refresh_server_tool_list reloads the client cache after connect)
     //   step 1 observe  -> cdp_find_elements
     //   step 1 act      -> click
     //   step 2 observe  -> cdp_find_elements
@@ -1918,7 +1918,7 @@ impl Mcp for RoutingMockMcp {
         self.tools.clone()
     }
 
-    async fn refresh_tools(&self) -> anyhow::Result<()> {
+    async fn refresh_server_tool_list(&self) -> anyhow::Result<()> {
         Ok(())
     }
 }

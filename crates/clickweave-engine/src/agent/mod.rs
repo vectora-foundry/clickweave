@@ -12,6 +12,7 @@ mod types;
 pub use loop_runner::{AgentRunner, ApprovalGate};
 pub use permissions::{PermissionAction, PermissionPolicy, PermissionRule, ToolAnnotations};
 pub use prior_turns::PriorTurn;
+pub use prompt::truncate_summary;
 pub use types::*;
 
 use clickweave_llm::ChatBackend;

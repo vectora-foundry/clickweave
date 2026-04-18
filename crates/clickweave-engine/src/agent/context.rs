@@ -58,10 +58,11 @@ fn resolve_tool_name<'a>(messages: &'a [Message], msg: &Message) -> Option<&'a s
     None
 }
 
-/// Estimate the number of tokens in a string.
-#[cfg(test)]
-pub fn estimate_tokens(text: &str) -> usize {
-    // Rough approximation: 1 token ≈ 4 characters
+/// Rough token estimate for a single string: ~4 characters per token.
+///
+/// Shared by context compaction and the prior-turn log renderer so the
+/// heuristic stays consistent.
+pub(crate) fn estimate_tokens(text: &str) -> usize {
     text.len().div_ceil(CHARS_PER_TOKEN)
 }
 

@@ -31,16 +31,12 @@ pub(crate) fn build_completion_prompt(goal: &str, summary: &str) -> String {
 
 /// Parse a VLM reply into a YES/NO verdict.
 ///
-/// Matching is forgiving:
-/// - case-insensitive on the first non-whitespace token
-/// - anything starting with "YES" maps to `Yes`
-/// - anything starting with "NO" maps to `No`
-/// - any other reply defaults to `No` (fail-closed: if the VLM didn't
-///   explicitly confirm, treat it as a disagreement so the user sees it)
+/// Matching requires the reply's first token to be exactly `YES` or `NO`
+/// (after trimming whitespace, markdown fences, and surrounding
+/// punctuation). Anything else (`"yeahh"`, `"not sure"`, `"YESN'T"`,
+/// empty body) falls through to `No` — fail-closed so the operator sees
+/// the disagreement when the VLM didn't emit an explicit verdict.
 pub(crate) fn parse_yes_no(reply: &str) -> VlmVerdict {
-    // Grab the first non-whitespace token. We strip any leading punctuation
-    // so models that wrap the verdict in quotes or markdown (`**YES**`,
-    // `"NO"`, `- yes`) still parse cleanly.
     let first_token = reply
         .trim_start()
         .split(|c: char| c.is_whitespace() || c == '.' || c == ',' || c == ':' || c == ';')
@@ -48,13 +44,9 @@ pub(crate) fn parse_yes_no(reply: &str) -> VlmVerdict {
         .unwrap_or("");
     let stripped = first_token.trim_matches(|c: char| !c.is_alphanumeric());
     let upper = stripped.to_ascii_uppercase();
-    if upper.starts_with("YES") {
-        VlmVerdict::Yes
-    } else {
-        // Both "starts with NO" and "neither" fail-close to No — if the VLM
-        // didn't emit an explicit YES we treat it as a disagreement so the
-        // user sees the reasoning.
-        VlmVerdict::No
+    match upper.as_str() {
+        "YES" => VlmVerdict::Yes,
+        _ => VlmVerdict::No,
     }
 }
 
@@ -135,11 +127,26 @@ mod tests {
     }
 
     #[test]
-    fn nope_word_does_not_count_as_no_prefix_edge_case() {
-        // "nope" starts with "no" so it currently maps to No — this documents
-        // the intentional lenient behaviour. Any further-than-NO word that
-        // starts with those two letters also defaults to No, which is the
-        // fail-closed default anyway.
+    fn nope_does_not_count_as_no_prefix() {
+        // Strict match — any token other than exactly YES/NO falls through
+        // to No (fail-closed). "nope" ends up in the No branch, but via
+        // the default path rather than a "starts with NO" bypass.
         assert_eq!(parse_yes_no("nope"), VlmVerdict::No);
+    }
+
+    #[test]
+    fn yesnt_rejected_as_non_yes() {
+        // A prefix like "YESN'T" must not map to Yes under strict parsing.
+        assert_eq!(parse_yes_no("YESN'T — not confirmed"), VlmVerdict::No);
+    }
+
+    #[test]
+    fn yes_with_trailing_text_parses() {
+        // The reply "YES, but the modal is still open" still starts with
+        // YES; the strict parser accepts the first-token match.
+        assert_eq!(
+            parse_yes_no("YES, but the modal is still open"),
+            VlmVerdict::Yes
+        );
     }
 }

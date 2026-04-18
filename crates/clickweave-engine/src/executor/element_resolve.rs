@@ -1,3 +1,4 @@
+use super::app_resolve::CacheMode;
 use super::retry_context::RetryContext;
 use super::{ExecutorError, ExecutorResult, WorkflowExecutor};
 use clickweave_core::decision_cache::{self, ClickDisambiguation, ElementResolution};
@@ -53,7 +54,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         available_elements: &[String],
         app_name: Option<&str>,
         node_run: Option<&NodeRun>,
-        force_resolve: bool,
+        cache_mode: CacheMode,
     ) -> ExecutorResult<String> {
         let cache_key = (target.to_string(), app_name.map(|s| s.to_string()));
 
@@ -79,9 +80,9 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         }
 
         // Check persistent decision cache (replays Test-mode decisions in Run mode).
-        // Skip when force_resolve is set so a retry after eviction re-resolves via LLM.
+        // Skip in Bypass mode so a retry after eviction re-resolves via LLM.
         let ck = decision_cache::cache_key(node_id, target, app_name);
-        if !force_resolve
+        if !cache_mode.is_bypass()
             && let Some(cached) = self
                 .read_decision_cache()
                 .element_resolution
@@ -119,13 +120,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             .collect::<Vec<_>>()
             .join("\n");
 
+        let json_only = super::prompts::JSON_ONLY_INSTRUCTION;
         let prompt = format!(
             "You are resolving a UI element name. The user wants to interact with: \"{target}\"{app_context}\n\
              \n\
              Available UI elements:\n\
              {elements_list}\n\
              \n\
-             Which element name matches what the user means? Return ONLY a JSON object:\n\
+             Which element name matches what the user means? {json_only}\n\
+             Schema:\n\
              {{\"name\": \"<exact element name from the list above>\"}}\n\
              \n\
              IMPORTANT: The name MUST be an exact match from the list above.\n\
@@ -260,13 +263,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             Self::format_tried_context(&tried, "indices")
         };
 
+        let json_only = super::prompts::JSON_ONLY_INSTRUCTION;
         let prompt = format!(
             "You need to click on \"{target}\"{app_context}.\n\
              \n\
              Multiple UI elements matched:\n\
              {matches_list}\n\
              \n\
-             Which element should be clicked? Return ONLY a JSON object:\n\
+             Which element should be clicked? {json_only}\n\
+             Schema:\n\
              {{\"index\": <number>}}\n\
              \n\
              Pick the element that is most likely the intended click target.\n\

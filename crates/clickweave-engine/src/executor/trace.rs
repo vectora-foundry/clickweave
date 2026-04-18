@@ -8,6 +8,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info};
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
+    /// Send an executor event to the UI channel.
+    ///
+    /// Uses `try_send` rather than `send().await` even though the agent
+    /// runner backpressures via `send().await`. The executor emits events
+    /// from many tight inner loops (per-tool logs, per-event trace writes)
+    /// that are not allowed to yield — inserting an `.await` here would
+    /// either require turning ~150 call sites async or wrapping them in
+    /// block-on shims. The downside is that a lagging UI can drop events;
+    /// the consumer must tolerate missed `Log` entries.
     pub(crate) fn emit(&self, event: ExecutorEvent) {
         if let Err(e) = self.event_tx.try_send(event) {
             error!("Failed to send executor event: {}", e);

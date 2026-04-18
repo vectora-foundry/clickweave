@@ -1,4 +1,5 @@
 use super::helpers::*;
+use crate::executor::app_resolve::CacheMode;
 use crate::executor::retry_context::RetryContext;
 use clickweave_core::AppKind;
 use uuid::Uuid;
@@ -18,7 +19,7 @@ async fn resolve_element_name_successful_match() {
             &available,
             Some("Calculator"),
             None,
-            false,
+            CacheMode::UseCache,
         )
         .await
         .unwrap(),
@@ -33,11 +34,11 @@ async fn resolve_element_name_caches_result() {
     let available = strs(&["Subtract", "Add"]);
     let node_id = Uuid::new_v4();
     let first = exec
-        .resolve_element_name(node_id, "−", &available, None, None, false)
+        .resolve_element_name(node_id, "−", &available, None, None, CacheMode::UseCache)
         .await
         .unwrap();
     let second = exec
-        .resolve_element_name(node_id, "−", &available, None, None, false)
+        .resolve_element_name(node_id, "−", &available, None, None, CacheMode::UseCache)
         .await
         .unwrap();
     assert_eq!(first, "Subtract");
@@ -54,7 +55,7 @@ async fn resolve_element_name_null_match_returns_error() {
             &strs(&["Multiply"]),
             None,
             None,
-            false,
+            CacheMode::UseCache,
         )
         .await
         .unwrap_err();
@@ -71,7 +72,7 @@ async fn resolve_element_name_rejects_hallucinated_name() {
             &strs(&["Multiply", "Divide"]),
             None,
             None,
-            false,
+            CacheMode::UseCache,
         )
         .await
         .unwrap_err();
@@ -88,7 +89,7 @@ async fn resolve_element_name_handles_code_block_wrapped_response() {
             &strs(&["All Clear", "Equals"]),
             Some("Calculator"),
             None,
-            false,
+            CacheMode::UseCache,
         )
         .await
         .unwrap(),
@@ -108,7 +109,7 @@ async fn resolve_element_name_handles_prose_wrapped_response() {
             &strs(&["Multiply", "Divide"]),
             None,
             None,
-            false,
+            CacheMode::UseCache,
         )
         .await
         .unwrap(),
@@ -132,7 +133,7 @@ async fn prepare_find_text_retry_full_flow() {
             &serde_json::json!({"text": "×", "app_name": "Calculator"}),
             AVAILABLE_ELEMENTS_RESPONSE,
             None,
-            false,
+            CacheMode::UseCache,
         )
         .await
         .expect("should produce retry args");
@@ -149,7 +150,7 @@ async fn prepare_find_text_retry_preserves_extra_fields() {
             &serde_json::json!({"text": "−", "app_name": "Calculator", "match_mode": "exact"}),
             "[]\n{\"available_elements\":[\"Add\",\"Subtract\"]}",
             None,
-            false,
+            CacheMode::UseCache,
         )
         .await
         .unwrap();
@@ -169,7 +170,7 @@ async fn prepare_find_text_retry_falls_back_to_focused_app() {
             &serde_json::json!({"text": "×"}),
             AVAILABLE_ELEMENTS_RESPONSE,
             None,
-            false,
+            CacheMode::UseCache,
         )
         .await
         .unwrap();
@@ -187,7 +188,7 @@ async fn prepare_find_text_retry_none_when_no_available_elements() {
             &serde_json::json!({"text": "×"}),
             "[{\"text\":\"×\",\"x\":100,\"y\":200}]",
             None,
-            false,
+            CacheMode::UseCache,
         )
         .await
         .is_none()
@@ -203,7 +204,7 @@ async fn prepare_find_text_retry_none_when_llm_finds_no_match() {
             &serde_json::json!({"text": "zzz"}),
             AVAILABLE_ELEMENTS_RESPONSE,
             None,
-            false,
+            CacheMode::UseCache,
         )
         .await
         .is_none()

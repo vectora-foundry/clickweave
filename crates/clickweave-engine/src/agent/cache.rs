@@ -5,10 +5,13 @@ use clickweave_core::cdp::CdpFindElementMatch;
 /// Generate a cache key from the goal and current page elements.
 ///
 /// The key combines the goal text with a page fingerprint so that the same
-/// page visited for different goals produces different cache keys.
+/// page visited for different goals produces different cache keys. The
+/// goal is trimmed and lowercased so trivial whitespace/casing differences
+/// (`"Login"` vs `" login "`) still hit the same cache entry.
 pub fn cache_key(goal: &str, elements: &[CdpFindElementMatch]) -> String {
     let fp = page_fingerprint(elements);
-    format!("{}|{}", goal, fp)
+    let normalized = goal.trim().to_lowercase();
+    format!("{}|{}", normalized, fp)
 }
 
 impl AgentCache {
@@ -76,9 +79,11 @@ impl AgentCache {
     /// entry's `produced_node_ids` Vec becomes empty the whole entry is
     /// evicted. Called by Clear-conversation and Selective-delete.
     ///
-    /// Legacy entries whose `produced_node_ids` was already empty from
-    /// disk are also dropped on first call — per D1.M2 they are harmless
-    /// to orphan and Clear-conversation wipes the file anyway.
+    /// Cache entries deserialized from disk with an empty
+    /// `produced_node_ids` are also dropped on first call: orphaned
+    /// entries are harmless (Clear-conversation wipes the file anyway)
+    /// but they never hit the lineage check, so eviction keeps the cache
+    /// from accumulating stale rows.
     pub fn evict_for_node(&mut self, node_id: uuid::Uuid) {
         self.entries.retain(|_, entry| {
             entry.produced_node_ids.retain(|id| *id != node_id);

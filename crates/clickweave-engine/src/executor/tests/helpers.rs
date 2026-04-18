@@ -199,7 +199,7 @@ impl Mcp for StubToolProvider {
         self.openai_schemas.clone()
     }
 
-    async fn refresh_tools(&self) -> anyhow::Result<()> {
+    async fn refresh_server_tool_list(&self) -> anyhow::Result<()> {
         Ok(())
     }
 }

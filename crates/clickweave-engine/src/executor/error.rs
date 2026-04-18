@@ -47,8 +47,22 @@ pub enum ExecutorError {
     #[error("Click target not found: {0}")]
     ClickTarget(String),
 
+    /// Generic CDP error — retained for paths where a more specific variant
+    /// isn't yet wired up.
     #[error("CDP error: {0}")]
     Cdp(String),
+
+    /// Quitting/killing/relaunching the CDP-capable app failed.
+    #[error("CDP relaunch failed for '{app_name}': {message}")]
+    CdpRelaunchFailed { app_name: String, message: String },
+
+    /// `cdp_connect` never succeeded within the configured retry budget.
+    #[error("Failed to connect CDP for '{app_name}' after {attempts} attempts: {last_error}")]
+    CdpConnectTimeout {
+        app_name: String,
+        attempts: u32,
+        last_error: String,
+    },
 
     #[error(
         "Ambiguous CDP target '{target}': {} candidates matched (uids: {})",

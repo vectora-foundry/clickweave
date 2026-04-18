@@ -7,8 +7,9 @@ use clickweave_mcp::ToolContent;
 use serde_json::Value;
 use tracing::debug;
 
-const SUPERVISION_SYSTEM_PROMPT: &str = "\
-You are supervising a UI automation workflow step by step. \
+fn supervision_system_prompt() -> String {
+    format!(
+        "You are supervising a UI automation workflow step by step. \
 After each step executes, you receive the step description and a visual observation \
 from a vision model describing the current screen state.
 
@@ -27,7 +28,10 @@ that the characters appeared somewhere on screen. Text landing in an unrelated \
 input (such as a search bar) means the typing step failed spatially even though \
 the characters were entered.
 
-Return ONLY a JSON object: {\"passed\": true/false, \"reasoning\": \"brief explanation\"}";
+{} Schema: {{\"passed\": true/false, \"reasoning\": \"brief explanation\"}}",
+        super::prompts::JSON_ONLY_INSTRUCTION,
+    )
+}
 
 /// Result of LLM step verification.
 pub(crate) struct VerificationResult {
@@ -188,7 +192,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             let mut history = retry_ctx.write_supervision_history();
 
             if history.is_empty() {
-                history.push(Message::system(SUPERVISION_SYSTEM_PROMPT));
+                history.push(Message::system(supervision_system_prompt()));
             }
 
             history.push(Message::user(step_message));
@@ -291,38 +295,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             }
         }
         None
-    }
-
-    /// Take a screenshot and extract both the image base64 and the screenshot_id
-    /// (used by find_image for server-side coordinate conversion).
-    #[allow(dead_code)]
-    pub(crate) async fn take_screenshot_with_id(
-        &self,
-        mcp: &(impl Mcp + ?Sized),
-        args: Value,
-    ) -> Option<(String, Option<String>)> {
-        let result = mcp.call_tool("take_screenshot", Some(args)).await.ok()?;
-        if result.is_error == Some(true) {
-            return None;
-        }
-        let mut image_b64 = None;
-        let mut screenshot_id = None;
-        for content in &result.content {
-            match content {
-                ToolContent::Image { data, .. } => {
-                    image_b64 = Some(data.clone());
-                }
-                ToolContent::Text { text } => {
-                    if let Ok(meta) = serde_json::from_str::<Value>(text)
-                        && let Some(id) = meta["screenshot_id"].as_str()
-                    {
-                        screenshot_id = Some(id.to_string());
-                    }
-                }
-                _ => {}
-            }
-        }
-        image_b64.map(|img| (img, screenshot_id))
     }
 }
 

@@ -36,15 +36,14 @@ pub(crate) struct RetryContext {
     /// the corresponding variables.
     pub completed_node_ids: Vec<(Uuid, String)>,
 
-    /// When true, skip the persistent decision cache during element and app
-    /// resolution so the executor re-resolves via LLM instead of replaying a
-    /// stale cached decision. Set after an eviction on retry; reset to false
-    /// after a node succeeds.
-    pub force_resolve: bool,
+    /// Whether the next resolve call should consult the persistent decision
+    /// cache. Set to [`CacheMode::Bypass`] after an eviction on retry; reset
+    /// to [`CacheMode::UseCache`] after a node succeeds.
+    pub cache_mode: super::app_resolve::CacheMode,
 
     /// Set to true when an AI step calls a focus-changing tool (launch_app,
     /// focus_window, quit_app). Used by post-AI-step logic to trigger a state
-    /// refresh (Task 11+).
+    /// refresh.
     pub focus_dirty: bool,
 
     /// Raw tool result text from the last deterministic MCP tool call.
@@ -69,7 +68,7 @@ impl RetryContext {
             supervision_history: RwLock::new(Vec::new()),
             runtime_verdicts: Vec::new(),
             completed_node_ids: Vec::new(),
-            force_resolve: false,
+            cache_mode: super::app_resolve::CacheMode::UseCache,
             focus_dirty: false,
             last_tool_result: None,
             cdp_ambiguity_overrides: RwLock::new(HashMap::new()),
@@ -111,13 +110,6 @@ impl RetryContext {
     pub fn write_tried_cdp_uids(&self) -> std::sync::RwLockWriteGuard<'_, Vec<String>> {
         self.tried_cdp_uids
             .write()
-            .unwrap_or_else(|e| e.into_inner())
-    }
-
-    #[allow(dead_code)] // Kept for API symmetry with write_supervision_history
-    pub fn read_supervision_history(&self) -> std::sync::RwLockReadGuard<'_, Vec<Message>> {
-        self.supervision_history
-            .read()
             .unwrap_or_else(|e| e.into_inner())
     }
 

@@ -1,7 +1,10 @@
+pub(crate) mod best_effort;
 pub(crate) mod cdp;
 mod click;
 mod hover;
 mod window;
+
+pub(crate) use best_effort::best_effort_tool_call;
 
 use super::retry_context::RetryContext;
 use super::{ExecutorError, ExecutorResult, Mcp, WorkflowExecutor};
@@ -661,7 +664,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     user_input,
                     mcp,
                     node_run.as_deref(),
-                    retry_ctx.force_resolve,
+                    retry_ctx.cache_mode,
                 )
                 .await?;
             // Upgrade app_kind if the node says Native but detection disagrees.
@@ -701,7 +704,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                         user_input,
                         mcp,
                         node_run.as_deref(),
-                        retry_ctx.force_resolve,
+                        retry_ctx.cache_mode,
                     )
                     .await?;
                 // Sync the CDP connection PID to the freshly resolved PID.
@@ -739,7 +742,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     user_input,
                     mcp,
                     node_run.as_deref(),
-                    retry_ctx.force_resolve,
+                    retry_ctx.cache_mode,
                 )
                 .await?;
             resolved_ss = NodeType::TakeScreenshot(TakeScreenshotParams {
@@ -871,7 +874,13 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     // short-circuits on the app name match and never connects
                     // to the new profile's Chrome instance.
                     if let Some((prev_name, _)) = self.cdp_connected_app.clone() {
-                        let _ = mcp.call_tool("cdp_disconnect", None).await;
+                        best_effort::best_effort_tool_call(
+                            mcp,
+                            "cdp_disconnect",
+                            None,
+                            "launch_app profile branch: force-disconnect before relaunch",
+                        )
+                        .await;
                         self.cdp_connected_app = None;
                         // The app was about to be killed for a profile
                         // relaunch — every remembered tab URL for any
@@ -1008,7 +1017,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     &result_text,
                     mcp,
                     node_run.as_deref(),
-                    retry_ctx.force_resolve,
+                    retry_ctx.cache_mode,
                 )
                 .await
                 .unwrap_or(result_text)

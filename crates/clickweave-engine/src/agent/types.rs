@@ -4,6 +4,19 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+/// Default ceiling on agent observe-act iterations. Chosen to cover typical
+/// multi-step tasks (login → action → confirm) with headroom while keeping a
+/// runaway loop from burning through an LLM budget. Callers set a larger
+/// value explicitly for research/automation tasks that need more steps.
+const DEFAULT_MAX_STEPS: usize = 30;
+/// Default consecutive-error budget before the agent aborts. Low on purpose
+/// — hitting three errors in a row almost always means the strategy is
+/// wrong rather than that one more retry would recover.
+const DEFAULT_MAX_CONSECUTIVE_ERRORS: usize = 3;
+/// Default consecutive-destructive-tool cap. Three irreversible actions in
+/// a row is the circuit-breaker point where the operator should review.
+const DEFAULT_CONSECUTIVE_DESTRUCTIVE_CAP: usize = 3;
+
 /// Events emitted by the agent loop during execution.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -40,6 +53,12 @@ pub enum AgentEvent {
     },
     /// An automatic sub-action performed by the agent (e.g. CDP auto-connect
     /// probing, quitting, relaunching). Not a user-approved step.
+    ///
+    /// Emitted twice per sub-call: once before the MCP call (summary
+    /// describes the intent) and once after (summary describes the
+    /// outcome, including a failure reason when applicable). UI layers
+    /// that want to render "started vs completed" pairs can match on the
+    /// summary prefix.
     SubAction {
         tool_name: String,
         summary: String,
@@ -120,11 +139,11 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            max_steps: 30,
-            max_consecutive_errors: 3,
+            max_steps: DEFAULT_MAX_STEPS,
+            max_consecutive_errors: DEFAULT_MAX_CONSECUTIVE_ERRORS,
             build_workflow: true,
             use_cache: true,
-            consecutive_destructive_cap: 3,
+            consecutive_destructive_cap: DEFAULT_CONSECUTIVE_DESTRUCTIVE_CAP,
         }
     }
 }
@@ -169,16 +188,6 @@ impl AgentCommand {
             _ => "unknown",
         }
     }
-}
-
-/// Truncate text to `max_chars`, snapping to a character boundary.
-/// Returns the original text if it fits within the limit.
-pub fn truncate_summary(text: &str, max_chars: usize) -> String {
-    if text.len() <= max_chars {
-        return text.to_string();
-    }
-    let end = text.floor_char_boundary(max_chars);
-    format!("{}...", &text[..end])
 }
 
 /// Mutable state accumulated during an agent run.
@@ -359,28 +368,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn truncate_summary_short_text_unchanged() {
-        assert_eq!(truncate_summary("hello", 10), "hello");
-    }
-
-    #[test]
-    fn truncate_summary_long_text_truncated() {
-        let long = "a".repeat(200);
-        let result = truncate_summary(&long, 50);
-        assert!(result.len() < 60);
-        assert!(result.ends_with("..."));
-    }
-
-    #[test]
-    fn truncate_summary_multibyte_snaps_to_boundary() {
-        // 3 bytes per char × 4 = 12 bytes; truncate at 5 snaps to char boundary
-        let text = "café!"; // 'é' is 2 bytes
-        let result = truncate_summary(text, 4);
-        assert!(result.ends_with("..."));
-        // Should not panic or split a multibyte char
-    }
-
-    #[test]
     fn disagreement_confirmed_is_completed() {
         let reason = TerminalReason::DisagreementConfirmed {
             agent_summary: "clicked Submit".to_string(),
@@ -460,7 +447,8 @@ mod tests {
 
     #[test]
     fn cached_decision_missing_produced_node_ids_defaults_to_empty() {
-        // Legacy cache entries have no produced_node_ids field.
+        // Cache entries serialized before the `produced_node_ids` field
+        // was introduced must still deserialize (with an empty lineage Vec).
         let json = r#"{
             "tool_name": "click",
             "arguments": {"uid": "1_0"},
@@ -470,7 +458,7 @@ mod tests {
         let d: CachedDecision = serde_json::from_str(json).unwrap();
         assert!(
             d.produced_node_ids.is_empty(),
-            "legacy cache entries must deserialize with empty produced_node_ids"
+            "entries missing the field must deserialize with empty produced_node_ids"
         );
     }
 }

@@ -7,7 +7,7 @@
 
 use super::error::{CandidateView, CdpCandidate, ExecutorError, ExecutorResult, Rect};
 use super::{Mcp, WorkflowExecutor};
-use clickweave_core::{ArtifactKind, NodeRun, TraceEvent, TraceLevel};
+use clickweave_core::{ArtifactKind, NodeRun, TraceLevel};
 use clickweave_llm::{ChatBackend, ChatOptions, Message};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -45,8 +45,9 @@ struct SidecarRecord {
     screenshot_path: String,
 }
 
-const DISAMBIGUATION_PROMPT: &str = "\
-You are helping a UI automation agent pick the correct element when its \
+fn disambiguation_prompt() -> String {
+    format!(
+        "You are helping a UI automation agent pick the correct element when its \
 accessibility-tree resolver matched more than one candidate for the same \
 target label.\n\n\
 You receive:\n\
@@ -58,8 +59,11 @@ coordinates (x, y, width, height — in CSS pixels, top-left origin).\n\n\
 Pick the candidate that best matches what the agent likely meant. Prefer \
 candidates that are clearly visible, sit in a primary action area, and have \
 reasonable dimensions. Avoid candidates that are off-screen or zero-sized.\n\n\
-Respond with ONLY a JSON object (no markdown fences):\n\
-{\"chosen_uid\": \"<uid>\", \"reasoning\": \"<1-2 sentence justification>\"}";
+{}\n\
+Schema: {{\"chosen_uid\": \"<uid>\", \"reasoning\": \"<1-2 sentence justification>\"}}",
+        super::prompts::JSON_ONLY_INSTRUCTION,
+    )
+}
 
 impl<C: ChatBackend> WorkflowExecutor<C> {
     /// Run the full disambiguation routine and return the chosen uid plus the
@@ -166,7 +170,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         );
 
         let messages = vec![
-            Message::system(DISAMBIGUATION_PROMPT),
+            Message::system(disambiguation_prompt()),
             Message::user_with_images(user_text, vec![(prepared_b64, mime)]),
         ];
 
@@ -267,16 +271,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
             "viewport_height": viewport.height,
             "screenshot_path": screenshot_filename,
         });
-        if let Some(run) = node_run.as_deref() {
-            let event = TraceEvent {
-                timestamp: Self::now_millis(),
-                event_type: "ambiguity_resolved".to_string(),
-                payload,
-            };
-            if let Err(e) = self.storage.append_event(run, &event) {
-                tracing::warn!("Failed to append ambiguity_resolved event: {}", e);
-            }
-        }
+        self.record_event(node_run.as_deref(), "ambiguity_resolved", payload);
 
         screenshot_filename
     }

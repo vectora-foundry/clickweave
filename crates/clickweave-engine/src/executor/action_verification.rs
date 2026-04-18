@@ -219,8 +219,10 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
              this assertion is true:\n\n\
              Assertion: \"{}\"\n\
              Observation: \"{}\"\n\n\
-             Return ONLY a JSON object: {{\"verified\": true/false, \"reasoning\": \"brief explanation\"}}",
-            assertion, observation
+             {} Schema: {{\"verified\": true/false, \"reasoning\": \"brief explanation\"}}",
+            assertion,
+            observation,
+            super::prompts::JSON_ONLY_INSTRUCTION,
         );
 
         let judge_messages = vec![Message::user(judge_prompt)];

@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clickweave_core::cdp::{CdpFindElementMatch, CdpFindElementsResponse};
@@ -13,7 +12,7 @@ use tracing::{debug, info, warn};
 use super::completion_check::{VlmVerdict, build_completion_prompt, parse_yes_no};
 use super::context;
 use super::permissions::{PermissionAction, PermissionPolicy, ToolAnnotations, evaluate};
-use super::prompt;
+use super::prompt::{self, truncate_summary};
 use super::recovery::{self, RecoveryAction};
 use super::transition;
 use super::types::*;
@@ -59,6 +58,15 @@ enum ApprovalResult {
     Unavailable,
 }
 
+/// State of the consecutive-destructive-tool cap after a tool call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CapStatus {
+    /// Streak is still below the cap — run continues normally.
+    Armed,
+    /// Cap reached — the caller must emit the cap-hit event and halt.
+    CapReached,
+}
+
 /// Build an index from tool name → MCP annotations from the raw tool
 /// JSON list produced by `mcp.tools_as_openai()`. Tools without an
 /// `annotations` block produce the default (all-`None`) struct.
@@ -75,6 +83,10 @@ fn build_annotations_index(mcp_tools: &[Value]) -> HashMap<String, ToolAnnotatio
             .or_else(|| tool.get("name"))
             .and_then(|v| v.as_str());
         let Some(name) = name else {
+            warn!(
+                tool = %tool,
+                "MCP tool entry missing 'name' — skipping annotations",
+            );
             continue;
         };
         index.insert(name.to_string(), ToolAnnotations::from_tool_json(tool));
@@ -101,7 +113,7 @@ pub struct AgentRunner<'a, B: ChatBackend> {
     event_tx: Option<mpsc::Sender<AgentEvent>>,
     approval_gate: Option<ApprovalGate>,
     /// Optional VLM backend used to verify `agent_done` against a fresh
-    /// screenshot. Disabled = legacy behaviour (agent's self-report wins).
+    /// screenshot. When `None`, the agent's self-reported `agent_done` stands.
     vision: Option<&'a B>,
     /// Permission policy consulted before every non-observation tool call.
     /// The default policy has no rules, allow_all = false, and
@@ -200,10 +212,12 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     /// slows down when the consumer falls behind, rather than dropping
     /// events that the UI depends on for workflow state.
     async fn emit_event(&self, event: AgentEvent) {
-        if let Some(tx) = &self.event_tx
-            && let Err(e) = tx.send(event).await
-        {
-            warn!("Failed to emit agent event: {}", e);
+        let Some(tx) = &self.event_tx else { return };
+        if tx.is_closed() {
+            return;
+        }
+        if let Err(e) = tx.send(event).await {
+            warn!("Failed to emit agent event (channel closed): {e}");
         }
     }
 
@@ -226,19 +240,18 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     }
 
     /// Update the consecutive-destructive-call tracker after a successful
-    /// tool call. Returns true when the cap is configured and has been
-    /// reached, meaning the caller should halt the run.
+    /// tool call, and report whether the cap has now been hit.
     ///
     /// `destructive_hint == Some(true)` increments the streak; anything
     /// else resets it. A cap value of `0` disables the feature entirely,
-    /// so the method is a no-op in that case.
-    fn record_destructive_and_check_cap(
+    /// so the method always returns `CapStatus::Armed` in that case.
+    fn maybe_halt_on_destructive_cap(
         &mut self,
         tool_name: &str,
         annotations_by_tool: &HashMap<String, ToolAnnotations>,
-    ) -> bool {
+    ) -> CapStatus {
         if self.config.consecutive_destructive_cap == 0 {
-            return false;
+            return CapStatus::Armed;
         }
         let destructive = annotations_by_tool
             .get(tool_name)
@@ -251,13 +264,17 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         } else {
             self.state.recent_destructive_tools.clear();
         }
-        self.state.recent_destructive_tools.len() >= self.config.consecutive_destructive_cap
+        if self.state.recent_destructive_tools.len() >= self.config.consecutive_destructive_cap {
+            CapStatus::CapReached
+        } else {
+            CapStatus::Armed
+        }
     }
 
     /// Halt the run because the consecutive-destructive cap was reached.
     /// Emits the cap-hit event and sets the terminal reason. Called once
-    /// when `record_destructive_and_check_cap` reports the cap has been
-    /// hit. Clears `recent_destructive_tools` afterwards so state serialization
+    /// when `maybe_halt_on_destructive_cap` reports `CapStatus::CapReached`.
+    /// Clears `recent_destructive_tools` afterwards so state serialization
     /// reflects the drained streak.
     async fn emit_destructive_cap_hit(&mut self) {
         let recent = std::mem::take(&mut self.state.recent_destructive_tools);
@@ -578,9 +595,12 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                                 // Destructive-cap accounting: the cached
                                 // replay counts toward the streak just like
                                 // a live tool call.
-                                if self.record_destructive_and_check_cap(
-                                    &cached_tool,
-                                    &annotations_by_tool,
+                                if matches!(
+                                    self.maybe_halt_on_destructive_cap(
+                                        &cached_tool,
+                                        &annotations_by_tool,
+                                    ),
+                                    CapStatus::CapReached
                                 ) {
                                     self.emit_destructive_cap_hit().await;
                                     break;
@@ -714,7 +734,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                     })
                     .await;
 
-                    let mut cap_hit = false;
+                    let mut cap_status = CapStatus::Armed;
                     if let AgentCommand::ToolCall {
                         tool_name,
                         arguments,
@@ -760,10 +780,10 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                                 }
                             }
                         }
-                        cap_hit =
-                            self.record_destructive_and_check_cap(tool_name, &annotations_by_tool);
+                        cap_status =
+                            self.maybe_halt_on_destructive_cap(tool_name, &annotations_by_tool);
                     }
-                    if cap_hit {
+                    if matches!(cap_status, CapStatus::CapReached) {
                         self.emit_destructive_cap_hit().await;
                         break;
                     }
@@ -940,11 +960,27 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         {
             Ok(result) if result.is_error != Some(true) => {
                 let text = extract_result_text(&result);
-                if let Ok(parsed) = serde_json::from_str::<CdpFindElementsResponse>(&text) {
-                    self.state.current_url = parsed.page_url;
-                    return parsed.matches;
+                match serde_json::from_str::<CdpFindElementsResponse>(&text) {
+                    Ok(parsed) => {
+                        self.state.current_url = parsed.page_url;
+                        return parsed.matches;
+                    }
+                    Err(parse_err) => {
+                        // Falling through to "empty page" is the right
+                        // runtime behaviour, but a schema drift in the MCP
+                        // server looks identical to a genuinely empty page
+                        // from the agent's perspective. Surface the parse
+                        // failure so the operator can tell them apart.
+                        debug!(error = %parse_err, "Failed to parse cdp_find_elements response");
+                        self.emit_event(AgentEvent::Warning {
+                            message: format!(
+                                "cdp_find_elements response failed to parse: {} — continuing with empty elements",
+                                parse_err
+                            ),
+                        })
+                        .await;
+                    }
                 }
-                debug!("Failed to parse cdp_find_elements response");
             }
             Ok(result) => {
                 let text = extract_result_text(&result);
@@ -999,8 +1035,20 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             })
             .await;
             let probe_text = match mcp.call_tool("probe_app", Some(probe_args)).await {
-                Ok(r) => extract_result_text(&r),
+                Ok(r) => {
+                    self.emit_event(AgentEvent::SubAction {
+                        tool_name: "probe_app".to_string(),
+                        summary: format!("Auto: probed {} (ok)", app_name),
+                    })
+                    .await;
+                    extract_result_text(&r)
+                }
                 Err(e) => {
+                    self.emit_event(AgentEvent::SubAction {
+                        tool_name: "probe_app".to_string(),
+                        summary: format!("Auto: probe_app failed for {}: {}", app_name, e),
+                    })
+                    .await;
                     debug!(app = app_name, error = %e, "probe_app failed, skipping CDP");
                     return None;
                 }
@@ -1035,12 +1083,21 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         })
         .await;
         let quit_args = serde_json::json!({"app_name": app_name});
-        let _ = mcp.call_tool("quit_app", Some(quit_args)).await;
+        let quit_outcome = mcp.call_tool("quit_app", Some(quit_args)).await;
+        let quit_summary = match &quit_outcome {
+            Ok(_) => format!("Auto: quit_app dispatched for {} (ok)", app_name),
+            Err(e) => format!("Auto: quit_app failed for {}: {}", app_name, e),
+        };
+        self.emit_event(AgentEvent::SubAction {
+            tool_name: "quit_app".to_string(),
+            summary: quit_summary,
+        })
+        .await;
 
-        // Poll until the app has exited (10s graceful, then force-quit)
+        use crate::executor::deterministic::cdp as cdp_cfg;
         let mut quit_confirmed = false;
-        for _ in 0..20 {
-            tokio::time::sleep(Duration::from_millis(500)).await;
+        for _ in 0..cdp_cfg::APP_QUIT_MAX_ATTEMPTS {
+            tokio::time::sleep(cdp_cfg::APP_QUIT_POLL_INTERVAL).await;
             let list_args = serde_json::json!({"app_name": app_name, "user_apps_only": true});
             if let Ok(r) = mcp.call_tool("list_apps", Some(list_args)).await {
                 let text = extract_result_text(&r);
@@ -1053,8 +1110,14 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         if !quit_confirmed {
             warn!(app = app_name, "App did not quit within 10s, force-killing");
             let force_args = serde_json::json!({"app_name": app_name, "force": true});
-            let _ = mcp.call_tool("quit_app", Some(force_args)).await;
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            crate::executor::deterministic::best_effort_tool_call(
+                mcp,
+                "quit_app",
+                Some(force_args),
+                "agent force-quit during CDP auto-connect",
+            )
+            .await;
+            tokio::time::sleep(cdp_cfg::APP_FORCE_QUIT_GRACE).await;
         }
 
         // Relaunch with debug port
@@ -1068,24 +1131,51 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             "args": [format!("--remote-debugging-port={}", port)],
         });
         match mcp.call_tool("launch_app", Some(launch_args)).await {
-            Ok(r) if r.is_error != Some(true) => {}
+            Ok(r) if r.is_error != Some(true) => {
+                self.emit_event(AgentEvent::SubAction {
+                    tool_name: "launch_app".to_string(),
+                    summary: format!("Auto: relaunched {} (ok)", app_name),
+                })
+                .await;
+            }
             Ok(r) => {
                 let err = extract_result_text(&r);
                 warn!(app = app_name, error = %err, "Relaunch with debug port failed");
+                self.emit_event(AgentEvent::SubAction {
+                    tool_name: "launch_app".to_string(),
+                    summary: format!("Auto: relaunch failed for {}: {}", app_name, err),
+                })
+                .await;
                 let fallback = serde_json::json!({"app_name": app_name});
-                let _ = mcp.call_tool("launch_app", Some(fallback)).await;
+                crate::executor::deterministic::best_effort_tool_call(
+                    mcp,
+                    "launch_app",
+                    Some(fallback),
+                    "agent fallback relaunch (server rejected debug-port args)",
+                )
+                .await;
                 return None;
             }
             Err(e) => {
                 warn!(app = app_name, error = %e, "Relaunch with debug port failed");
+                self.emit_event(AgentEvent::SubAction {
+                    tool_name: "launch_app".to_string(),
+                    summary: format!("Auto: relaunch failed for {}: {}", app_name, e),
+                })
+                .await;
                 let fallback = serde_json::json!({"app_name": app_name});
-                let _ = mcp.call_tool("launch_app", Some(fallback)).await;
+                crate::executor::deterministic::best_effort_tool_call(
+                    mcp,
+                    "launch_app",
+                    Some(fallback),
+                    "agent fallback relaunch (transport error)",
+                )
+                .await;
                 return None;
             }
         }
 
-        // Wait for the app to finish starting
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        tokio::time::sleep(cdp_cfg::APP_RELAUNCH_WARMUP).await;
 
         self.emit_event(AgentEvent::SubAction {
             tool_name: "cdp_connect".to_string(),
@@ -1094,19 +1184,30 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         .await;
         if self.cdp_connect_with_retries(port, mcp).await {
             info!(app = app_name, port, "CDP connected");
+            self.emit_event(AgentEvent::SubAction {
+                tool_name: "cdp_connect".to_string(),
+                summary: format!("Auto: CDP connected on port {} (ok)", port),
+            })
+            .await;
             Some(port)
         } else {
             warn!(app = app_name, port, "CDP connection failed after retries");
+            self.emit_event(AgentEvent::SubAction {
+                tool_name: "cdp_connect".to_string(),
+                summary: format!("Auto: CDP connect failed on port {}", port),
+            })
+            .await;
             None
         }
     }
 
     /// Attempt `cdp_connect` with retries, returning true on success.
     async fn cdp_connect_with_retries(&self, port: u16, mcp: &(impl Mcp + ?Sized)) -> bool {
+        use crate::executor::deterministic::cdp as cdp_cfg;
         let args = serde_json::json!({"port": port});
-        for attempt in 0..10 {
+        for attempt in 0..cdp_cfg::CDP_CONNECT_MAX_ATTEMPTS {
             if attempt > 0 {
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::time::sleep(cdp_cfg::CDP_CONNECT_RETRY_INTERVAL).await;
             }
             match mcp.call_tool("cdp_connect", Some(args.clone())).await {
                 Ok(r) if r.is_error != Some(true) => return true,
@@ -1304,7 +1405,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             // Refresh the client-side cache (not the agent's LLM tools
             // vec) so observation gates like `has_tool("cdp_find_elements")`
             // see tools surfaced by the server post-connect.
-            if let Err(e) = mcp.refresh_tools().await {
+            if let Err(e) = mcp.refresh_server_tool_list().await {
                 warn!(error = %e, "Post-CDP-connect client tool-cache refresh failed");
             }
         }
@@ -1742,7 +1843,7 @@ mod resolve_cdp_target_tests {
         fn tools_as_openai(&self) -> Vec<Value> {
             Vec::new()
         }
-        async fn refresh_tools(&self) -> anyhow::Result<()> {
+        async fn refresh_server_tool_list(&self) -> anyhow::Result<()> {
             Ok(())
         }
     }

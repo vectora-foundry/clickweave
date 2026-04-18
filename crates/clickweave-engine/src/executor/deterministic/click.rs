@@ -1,4 +1,5 @@
 use super::super::Mcp;
+use super::super::app_resolve::CacheMode;
 use super::super::retry_context::RetryContext;
 use super::super::{ExecutorError, ExecutorResult, WorkflowExecutor};
 use super::truncate_for_error;
@@ -84,7 +85,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     &result_text,
                     mcp,
                     node_run.as_deref(),
-                    retry_ctx.force_resolve,
+                    retry_ctx.cache_mode,
                 )
                 .await
         {
@@ -188,114 +189,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         Ok((x, y))
     }
 
-    /// Resolve a target by image template matching. Returns `(x, y)` coordinates.
-    #[allow(dead_code)]
-    pub(in crate::executor) async fn resolve_target_by_image(
-        &self,
-        template_b64: &str,
-        mcp: &(impl Mcp + ?Sized),
-        node_run: &mut Option<&mut NodeRun>,
-    ) -> ExecutorResult<(f64, f64)> {
-        self.log("Resolving target by image template".to_string());
-
-        let app_name = self.focused_app_name();
-        let screenshot_args = match &app_name {
-            Some(name) => serde_json::json!({ "app_name": name }),
-            None => serde_json::json!({}),
-        };
-        let (screenshot_b64, screenshot_id) = self
-            .take_screenshot_with_id(mcp, screenshot_args)
-            .await
-            .ok_or(ExecutorError::ClickTarget(
-                "Failed to take screenshot for image template matching".to_string(),
-            ))?;
-
-        let mut find_args = serde_json::json!({
-            "template_image_base64": template_b64,
-            "threshold": 0.75,
-            "max_results": 1,
-        });
-        // Prefer screenshot_id (avoids re-sending the full image and provides
-        // metadata for screen coordinate conversion). Fall back to base64.
-        if let Some(id) = &screenshot_id {
-            find_args["screenshot_id"] = serde_json::Value::String(id.clone());
-        } else {
-            find_args["screenshot_image_base64"] = serde_json::Value::String(screenshot_b64);
-        }
-
-        self.record_event(
-            node_run.as_deref(),
-            "tool_call",
-            serde_json::json!({"name": "find_image", "args": {
-                "threshold": 0.75,
-                "max_results": 1,
-                "has_template": true,
-            }}),
-        );
-
-        let result = mcp
-            .call_tool("find_image", Some(find_args))
-            .await
-            .map_err(|e| ExecutorError::ClickTarget(format!("find_image failed: {}", e)))?;
-        Self::check_tool_error(&result, "find_image")?;
-
-        let result_text = Self::extract_result_text(&result);
-
-        self.record_event(
-            node_run.as_deref(),
-            "tool_result",
-            serde_json::json!({
-                "name": "find_image",
-                "text": Self::truncate_for_trace(&result_text, 8192),
-                "text_len": result_text.len(),
-            }),
-        );
-
-        let parsed: Value = serde_json::from_str(&result_text).map_err(|e| {
-            ExecutorError::ClickTarget(format!("Failed to parse find_image result: {}", e))
-        })?;
-
-        let matches = parsed["matches"].as_array().ok_or_else(|| {
-            ExecutorError::ClickTarget("find_image returned no matches array".to_string())
-        })?;
-        let best = matches
-            .first()
-            .ok_or_else(|| ExecutorError::ClickTarget("find_image found no matches".to_string()))?;
-
-        let x = best["screen_x"]
-            .as_f64()
-            .or_else(|| best["center"]["x"].as_f64())
-            .ok_or(ExecutorError::ClickTarget(
-                "Missing x in find_image match".to_string(),
-            ))?;
-        let y = best["screen_y"]
-            .as_f64()
-            .or_else(|| best["center"]["y"].as_f64())
-            .ok_or(ExecutorError::ClickTarget(
-                "Missing y in find_image match".to_string(),
-            ))?;
-
-        self.log(format!(
-            "Resolved image target -> ({}, {}), score={}",
-            x,
-            y,
-            best["score"].as_f64().unwrap_or(0.0)
-        ));
-
-        self.record_event(
-            node_run.as_deref(),
-            "target_resolved",
-            serde_json::json!({
-                "method": "find_image",
-                "x": x,
-                "y": y,
-                "score": best["score"],
-            }),
-        );
-
-        Ok((x, y))
-    }
-
     /// Try to resolve a failed find_text query by asking the LLM to match
     /// against available accessibility element names, then retry.
     /// Returns the retry result text on success, or None if resolution wasn't
@@ -310,7 +203,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         original_result_text: &str,
         mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
-        force_resolve: bool,
+        cache_mode: CacheMode,
     ) -> Option<String> {
         let retry_args = self
             .prepare_find_text_retry(
@@ -318,7 +211,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 original_args,
                 original_result_text,
                 node_run,
-                force_resolve,
+                cache_mode,
             )
             .await?;
         let retry_result = mcp.call_tool("find_text", Some(retry_args)).await.ok()?;
@@ -340,7 +233,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         original_args: &Value,
         original_result_text: &str,
         node_run: Option<&NodeRun>,
-        force_resolve: bool,
+        cache_mode: CacheMode,
     ) -> Option<Value> {
         let target = original_args.get("text")?.as_str()?;
         let available =
@@ -358,7 +251,7 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 &available,
                 scoped_app.as_deref(),
                 node_run,
-                force_resolve,
+                cache_mode,
             )
             .await
             .ok()?;
