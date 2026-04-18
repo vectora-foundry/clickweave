@@ -75,6 +75,29 @@ enum CapStatus {
     CapReached,
 }
 
+/// Control signal returned from [`AgentRunner::try_replay_cache`].
+///
+/// `Continue` means the replay handled this iteration (either succeeded or
+/// recorded a policy-reject / approval-reject step) and the loop should
+/// `continue`. `Break` means a terminal condition was reached (approval
+/// unavailable, max-errors, destructive cap). `FellThrough` means the loop
+/// should keep going to the LLM.
+enum ReplayResult {
+    Continue,
+    Break,
+    FellThrough,
+}
+
+/// Control signal returned from [`AgentRunner::handle_step_outcome`].
+///
+/// `Break` signals the outer step loop should exit (loop-detection,
+/// max-errors, completion disagreement, destructive cap, or successful
+/// completion). `Continue` keeps the loop running.
+enum StepFlow {
+    Break,
+    Continue,
+}
+
 /// Build an index from tool name → MCP annotations from the raw tool
 /// JSON list produced by `mcp.tools_as_openai()`. Tools without an
 /// `annotations` block produce the default (all-`None`) struct.
@@ -434,235 +457,23 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             //    - Skip if the same cache key was just replayed (prevents infinite loops)
             //    - Approval-gated tools still require user approval on replay
             //    - Post-tool hooks (auto_connect_cdp) run after replay
-            if self.config.use_cache && !elements.is_empty() {
-                let current_key = super::cache::cache_key(&goal, &elements);
-                let is_repeat = last_cache_key.as_ref() == Some(&current_key);
-
-                if !is_repeat && let Some(cached) = self.cache.lookup(&goal, &elements) {
-                    // Skip observation tools that may exist in old cache files
-                    // from before the write-side filter was added.
-                    if Self::is_observation_tool(&cached.tool_name, &annotations_by_tool) {
-                        debug!(
-                            tool = %cached.tool_name,
-                            "Skipping cached observation tool (stale entry)"
-                        );
-                    } else {
-                        let cached_tool = cached.tool_name.clone();
-                        let cached_args = cached.arguments.clone();
-                        debug!(
-                            tool = %cached_tool,
-                            hits = cached.hit_count,
-                            "Cache hit — replaying cached decision"
-                        );
-
-                        // Approval-gated tools must be re-approved on replay.
-                        // The permission policy decides whether to skip the
-                        // prompt (Allow), hard-reject (Deny), or prompt (Ask).
-                        let needs_approval =
-                            !Self::is_observation_tool(&cached_tool, &annotations_by_tool);
-                        if needs_approval {
-                            let policy_action =
-                                self.policy_for(&cached_tool, &cached_args, &annotations_by_tool);
-                            if matches!(policy_action, PermissionAction::Deny) {
-                                // Hard policy reject: fail the step, drop
-                                // the cached entry so the next iteration
-                                // does not re-hit it, and continue the loop
-                                // — same as any other step error.
-                                self.cache.remove(&goal, &elements);
-                                last_cache_key = None;
-                                let err_msg =
-                                    format!("Tool `{}` denied by permission policy", cached_tool);
-                                warn!(
-                                    tool = %cached_tool,
-                                    "Cached tool denied by permission policy"
-                                );
-                                let command = AgentCommand::ToolCall {
-                                    tool_name: cached_tool.clone(),
-                                    arguments: cached_args.clone(),
-                                    tool_call_id: format!("cache-{}", step_index),
-                                };
-                                self.emit_event(AgentEvent::StepFailed {
-                                    step_index,
-                                    tool_name: cached_tool.clone(),
-                                    error: err_msg.clone(),
-                                })
-                                .await;
-                                let step = AgentStep {
-                                    index: step_index,
-                                    elements: elements.clone(),
-                                    command,
-                                    outcome: StepOutcome::Error(err_msg.clone()),
-                                    page_url: self.state.current_url.clone(),
-                                };
-                                self.state.steps.push(step);
-                                self.state.consecutive_errors += 1;
-                                previous_result = Some(format!("Error: {}", err_msg));
-                                let action = recovery::recovery_strategy(
-                                    self.state.consecutive_errors,
-                                    self.config.max_consecutive_errors,
-                                );
-                                if matches!(action, RecoveryAction::Abort) {
-                                    self.state.terminal_reason =
-                                        Some(TerminalReason::MaxErrorsReached {
-                                            consecutive_errors: self.state.consecutive_errors,
-                                        });
-                                    break;
-                                }
-                                continue;
-                            }
-                            if matches!(policy_action, PermissionAction::Ask) {
-                                match self
-                                    .request_approval(
-                                        &cached_tool,
-                                        &cached_args,
-                                        step_index,
-                                        " (cached)",
-                                    )
-                                    .await
-                                {
-                                    Some(ApprovalResult::Rejected) => {
-                                        // Evict the rejected entry so the next
-                                        // iteration falls through to the LLM
-                                        // instead of re-prompting the same
-                                        // cached action in an approval loop.
-                                        self.cache.remove(&goal, &elements);
-                                        last_cache_key = None;
-                                        let command = AgentCommand::ToolCall {
-                                            tool_name: cached_tool.clone(),
-                                            arguments: cached_args.clone(),
-                                            tool_call_id: format!("cache-{}", step_index),
-                                        };
-                                        let step = AgentStep {
-                                            index: step_index,
-                                            elements: elements.clone(),
-                                            command,
-                                            outcome: StepOutcome::Replan(
-                                                "User rejected cached action".to_string(),
-                                            ),
-                                            page_url: self.state.current_url.clone(),
-                                        };
-                                        self.state.steps.push(step);
-                                        previous_result =
-                                            Some("Replan: user rejected cached action".to_string());
-                                        continue;
-                                    }
-                                    Some(ApprovalResult::Unavailable) => {
-                                        self.state.terminal_reason =
-                                            Some(TerminalReason::ApprovalUnavailable);
-                                        break;
-                                    }
-                                    // Approved or no gate configured
-                                    _ => {}
-                                }
-                            }
-                            // PermissionAction::Allow: skip approval entirely.
-                        }
-
-                        match mcp.call_tool(&cached_tool, Some(cached_args.clone())).await {
-                            Ok(result) if !result.is_error.unwrap_or(false) => {
-                                let result_text = extract_result_text(&result);
-                                let tool_call_id = format!("cache-{}", step_index);
-                                let command = AgentCommand::ToolCall {
-                                    tool_name: cached_tool.clone(),
-                                    arguments: cached_args.clone(),
-                                    tool_call_id: tool_call_id.clone(),
-                                };
-
-                                // Rebuild workflow node for this run — the cache
-                                // stores decisions across runs, so the current
-                                // workflow needs the replayed action as a node.
-                                let produced_node_id_on_replay = if self.config.build_workflow {
-                                    self.add_workflow_node(
-                                        &cached_tool,
-                                        &cached_args,
-                                        &mcp_tools,
-                                        &annotations_by_tool,
-                                    )
-                                    .await
-                                } else {
-                                    None
-                                };
-                                // Append the replayed node to the cached entry's
-                                // lineage so selective delete can still evict the
-                                // right entry later.
-                                if let Some(node_id) = produced_node_id_on_replay
-                                    && let Some(entry) = self.cache.entries.get_mut(&current_key)
-                                {
-                                    entry.produced_node_ids.push(node_id);
-                                    entry.hit_count += 1;
-                                }
-
-                                // Reconstruct transcript so the LLM sees the full
-                                // action history, not just the raw result text.
-                                self.messages.push(Message::assistant_tool_calls(vec![
-                                    clickweave_llm::ToolCall {
-                                        id: tool_call_id.clone(),
-                                        call_type: clickweave_llm::CallType::Function,
-                                        function: clickweave_llm::FunctionCall {
-                                            name: cached_tool.clone(),
-                                            arguments: cached_args.clone(),
-                                        },
-                                    },
-                                ]));
-                                self.messages
-                                    .push(Message::tool_result(&tool_call_id, &result_text));
-
-                                // Emit live step event for cached replay
-                                self.emit_event(AgentEvent::StepCompleted {
-                                    step_index,
-                                    tool_name: cached_tool.clone(),
-                                    summary: truncate_summary(&result_text, 120),
-                                })
-                                .await;
-
-                                self.maybe_cdp_connect(
-                                    &cached_tool,
-                                    &cached_args,
-                                    &result_text,
-                                    mcp,
-                                )
-                                .await;
-
-                                let step = AgentStep {
-                                    index: step_index,
-                                    elements: elements.clone(),
-                                    command,
-                                    outcome: StepOutcome::Success(result_text.clone()),
-                                    page_url: self.state.current_url.clone(),
-                                };
-                                self.state.steps.push(step);
-                                self.state.consecutive_errors = 0;
-                                last_failure = None;
-                                previous_result = Some(result_text);
-                                last_cache_key = Some(current_key);
-
-                                // Destructive-cap accounting: the cached
-                                // replay counts toward the streak just like
-                                // a live tool call.
-                                if matches!(
-                                    self.maybe_halt_on_destructive_cap(
-                                        &cached_tool,
-                                        &annotations_by_tool,
-                                    ),
-                                    CapStatus::CapReached
-                                ) {
-                                    self.emit_destructive_cap_hit().await;
-                                    break;
-                                }
-                                continue;
-                            }
-                            Ok(result) => {
-                                let err_text = extract_result_text(&result);
-                                debug!(error = %err_text, "Cached decision returned error, falling through to LLM");
-                            }
-                            Err(e) => {
-                                debug!(error = %e, "Cached decision execution failed, falling through to LLM");
-                            }
-                        }
-                    } // else: not an observation tool
-                }
-                // Reset cache key tracking when falling through to LLM
-                last_cache_key = None;
+            match self
+                .try_replay_cache(
+                    &goal,
+                    &elements,
+                    step_index,
+                    &mcp_tools,
+                    &annotations_by_tool,
+                    mcp,
+                    &mut previous_result,
+                    &mut last_cache_key,
+                    &mut last_failure,
+                )
+                .await
+            {
+                ReplayResult::Continue => continue,
+                ReplayResult::Break => break,
+                ReplayResult::FellThrough => {}
             }
 
             // 3. Build the step observation message
@@ -765,212 +576,26 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             self.state.steps.push(step);
 
             // Handle outcome
-            match &outcome {
-                StepOutcome::Success(result_text) => {
-                    self.state.consecutive_errors = 0;
-                    last_failure = None;
-                    previous_result = Some(result_text.clone());
-
-                    self.emit_event(AgentEvent::StepCompleted {
-                        step_index,
-                        tool_name: command.tool_name_or_unknown().to_string(),
-                        summary: truncate_summary(result_text, 120),
-                    })
-                    .await;
-
-                    let mut cap_status = CapStatus::Armed;
-                    if let AgentCommand::ToolCall {
-                        tool_name,
-                        arguments,
-                        ..
-                    } = &command
-                    {
-                        // Build the workflow node first so we know the node id
-                        // to stamp onto the cache entry (for eviction-on-delete).
-                        let produced_node_id = if self.config.build_workflow {
-                            self.add_workflow_node(
-                                tool_name,
-                                arguments,
-                                &mcp_tools,
-                                &annotations_by_tool,
-                            )
-                            .await
-                        } else {
-                            None
-                        };
-                        // Only cache action tools, never observation tools.
-                        // Observation tools provide fresh environmental evidence
-                        // that must not be replayed from stale cache entries.
-                        if self.config.use_cache
-                            && !Self::is_observation_tool(tool_name, &annotations_by_tool)
-                            && !elements.is_empty()
-                        {
-                            match produced_node_id {
-                                Some(node_id) => {
-                                    self.cache.store_with_node(
-                                        &goal,
-                                        &elements,
-                                        tool_name.clone(),
-                                        arguments.clone(),
-                                        node_id,
-                                    );
-                                }
-                                None => {
-                                    // No workflow node built (mapping failed or
-                                    // build_workflow off). Keep the decision in
-                                    // cache but without a node stamp — it will
-                                    // survive until Clear wipes the whole file.
-                                    self.cache.store(
-                                        &goal,
-                                        &elements,
-                                        tool_name.clone(),
-                                        arguments.clone(),
-                                    );
-                                }
-                            }
-                        }
-                        cap_status =
-                            self.maybe_halt_on_destructive_cap(tool_name, &annotations_by_tool);
-                    }
-                    if matches!(cap_status, CapStatus::CapReached) {
-                        self.emit_destructive_cap_hit().await;
-                        break;
-                    }
-                }
-                StepOutcome::Error(err) => {
-                    self.state.consecutive_errors += 1;
-                    previous_result = Some(format!("Error: {}", err));
-
-                    self.emit_event(AgentEvent::StepFailed {
-                        step_index,
-                        tool_name: command.tool_name_or_unknown().to_string(),
-                        error: err.clone(),
-                    })
-                    .await;
-
-                    // Loop detection: if the LLM just issued the identical
-                    // (tool, args) call and got the identical error back,
-                    // halt with LoopDetected instead of letting it chew
-                    // through the max-consecutive-errors budget on the
-                    // same broken call. The MCP tool error already tells
-                    // the LLM what's missing — another round won't help.
-                    if let AgentCommand::ToolCall {
-                        tool_name,
-                        arguments,
-                        ..
-                    } = &command
-                    {
-                        let looped = matches!(
-                            &last_failure,
-                            Some((prev_tool, prev_args, prev_err))
-                                if prev_tool == tool_name
-                                    && prev_args == arguments
-                                    && prev_err == err
-                        );
-                        if looped {
-                            warn!(
-                                tool = %tool_name,
-                                error = %err,
-                                "Identical failing tool call repeated — aborting"
-                            );
-                            self.state.terminal_reason = Some(TerminalReason::LoopDetected {
-                                tool_name: tool_name.clone(),
-                                error: err.clone(),
-                            });
-                            break;
-                        }
-                        last_failure = Some((tool_name.clone(), arguments.clone(), err.clone()));
-                    } else {
-                        // Non-tool-call error (e.g. text-only response);
-                        // don't count that toward identical-loop detection.
-                        last_failure = None;
-                    }
-
-                    let action = recovery::recovery_strategy(
-                        self.state.consecutive_errors,
-                        self.config.max_consecutive_errors,
-                    );
-                    match action {
-                        RecoveryAction::Abort => {
-                            warn!(
-                                errors = self.state.consecutive_errors,
-                                "Too many consecutive errors, aborting"
-                            );
-                            self.state.terminal_reason = Some(TerminalReason::MaxErrorsReached {
-                                consecutive_errors: self.state.consecutive_errors,
-                            });
-                            break;
-                        }
-                        RecoveryAction::Continue => {
-                            debug!(
-                                errors = self.state.consecutive_errors,
-                                "Recovery: re-observing and continuing"
-                            );
-                        }
-                    }
-                }
-                StepOutcome::Done(summary) => {
-                    // Post-agent_done VLM check. A NO verdict halts the run
-                    // and surfaces a disagreement event for the user to
-                    // adjudicate; a YES verdict (or any verification error)
-                    // falls through to normal completion.
-                    let disagreement = self.verify_completion(&goal, summary, mcp).await;
-                    if let Some((screenshot_b64, vlm_reasoning)) = disagreement {
-                        warn!("VLM disagreed with agent_done — halting run for user review");
-                        self.emit_event(AgentEvent::CompletionDisagreement {
-                            screenshot_b64,
-                            vlm_reasoning: vlm_reasoning.clone(),
-                            agent_summary: summary.clone(),
-                        })
-                        .await;
-                        self.state.terminal_reason = Some(TerminalReason::CompletionDisagreement {
-                            agent_summary: summary.clone(),
-                            vlm_reasoning,
-                        });
-                        // Do not mark `completed` — the run halts pending
-                        // user decision instead of re-planning automatically.
-                        break;
-                    }
-
-                    self.state.completed = true;
-                    self.state.summary = Some(summary.clone());
-                    self.state.terminal_reason = Some(TerminalReason::Completed {
-                        summary: summary.clone(),
-                    });
-                    previous_result = None;
-                    info!(summary = %summary, "Agent completed goal");
-                    self.emit_event(AgentEvent::GoalComplete {
-                        summary: summary.clone(),
-                    })
-                    .await;
-                }
-                StepOutcome::Replan(reason) => {
-                    previous_result = Some(format!("Replan requested: {}", reason));
-                    warn!(reason = %reason, "Agent requested replan");
-                }
+            let flow = self
+                .handle_step_outcome(
+                    &outcome,
+                    &command,
+                    step_index,
+                    &goal,
+                    &elements,
+                    &mcp_tools,
+                    &annotations_by_tool,
+                    mcp,
+                    &mut previous_result,
+                    &mut last_failure,
+                )
+                .await;
+            match flow {
+                StepFlow::Break => break,
+                StepFlow::Continue => {}
             }
 
-            // Add the assistant's response to the conversation. Preserve the
-            // model's reasoning_content so subsequent turns can build on prior
-            // thinking instead of re-deriving it from scratch each step.
-            // Only the first tool call is included — we execute exactly one
-            // tool per turn, so appending extras would create transcript
-            // entries with no corresponding tool result.
-            let reasoning = choice.message.reasoning_content.clone();
-            if let Some(tool_calls) = &choice.message.tool_calls {
-                if let Some(tc) = tool_calls.first() {
-                    let mut assistant_msg = Message::assistant_tool_calls(vec![tc.clone()]);
-                    assistant_msg.reasoning_content = reasoning;
-                    self.messages.push(assistant_msg);
-                    let result_text = previous_result.as_deref().unwrap_or("ok");
-                    self.messages
-                        .push(Message::tool_result(&tc.id, result_text));
-                }
-            } else if let Some(text) = choice.message.content_text() {
-                let mut assistant_msg = Message::assistant(text);
-                assistant_msg.reasoning_content = reasoning;
-                self.messages.push(assistant_msg);
-            }
+            self.append_assistant_message(&choice.message, previous_result.as_deref());
         }
 
         if !self.state.completed && self.state.terminal_reason.is_none() {
@@ -989,6 +614,489 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             AgentState::new(Workflow::new("Agent Workflow")),
         );
         Ok(final_state)
+    }
+
+    /// Attempt to replay a cached decision for the current observation.
+    ///
+    /// Guards:
+    /// - Skip when elements are empty (degenerate cache key on native/no-CDP paths)
+    /// - Skip if the same cache key was just replayed (prevents infinite loops)
+    /// - Approval-gated tools still require user approval on replay
+    /// - Post-tool hooks (auto_connect_cdp) run after replay
+    ///
+    /// Mutates `previous_result`, `last_cache_key`, `last_failure`, and
+    /// `self.state` to mirror whatever the replay (or its rejection) did.
+    /// Returns a [`ReplayResult`] that tells the outer loop whether to
+    /// `continue`, `break`, or fall through to the live LLM path. The
+    /// live-execution path shares the post-call bookkeeping in
+    /// `handle_step_outcome`; here we dispatch the same transcript
+    /// append + StepCompleted + CDP hook + cache-hit bump that a live
+    /// tool call would trigger, the only divergence being that loop
+    /// detection stays LIVE-only (by design).
+    #[allow(clippy::too_many_arguments)]
+    async fn try_replay_cache(
+        &mut self,
+        goal: &str,
+        elements: &[CdpFindElementMatch],
+        step_index: usize,
+        mcp_tools: &[Value],
+        annotations_by_tool: &HashMap<String, ToolAnnotations>,
+        mcp: &(impl Mcp + ?Sized),
+        previous_result: &mut Option<String>,
+        last_cache_key: &mut Option<String>,
+        last_failure: &mut Option<(String, Value, String)>,
+    ) -> ReplayResult {
+        if !self.config.use_cache || elements.is_empty() {
+            return ReplayResult::FellThrough;
+        }
+        let current_key = super::cache::cache_key(goal, elements);
+        let is_repeat = last_cache_key.as_ref() == Some(&current_key);
+
+        if is_repeat {
+            // Reset cache key tracking when falling through to LLM
+            *last_cache_key = None;
+            return ReplayResult::FellThrough;
+        }
+        let Some(cached) = self.cache.lookup(goal, elements) else {
+            *last_cache_key = None;
+            return ReplayResult::FellThrough;
+        };
+        // Skip observation tools that may exist in old cache files
+        // from before the write-side filter was added.
+        if Self::is_observation_tool(&cached.tool_name, annotations_by_tool) {
+            debug!(
+                tool = %cached.tool_name,
+                "Skipping cached observation tool (stale entry)"
+            );
+            *last_cache_key = None;
+            return ReplayResult::FellThrough;
+        }
+        let cached_tool = cached.tool_name.clone();
+        let cached_args = cached.arguments.clone();
+        debug!(
+            tool = %cached_tool,
+            hits = cached.hit_count,
+            "Cache hit — replaying cached decision"
+        );
+
+        // Approval-gated tools must be re-approved on replay.
+        // The permission policy decides whether to skip the
+        // prompt (Allow), hard-reject (Deny), or prompt (Ask).
+        let needs_approval = !Self::is_observation_tool(&cached_tool, annotations_by_tool);
+        if needs_approval {
+            let policy_action = self.policy_for(&cached_tool, &cached_args, annotations_by_tool);
+            if matches!(policy_action, PermissionAction::Deny) {
+                // Hard policy reject: fail the step, drop
+                // the cached entry so the next iteration
+                // does not re-hit it, and continue the loop
+                // — same as any other step error.
+                self.cache.remove(goal, elements);
+                *last_cache_key = None;
+                let err_msg = format!("Tool `{}` denied by permission policy", cached_tool);
+                warn!(
+                    tool = %cached_tool,
+                    "Cached tool denied by permission policy"
+                );
+                let command = AgentCommand::ToolCall {
+                    tool_name: cached_tool.clone(),
+                    arguments: cached_args.clone(),
+                    tool_call_id: format!("cache-{}", step_index),
+                };
+                self.emit_event(AgentEvent::StepFailed {
+                    step_index,
+                    tool_name: cached_tool.clone(),
+                    error: err_msg.clone(),
+                })
+                .await;
+                let step = AgentStep {
+                    index: step_index,
+                    elements: elements.to_vec(),
+                    command,
+                    outcome: StepOutcome::Error(err_msg.clone()),
+                    page_url: self.state.current_url.clone(),
+                };
+                self.state.steps.push(step);
+                self.state.consecutive_errors += 1;
+                *previous_result = Some(format!("Error: {}", err_msg));
+                let action = recovery::recovery_strategy(
+                    self.state.consecutive_errors,
+                    self.config.max_consecutive_errors,
+                );
+                if matches!(action, RecoveryAction::Abort) {
+                    self.state.terminal_reason = Some(TerminalReason::MaxErrorsReached {
+                        consecutive_errors: self.state.consecutive_errors,
+                    });
+                    return ReplayResult::Break;
+                }
+                return ReplayResult::Continue;
+            }
+            if matches!(policy_action, PermissionAction::Ask) {
+                match self
+                    .request_approval(&cached_tool, &cached_args, step_index, " (cached)")
+                    .await
+                {
+                    Some(ApprovalResult::Rejected) => {
+                        // Evict the rejected entry so the next
+                        // iteration falls through to the LLM
+                        // instead of re-prompting the same
+                        // cached action in an approval loop.
+                        self.cache.remove(goal, elements);
+                        *last_cache_key = None;
+                        let command = AgentCommand::ToolCall {
+                            tool_name: cached_tool.clone(),
+                            arguments: cached_args.clone(),
+                            tool_call_id: format!("cache-{}", step_index),
+                        };
+                        let step = AgentStep {
+                            index: step_index,
+                            elements: elements.to_vec(),
+                            command,
+                            outcome: StepOutcome::Replan("User rejected cached action".to_string()),
+                            page_url: self.state.current_url.clone(),
+                        };
+                        self.state.steps.push(step);
+                        *previous_result = Some("Replan: user rejected cached action".to_string());
+                        return ReplayResult::Continue;
+                    }
+                    Some(ApprovalResult::Unavailable) => {
+                        self.state.terminal_reason = Some(TerminalReason::ApprovalUnavailable);
+                        return ReplayResult::Break;
+                    }
+                    // Approved or no gate configured
+                    _ => {}
+                }
+            }
+            // PermissionAction::Allow: skip approval entirely.
+        }
+
+        match mcp.call_tool(&cached_tool, Some(cached_args.clone())).await {
+            Ok(result) if !result.is_error.unwrap_or(false) => {
+                let result_text = extract_result_text(&result);
+                let tool_call_id = format!("cache-{}", step_index);
+                let command = AgentCommand::ToolCall {
+                    tool_name: cached_tool.clone(),
+                    arguments: cached_args.clone(),
+                    tool_call_id: tool_call_id.clone(),
+                };
+
+                // Rebuild workflow node for this run — the cache
+                // stores decisions across runs, so the current
+                // workflow needs the replayed action as a node.
+                let produced_node_id_on_replay = if self.config.build_workflow {
+                    self.add_workflow_node(
+                        &cached_tool,
+                        &cached_args,
+                        mcp_tools,
+                        annotations_by_tool,
+                    )
+                    .await
+                } else {
+                    None
+                };
+                // Append the replayed node to the cached entry's
+                // lineage so selective delete can still evict the
+                // right entry later.
+                if let Some(node_id) = produced_node_id_on_replay
+                    && let Some(entry) = self.cache.entries.get_mut(&current_key)
+                {
+                    entry.produced_node_ids.push(node_id);
+                    entry.hit_count += 1;
+                }
+
+                // Reconstruct transcript so the LLM sees the full
+                // action history, not just the raw result text.
+                self.messages.push(Message::assistant_tool_calls(vec![
+                    clickweave_llm::ToolCall {
+                        id: tool_call_id.clone(),
+                        call_type: clickweave_llm::CallType::Function,
+                        function: clickweave_llm::FunctionCall {
+                            name: cached_tool.clone(),
+                            arguments: cached_args.clone(),
+                        },
+                    },
+                ]));
+                self.messages
+                    .push(Message::tool_result(&tool_call_id, &result_text));
+
+                // Emit live step event for cached replay
+                self.emit_event(AgentEvent::StepCompleted {
+                    step_index,
+                    tool_name: cached_tool.clone(),
+                    summary: truncate_summary(&result_text, 120),
+                })
+                .await;
+
+                self.maybe_cdp_connect(&cached_tool, &cached_args, &result_text, mcp)
+                    .await;
+
+                let step = AgentStep {
+                    index: step_index,
+                    elements: elements.to_vec(),
+                    command,
+                    outcome: StepOutcome::Success(result_text.clone()),
+                    page_url: self.state.current_url.clone(),
+                };
+                self.state.steps.push(step);
+                self.state.consecutive_errors = 0;
+                *last_failure = None;
+                *previous_result = Some(result_text);
+                *last_cache_key = Some(current_key);
+
+                // Destructive-cap accounting: the cached
+                // replay counts toward the streak just like
+                // a live tool call.
+                if matches!(
+                    self.maybe_halt_on_destructive_cap(&cached_tool, annotations_by_tool),
+                    CapStatus::CapReached
+                ) {
+                    self.emit_destructive_cap_hit().await;
+                    return ReplayResult::Break;
+                }
+                ReplayResult::Continue
+            }
+            Ok(result) => {
+                let err_text = extract_result_text(&result);
+                debug!(error = %err_text, "Cached decision returned error, falling through to LLM");
+                *last_cache_key = None;
+                ReplayResult::FellThrough
+            }
+            Err(e) => {
+                debug!(error = %e, "Cached decision execution failed, falling through to LLM");
+                *last_cache_key = None;
+                ReplayResult::FellThrough
+            }
+        }
+    }
+
+    /// React to a [`StepOutcome`]: emit events, update consecutive-error
+    /// counters, maintain loop-detection state (LIVE-only — by design, the
+    /// cache-replay path deliberately does not participate), manage the
+    /// cross-run decision cache, and decide whether the outer step loop
+    /// should break.
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_step_outcome(
+        &mut self,
+        outcome: &StepOutcome,
+        command: &AgentCommand,
+        step_index: usize,
+        goal: &str,
+        elements: &[CdpFindElementMatch],
+        mcp_tools: &[Value],
+        annotations_by_tool: &HashMap<String, ToolAnnotations>,
+        mcp: &(impl Mcp + ?Sized),
+        previous_result: &mut Option<String>,
+        last_failure: &mut Option<(String, Value, String)>,
+    ) -> StepFlow {
+        match outcome {
+            StepOutcome::Success(result_text) => {
+                self.state.consecutive_errors = 0;
+                *last_failure = None;
+                *previous_result = Some(result_text.clone());
+
+                self.emit_event(AgentEvent::StepCompleted {
+                    step_index,
+                    tool_name: command.tool_name_or_unknown().to_string(),
+                    summary: truncate_summary(result_text, 120),
+                })
+                .await;
+
+                let mut cap_status = CapStatus::Armed;
+                if let AgentCommand::ToolCall {
+                    tool_name,
+                    arguments,
+                    ..
+                } = command
+                {
+                    // Build the workflow node first so we know the node id
+                    // to stamp onto the cache entry (for eviction-on-delete).
+                    let produced_node_id = if self.config.build_workflow {
+                        self.add_workflow_node(tool_name, arguments, mcp_tools, annotations_by_tool)
+                            .await
+                    } else {
+                        None
+                    };
+                    // Only cache action tools, never observation tools.
+                    // Observation tools provide fresh environmental evidence
+                    // that must not be replayed from stale cache entries.
+                    if self.config.use_cache
+                        && !Self::is_observation_tool(tool_name, annotations_by_tool)
+                        && !elements.is_empty()
+                    {
+                        match produced_node_id {
+                            Some(node_id) => {
+                                self.cache.store_with_node(
+                                    goal,
+                                    elements,
+                                    tool_name.clone(),
+                                    arguments.clone(),
+                                    node_id,
+                                );
+                            }
+                            None => {
+                                // No workflow node built (mapping failed or
+                                // build_workflow off). Keep the decision in
+                                // cache but without a node stamp — it will
+                                // survive until Clear wipes the whole file.
+                                self.cache.store(
+                                    goal,
+                                    elements,
+                                    tool_name.clone(),
+                                    arguments.clone(),
+                                );
+                            }
+                        }
+                    }
+                    cap_status = self.maybe_halt_on_destructive_cap(tool_name, annotations_by_tool);
+                }
+                if matches!(cap_status, CapStatus::CapReached) {
+                    self.emit_destructive_cap_hit().await;
+                    return StepFlow::Break;
+                }
+                StepFlow::Continue
+            }
+            StepOutcome::Error(err) => {
+                self.state.consecutive_errors += 1;
+                *previous_result = Some(format!("Error: {}", err));
+
+                self.emit_event(AgentEvent::StepFailed {
+                    step_index,
+                    tool_name: command.tool_name_or_unknown().to_string(),
+                    error: err.clone(),
+                })
+                .await;
+
+                // Loop detection: if the LLM just issued the identical
+                // (tool, args) call and got the identical error back,
+                // halt with LoopDetected instead of letting it chew
+                // through the max-consecutive-errors budget on the
+                // same broken call. The MCP tool error already tells
+                // the LLM what's missing — another round won't help.
+                if let AgentCommand::ToolCall {
+                    tool_name,
+                    arguments,
+                    ..
+                } = command
+                {
+                    let looped = matches!(
+                        last_failure.as_ref(),
+                        Some((prev_tool, prev_args, prev_err))
+                            if prev_tool == tool_name
+                                && prev_args == arguments
+                                && prev_err == err
+                    );
+                    if looped {
+                        warn!(
+                            tool = %tool_name,
+                            error = %err,
+                            "Identical failing tool call repeated — aborting"
+                        );
+                        self.state.terminal_reason = Some(TerminalReason::LoopDetected {
+                            tool_name: tool_name.clone(),
+                            error: err.clone(),
+                        });
+                        return StepFlow::Break;
+                    }
+                    *last_failure = Some((tool_name.clone(), arguments.clone(), err.clone()));
+                } else {
+                    // Non-tool-call error (e.g. text-only response);
+                    // don't count that toward identical-loop detection.
+                    *last_failure = None;
+                }
+
+                let action = recovery::recovery_strategy(
+                    self.state.consecutive_errors,
+                    self.config.max_consecutive_errors,
+                );
+                match action {
+                    RecoveryAction::Abort => {
+                        warn!(
+                            errors = self.state.consecutive_errors,
+                            "Too many consecutive errors, aborting"
+                        );
+                        self.state.terminal_reason = Some(TerminalReason::MaxErrorsReached {
+                            consecutive_errors: self.state.consecutive_errors,
+                        });
+                        StepFlow::Break
+                    }
+                    RecoveryAction::Continue => {
+                        debug!(
+                            errors = self.state.consecutive_errors,
+                            "Recovery: re-observing and continuing"
+                        );
+                        StepFlow::Continue
+                    }
+                }
+            }
+            StepOutcome::Done(summary) => {
+                // Post-agent_done VLM check. A NO verdict halts the run
+                // and surfaces a disagreement event for the user to
+                // adjudicate; a YES verdict (or any verification error)
+                // falls through to normal completion.
+                let disagreement = self.verify_completion(goal, summary, mcp).await;
+                if let Some((screenshot_b64, vlm_reasoning)) = disagreement {
+                    warn!("VLM disagreed with agent_done — halting run for user review");
+                    self.emit_event(AgentEvent::CompletionDisagreement {
+                        screenshot_b64,
+                        vlm_reasoning: vlm_reasoning.clone(),
+                        agent_summary: summary.clone(),
+                    })
+                    .await;
+                    self.state.terminal_reason = Some(TerminalReason::CompletionDisagreement {
+                        agent_summary: summary.clone(),
+                        vlm_reasoning,
+                    });
+                    // Do not mark `completed` — the run halts pending
+                    // user decision instead of re-planning automatically.
+                    return StepFlow::Break;
+                }
+
+                self.state.completed = true;
+                self.state.summary = Some(summary.clone());
+                self.state.terminal_reason = Some(TerminalReason::Completed {
+                    summary: summary.clone(),
+                });
+                *previous_result = None;
+                info!(summary = %summary, "Agent completed goal");
+                self.emit_event(AgentEvent::GoalComplete {
+                    summary: summary.clone(),
+                })
+                .await;
+                StepFlow::Continue
+            }
+            StepOutcome::Replan(reason) => {
+                *previous_result = Some(format!("Replan requested: {}", reason));
+                warn!(reason = %reason, "Agent requested replan");
+                StepFlow::Continue
+            }
+        }
+    }
+
+    /// Append the assistant's response (tool call or plain text) to the
+    /// conversation transcript. Preserves `reasoning_content` so subsequent
+    /// turns can build on prior thinking instead of re-deriving it from
+    /// scratch each step. Only the first tool call is included — we execute
+    /// exactly one tool per turn, so appending extras would create
+    /// transcript entries with no corresponding tool result.
+    fn append_assistant_message(
+        &mut self,
+        message: &clickweave_llm::Message,
+        previous_result: Option<&str>,
+    ) {
+        let reasoning = message.reasoning_content.clone();
+        if let Some(tool_calls) = &message.tool_calls {
+            if let Some(tc) = tool_calls.first() {
+                let mut assistant_msg = Message::assistant_tool_calls(vec![tc.clone()]);
+                assistant_msg.reasoning_content = reasoning;
+                self.messages.push(assistant_msg);
+                let result_text = previous_result.unwrap_or("ok");
+                self.messages
+                    .push(Message::tool_result(&tc.id, result_text));
+            }
+        } else if let Some(text) = message.content_text() {
+            let mut assistant_msg = Message::assistant(text);
+            assistant_msg.reasoning_content = reasoning;
+            self.messages.push(assistant_msg);
+        }
     }
 
     /// Fetch interactive elements from the current page via MCP.

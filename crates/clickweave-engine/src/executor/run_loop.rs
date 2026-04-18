@@ -16,6 +16,22 @@ enum SupervisionAction {
     Abort,
 }
 
+/// Control signal returned from the supervision flow helper: either the
+/// node is done (and the caller should return this `StepOutcome`) or the
+/// caller should re-enter `execute_node_with_retries`.
+enum SupervisionFlow {
+    Return(StepOutcome),
+    Retry,
+}
+
+/// Control signal returned from the CDP ambiguity handler: either the
+/// node should be re-run with the chosen override in place, or the node
+/// has been finalized as failed (error already emitted).
+enum CdpAmbiguityFlow {
+    Retry,
+    Failed,
+}
+
 /// Outcome of executing a single node with its supervision retry loop.
 enum StepOutcome {
     /// Node completed successfully (possibly after supervision retries).
@@ -253,159 +269,42 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 .await
             {
                 Ok(node_result) => {
-                    if ctx.focus_dirty {
-                        self.refresh_focused_pid(mcp).await;
-                        ctx.focus_dirty = false;
-                    }
-
-                    self.extract_and_store_variables(
-                        node_auto_id,
-                        &node_result,
-                        node_type,
-                        node_run.as_ref(),
-                    );
-
-                    // Run action verification if configured
-                    if let Some((method, assertion)) =
-                        super::action_verification::extract_verification_config(node_type)
-                        && let Err(e) = self
-                            .run_action_verification(
-                                node_auto_id,
-                                &method,
-                                &assertion,
-                                mcp,
-                                node_run.as_ref(),
-                            )
-                            .await
-                    {
-                        self.log(format!(
-                            "Action verification failed for {}: {}",
-                            node_auto_id, e
-                        ));
-                    }
-
-                    // Inline verdict for Verification-role nodes
-                    if node_role == NodeRole::Verification
-                        && let Some(v) = self
-                            .evaluate_verification(
-                                node_id,
-                                node_name,
-                                node_type,
-                                expected_outcome,
-                                &node_result,
-                                mcp,
-                            )
-                            .await
-                    {
-                        let failed = v
-                            .check_results
-                            .iter()
-                            .any(|r| r.verdict == clickweave_core::CheckVerdict::Fail);
-                        self.log(format!(
-                            "Verification '{}': {}",
+                    if let Some(post) = self
+                        .handle_post_success(
+                            node_id,
                             node_name,
-                            if failed { "FAIL" } else { "PASS" },
-                        ));
-                        let has_warn = v
-                            .check_results
-                            .iter()
-                            .any(|r| r.verdict == clickweave_core::CheckVerdict::Warn);
-                        ctx.runtime_verdicts.push(v);
-                        if has_warn {
-                            self.log(format!(
-                                "WARNING: Verification node '{}' has no expected_outcome — \
-                                 verification was not evaluated. \
-                                 Set expected_outcome to enable actual verification.",
-                                node_name,
-                            ));
-                        }
-                        if failed {
-                            self.emit_error(format!("Verification failed: '{}'", node_name));
-                            return StepOutcome::VerificationFailed;
-                        }
+                            node_auto_id,
+                            node_type,
+                            node_role,
+                            expected_outcome,
+                            &node_result,
+                            mcp,
+                            node_run,
+                            ctx,
+                        )
+                        .await
+                    {
+                        return post;
                     }
 
                     // Supervision (Test mode only)
                     if self.execution_mode == ExecutionMode::Test {
-                        let verification = self.verify_step(node_name, node_type, mcp, ctx).await;
-                        if verification.passed {
-                            ctx.supervision_hint = None;
-                            ctx.cache_mode = super::app_resolve::CacheMode::UseCache;
-                            // Consume the URL navigation intent now that
-                            // supervision confirmed the step succeeded.
-                            ctx.last_typed_url = None;
-                            self.emit(ExecutorEvent::SupervisionPassed {
+                        match self
+                            .handle_supervision_flow(
                                 node_id,
-                                node_name: node_name.to_string(),
-                                summary: verification.reasoning,
-                            });
-                            return StepOutcome::Succeeded;
-                        } else if supervision_attempts < supervision_retries {
-                            // Auto-retry: evict caches and re-execute with hint
-                            supervision_attempts += 1;
-                            self.log(format!(
-                                "Supervision auto-retry {}/{} for '{}': {}",
-                                supervision_attempts,
-                                supervision_retries,
                                 node_name,
-                                verification.reasoning,
-                            ));
-                            ctx.supervision_hint = Some(verification.reasoning.clone());
-                            // Drop the prior agent pick so the supervision
-                            // hint can drive a different disambiguation on
-                            // the retry. Without this, the resolver would
-                            // short-circuit on the stale override.
-                            ctx.cdp_ambiguity_overrides.clear();
-                            self.evict_caches_for_node(node_type);
-                            ctx.cache_mode = super::app_resolve::CacheMode::Bypass;
-                            self.record_event(
-                                node_run.as_ref(),
-                                "supervision_retry",
-                                serde_json::json!({
-                                    "attempt": supervision_attempts,
-                                    "reason": verification.reasoning,
-                                }),
-                            );
-                            self.re_execute_preceding_click(node_id, node_type, mcp, ctx)
-                                .await;
-                            continue;
-                        } else {
-                            // Exhausted auto-retries — fall through to the
-                            // manual supervision dialog.
-                            ctx.supervision_hint = None;
-
-                            match self
-                                .handle_supervision_pause(
-                                    node_id,
-                                    node_name,
-                                    verification.reasoning,
-                                    verification.screenshot,
-                                    command_rx,
-                                )
-                                .await
-                            {
-                                SupervisionAction::Retry => {
-                                    self.log("Supervision: user chose Retry");
-                                    // Reset supervision state so the manual retry gets a
-                                    // fresh start with the full auto-retry budget.
-                                    supervision_attempts = 0;
-                                    ctx.tried_click_indices.clear();
-                                    ctx.tried_cdp_uids.clear();
-                                    ctx.cdp_ambiguity_overrides.clear();
-                                    ctx.supervision_hint = None;
-                                    self.re_execute_preceding_click(node_id, node_type, mcp, ctx)
-                                        .await;
-                                    continue;
-                                }
-                                SupervisionAction::Skip => {
-                                    self.log("Supervision: user chose Skip");
-                                    return StepOutcome::Succeeded;
-                                }
-                                SupervisionAction::Abort => {
-                                    self.log("Supervision: user chose Abort");
-                                    return StepOutcome::Aborted;
-                                }
-                            }
+                                node_type,
+                                mcp,
+                                node_run,
+                                ctx,
+                                command_rx,
+                                &mut supervision_attempts,
+                                supervision_retries,
+                            )
+                            .await
+                        {
+                            SupervisionFlow::Return(outcome) => return outcome,
+                            SupervisionFlow::Retry => continue,
                         }
                     } else {
                         return StepOutcome::Succeeded;
@@ -420,69 +319,14 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     return StepOutcome::Cancelled;
                 }
                 Err(ExecutorError::CdpAmbiguousTarget { target, candidates }) => {
-                    // Agent-driven disambiguation: pick one candidate, stash
-                    // the uid in the retry context, and re-run the node so the
-                    // resolver short-circuits to the chosen uid.
-                    let already_tried = ctx.cdp_ambiguity_overrides.contains_key(&target);
-                    if already_tried {
-                        let msg = format!(
-                            "Disambiguation already attempted for '{}' but resolver remained ambiguous",
-                            target
-                        );
-                        self.emit_error(format!("Node {} failed: {}", node_name, msg));
-                        if let Some(run) = node_run {
-                            self.finalize_run(run, RunStatus::Failed);
-                        }
-                        self.emit(ExecutorEvent::NodeFailed(node_id, msg));
-                        return StepOutcome::Failed;
-                    }
-
-                    self.log(format!(
-                        "Ambiguous CDP target '{}' — asking agent to pick among {} candidates",
-                        target,
-                        candidates.len()
-                    ));
                     match self
-                        .resolve_cdp_ambiguity(
-                            node_name,
-                            &target,
-                            candidates,
-                            mcp,
-                            node_run.as_mut(),
+                        .handle_cdp_ambiguity(
+                            node_id, node_name, target, candidates, mcp, node_run, ctx,
                         )
                         .await
                     {
-                        Ok(res) => {
-                            self.log(format!(
-                                "Agent picked uid='{}' for '{}': {}",
-                                res.chosen_uid,
-                                target,
-                                Self::truncate_for_trace(&res.reasoning, 200)
-                            ));
-                            ctx.cdp_ambiguity_overrides
-                                .insert(target.clone(), res.chosen_uid.clone());
-                            self.emit(ExecutorEvent::AmbiguityResolved {
-                                node_id,
-                                target,
-                                candidates: res.candidates_with_rects,
-                                chosen_uid: res.chosen_uid,
-                                reasoning: res.reasoning,
-                                viewport_width: res.viewport_width,
-                                viewport_height: res.viewport_height,
-                                screenshot_path: res.screenshot_path,
-                                screenshot_base64: res.screenshot_base64,
-                            });
-                            continue;
-                        }
-                        Err(disambig_err) => {
-                            let msg = format!("Disambiguation failed: {}", disambig_err);
-                            self.emit_error(format!("Node {} failed: {}", node_name, msg));
-                            if let Some(run) = node_run {
-                                self.finalize_run(run, RunStatus::Failed);
-                            }
-                            self.emit(ExecutorEvent::NodeFailed(node_id, msg));
-                            return StepOutcome::Failed;
-                        }
+                        CdpAmbiguityFlow::Retry => continue,
+                        CdpAmbiguityFlow::Failed => return StepOutcome::Failed,
                     }
                 }
                 Err(e) => {
@@ -494,6 +338,256 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                     self.emit(ExecutorEvent::NodeFailed(node_id, msg));
                     return StepOutcome::Failed;
                 }
+            }
+        }
+    }
+
+    /// Post-success handling: focus refresh, variable extraction, action
+    /// verification, and the Verification-role verdict. Returns
+    /// `Some(VerificationFailed)` when the inline verdict fails — otherwise
+    /// `None` so the caller can drop into the supervision flow.
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_post_success(
+        &mut self,
+        node_id: Uuid,
+        node_name: &str,
+        node_auto_id: &str,
+        node_type: &NodeType,
+        node_role: NodeRole,
+        expected_outcome: Option<&str>,
+        node_result: &Value,
+        mcp: &(impl Mcp + ?Sized),
+        node_run: &mut Option<NodeRun>,
+        ctx: &mut RetryContext,
+    ) -> Option<StepOutcome> {
+        if ctx.focus_dirty {
+            self.refresh_focused_pid(mcp).await;
+            ctx.focus_dirty = false;
+        }
+
+        self.extract_and_store_variables(node_auto_id, node_result, node_type, node_run.as_ref());
+
+        // Run action verification if configured
+        if let Some((method, assertion)) =
+            super::action_verification::extract_verification_config(node_type)
+            && let Err(e) = self
+                .run_action_verification(node_auto_id, &method, &assertion, mcp, node_run.as_ref())
+                .await
+        {
+            self.log(format!(
+                "Action verification failed for {}: {}",
+                node_auto_id, e
+            ));
+        }
+
+        // Inline verdict for Verification-role nodes
+        if node_role == NodeRole::Verification
+            && let Some(v) = self
+                .evaluate_verification(
+                    node_id,
+                    node_name,
+                    node_type,
+                    expected_outcome,
+                    node_result,
+                    mcp,
+                )
+                .await
+        {
+            let failed = v
+                .check_results
+                .iter()
+                .any(|r| r.verdict == clickweave_core::CheckVerdict::Fail);
+            self.log(format!(
+                "Verification '{}': {}",
+                node_name,
+                if failed { "FAIL" } else { "PASS" },
+            ));
+            let has_warn = v
+                .check_results
+                .iter()
+                .any(|r| r.verdict == clickweave_core::CheckVerdict::Warn);
+            ctx.runtime_verdicts.push(v);
+            if has_warn {
+                self.log(format!(
+                    "WARNING: Verification node '{}' has no expected_outcome — \
+                     verification was not evaluated. \
+                     Set expected_outcome to enable actual verification.",
+                    node_name,
+                ));
+            }
+            if failed {
+                self.emit_error(format!("Verification failed: '{}'", node_name));
+                return Some(StepOutcome::VerificationFailed);
+            }
+        }
+
+        None
+    }
+
+    /// Supervision flow (Test mode): run verify_step, auto-retry with hint
+    /// while the attempt budget allows, then fall through to the manual
+    /// pause dialog when exhausted. Returns `Retry` to loop back into
+    /// `execute_node_with_retries`, `Return` to terminate this node.
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_supervision_flow(
+        &mut self,
+        node_id: Uuid,
+        node_name: &str,
+        node_type: &NodeType,
+        mcp: &(impl Mcp + ?Sized),
+        node_run: &mut Option<NodeRun>,
+        ctx: &mut RetryContext,
+        command_rx: &mut Receiver<ExecutorCommand>,
+        supervision_attempts: &mut u32,
+        supervision_retries: u32,
+    ) -> SupervisionFlow {
+        let verification = self.verify_step(node_name, node_type, mcp, ctx).await;
+        if verification.passed {
+            ctx.supervision_hint = None;
+            ctx.cache_mode = super::app_resolve::CacheMode::UseCache;
+            // Consume the URL navigation intent now that
+            // supervision confirmed the step succeeded.
+            ctx.last_typed_url = None;
+            self.emit(ExecutorEvent::SupervisionPassed {
+                node_id,
+                node_name: node_name.to_string(),
+                summary: verification.reasoning,
+            });
+            return SupervisionFlow::Return(StepOutcome::Succeeded);
+        }
+        if *supervision_attempts < supervision_retries {
+            // Auto-retry: evict caches and re-execute with hint
+            *supervision_attempts += 1;
+            self.log(format!(
+                "Supervision auto-retry {}/{} for '{}': {}",
+                *supervision_attempts, supervision_retries, node_name, verification.reasoning,
+            ));
+            ctx.supervision_hint = Some(verification.reasoning.clone());
+            // Drop the prior agent pick so the supervision
+            // hint can drive a different disambiguation on
+            // the retry. Without this, the resolver would
+            // short-circuit on the stale override.
+            ctx.cdp_ambiguity_overrides.clear();
+            self.evict_caches_for_node(node_type);
+            ctx.cache_mode = super::app_resolve::CacheMode::Bypass;
+            self.record_event(
+                node_run.as_ref(),
+                "supervision_retry",
+                serde_json::json!({
+                    "attempt": *supervision_attempts,
+                    "reason": verification.reasoning,
+                }),
+            );
+            self.re_execute_preceding_click(node_id, node_type, mcp, ctx)
+                .await;
+            return SupervisionFlow::Retry;
+        }
+        // Exhausted auto-retries — fall through to the
+        // manual supervision dialog.
+        ctx.supervision_hint = None;
+
+        match self
+            .handle_supervision_pause(
+                node_id,
+                node_name,
+                verification.reasoning,
+                verification.screenshot,
+                command_rx,
+            )
+            .await
+        {
+            SupervisionAction::Retry => {
+                self.log("Supervision: user chose Retry");
+                // Reset supervision state so the manual retry gets a
+                // fresh start with the full auto-retry budget.
+                *supervision_attempts = 0;
+                ctx.tried_click_indices.clear();
+                ctx.tried_cdp_uids.clear();
+                ctx.cdp_ambiguity_overrides.clear();
+                ctx.supervision_hint = None;
+                self.re_execute_preceding_click(node_id, node_type, mcp, ctx)
+                    .await;
+                SupervisionFlow::Retry
+            }
+            SupervisionAction::Skip => {
+                self.log("Supervision: user chose Skip");
+                SupervisionFlow::Return(StepOutcome::Succeeded)
+            }
+            SupervisionAction::Abort => {
+                self.log("Supervision: user chose Abort");
+                SupervisionFlow::Return(StepOutcome::Aborted)
+            }
+        }
+    }
+
+    /// Agent-driven disambiguation: pick one candidate, stash the uid in the
+    /// retry context, and re-run the node so the resolver short-circuits to
+    /// the chosen uid. Returns whether the caller should retry the node or
+    /// treat the node as failed.
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_cdp_ambiguity(
+        &mut self,
+        node_id: Uuid,
+        node_name: &str,
+        target: String,
+        candidates: Vec<super::error::CdpCandidate>,
+        mcp: &(impl Mcp + ?Sized),
+        node_run: &mut Option<NodeRun>,
+        ctx: &mut RetryContext,
+    ) -> CdpAmbiguityFlow {
+        let already_tried = ctx.cdp_ambiguity_overrides.contains_key(&target);
+        if already_tried {
+            let msg = format!(
+                "Disambiguation already attempted for '{}' but resolver remained ambiguous",
+                target
+            );
+            self.emit_error(format!("Node {} failed: {}", node_name, msg));
+            if let Some(run) = node_run {
+                self.finalize_run(run, RunStatus::Failed);
+            }
+            self.emit(ExecutorEvent::NodeFailed(node_id, msg));
+            return CdpAmbiguityFlow::Failed;
+        }
+
+        self.log(format!(
+            "Ambiguous CDP target '{}' — asking agent to pick among {} candidates",
+            target,
+            candidates.len()
+        ));
+        match self
+            .resolve_cdp_ambiguity(node_name, &target, candidates, mcp, node_run.as_mut())
+            .await
+        {
+            Ok(res) => {
+                self.log(format!(
+                    "Agent picked uid='{}' for '{}': {}",
+                    res.chosen_uid,
+                    target,
+                    Self::truncate_for_trace(&res.reasoning, 200)
+                ));
+                ctx.cdp_ambiguity_overrides
+                    .insert(target.clone(), res.chosen_uid.clone());
+                self.emit(ExecutorEvent::AmbiguityResolved {
+                    node_id,
+                    target,
+                    candidates: res.candidates_with_rects,
+                    chosen_uid: res.chosen_uid,
+                    reasoning: res.reasoning,
+                    viewport_width: res.viewport_width,
+                    viewport_height: res.viewport_height,
+                    screenshot_path: res.screenshot_path,
+                    screenshot_base64: res.screenshot_base64,
+                });
+                CdpAmbiguityFlow::Retry
+            }
+            Err(disambig_err) => {
+                let msg = format!("Disambiguation failed: {}", disambig_err);
+                self.emit_error(format!("Node {} failed: {}", node_name, msg));
+                if let Some(run) = node_run {
+                    self.finalize_run(run, RunStatus::Failed);
+                }
+                self.emit(ExecutorEvent::NodeFailed(node_id, msg));
+                CdpAmbiguityFlow::Failed
             }
         }
     }
