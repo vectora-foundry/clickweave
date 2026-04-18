@@ -404,7 +404,13 @@ export type AppDebugKitParams = { operation_name: string; parameters: JsonValue 
 export type AppKind = "Native" | "ChromeBrowser" | "ElectronApp"
 export type AppResolutionSeedEntry = { node_id: string; app_name: string }
 export type Artifact = { artifact_id: string; kind: ArtifactKind; path: string; metadata: JsonValue; overlays: JsonValue[] }
-export type ArtifactKind = "Screenshot" | "Ocr" | "TemplateMatch" | "Log" | "Other"
+export type ArtifactKind = "Screenshot" | 
+/**
+ * Catch-all for any artifact that doesn't fit a more specific category.
+ * Legacy kinds (`Ocr`, `TemplateMatch`, `Log`) were never produced —
+ * `#[serde(other)]` lets pre-removal artifact records still deserialize.
+ */
+"Other"
 /**
  * User-selected app for CDP during walkthrough.
  */
@@ -413,15 +419,15 @@ export type CdpAppConfig = { name: string;
  * Path to the app binary (from file picker). None for already-running apps.
  */
 binary_path: string | null; app_kind: AppKind }
-export type CdpClickParams = { target: CdpTarget; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
-export type CdpClosePageParams = { page_index?: number | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
-export type CdpFillParams = { target: CdpTarget; value: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
-export type CdpHandleDialogParams = { accept: boolean; prompt_text?: string | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
-export type CdpHoverParams = { target: CdpTarget; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
-export type CdpNavigateParams = { url: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
-export type CdpNewPageParams = { url?: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
-export type CdpPressKeyParams = { key: string; modifiers?: string[]; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
-export type CdpSelectPageParams = { page_index: number; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type CdpClickParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target: CdpTarget }
+export type CdpClosePageParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { page_index?: number | null }
+export type CdpFillParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target: CdpTarget; value: string }
+export type CdpHandleDialogParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { accept: boolean; prompt_text?: string | null }
+export type CdpHoverParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target: CdpTarget }
+export type CdpNavigateParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { url: string }
+export type CdpNewPageParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { url?: string }
+export type CdpPressKeyParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { key: string; modifiers?: string[] }
+export type CdpSelectPageParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { page_index: number }
 /**
  * Distinguishes how a CDP element target was produced, so the executor can
  * choose the right resolution strategy.
@@ -440,11 +446,11 @@ export type CdpTarget =
  * Concrete DOM UID resolved at execution time (for Run mode / decision cache).
  */
 { kind: "ResolvedUid"; value: string }
-export type CdpTypeParams = { text: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type CdpTypeParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { text: string }
 export type CdpWaitParams = { text: string; timeout_ms?: number }
 export type ChromeProfile = { id: string; name: string; google_email: string | null }
 export type ClearAgentConversationRequest = { project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
-export type ClickParams = { target: ClickTarget | null; button: MouseButton; click_count: number; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type ClickParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target?: ClickTarget | null; button: MouseButton; click_count: number }
 export type ClickTarget = { type: "Text"; text: string } | { type: "Coordinates"; x: number; y: number } | { type: "WindowControl"; action: WindowControlAction }
 /**
  * Structured error type for Tauri IPC commands.
@@ -461,22 +467,20 @@ export type ConfirmableTool = { name: string; description: string }
  * A running app detected as Electron or Chrome, returned to the frontend for CDP selection.
  */
 export type DetectedCdpApp = { name: string; pid: number; app_kind: AppKind }
-export type DragParams = { from_x: number | null; from_y: number | null; to_x: number | null; to_y: number | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type DragParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { from_x?: number | null; from_y?: number | null; to_x?: number | null; to_y?: number | null }
 export type Edge = { from: string; to: string }
 export type EndpointConfig = { base_url: string; model: string; api_key: string | null }
 export type ErrorKind = "Validation" | "Io" | "Mcp" | "AlreadyRunning" | "Internal"
 export type ExecutionMode = "Test" | "Run"
 export type FindAppParams = { search: string }
 export type FindImageParams = { template_image: string | null; threshold: number; max_results: number }
-export type FindTextParams = { search_text: string; match_mode: MatchMode; scope: string | null; select_result: string | null }
-export type FocusMethod = "WindowId" | "AppName" | "Pid"
-export type FocusWindowParams = { method: FocusMethod; value: string | null; bring_to_front: boolean; app_kind?: AppKind; chrome_profile_id?: string | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
-export type HoverParams = { target: ClickTarget | null; dwell_ms: number; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type FindTextParams = { search_text?: string; scope?: string | null }
+export type FocusWindowParams = ({ method: "AppName"; value: string } | { method: "WindowId"; value: number } | { method: "Pid"; value: number }) & ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { bring_to_front: boolean; app_kind?: AppKind; chrome_profile_id?: string | null }
+export type HoverParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target?: ClickTarget | null; dwell_ms: number }
 export type ImportedAsset = { relative_path: string; absolute_path: string }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
-export type LaunchAppParams = { app_name: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type LaunchAppParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { app_name: string }
 export type LoadAgentChatRequest = { project_path: string | null; workflow_name: string; workflow_id: string }
-export type MatchMode = "Contains" | "Exact"
 export type McpToolCallParams = { tool_name: string; arguments: JsonValue }
 export type MouseButton = "Left" | "Right" | "Center"
 export type Node = { id: string; node_type: NodeType; position: Position; name: string; description?: string | null; auto_id?: string; enabled: boolean; timeout_ms: number | null; settle_ms: number | null; retries: number; supervision_retries?: number; trace_level: TraceLevel; role?: NodeRole; expected_outcome: string | null; 
@@ -520,7 +524,7 @@ per_tool?: Partial<{ [key in string]: PermissionActionWire }> }
  */
 export type PermissionRuleWire = { tool_pattern: string; args_pattern: string | null; action: PermissionActionWire }
 export type Position = { x: number; y: number }
-export type PressKeyParams = { key: string; modifiers: string[]; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type PressKeyParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { key: string; modifiers?: string[] }
 /**
  * Wire form of a prior-turn entry (matches
  * `clickweave_engine::agent::PriorTurn` with string UUIDs for JSON).
@@ -528,7 +532,7 @@ export type PressKeyParams = { key: string; modifiers: string[]; verification_me
 export type PriorTurnWire = { goal: string; summary: string; run_id: string }
 export type ProjectData = { path: string; workflow: Workflow }
 export type PruneAgentCacheRequest = { project_path: string | null; workflow_name: string; workflow_id: string; node_ids: string[]; store_traces: boolean }
-export type QuitAppParams = { app_name: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type QuitAppParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { app_name: string }
 export type RunEventsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string; execution_dir: string | null; run_id: string }
 export type RunRequest = { workflow: Workflow; project_path: string | null; agent: EndpointConfig; fast: EndpointConfig | null; 
 /**
@@ -552,7 +556,7 @@ export type SaveAgentChatRequest = { project_path: string | null; workflow_name:
  */
 export type ScreenshotMeta = { origin_x: number; origin_y: number; scale: number }
 export type ScreenshotMode = "Screen" | "Window" | "Region"
-export type ScrollParams = { delta_y: number; x: number | null; y: number | null; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type ScrollParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { delta_y: number; x?: number | null; y?: number | null }
 export type TakeScreenshotParams = { mode: ScreenshotMode; target: string | null; include_ocr: boolean }
 export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role: string | null } | 
 /**
@@ -569,9 +573,24 @@ export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role:
  */
 { type: "WindowControl"; action: WindowControlAction }
 export type TargetOverride = { node_id: string; chosen_candidate_index: number }
-export type TraceEvent = { timestamp: number; event_type: string; payload: JsonValue }
+export type TraceEvent = { timestamp: number; event_type: TraceEventKind; payload: JsonValue }
+/**
+ * The canonical set of trace event kinds emitted by the executor.
+ * 
+ * Serialized as snake_case strings so the on-disk shape matches the literal
+ * event-type strings that the engine has emitted historically. Legacy
+ * `events.jsonl` files therefore load unchanged. Unknown strings deserialize
+ * as [`TraceEventKind::Unknown`] so forward-compatible additions don't break
+ * old readers.
+ */
+export type TraceEventKind = "node_started" | "tool_call" | "tool_result" | "step_completed" | "step_failed" | "branch_evaluated" | "loop_iteration" | "target_resolved" | "action_verification" | "ambiguity_resolved" | "element_resolved" | "match_disambiguated" | "app_resolved" | "cdp_connected" | "cdp_click" | "cdp_hover" | "cdp_fill" | "vision_summary" | "variable_set" | "retry" | "supervision_retry" | 
+/**
+ * Forward-compatibility catch-all for event kinds that aren't in this
+ * enum yet. `#[serde(other)]` parses any unknown string into `Unknown`.
+ */
+"unknown"
 export type TraceLevel = "Off" | "Minimal" | "Full"
-export type TypeTextParams = { text: string; verification_method?: VerificationMethod | null; verification_assertion?: string | null }
+export type TypeTextParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { text: string }
 export type ValidationResult = { valid: boolean; errors: string[] }
 export type VariablePromotion = { node_id: string; variable_name: string }
 /**
