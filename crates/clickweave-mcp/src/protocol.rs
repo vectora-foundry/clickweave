@@ -49,6 +49,11 @@ pub struct InitializeParams {
     pub client_info: ClientInfo,
 }
 
+/// Client capabilities advertised during `initialize`.
+///
+/// Empty because Clickweave is a pure tool consumer. Populate fields here when
+/// the client needs to declare capabilities such as `sampling`, `elicitation`,
+/// or `roots`.
 #[derive(Debug, Serialize, Default)]
 pub struct ClientCapabilities {}
 
@@ -145,7 +150,7 @@ pub struct ToolCallResult {
     pub is_error: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ToolContent {
     Text {
@@ -156,14 +161,67 @@ pub enum ToolContent {
         #[serde(rename = "mimeType")]
         mime_type: String,
     },
-    #[serde(other)]
-    Unknown,
+    /// Any content type not explicitly modeled above (e.g. `resource`,
+    /// `audio`, `resource_link`). The raw JSON is preserved so callers can
+    /// inspect or log the payload instead of silently discarding it.
+    #[serde(skip)]
+    Unknown(Value),
+}
+
+impl<'de> Deserialize<'de> for ToolContent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        let type_tag = value.get("type").and_then(Value::as_str);
+
+        match type_tag {
+            Some("text") => {
+                let text = value
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        serde::de::Error::custom("text content missing `text` string field")
+                    })?
+                    .to_string();
+                Ok(ToolContent::Text { text })
+            }
+            Some("image") => {
+                let data = value
+                    .get("data")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        serde::de::Error::custom("image content missing `data` string field")
+                    })?
+                    .to_string();
+                let mime_type = value
+                    .get("mimeType")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        serde::de::Error::custom("image content missing `mimeType` string field")
+                    })?
+                    .to_string();
+                Ok(ToolContent::Image { data, mime_type })
+            }
+            _ => Ok(ToolContent::Unknown(value)),
+        }
+    }
 }
 
 impl ToolContent {
     pub fn as_text(&self) -> Option<&str> {
         match self {
             ToolContent::Text { text } => Some(text),
+            _ => None,
+        }
+    }
+
+    /// Returns the raw JSON payload for content variants this crate does not
+    /// model. Returns `None` for variants with a structured representation.
+    pub fn as_unknown_json(&self) -> Option<&Value> {
+        match self {
+            ToolContent::Unknown(value) => Some(value),
             _ => None,
         }
     }
@@ -370,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_content_unknown_type_deserializes_as_unknown() {
+    fn tool_content_unknown_type_preserves_raw_json() {
         let raw = json!({
             "content": [
                 {"type": "resource", "uri": "file:///tmp/data.json"}
@@ -379,8 +437,13 @@ mod tests {
 
         let result: ToolCallResult = serde_json::from_value(raw).unwrap();
         assert_eq!(result.content.len(), 1);
-        assert!(matches!(&result.content[0], ToolContent::Unknown));
         assert!(result.content[0].as_text().is_none());
+
+        let payload = result.content[0]
+            .as_unknown_json()
+            .expect("unknown content preserves raw JSON");
+        assert_eq!(payload["type"], "resource");
+        assert_eq!(payload["uri"], "file:///tmp/data.json");
     }
 
     // ── tools_to_openai conversion ──────────────────────────────────────

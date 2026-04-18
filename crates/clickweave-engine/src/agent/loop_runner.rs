@@ -46,7 +46,7 @@ fn extract_result_text(result: &clickweave_mcp::ToolCallResult) -> String {
             clickweave_mcp::ToolContent::Image { mime_type, .. } => {
                 format!("[image: {}]", mime_type)
             }
-            clickweave_mcp::ToolContent::Unknown => "[unknown content]".to_string(),
+            clickweave_mcp::ToolContent::Unknown(_) => "[unknown content]".to_string(),
         })
         .collect::<Vec<_>>()
         .join("\n")

@@ -9,5 +9,4 @@ serde_json.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-uuid.workspace = true
 tracing.workspace = true
