@@ -119,6 +119,28 @@ pub enum ExecutorError {
         "No CDP connection — ensure a FocusWindow or LaunchApp targeting a CDP-capable app runs before {node_type}"
     )]
     NoCdpConnection { node_type: String },
+
+    /// `take_ax_snapshot` itself failed. Transient — the executor retries once
+    /// internally before surfacing this.
+    #[error("AX snapshot failed: {0}")]
+    AxSnapshotFailed(String),
+
+    /// The current AX snapshot contains no element whose descriptor matches
+    /// the node's target, so dispatch cannot proceed.
+    #[error("No matching AX element for target '{target}'")]
+    AxNotFound { target: String },
+
+    /// AX dispatch returned a typed error code from the MCP server (e.g.
+    /// `snapshot_expired`, `not_dispatchable`, `no_row_ancestor`,
+    /// `no_outline_container`, `ax_error`). Carries the optional `fallback`
+    /// screen coordinate the server suggests for a coord-based retry.
+    #[error("AX dispatch failed ({tool}): {code}: {message}")]
+    AxDispatch {
+        tool: String,
+        code: String,
+        message: String,
+        fallback: Option<(f64, f64)>,
+    },
 }
 
 /// Alias used throughout the executor.
