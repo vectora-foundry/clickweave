@@ -229,6 +229,10 @@ pub enum NodeType {
     CdpClosePage(CdpClosePageParams),
     CdpSelectPage(CdpSelectPageParams),
     CdpHandleDialog(CdpHandleDialogParams),
+    // AX — macOS accessibility-tree dispatch (background-safe)
+    AxClick(AxClickParams),
+    AxSetValue(AxSetValueParams),
+    AxSelect(AxSelectParams),
     // AI
     AiStep(AiStepParams),
     // Generic
@@ -268,7 +272,10 @@ impl NodeType {
             | Self::CdpNewPage(_)
             | Self::CdpClosePage(_)
             | Self::CdpSelectPage(_)
-            | Self::CdpHandleDialog(_) => OutputRole::Action,
+            | Self::CdpHandleDialog(_)
+            | Self::AxClick(_)
+            | Self::AxSetValue(_)
+            | Self::AxSelect(_) => OutputRole::Action,
 
             Self::AiStep(_) => OutputRole::Ai,
 
@@ -290,7 +297,10 @@ impl NodeType {
             | Self::Scroll(_)
             | Self::FocusWindow(_)
             | Self::LaunchApp(_)
-            | Self::QuitApp(_) => NodeContext::Native,
+            | Self::QuitApp(_)
+            | Self::AxClick(_)
+            | Self::AxSetValue(_)
+            | Self::AxSelect(_) => NodeContext::Native,
 
             Self::CdpWait(_)
             | Self::CdpClick(_)
@@ -327,7 +337,10 @@ impl NodeType {
     pub fn is_text_input(&self) -> bool {
         matches!(
             self,
-            NodeType::TypeText(_) | NodeType::CdpFill(_) | NodeType::CdpType(_)
+            NodeType::TypeText(_)
+                | NodeType::CdpFill(_)
+                | NodeType::CdpType(_)
+                | NodeType::AxSetValue(_)
         )
     }
 
@@ -335,6 +348,9 @@ impl NodeType {
     /// Used to identify predecessor nodes that should be re-run before retrying
     /// a text-input node.
     pub fn is_focus_establishing(&self) -> bool {
+        // `AxClick` deliberately excluded — it dispatches without stealing
+        // focus, so it does not re-establish keyboard focus for a following
+        // text-input node.
         matches!(self, NodeType::Click(_) | NodeType::CdpClick(_))
     }
 
@@ -357,6 +373,9 @@ impl NodeType {
             NodeType::CdpClick(p) => Some(p.target.as_str()).filter(|s| !s.is_empty()),
             NodeType::CdpHover(p) => Some(p.target.as_str()).filter(|s| !s.is_empty()),
             NodeType::CdpWait(p) => Some(p.text.as_str()).filter(|s| !s.is_empty()),
+            NodeType::AxClick(p) => Some(p.target.as_str()).filter(|s| !s.is_empty()),
+            NodeType::AxSetValue(p) => Some(p.target.as_str()).filter(|s| !s.is_empty()),
+            NodeType::AxSelect(p) => Some(p.target.as_str()).filter(|s| !s.is_empty()),
             _ => None,
         }
     }
@@ -387,6 +406,9 @@ impl NodeType {
             NodeType::CdpClosePage(_) => "CDP Close Page",
             NodeType::CdpSelectPage(_) => "CDP Select Page",
             NodeType::CdpHandleDialog(_) => "CDP Handle Dialog",
+            NodeType::AxClick(_) => "AX Click",
+            NodeType::AxSetValue(_) => "AX Set Value",
+            NodeType::AxSelect(_) => "AX Select",
             NodeType::AiStep(_) => "AI Step",
             NodeType::McpToolCall(_) => "MCP Tool Call",
             NodeType::AppDebugKitOp(_) => "AppDebugKit Op",
@@ -464,6 +486,9 @@ impl NodeType {
                     "CDP dismissed dialog".to_string()
                 }
             }
+            NodeType::AxClick(p) => format!("AX clicked element '{}'", p.target.as_str()),
+            NodeType::AxSetValue(p) => format!("AX set value to '{}'", p.value),
+            NodeType::AxSelect(p) => format!("AX selected row '{}'", p.target.as_str()),
             NodeType::McpToolCall(p) => format!("Called tool '{}'", p.tool_name),
             NodeType::AppDebugKitOp(p) => format!("Called AppDebugKit '{}'", p.operation_name),
             _ => self.display_name().to_string(),
@@ -477,10 +502,13 @@ impl NodeType {
             NodeType::FindText(_) => "🔍",
             NodeType::FindImage(_) => "🖼",
             NodeType::FindApp(_) => "🔍",
-            NodeType::Click(_) | NodeType::CdpClick(_) => "🖱",
+            NodeType::Click(_) | NodeType::CdpClick(_) | NodeType::AxClick(_) => "🖱",
             NodeType::Hover(_) | NodeType::CdpHover(_) => "👆",
             NodeType::Drag(_) => "↔",
-            NodeType::TypeText(_) | NodeType::CdpType(_) | NodeType::CdpFill(_) => "⌨",
+            NodeType::TypeText(_)
+            | NodeType::CdpType(_)
+            | NodeType::CdpFill(_)
+            | NodeType::AxSetValue(_) => "⌨",
             NodeType::PressKey(_) | NodeType::CdpPressKey(_) => "⌨",
             NodeType::Scroll(_) => "📜",
             NodeType::FocusWindow(_) => "🪟",
@@ -492,6 +520,7 @@ impl NodeType {
             NodeType::CdpClosePage(_) => "🗑",
             NodeType::CdpSelectPage(_) => "📑",
             NodeType::CdpHandleDialog(_) => "💬",
+            NodeType::AxSelect(_) => "✅",
             NodeType::McpToolCall(_) | NodeType::AppDebugKitOp(_) => "🔧",
             NodeType::Unknown => "❓",
         }

@@ -642,6 +642,139 @@ pub struct CdpFillParams {
 
 impl_cdp_target_deser!(CdpFillParams { value: String });
 
+// --- AX target enum ---
+
+/// Distinguishes how a macOS accessibility-tree element target was produced,
+/// so the executor can choose the right resolution strategy at dispatch time.
+///
+/// AX snapshots are session-stateful: every call to `take_ax_snapshot` bumps a
+/// generation and emits uids like `a42g3`. Uids from prior snapshots are
+/// rejected by `ax_click` / `ax_set_value` / `ax_select` with
+/// `snapshot_expired`. To replay safely, the executor re-snapshots immediately
+/// before each dispatch and resolves the node's descriptor (role + name) to a
+/// fresh uid — see [`clickweave_engine::executor::deterministic::ax`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "kind", content = "value")]
+pub enum AxTarget {
+    /// Replay-stable descriptor. Executor re-resolves via `take_ax_snapshot`
+    /// and matches the first entry with this `role` whose `name` matches —
+    /// optional `parent_name` breaks ties for sidebars/outlines where many
+    /// rows share a role.
+    Descriptor {
+        role: String,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_name: Option<String>,
+    },
+    /// Raw uid captured at agent run time. Valid only for the current AX
+    /// snapshot generation — will fail with `snapshot_expired` on replay.
+    /// Agent-loop post-hooks upgrade `ResolvedUid` to `Descriptor` when the
+    /// original snapshot is still on hand.
+    ResolvedUid(String),
+}
+
+impl Default for AxTarget {
+    fn default() -> Self {
+        Self::ResolvedUid(String::new())
+    }
+}
+
+impl AxTarget {
+    /// A human-readable handle for the target regardless of variant — the
+    /// descriptor's `name`, or the uid string.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Descriptor { name, .. } => name.as_str(),
+            Self::ResolvedUid(s) => s.as_str(),
+        }
+    }
+}
+
+// --- AX node params ---
+
+/// Generate backward-compatible deserialization for AX params structs.
+/// Accepts both the current tagged `target` shape and the legacy top-level
+/// `{"uid": "..."}` shape (deserialized as `AxTarget::ResolvedUid`).
+macro_rules! impl_ax_target_deser {
+    ($ty:ident { $($extra_field:ident : $extra_ty:ty),* $(,)? }) => {
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                #[derive(Deserialize)]
+                struct Raw {
+                    #[serde(default)]
+                    target: Option<AxTarget>,
+                    #[serde(default)]
+                    uid: Option<String>,
+                    $(
+                        #[serde(default)]
+                        $extra_field: $extra_ty,
+                    )*
+                    #[serde(default)]
+                    verification_method: Option<VerificationMethod>,
+                    #[serde(default)]
+                    verification_assertion: Option<String>,
+                }
+                let raw = Raw::deserialize(deserializer)?;
+                let verification = VerificationConfig {
+                    verification_method: raw.verification_method,
+                    verification_assertion: raw.verification_assertion,
+                };
+                Ok(Self {
+                    target: match (raw.target, raw.uid) {
+                        (Some(t), _) => t,
+                        (None, Some(uid)) => AxTarget::ResolvedUid(uid),
+                        (None, None) => AxTarget::default(),
+                    },
+                    $( $extra_field: raw.$extra_field, )*
+                    verification,
+                })
+            }
+        }
+
+        impl HasVerification for $ty {
+            fn verification(&self) -> Option<&VerificationConfig> {
+                if self.verification.is_empty() {
+                    None
+                } else {
+                    Some(&self.verification)
+                }
+            }
+        }
+    };
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct AxClickParams {
+    pub target: AxTarget,
+    #[serde(flatten, default)]
+    pub verification: VerificationConfig,
+}
+
+impl_ax_target_deser!(AxClickParams {});
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct AxSetValueParams {
+    pub target: AxTarget,
+    pub value: String,
+    #[serde(flatten, default)]
+    pub verification: VerificationConfig,
+}
+
+impl_ax_target_deser!(AxSetValueParams { value: String });
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct AxSelectParams {
+    pub target: AxTarget,
+    #[serde(flatten, default)]
+    pub verification: VerificationConfig,
+}
+
+impl_ax_target_deser!(AxSelectParams {});
+
 #[derive(Debug, Clone, Default, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct CdpTypeParams {
@@ -917,6 +1050,9 @@ pub enum TraceEventKind {
     CdpClick,
     CdpHover,
     CdpFill,
+    AxClick,
+    AxSetValue,
+    AxSelect,
     VisionSummary,
     VariableSet,
     Retry,
@@ -950,6 +1086,9 @@ impl From<&str> for TraceEventKind {
             "cdp_click" => Self::CdpClick,
             "cdp_hover" => Self::CdpHover,
             "cdp_fill" => Self::CdpFill,
+            "ax_click" => Self::AxClick,
+            "ax_set_value" => Self::AxSetValue,
+            "ax_select" => Self::AxSelect,
             "vision_summary" => Self::VisionSummary,
             "variable_set" => Self::VariableSet,
             "retry" => Self::Retry,
@@ -988,6 +1127,9 @@ impl TraceEventKind {
             Self::CdpClick => "cdp_click",
             Self::CdpHover => "cdp_hover",
             Self::CdpFill => "cdp_fill",
+            Self::AxClick => "ax_click",
+            Self::AxSetValue => "ax_set_value",
+            Self::AxSelect => "ax_select",
             Self::VisionSummary => "vision_summary",
             Self::VariableSet => "variable_set",
             Self::Retry => "retry",
@@ -1133,6 +1275,111 @@ mod tests {
         let params: CdpClickParams = serde_json::from_str(json).unwrap();
         assert_eq!(params.target, CdpTarget::default());
         assert!(matches!(params.target, CdpTarget::Intent(ref s) if s.is_empty()));
+    }
+
+    // ── AxTarget + AX params ────────────────────────────────────────────
+
+    #[test]
+    fn ax_target_descriptor_serde_roundtrip() {
+        let target = AxTarget::Descriptor {
+            role: "AXButton".into(),
+            name: "Submit".into(),
+            parent_name: None,
+        };
+        let json = serde_json::to_string(&target).unwrap();
+        assert!(json.contains("\"kind\":\"Descriptor\""));
+        let back: AxTarget = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, target);
+    }
+
+    #[test]
+    fn ax_target_as_str_prefers_name_over_uid() {
+        assert_eq!(
+            AxTarget::Descriptor {
+                role: "AXButton".into(),
+                name: "OK".into(),
+                parent_name: None,
+            }
+            .as_str(),
+            "OK"
+        );
+        assert_eq!(AxTarget::ResolvedUid("a42g3".into()).as_str(), "a42g3");
+    }
+
+    #[test]
+    fn ax_target_default_is_empty_resolved_uid() {
+        assert_eq!(AxTarget::default(), AxTarget::ResolvedUid(String::new()));
+    }
+
+    #[test]
+    fn ax_click_params_descriptor_roundtrip() {
+        let params = AxClickParams {
+            target: AxTarget::Descriptor {
+                role: "AXButton".into(),
+                name: "Continue".into(),
+                parent_name: Some("Toolbar".into()),
+            },
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        let back: AxClickParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.target, params.target);
+    }
+
+    #[test]
+    fn ax_click_params_legacy_uid_deserializes_as_resolved_uid() {
+        // Agent-generated workflow nodes start with ResolvedUid captured from
+        // the live snapshot; old persisted workflows may use the even-older
+        // top-level `{"uid": "..."}` shape.
+        let json = r#"{"uid": "a42g3"}"#;
+        let params: AxClickParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.target, AxTarget::ResolvedUid("a42g3".into()));
+    }
+
+    #[test]
+    fn ax_set_value_params_roundtrip_with_value() {
+        let params = AxSetValueParams {
+            target: AxTarget::Descriptor {
+                role: "AXTextField".into(),
+                name: "Search".into(),
+                parent_name: None,
+            },
+            value: "hello world".into(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        let back: AxSetValueParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.value, "hello world");
+        assert_eq!(back.target, params.target);
+    }
+
+    #[test]
+    fn ax_set_value_params_legacy_uid_preserves_value() {
+        let json = r#"{"uid": "a12g1", "value": "typed"}"#;
+        let params: AxSetValueParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.target, AxTarget::ResolvedUid("a12g1".into()));
+        assert_eq!(params.value, "typed");
+    }
+
+    #[test]
+    fn ax_select_params_descriptor_roundtrip() {
+        let params = AxSelectParams {
+            target: AxTarget::Descriptor {
+                role: "AXRow".into(),
+                name: "Wi-Fi".into(),
+                parent_name: Some("Sidebar".into()),
+            },
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        let back: AxSelectParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.target, params.target);
+    }
+
+    #[test]
+    fn ax_params_empty_json_defaults_to_resolved_uid_empty() {
+        let params: AxClickParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(params.target, AxTarget::ResolvedUid(String::new()));
     }
 
     #[test]
@@ -1335,6 +1582,9 @@ mod tests {
             TraceEventKind::CdpClick,
             TraceEventKind::CdpHover,
             TraceEventKind::CdpFill,
+            TraceEventKind::AxClick,
+            TraceEventKind::AxSetValue,
+            TraceEventKind::AxSelect,
             TraceEventKind::VisionSummary,
             TraceEventKind::VariableSet,
             TraceEventKind::Retry,
