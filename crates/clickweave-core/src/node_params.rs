@@ -554,23 +554,32 @@ impl CdpTarget {
     }
 }
 
-// --- CDP node params ---
+// --- Target-param deser macro ---
 
-/// Macro to generate backward-compatible deserialization for CDP params structs.
+/// Generate backward-compatible deserialization for params structs whose
+/// `target` field is a typed target enum (`CdpTarget` / `AxTarget`).
 ///
-/// Accepts both the legacy on-disk shape `{"uid": "..."}` (deserialized as
-/// `CdpTarget::ExactLabel(...)`) and the current tagged shape
-/// `{"target": {"kind": "...", "value": "..."}}`. Also handles the migration
-/// from split `verification_method` / `verification_assertion` fields to the
-/// flattened [`VerificationConfig`] substruct.
-macro_rules! impl_cdp_target_deser {
-    ($ty:ident { $($extra_field:ident : $extra_ty:ty),* $(,)? }) => {
+/// Accepts both the current tagged shape
+/// `{"target": {"kind": "...", "value": "..."}}` and the legacy on-disk
+/// shape `{"uid": "..."}`, which is routed through `$uid_fallback` to build
+/// the right target variant (e.g. `CdpTarget::ExactLabel` for CDP, which
+/// tries an exact-label CDP query, or `AxTarget::ResolvedUid` for AX,
+/// which treats it as a raw snapshot uid). Also handles the migration
+/// from split `verification_method` / `verification_assertion` fields to
+/// the flattened [`VerificationConfig`] substruct.
+macro_rules! impl_target_deser {
+    (
+        $ty:ident,
+        target: $target_ty:ty,
+        uid_fallback: $uid_fallback:path,
+        { $($extra_field:ident : $extra_ty:ty),* $(,)? }
+    ) => {
         impl<'de> Deserialize<'de> for $ty {
             fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
                 #[derive(Deserialize)]
                 struct Raw {
                     #[serde(default)]
-                    target: Option<CdpTarget>,
+                    target: Option<$target_ty>,
                     #[serde(default)]
                     uid: Option<String>,
                     $(
@@ -590,8 +599,8 @@ macro_rules! impl_cdp_target_deser {
                 Ok(Self {
                     target: match (raw.target, raw.uid) {
                         (Some(t), _) => t,
-                        (None, Some(uid)) => CdpTarget::ExactLabel(uid),
-                        (None, None) => CdpTarget::default(),
+                        (None, Some(uid)) => $uid_fallback(uid),
+                        (None, None) => <$target_ty>::default(),
                     },
                     $( $extra_field: raw.$extra_field, )*
                     verification,
@@ -611,6 +620,8 @@ macro_rules! impl_cdp_target_deser {
     };
 }
 
+// --- CDP node params ---
+
 #[derive(Debug, Clone, Default, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct CdpClickParams {
@@ -619,7 +630,7 @@ pub struct CdpClickParams {
     pub verification: VerificationConfig,
 }
 
-impl_cdp_target_deser!(CdpClickParams {});
+impl_target_deser!(CdpClickParams, target: CdpTarget, uid_fallback: CdpTarget::ExactLabel, {});
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -629,7 +640,7 @@ pub struct CdpHoverParams {
     pub verification: VerificationConfig,
 }
 
-impl_cdp_target_deser!(CdpHoverParams {});
+impl_target_deser!(CdpHoverParams, target: CdpTarget, uid_fallback: CdpTarget::ExactLabel, {});
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -640,7 +651,12 @@ pub struct CdpFillParams {
     pub verification: VerificationConfig,
 }
 
-impl_cdp_target_deser!(CdpFillParams { value: String });
+impl_target_deser!(
+    CdpFillParams,
+    target: CdpTarget,
+    uid_fallback: CdpTarget::ExactLabel,
+    { value: String }
+);
 
 // --- AX target enum ---
 
@@ -693,57 +709,6 @@ impl AxTarget {
 
 // --- AX node params ---
 
-/// Generate backward-compatible deserialization for AX params structs.
-/// Accepts both the current tagged `target` shape and the legacy top-level
-/// `{"uid": "..."}` shape (deserialized as `AxTarget::ResolvedUid`).
-macro_rules! impl_ax_target_deser {
-    ($ty:ident { $($extra_field:ident : $extra_ty:ty),* $(,)? }) => {
-        impl<'de> Deserialize<'de> for $ty {
-            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-                #[derive(Deserialize)]
-                struct Raw {
-                    #[serde(default)]
-                    target: Option<AxTarget>,
-                    #[serde(default)]
-                    uid: Option<String>,
-                    $(
-                        #[serde(default)]
-                        $extra_field: $extra_ty,
-                    )*
-                    #[serde(default)]
-                    verification_method: Option<VerificationMethod>,
-                    #[serde(default)]
-                    verification_assertion: Option<String>,
-                }
-                let raw = Raw::deserialize(deserializer)?;
-                let verification = VerificationConfig {
-                    verification_method: raw.verification_method,
-                    verification_assertion: raw.verification_assertion,
-                };
-                Ok(Self {
-                    target: match (raw.target, raw.uid) {
-                        (Some(t), _) => t,
-                        (None, Some(uid)) => AxTarget::ResolvedUid(uid),
-                        (None, None) => AxTarget::default(),
-                    },
-                    $( $extra_field: raw.$extra_field, )*
-                    verification,
-                })
-            }
-        }
-
-        impl HasVerification for $ty {
-            fn verification(&self) -> Option<&VerificationConfig> {
-                if self.verification.is_empty() {
-                    None
-                } else {
-                    Some(&self.verification)
-                }
-            }
-        }
-    };
-}
-
 #[derive(Debug, Clone, Default, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct AxClickParams {
@@ -752,7 +717,7 @@ pub struct AxClickParams {
     pub verification: VerificationConfig,
 }
 
-impl_ax_target_deser!(AxClickParams {});
+impl_target_deser!(AxClickParams, target: AxTarget, uid_fallback: AxTarget::ResolvedUid, {});
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -763,7 +728,12 @@ pub struct AxSetValueParams {
     pub verification: VerificationConfig,
 }
 
-impl_ax_target_deser!(AxSetValueParams { value: String });
+impl_target_deser!(
+    AxSetValueParams,
+    target: AxTarget,
+    uid_fallback: AxTarget::ResolvedUid,
+    { value: String }
+);
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -773,7 +743,7 @@ pub struct AxSelectParams {
     pub verification: VerificationConfig,
 }
 
-impl_ax_target_deser!(AxSelectParams {});
+impl_target_deser!(AxSelectParams, target: AxTarget, uid_fallback: AxTarget::ResolvedUid, {});
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]

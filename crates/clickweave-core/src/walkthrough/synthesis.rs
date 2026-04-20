@@ -506,17 +506,18 @@ pub fn synthesize_draft(
                         // AXRow / AXOutlineRow targets fire AXSelectedRows
                         // on the enclosing outline/table, not AXPress —
                         // ax_select is the right MCP entry point.
-                        let ax_target = AxTarget::Descriptor {
-                            role: role.clone(),
-                            name: name.clone(),
-                            parent_name,
-                        };
                         let label = if name.is_empty() {
                             role.clone()
                         } else {
                             name.clone()
                         };
-                        if role == "AXRow" || role == "AXOutlineRow" {
+                        let is_row = role == "AXRow" || role == "AXOutlineRow";
+                        let ax_target = AxTarget::Descriptor {
+                            role,
+                            name,
+                            parent_name,
+                        };
+                        if is_row {
                             (
                                 NodeType::AxSelect(AxSelectParams {
                                     target: ax_target,

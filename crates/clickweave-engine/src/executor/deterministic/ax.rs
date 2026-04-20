@@ -136,6 +136,15 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         mcp: &(impl Mcp + ?Sized),
         node_run: Option<&NodeRun>,
     ) -> ExecutorResult<String> {
+        // Typed trace event kind — computed once; the retry loop reuses it so
+        // we don't re-classify the same tool name on every pass.
+        let event_kind = match tool_name {
+            "ax_click" => TraceEventKind::AxClick,
+            "ax_set_value" => TraceEventKind::AxSetValue,
+            "ax_select" => TraceEventKind::AxSelect,
+            _ => TraceEventKind::Unknown,
+        };
+
         let mut snapshot_text = self.take_ax_snapshot(mcp).await?;
 
         for attempt in 0..AX_DISPATCH_MAX_ATTEMPTS {
@@ -182,15 +191,6 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
                 });
             }
 
-            // Record the typed trace event so the UI timeline and the
-            // downstream verdict writer don't have to re-classify by tool
-            // name.
-            let event_kind = match tool_name {
-                "ax_click" => TraceEventKind::AxClick,
-                "ax_set_value" => TraceEventKind::AxSetValue,
-                "ax_select" => TraceEventKind::AxSelect,
-                _ => TraceEventKind::Unknown,
-            };
             self.record_event(
                 node_run,
                 event_kind,
@@ -296,11 +296,9 @@ pub(crate) fn parse_ax_snapshot(text: &str) -> Vec<AxSnapshotEntry> {
             continue;
         }
 
-        let Some(uid) = parse_snapshot_uid(line) else {
+        let Some((uid, role, name)) = parse_snapshot_line(line) else {
             continue;
         };
-        let role = parse_snapshot_role(line).unwrap_or_default();
-        let name = parse_snapshot_name(line);
 
         // Drop ancestors at the same depth or deeper — they're siblings or
         // cousins, not parents of this node.
@@ -338,40 +336,41 @@ fn leading_indent_depth(line: &str) -> u32 {
     (spaces / 2) as u32
 }
 
-fn parse_snapshot_uid(line: &str) -> Option<String> {
+/// Extract `(uid, role, name)` from a single trimmed snapshot line. The MCP
+/// formatter emits `uid=<uid> <Role> "<name>" [value="..." focused bbox=...]`,
+/// so we walk it once: find `uid=`, consume the uid and role as
+/// whitespace-delimited tokens, then pick out the first quoted substring as
+/// the name. `role` is `""` when missing, and `name` is `None` when the line
+/// has no quoted value at all. Returns `None` if `uid=` is absent or its
+/// value is empty — treated as a non-entry (blank lines, free-form text).
+fn parse_snapshot_line(line: &str) -> Option<(String, String, Option<String>)> {
     let start = line.find("uid=")?;
-    let rest = &line[start + 4..];
-    let end = rest.find(' ').unwrap_or(rest.len());
-    let uid = &rest[..end];
+    let after_uid = &line[start + 4..];
+    let (uid, after) = split_first_token(after_uid);
     if uid.is_empty() {
-        None
-    } else {
-        Some(uid.to_string())
+        return None;
+    }
+    let role = after
+        .map(|s| split_first_token(s.trim_start()).0)
+        .unwrap_or("");
+    let name = parse_first_quoted(line);
+    Some((uid.to_string(), role.to_string(), name))
+}
+
+/// Split `s` on the first whitespace. Returns the leading non-whitespace
+/// token and the remainder after that whitespace (or `None` when the whole
+/// string is a single token).
+fn split_first_token(s: &str) -> (&str, Option<&str>) {
+    match s.find(|c: char| c.is_whitespace()) {
+        Some(end) => (&s[..end], Some(&s[end + 1..])),
+        None => (s, None),
     }
 }
 
-fn parse_snapshot_role(line: &str) -> Option<String> {
-    let uid_start = line.find("uid=")?;
-    let after_uid = &line[uid_start + 4..];
-    let uid_end = after_uid.find(' ')?;
-    let after_role_space = &after_uid[uid_end + 1..];
-    // Role is the next whitespace-delimited token.
-    let role_end = after_role_space
-        .find(|c: char| c.is_whitespace())
-        .unwrap_or(after_role_space.len());
-    let role = &after_role_space[..role_end];
-    if role.is_empty() {
-        None
-    } else {
-        Some(role.to_string())
-    }
-}
-
-fn parse_snapshot_name(line: &str) -> Option<String> {
-    // First quoted substring in the line — the MCP formatter emits role
-    // first, then `"name"`, then optional `value="..."` / `focused` /
-    // `bbox=...`. Treating the first quoted span as the name avoids
-    // picking up the value accidentally.
+/// First quoted substring in a line — the MCP formatter emits role first,
+/// then `"name"`, then optional `value="..."` / `focused` / `bbox=...`.
+/// Treating the first quoted span as the name avoids picking up the value.
+fn parse_first_quoted(line: &str) -> Option<String> {
     let start = line.find('"')?;
     let rest = &line[start + 1..];
     let end = rest.find('"')?;
