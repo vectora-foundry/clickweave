@@ -321,6 +321,19 @@ pub enum TargetCandidate {
         parent_role: Option<String>,
         parent_name: Option<String>,
     },
+    /// macOS accessibility element reached via the native AX tree — the
+    /// target descriptor for `ax_click` / `ax_set_value` / `ax_select`.
+    /// Populated only when the role is actionable (button, text field,
+    /// menu item, row, etc.) and the app exposes an AX tree. Replay
+    /// re-resolves this to a fresh uid via `take_ax_snapshot` at
+    /// execution time, so no generation-tagged uid is carried on the
+    /// candidate.
+    AxElement {
+        role: String,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_name: Option<String>,
+    },
     /// macOS window control button (close, minimize, maximize).
     /// Resolved at execution time to a window-relative click.
     WindowControl {
@@ -369,6 +382,7 @@ impl TargetCandidate {
             Self::VlmLabel { label } => Some(label),
             Self::OcrText { text } => Some(text),
             Self::CdpElement { name, .. } => Some(name),
+            Self::AxElement { name, .. } => Some(name),
             Self::WindowControl { action } => Some(action.display_name()),
             _ => None,
         }
