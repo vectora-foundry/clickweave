@@ -456,6 +456,23 @@ You have access to MCP tools for native UI interaction:
 - list_apps: list running applications (use user_apps_only=true to filter system processes)
 - list_windows / focus_window: manage windows (focus_window accepts app_name, window_id, or pid)
 
+macOS accessibility (AX) tools — prefer these over click / type_text when available:
+- take_ax_snapshot: capture the focused app's AX tree as text (uids look like `a42g3`)
+- ax_click: dispatch a press against the element at the given uid (buttons, menu items, checkboxes)
+- ax_set_value: write a value into a text field by uid (no keystrokes, no focus steal)
+- ax_select: select a row inside NSOutlineView / NSTableView by its uid (sidebars, rule lists)
+
+AX tools dispatch in the background — the cursor does NOT move and the target app does
+NOT steal focus, so they are the preferred choice whenever you can see the element you
+need in a snapshot. They only work when the server advertises them (macOS only).
+
+CRITICAL AX rule — snapshots are session-stateful. Each take_ax_snapshot bumps the
+generation counter; uids from a prior snapshot are rejected with `snapshot_expired`.
+So: take_ax_snapshot immediately before every ax_click / ax_set_value / ax_select, in
+the same tool sequence. Do not reuse a uid after any intervening action or any other
+tool call that could cause the tree to change. If a dispatch returns `snapshot_expired`,
+take a fresh snapshot and try again.
+
 For each step, you will receive:
 - A prompt describing the objective
 - Optional button_text: specific text to find and click
@@ -471,10 +488,11 @@ their analysis as a VLM_IMAGE_SUMMARY message containing a JSON object with:
 Use find_text / find_image for precise coordinate targeting. Do not guess coordinates.
 
 Strategy:
-1. If you need to see the screen, take a screenshot to observe the current state
-2. Use find_text or find_image to locate targets precisely
-3. Perform the required input actions (click, type, scroll)
-4. Verify the result with another screenshot if needed
+1. If you need to see the screen, take a screenshot OR take_ax_snapshot to observe state
+2. Use take_ax_snapshot + ax_* tools for macOS apps when the element is in the AX tree
+3. Fall back to find_text / find_image + click for coordinate-based targeting
+4. Perform the required input actions
+5. Verify the result with another screenshot or snapshot if needed
 
 When you have completed the step's objective, respond with a JSON object:
 {"step_complete": true, "summary": "Brief description of what was done"}

@@ -598,6 +598,35 @@ mod tests {
     }
 
     #[test]
+    fn collapse_treats_take_ax_snapshot_as_snapshot_tool() {
+        // AX snapshots are session-stateful — each call bumps the
+        // server-side generation, so uids from older snapshots are
+        // invalid on dispatch. Keeping older snapshot bodies in the
+        // transcript wastes tokens and tempts the LLM to reuse a stale
+        // uid, so they must be collapsed the same way CDP snapshots are.
+        let mut messages = vec![Message::system("System"), Message::user("Goal")];
+        for i in 0..3 {
+            let (asst, result) = snapshot_pair("take_ax_snapshot", &format!("ax_{}", i), 4);
+            messages.push(asst);
+            messages.push(result);
+        }
+
+        let collapsed = collapse_superseded_snapshots(&messages)
+            .expect("take_ax_snapshot supersession should fire");
+
+        let collapsed_ids: Vec<String> = collapsed
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .filter(|m| {
+                m.content_text()
+                    .is_some_and(|t| t.starts_with("[superseded "))
+            })
+            .filter_map(|m| m.tool_call_id.clone())
+            .collect();
+        assert_eq!(collapsed_ids, vec!["ax_0".to_string(), "ax_1".to_string()]);
+    }
+
+    #[test]
     fn collapse_preserves_take_screenshot_results() {
         // take_screenshot must NOT be collapsed: its result body carries a
         // screenshot_id that find_image and coordinate-based tools can

@@ -2273,4 +2273,47 @@ mod observation_union_tests {
         assert!(!is_observation("quit_app", &annotations));
         assert!(!is_observation("cdp_connect", &annotations));
     }
+
+    #[test]
+    fn take_ax_snapshot_is_observation_but_ax_dispatch_is_not() {
+        // Snapshot is read-only, should bypass the approval prompt and be
+        // eligible for transcript-level collapse. The three dispatch tools
+        // (ax_click / ax_set_value / ax_select) perform real side effects
+        // even though the cursor doesn't move — they must stay in the
+        // approval path, matching the MCP server's
+        // `readOnlyHint: false` / `destructiveHint: false` annotations.
+        let mut annotations: HashMap<String, ToolAnnotations> = HashMap::new();
+        annotations.insert(
+            "take_ax_snapshot".to_string(),
+            ToolAnnotations {
+                read_only_hint: Some(true),
+                ..Default::default()
+            },
+        );
+        annotations.insert(
+            "ax_click".to_string(),
+            ToolAnnotations {
+                read_only_hint: Some(false),
+                ..Default::default()
+            },
+        );
+        annotations.insert(
+            "ax_set_value".to_string(),
+            ToolAnnotations {
+                read_only_hint: Some(false),
+                ..Default::default()
+            },
+        );
+        annotations.insert(
+            "ax_select".to_string(),
+            ToolAnnotations {
+                read_only_hint: Some(false),
+                ..Default::default()
+            },
+        );
+        assert!(is_observation("take_ax_snapshot", &annotations));
+        assert!(!is_observation("ax_click", &annotations));
+        assert!(!is_observation("ax_set_value", &annotations));
+        assert!(!is_observation("ax_select", &annotations));
+    }
 }
