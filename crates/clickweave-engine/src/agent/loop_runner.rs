@@ -1892,7 +1892,7 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
         if Self::is_observation_tool(tool_name, annotations_by_tool) {
             return None;
         }
-        let node_type = match tool_invocation_to_node_type(tool_name, arguments, known_tools) {
+        let mut node_type = match tool_invocation_to_node_type(tool_name, arguments, known_tools) {
             Ok(nt) => nt,
             Err(e) => {
                 warn!(error = %e, tool = tool_name, "Could not map tool to workflow node type — workflow graph will be incomplete");
@@ -1903,6 +1903,15 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
                 return None;
             }
         };
+
+        // AX dispatch descriptor enrichment. The tool-mapping inbound path
+        // has no access to the AX snapshot that the agent saw, so it writes
+        // `AxTarget::ResolvedUid(uid)`. Here — where we *do* have the recent
+        // transcript — walk back to the nearest `take_ax_snapshot` result
+        // and upgrade to `Descriptor { role, name, parent_name }` so the
+        // node replays correctly after a fresh snapshot (which will have a
+        // different generation and therefore a different uid).
+        self.enrich_ax_descriptor(&mut node_type);
 
         let position = Position {
             x: 0.0,
@@ -1932,6 +1941,258 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
 
         self.state.last_node_id = Some(node_id);
         Some(node_id)
+    }
+
+    /// Upgrade an `AxClick` / `AxSetValue` / `AxSelect` node's target from
+    /// the raw uid emitted by the LLM (already stored as
+    /// `AxTarget::ResolvedUid`) into a replay-stable descriptor, using the
+    /// most recent `take_ax_snapshot` result in the agent transcript.
+    ///
+    /// Thin wrapper over [`upgrade_ax_target_from_snapshot`] that looks up
+    /// the snapshot from `self.state.steps`.
+    fn enrich_ax_descriptor(&self, node_type: &mut clickweave_core::NodeType) {
+        let Some(snapshot_text) = most_recent_ax_snapshot_text(&self.state.steps) else {
+            return;
+        };
+        upgrade_ax_target_from_snapshot(node_type, &snapshot_text);
+    }
+}
+
+/// Pure helper: scan agent steps from newest to oldest, return the most
+/// recent `take_ax_snapshot` success-outcome text. `None` if no such step
+/// exists. Pulled out of [`AgentRunner`] so unit tests can assert the
+/// lookup without constructing a full runner.
+fn most_recent_ax_snapshot_text(steps: &[super::types::AgentStep]) -> Option<String> {
+    use super::types::{AgentCommand, StepOutcome};
+    for step in steps.iter().rev() {
+        let AgentCommand::ToolCall { tool_name, .. } = &step.command else {
+            continue;
+        };
+        if tool_name != "take_ax_snapshot" {
+            continue;
+        }
+        if let StepOutcome::Success(text) = &step.outcome {
+            return Some(text.clone());
+        }
+    }
+    None
+}
+
+/// Pure helper: if `node_type` is an AX dispatch variant with a
+/// `ResolvedUid` target, and `snapshot_text` contains a matching entry,
+/// replace the target with a `Descriptor`. No-op otherwise.
+///
+/// Silent no-ops are preferable to hard failures — the executor's
+/// descriptor resolution will surface a clear error later if the uid
+/// genuinely cannot be replayed. The upgrade is "best effort at record
+/// time."
+fn upgrade_ax_target_from_snapshot(node_type: &mut clickweave_core::NodeType, snapshot_text: &str) {
+    use clickweave_core::{AxTarget, NodeType};
+
+    let target: &mut AxTarget = match node_type {
+        NodeType::AxClick(p) => &mut p.target,
+        NodeType::AxSetValue(p) => &mut p.target,
+        NodeType::AxSelect(p) => &mut p.target,
+        _ => return,
+    };
+
+    let uid = match target {
+        AxTarget::ResolvedUid(uid) if !uid.is_empty() => uid.clone(),
+        _ => return,
+    };
+
+    let entries = crate::executor::deterministic::ax::parse_ax_snapshot(snapshot_text);
+    let Some(entry) = entries.into_iter().find(|e| e.uid == uid) else {
+        return;
+    };
+    *target = AxTarget::Descriptor {
+        role: entry.role,
+        name: entry.name.unwrap_or_default(),
+        parent_name: entry.parent_name,
+    };
+}
+
+#[cfg(test)]
+mod ax_enrichment_tests {
+    use super::super::types::{AgentCommand, AgentStep, StepOutcome};
+    use super::{most_recent_ax_snapshot_text, upgrade_ax_target_from_snapshot};
+    use clickweave_core::{AxClickParams, AxSelectParams, AxSetValueParams, AxTarget, NodeType};
+
+    fn tool_step(tool_name: &str, outcome: StepOutcome) -> AgentStep {
+        AgentStep {
+            index: 0,
+            elements: Vec::new(),
+            command: AgentCommand::ToolCall {
+                tool_name: tool_name.to_string(),
+                arguments: serde_json::json!({}),
+                tool_call_id: "call_0".to_string(),
+            },
+            outcome,
+            page_url: String::new(),
+        }
+    }
+
+    #[test]
+    fn most_recent_snapshot_returns_latest_success() {
+        let steps = vec![
+            tool_step(
+                "take_ax_snapshot",
+                StepOutcome::Success("uid=a1g1 AXButton \"Old\"".into()),
+            ),
+            tool_step("click", StepOutcome::Success("ok".into())),
+            tool_step(
+                "take_ax_snapshot",
+                StepOutcome::Success("uid=a2g2 AXButton \"New\"".into()),
+            ),
+        ];
+        let text = most_recent_ax_snapshot_text(&steps).expect("most recent should be found");
+        assert!(text.contains("New"));
+    }
+
+    #[test]
+    fn most_recent_snapshot_ignores_non_ax_tools_and_failures() {
+        let steps = vec![
+            tool_step(
+                "take_ax_snapshot",
+                StepOutcome::Success("uid=a1g1 AXButton \"First\"".into()),
+            ),
+            tool_step(
+                "take_ax_snapshot",
+                StepOutcome::Error("snapshot failed".into()),
+            ),
+            tool_step("click", StepOutcome::Success("unrelated".into())),
+        ];
+        // Should return the only successful snapshot, skipping the later
+        // failure (error outcome) and the unrelated `click` step.
+        let text = most_recent_ax_snapshot_text(&steps).expect("fall back to older success");
+        assert!(text.contains("First"));
+    }
+
+    #[test]
+    fn most_recent_snapshot_returns_none_when_no_snapshots() {
+        let steps = vec![tool_step("click", StepOutcome::Success("ok".into()))];
+        assert!(most_recent_ax_snapshot_text(&steps).is_none());
+    }
+
+    #[test]
+    fn upgrade_ax_click_resolved_uid_to_descriptor() {
+        let mut nt = NodeType::AxClick(AxClickParams {
+            target: AxTarget::ResolvedUid("a5g2".into()),
+            ..Default::default()
+        });
+        let snapshot = "uid=a5g2 AXButton \"Continue\"\n";
+        upgrade_ax_target_from_snapshot(&mut nt, snapshot);
+        match nt {
+            NodeType::AxClick(p) => assert_eq!(
+                p.target,
+                AxTarget::Descriptor {
+                    role: "AXButton".into(),
+                    name: "Continue".into(),
+                    parent_name: None,
+                }
+            ),
+            _ => panic!("expected AxClick"),
+        }
+    }
+
+    #[test]
+    fn upgrade_ax_set_value_preserves_value_field() {
+        let mut nt = NodeType::AxSetValue(AxSetValueParams {
+            target: AxTarget::ResolvedUid("a10g1".into()),
+            value: "preserved".into(),
+            ..Default::default()
+        });
+        let snapshot = "uid=a10g1 AXTextField \"Email\"\n";
+        upgrade_ax_target_from_snapshot(&mut nt, snapshot);
+        match nt {
+            NodeType::AxSetValue(p) => {
+                assert_eq!(p.value, "preserved");
+                assert_eq!(
+                    p.target,
+                    AxTarget::Descriptor {
+                        role: "AXTextField".into(),
+                        name: "Email".into(),
+                        parent_name: None,
+                    }
+                );
+            }
+            _ => panic!("expected AxSetValue"),
+        }
+    }
+
+    #[test]
+    fn upgrade_preserves_parent_name_for_outline_rows() {
+        // NSOutlineView rows often share (role, name) across sections, so
+        // the parent anchor is what makes the descriptor unambiguous.
+        let mut nt = NodeType::AxSelect(AxSelectParams {
+            target: AxTarget::ResolvedUid("a3g1".into()),
+            ..Default::default()
+        });
+        let snapshot = concat!(
+            "uid=a1g1 AXOutline \"Sidebar\"\n",
+            "  uid=a2g1 AXGroup \"Network\"\n",
+            "    uid=a3g1 AXRow \"Wi-Fi\"\n",
+        );
+        upgrade_ax_target_from_snapshot(&mut nt, snapshot);
+        match nt {
+            NodeType::AxSelect(p) => assert_eq!(
+                p.target,
+                AxTarget::Descriptor {
+                    role: "AXRow".into(),
+                    name: "Wi-Fi".into(),
+                    parent_name: Some("Network".into()),
+                }
+            ),
+            _ => panic!("expected AxSelect"),
+        }
+    }
+
+    #[test]
+    fn upgrade_is_noop_when_uid_not_in_snapshot() {
+        let mut nt = NodeType::AxClick(AxClickParams {
+            target: AxTarget::ResolvedUid("a99g9".into()),
+            ..Default::default()
+        });
+        let snapshot = "uid=a1g1 AXButton \"Other\"\n";
+        upgrade_ax_target_from_snapshot(&mut nt, snapshot);
+        match nt {
+            NodeType::AxClick(p) => {
+                assert_eq!(p.target, AxTarget::ResolvedUid("a99g9".into()));
+            }
+            _ => panic!("expected AxClick"),
+        }
+    }
+
+    #[test]
+    fn upgrade_is_noop_for_non_ax_nodes() {
+        let mut nt = NodeType::McpToolCall(clickweave_core::McpToolCallParams {
+            tool_name: "click".into(),
+            arguments: serde_json::json!({}),
+        });
+        let snapshot = "uid=a1g1 AXButton \"X\"\n";
+        upgrade_ax_target_from_snapshot(&mut nt, snapshot);
+        assert!(matches!(nt, NodeType::McpToolCall(_)));
+    }
+
+    #[test]
+    fn upgrade_is_noop_for_already_descriptor_target() {
+        let original = AxTarget::Descriptor {
+            role: "AXButton".into(),
+            name: "OK".into(),
+            parent_name: None,
+        };
+        let mut nt = NodeType::AxClick(AxClickParams {
+            target: original.clone(),
+            ..Default::default()
+        });
+        // Snapshot has a different mapping — shouldn't matter, we don't
+        // touch Descriptor targets.
+        let snapshot = "uid=a1g1 AXCheckbox \"Rogue\"\n";
+        upgrade_ax_target_from_snapshot(&mut nt, snapshot);
+        match nt {
+            NodeType::AxClick(p) => assert_eq!(p.target, original),
+            _ => panic!("expected AxClick"),
+        }
     }
 }
 
