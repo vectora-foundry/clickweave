@@ -37,18 +37,39 @@ use CDP tools to interact with them directly by UID:
 Example: to click a button labeled "Submit" with uid [2_3]:
   → call cdp_click with uid="2_3"
 
-If CDP tools are NOT available, use `find_text` to locate the element by label,
-then `click` with the `x` and `y` it returned.
+If CDP tools are NOT available, prefer the macOS accessibility path over
+coordinate-based clicking whenever both are available:
 
-Example: find_text returns `{"x": 553, "y": 1082, ...}` for "Message".
-  → call click with {"x": 553, "y": 1082}  (the `screen` coordinate variant)
+1. Call `take_ax_snapshot` with the target `app_name`. The response tags
+   every element with a uid like `a42g3`.
+2. Dispatch against those uids with `ax_click` (buttons, menu items),
+   `ax_set_value` (text fields), or `ax_select` (list / outline rows).
+
+The AX dispatch tools do NOT move the mouse cursor and do NOT steal focus
+from the frontmost app. Because of that, you must NOT call `focus_window`
+before `take_ax_snapshot` / `ax_click` / `ax_set_value` / `ax_select` — the
+snapshot and dispatch work against background windows just as well as the
+foreground one, and focusing the app only creates an unnecessary visual
+disruption. Snapshot uids are generation-scoped, so always re-snapshot
+immediately before each AX dispatch call.
+
+Only fall back to cursor-based `find_text` + `click` when AX is unavailable
+(e.g. a cross-platform tool call, Windows target, or an app whose AX tree
+does not expose the required element). That path IS focus-sensitive, so
+call `focus_window` first before using coordinate-based click/type.
+
+Example (AX path, no focus): take_ax_snapshot(app_name="Calculator") →
+  ax_click(uid="a17g2")  — button "5"
+
+Example (coordinate path): find_text returns `{"x": 553, "y": 1082, ...}`
+  for "Message" → focus_window(app_name="...") → click(x=553, y=1082).
 
 NEVER call `click` with empty arguments or guessed coordinates. If find_text
 returned coordinates, pass those exact numbers through to `click`. NEVER use
 `take_screenshot` when elements are listed in the observation.
 
-When NO elements are listed, use `take_screenshot` to see the screen, then
-`find_text` to locate elements by name."#
+When NO elements are listed, prefer `take_ax_snapshot` on macOS, or fall
+back to `take_screenshot` + `find_text` to locate elements by name."#
         .to_string()
 }
 
