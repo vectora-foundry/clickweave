@@ -411,6 +411,35 @@ export type ArtifactKind = "Screenshot" |
  * `#[serde(other)]` lets pre-removal artifact records still deserialize.
  */
 "Other"
+export type AxClickParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target: AxTarget }
+export type AxSelectParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target: AxTarget }
+export type AxSetValueParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target: AxTarget; value: string }
+/**
+ * Distinguishes how a macOS accessibility-tree element target was produced,
+ * so the executor can choose the right resolution strategy at dispatch time.
+ * 
+ * AX snapshots are session-stateful: every call to `take_ax_snapshot` bumps a
+ * generation and emits uids like `a42g3`. Uids from prior snapshots are
+ * rejected by `ax_click` / `ax_set_value` / `ax_select` with
+ * `snapshot_expired`. To replay safely, the executor re-snapshots immediately
+ * before each dispatch and resolves the node's descriptor (role + name) to a
+ * fresh uid — see [`clickweave_engine::executor::deterministic::ax`].
+ */
+export type AxTarget = 
+/**
+ * Replay-stable descriptor. Executor re-resolves via `take_ax_snapshot`
+ * and matches the first entry with this `role` whose `name` matches —
+ * optional `parent_name` breaks ties for sidebars/outlines where many
+ * rows share a role.
+ */
+{ kind: "Descriptor"; value: { role: string; name: string; parent_name?: string | null } } | 
+/**
+ * Raw uid captured at agent run time. Valid only for the current AX
+ * snapshot generation — will fail with `snapshot_expired` on replay.
+ * Agent-loop post-hooks upgrade `ResolvedUid` to `Descriptor` when the
+ * original snapshot is still on hand.
+ */
+{ kind: "ResolvedUid"; value: string }
 /**
  * User-selected app for CDP during walkthrough.
  */
@@ -419,35 +448,6 @@ export type CdpAppConfig = { name: string;
  * Path to the app binary (from file picker). None for already-running apps.
  */
 binary_path: string | null; app_kind: AppKind }
-export type AxClickParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target: AxTarget }
-export type AxSelectParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target: AxTarget }
-export type AxSetValueParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target: AxTarget; value: string }
-/**
- * Distinguishes how a macOS accessibility-tree element target was produced,
- * so the executor can choose the right resolution strategy at dispatch time.
- *
- * AX snapshots are session-stateful: every call to `take_ax_snapshot` bumps a
- * generation and emits uids like `a42g3`. Uids from prior snapshots are
- * rejected by `ax_click` / `ax_set_value` / `ax_select` with
- * `snapshot_expired`. To replay safely, the executor re-snapshots immediately
- * before each dispatch and resolves the node's descriptor (role + name) to a
- * fresh uid — see [`clickweave_engine::executor::deterministic::ax`].
- */
-export type AxTarget =
-/**
- * Replay-stable descriptor. Executor re-resolves via `take_ax_snapshot`
- * and matches the first entry with this `role` whose `name` matches —
- * optional `parent_name` breaks ties for sidebars/outlines where many
- * rows share a role.
- */
-{ kind: "Descriptor"; value: { role: string; name: string; parent_name?: string | null } } |
-/**
- * Raw uid captured at agent run time. Valid only for the current AX
- * snapshot generation — will fail with `snapshot_expired` on replay.
- * Agent-loop post-hooks upgrade `ResolvedUid` to `Descriptor` when the
- * original snapshot is still on hand.
- */
-{ kind: "ResolvedUid"; value: string }
 export type CdpClickParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target: CdpTarget }
 export type CdpClosePageParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { page_index?: number | null }
 export type CdpFillParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target: CdpTarget; value: string }
@@ -525,7 +525,7 @@ export type NodeGroup = { id: string; name: string; color: string; node_ids: str
 export type NodeRename = { node_id: string; new_name: string }
 export type NodeRole = "Default" | "Verification"
 export type NodeRun = { run_id: string; node_id: string; node_name?: string; execution_dir?: string; started_at: number; ended_at: number | null; status: RunStatus; trace_level: TraceLevel; events: TraceEvent[]; artifacts: Artifact[]; observed_summary: string | null }
-export type NodeType = ({ type: "FindText" } & FindTextParams) | ({ type: "FindImage" } & FindImageParams) | ({ type: "FindApp" } & FindAppParams) | ({ type: "TakeScreenshot" } & TakeScreenshotParams) | ({ type: "Click" } & ClickParams) | ({ type: "Hover" } & HoverParams) | ({ type: "Drag" } & DragParams) | ({ type: "TypeText" } & TypeTextParams) | ({ type: "PressKey" } & PressKeyParams) | ({ type: "Scroll" } & ScrollParams) | ({ type: "FocusWindow" } & FocusWindowParams) | ({ type: "LaunchApp" } & LaunchAppParams) | ({ type: "QuitApp" } & QuitAppParams) | ({ type: "CdpWait" } & CdpWaitParams) | ({ type: "CdpClick" } & CdpClickParams) | ({ type: "CdpHover" } & CdpHoverParams) | ({ type: "CdpFill" } & CdpFillParams) | ({ type: "CdpType" } & CdpTypeParams) | ({ type: "CdpPressKey" } & CdpPressKeyParams) | ({ type: "CdpNavigate" } & CdpNavigateParams) | ({ type: "CdpNewPage" } & CdpNewPageParams) | ({ type: "CdpClosePage" } & CdpClosePageParams) | ({ type: "CdpSelectPage" } & CdpSelectPageParams) | ({ type: "CdpHandleDialog" } & CdpHandleDialogParams) | ({ type: "AxClick" } & AxClickParams) | ({ type: "AxSetValue" } & AxSetValueParams) | ({ type: "AxSelect" } & AxSelectParams) | ({ type: "AiStep" } & AiStepParams) | ({ type: "McpToolCall" } & McpToolCallParams) | ({ type: "AppDebugKitOp" } & AppDebugKitParams) |
+export type NodeType = ({ type: "FindText" } & FindTextParams) | ({ type: "FindImage" } & FindImageParams) | ({ type: "FindApp" } & FindAppParams) | ({ type: "TakeScreenshot" } & TakeScreenshotParams) | ({ type: "Click" } & ClickParams) | ({ type: "Hover" } & HoverParams) | ({ type: "Drag" } & DragParams) | ({ type: "TypeText" } & TypeTextParams) | ({ type: "PressKey" } & PressKeyParams) | ({ type: "Scroll" } & ScrollParams) | ({ type: "FocusWindow" } & FocusWindowParams) | ({ type: "LaunchApp" } & LaunchAppParams) | ({ type: "QuitApp" } & QuitAppParams) | ({ type: "CdpWait" } & CdpWaitParams) | ({ type: "CdpClick" } & CdpClickParams) | ({ type: "CdpHover" } & CdpHoverParams) | ({ type: "CdpFill" } & CdpFillParams) | ({ type: "CdpType" } & CdpTypeParams) | ({ type: "CdpPressKey" } & CdpPressKeyParams) | ({ type: "CdpNavigate" } & CdpNavigateParams) | ({ type: "CdpNewPage" } & CdpNewPageParams) | ({ type: "CdpClosePage" } & CdpClosePageParams) | ({ type: "CdpSelectPage" } & CdpSelectPageParams) | ({ type: "CdpHandleDialog" } & CdpHandleDialogParams) | ({ type: "AxClick" } & AxClickParams) | ({ type: "AxSetValue" } & AxSetValueParams) | ({ type: "AxSelect" } & AxSelectParams) | ({ type: "AiStep" } & AiStepParams) | ({ type: "McpToolCall" } & McpToolCallParams) | ({ type: "AppDebugKitOp" } & AppDebugKitParams) | 
 /**
  * Placeholder for removed or unrecognized node types. Preserved on
  * load so that old workflows don't hard-fail; the UI can display them
@@ -595,12 +595,17 @@ export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role:
 /**
  * Element captured via Chrome DevTools Protocol click listener.
  */
-{ type: "CdpElement"; name: string; role: string | null; href: string | null; parent_role: string | null; parent_name: string | null } |
+{ type: "CdpElement"; name: string; role: string | null; href: string | null; parent_role: string | null; parent_name: string | null } | 
 /**
  * macOS accessibility element reached via the native AX tree — the
  * target descriptor for `ax_click` / `ax_set_value` / `ax_select`.
+ * Populated only when the role is actionable (button, text field,
+ * menu item, row, etc.) and the app exposes an AX tree. Replay
+ * re-resolves this to a fresh uid via `take_ax_snapshot` at
+ * execution time, so no generation-tagged uid is carried on the
+ * candidate.
  */
-{ type: "AxElement"; role: string; name: string; parent_name?: string | null } |
+{ type: "AxElement"; role: string; name: string; parent_name?: string | null } | 
 /**
  * macOS window control button (close, minimize, maximize).
  * Resolved at execution time to a window-relative click.
@@ -617,7 +622,7 @@ export type TraceEvent = { timestamp: number; event_type: TraceEventKind; payloa
  * as [`TraceEventKind::Unknown`] so forward-compatible additions don't break
  * old readers.
  */
-export type TraceEventKind = "node_started" | "tool_call" | "tool_result" | "step_completed" | "step_failed" | "branch_evaluated" | "loop_iteration" | "target_resolved" | "action_verification" | "ambiguity_resolved" | "element_resolved" | "match_disambiguated" | "app_resolved" | "cdp_connected" | "cdp_click" | "cdp_hover" | "cdp_fill" | "ax_click" | "ax_set_value" | "ax_select" | "vision_summary" | "variable_set" | "retry" | "supervision_retry" |
+export type TraceEventKind = "node_started" | "tool_call" | "tool_result" | "step_completed" | "step_failed" | "branch_evaluated" | "loop_iteration" | "target_resolved" | "action_verification" | "ambiguity_resolved" | "element_resolved" | "match_disambiguated" | "app_resolved" | "cdp_connected" | "cdp_click" | "cdp_hover" | "cdp_fill" | "ax_click" | "ax_set_value" | "ax_select" | "vision_summary" | "variable_set" | "retry" | "supervision_retry" | 
 /**
  * Forward-compatibility catch-all for event kinds that aren't in this
  * enum yet. `#[serde(other)]` parses any unknown string into `Unknown`.
