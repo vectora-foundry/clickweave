@@ -406,6 +406,22 @@ impl RunStorage {
         self.base_path.join("agent_chat.json")
     }
 
+    /// Path to the `artifacts/` directory for the current execution.
+    ///
+    /// Returns `None` when `begin_execution()` has not yet been called, or
+    /// when persistence is disabled (the path would point at a non-existent
+    /// directory in that case).
+    ///
+    /// The directory itself is NOT created by this method; the caller is
+    /// responsible for creating it (via `std::fs::create_dir_all`) if needed.
+    pub fn execution_artifacts_dir(&self) -> Option<PathBuf> {
+        let exec_dir = self.execution_dir.as_ref()?;
+        if !self.persistent {
+            return None;
+        }
+        Some(self.base_path.join(exec_dir).join("artifacts"))
+    }
+
     /// Append a serializable agent event to the execution-level events.jsonl.
     ///
     /// No-op when persistence is disabled — the agent run still requires

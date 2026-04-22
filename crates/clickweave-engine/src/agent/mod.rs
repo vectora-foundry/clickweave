@@ -15,6 +15,8 @@ pub use prior_turns::PriorTurn;
 pub use prompt::truncate_summary;
 pub use types::*;
 
+use std::path::PathBuf;
+
 use clickweave_llm::ChatBackend;
 use clickweave_mcp::McpClient;
 
@@ -42,6 +44,10 @@ pub struct AgentChannels {
 /// When `permissions` is `Some`, the runner consults the policy for every
 /// non-observation tool call — `Allow` skips approval, `Deny` hard-rejects,
 /// `Ask` falls through to the existing approval prompt.
+/// When `verification_artifacts_dir` is `Some`, the runner writes a PNG
+/// screenshot and a JSON metadata file to that directory after every
+/// `agent_done` VLM check — regardless of verdict — so every completion
+/// check leaves forensic evidence on disk.
 /// Returns both the final agent state and the (possibly updated) cache.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_agent_workflow<B: ChatBackend>(
@@ -57,6 +63,7 @@ pub async fn run_agent_workflow<B: ChatBackend>(
     run_id: uuid::Uuid,
     anchor_node_id: Option<uuid::Uuid>,
     prior_turns: Vec<prior_turns::PriorTurn>,
+    verification_artifacts_dir: Option<PathBuf>,
 ) -> anyhow::Result<(AgentState, AgentCache)> {
     let tools = mcp.tools_as_openai();
     let workflow = clickweave_core::Workflow::default();
@@ -75,6 +82,9 @@ pub async fn run_agent_workflow<B: ChatBackend>(
     }
     if let Some(policy) = permissions {
         runner = runner.with_permissions(policy);
+    }
+    if let Some(dir) = verification_artifacts_dir {
+        runner = runner.with_verification_artifacts_dir(dir);
     }
     let state = runner
         .run(

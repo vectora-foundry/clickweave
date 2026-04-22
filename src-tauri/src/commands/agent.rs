@@ -454,7 +454,7 @@ pub async fn run_agent(
         // Storage init failure prevents the run from starting — durable tracing
         // must be available before executing any agent actions.
         let storage = task_storage;
-        let (variant_context, cache) = {
+        let (variant_context, cache, verification_artifacts_dir) = {
             let mut guard = storage.lock().unwrap();
             match guard.begin_execution() {
                 Ok(_) => {}
@@ -479,7 +479,12 @@ pub async fn run_agent(
             let variant_index =
                 VariantIndex::load_existing(&guard.variant_index_path(), guard.base_path());
             let cache = AgentCache::load_from_path(&guard.agent_cache_path());
-            (variant_index.as_context_text(), cache)
+            let verification_artifacts_dir = guard.execution_artifacts_dir();
+            (
+                variant_index.as_context_text(),
+                cache,
+                verification_artifacts_dir,
+            )
         };
 
         let channels = AgentChannels {
@@ -506,6 +511,7 @@ pub async fn run_agent(
                 run_uuid,
                 anchor_uuid,
                 prior_turns,
+                verification_artifacts_dir,
             ) => res,
             _ = agent_token.cancelled() => {
                 let _ = emit_handle.emit(

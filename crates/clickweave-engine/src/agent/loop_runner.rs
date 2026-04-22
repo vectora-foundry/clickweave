@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clickweave_core::cdp::{CdpFindElementMatch, CdpFindElementsResponse};
@@ -173,6 +174,14 @@ pub struct AgentRunner<'a, B: ChatBackend> {
     /// AX dispatch is focus-preserving, so pre-focusing just steals
     /// foreground from the user for no behavioral benefit.
     known_app_kinds: HashMap<String, String>,
+    /// Directory where completion-verification artifacts (screenshot + metadata
+    /// JSON) are written after every `verify_completion` call. When `None`,
+    /// no artifacts are persisted (e.g. in tests or when storage is disabled).
+    verification_artifacts_dir: Option<PathBuf>,
+    /// Monotonically incrementing ordinal used to name successive
+    /// completion-verification artifact files within one execution so that
+    /// repeated `verify_completion` calls do not overwrite each other.
+    verification_count: u32,
 }
 
 /// Reason the runner suppressed a `focus_window` MCP call. Each variant
@@ -247,6 +256,8 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             run_id: uuid::Uuid::new_v4(),
             cdp_state: crate::cdp_lifecycle::CdpState::new(),
             known_app_kinds: HashMap::new(),
+            verification_artifacts_dir: None,
+            verification_count: 0,
         }
     }
 
@@ -265,6 +276,8 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             run_id: uuid::Uuid::new_v4(),
             cdp_state: crate::cdp_lifecycle::CdpState::new(),
             known_app_kinds: HashMap::new(),
+            verification_artifacts_dir: None,
+            verification_count: 0,
         }
     }
 
@@ -292,6 +305,18 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     /// instead of falling through to `Completed`.
     pub fn with_vision(mut self, vision: &'a B) -> Self {
         self.vision = Some(vision);
+        self
+    }
+
+    /// Set the directory where completion-verification artifacts are written.
+    ///
+    /// When set, every call to `verify_completion` persists a PNG screenshot
+    /// and a JSON metadata file to this directory (named
+    /// `completion_verification_<ordinal>.{png,json}`) regardless of whether
+    /// the VLM agreed or disagreed. Write failures are logged at `warn` level
+    /// and do not affect the run outcome.
+    pub fn with_verification_artifacts_dir(mut self, dir: PathBuf) -> Self {
+        self.verification_artifacts_dir = Some(dir);
         self
     }
 
@@ -1543,8 +1568,13 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
     /// check fails (no vision backend, screenshot failed, VLM call failed),
     /// returns `None` and the caller falls through to the normal
     /// `Completed` path. Verification errors must not tank the run.
+    ///
+    /// On both YES and NO verdicts, the screenshot and a JSON metadata file
+    /// are written to `self.verification_artifacts_dir` (when set). Write
+    /// failures are logged at `warn` level and do not affect the return value
+    /// or abort the run.
     async fn verify_completion(
-        &self,
+        &mut self,
         goal: &str,
         summary: &str,
         mcp: &(impl Mcp + ?Sized),
@@ -1589,7 +1619,31 @@ impl<'a, B: ChatBackend> AgentRunner<'a, B> {
             }
         };
 
-        match parse_yes_no(&reply) {
+        let verdict = parse_yes_no(&reply);
+
+        // Persist artifacts for both verdicts so every verification call
+        // leaves forensic evidence. Failures are non-fatal.
+        if let Some(dir) = &self.verification_artifacts_dir {
+            let ordinal = self.verification_count;
+            if let Err(e) = super::completion_check::persist_verification_artifacts(
+                dir,
+                ordinal,
+                verdict,
+                &reply,
+                goal,
+                summary,
+                &prepared_b64,
+            ) {
+                warn!(
+                    ordinal,
+                    error = %e,
+                    "Completion verification: failed to persist artifacts (non-fatal)",
+                );
+            }
+        }
+        self.verification_count += 1;
+
+        match verdict {
             VlmVerdict::Yes => {
                 info!(reply = %reply, "Completion verification: VLM confirmed goal");
                 None
