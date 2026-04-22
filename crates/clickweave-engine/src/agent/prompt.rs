@@ -26,6 +26,16 @@ You operate in an observe-act loop:
 - If the goal seems unreachable, call the `agent_replan` tool with a reason.
 - Be concise in your reasoning. Focus on the next immediate action.
 
+## Launching Apps
+When calling `launch_app`, set `background=true` whenever the next planned
+action will use a focus-preserving dispatch path:
+- **CDP path** (Electron / Chrome apps): `cdp_connect` → `cdp_click` / `cdp_fill` / `cdp_press_key` — these work in the background.
+- **AX path** (native macOS apps): `take_ax_snapshot` → `ax_click` / `ax_set_value` / `ax_select` — these also work in the background.
+
+Set `background=false` (or omit it) only when the very next action genuinely
+requires the app to be frontmost — e.g. coordinate-based `click`, `type_text`
+(without AX), or `find_text` OCR, all of which steal focus.
+
 ## How to Interact with Elements
 When the observation includes interactive elements with UIDs (like [1_0], [1_1], [2_3], etc.),
 use CDP tools to interact with them directly by UID:
