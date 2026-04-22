@@ -469,6 +469,61 @@ pub async fn check_endpoint(
     }
 }
 
+/// Fetch the list of model IDs available at `{base_url}/models`.
+///
+/// Hits GET `{base_url}/models` with a 5-second timeout, parses the
+/// OpenAI-shaped `{ "data": [{ "id": "..." }, ...] }` response, and returns
+/// the raw `id` strings in the order the server returns them.
+///
+/// Returns `Err` when:
+/// - The HTTP request fails or times out.
+/// - The server responds with a non-2xx status.
+/// - The body is not valid JSON or does not contain a `data` array.
+pub async fn list_models(base_url: &str, api_key: Option<&str>) -> Result<Vec<String>> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .context("HTTP client error")?;
+
+    let mut req = client.get(&url);
+    if let Some(key) = api_key {
+        req = req.bearer_auth(key);
+    }
+
+    let resp = match req.send().await {
+        Ok(resp) if resp.status().is_success() => resp,
+        Ok(resp) => {
+            anyhow::bail!(
+                "Endpoint responded with status {} at {}",
+                resp.status(),
+                url
+            );
+        }
+        Err(e) if e.is_timeout() => {
+            anyhow::bail!("Endpoint timed out after 5s at {}", url);
+        }
+        Err(e) => {
+            return Err(anyhow!(e)).with_context(|| format!("Cannot reach endpoint at {}", url));
+        }
+    };
+
+    let body = resp.text().await.context("Failed to read response")?;
+    let json: serde_json::Value =
+        serde_json::from_str(&body).map_err(|_| anyhow!("Endpoint did not return valid JSON"))?;
+
+    let data = json["data"].as_array().ok_or_else(|| {
+        anyhow!("Response missing 'data' array; endpoint may not be OpenAI-compatible")
+    })?;
+
+    let ids: Vec<String> = data
+        .iter()
+        .filter_map(|m| m["id"].as_str().map(String::from))
+        .collect();
+
+    Ok(ids)
+}
+
 /// System prompt for the agent (text-only, no images).
 pub fn workflow_system_prompt() -> &'static str {
     r#"You are a UI automation assistant executing an AI Step node within a workflow.
@@ -911,6 +966,62 @@ mod tests {
         assert!(
             matches!(&messages[1].content, Some(Content::Parts(parts)) if parts.len() >= 2),
             "VLM user message should contain text + image parts"
+        );
+    }
+
+    // ---- list_models parse tests (pure, no network) ----
+
+    /// Helper: call the parse logic of `list_models` against a fixture JSON body
+    /// without making a real HTTP request. Extracts the same logic by parsing
+    /// the body directly.
+    fn parse_models_response(body: &str) -> Result<Vec<String>> {
+        let json: serde_json::Value =
+            serde_json::from_str(body).map_err(|_| anyhow!("not valid JSON"))?;
+        let data = json["data"].as_array().ok_or_else(|| {
+            anyhow!("Response missing 'data' array; endpoint may not be OpenAI-compatible")
+        })?;
+        Ok(data
+            .iter()
+            .filter_map(|m| m["id"].as_str().map(String::from))
+            .collect())
+    }
+
+    #[test]
+    fn list_models_parses_openai_shaped_response_with_multiple_models() {
+        let body = r#"{
+            "object": "list",
+            "data": [
+                {"id": "ModelA-Q8_0.gguf", "object": "model"},
+                {"id": "ModelB-Q6_K.gguf", "object": "model"}
+            ]
+        }"#;
+        let ids = parse_models_response(body).unwrap();
+        assert_eq!(ids, vec!["ModelA-Q8_0.gguf", "ModelB-Q6_K.gguf"]);
+    }
+
+    #[test]
+    fn list_models_parses_single_model_response() {
+        let body = r#"{"data": [{"id": "only-model"}]}"#;
+        let ids = parse_models_response(body).unwrap();
+        assert_eq!(ids, vec!["only-model"]);
+    }
+
+    #[test]
+    fn list_models_returns_err_when_data_array_missing() {
+        let body = r#"{"object": "list", "models": []}"#;
+        let err = parse_models_response(body).unwrap_err();
+        assert!(
+            err.to_string().contains("'data' array"),
+            "error should mention missing data array, got: {err}"
+        );
+    }
+
+    #[test]
+    fn list_models_returns_err_for_non_json_body() {
+        let err = parse_models_response("not json at all").unwrap_err();
+        assert!(
+            err.to_string().contains("not valid JSON"),
+            "error should indicate invalid JSON, got: {err}"
         );
     }
 }

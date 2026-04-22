@@ -107,6 +107,12 @@ pub struct AgentRunRequest {
     /// `0` disables the cap. `None` uses the engine default (3).
     #[serde(default)]
     pub consecutive_destructive_cap: Option<usize>,
+    /// Permit `focus_window` MCP calls. When `Some(false)` the runner
+    /// suppresses every `focus_window` call with a synthetic skip,
+    /// regardless of app kind or CDP state — useful for background-run
+    /// policies. `None` leaves the engine default (`true`) in place.
+    #[serde(default)]
+    pub allow_focus_window: Option<bool>,
     /// Privacy kill switch: when false, the run is entirely in-memory.
     /// No `.clickweave/runs/` directory is created and no trace files
     /// or cache files are written. When `None`, persistence is on —
@@ -364,6 +370,7 @@ pub async fn run_agent(
 
     let permission_policy: Option<PermissionPolicy> = request.permissions.map(Into::into);
     let consecutive_destructive_cap = request.consecutive_destructive_cap;
+    let allow_focus_window = request.allow_focus_window;
 
     let cancel_token = CancellationToken::new();
     let agent_token = cancel_token.clone();
@@ -448,6 +455,9 @@ pub async fn run_agent(
         let mut config = AgentConfig::default();
         if let Some(cap) = consecutive_destructive_cap {
             config.consecutive_destructive_cap = cap;
+        }
+        if let Some(allow) = allow_focus_window {
+            config.allow_focus_window = allow;
         }
 
         // Begin storage execution and load cross-run state under a single lock.

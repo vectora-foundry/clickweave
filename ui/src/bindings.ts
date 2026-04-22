@@ -252,6 +252,14 @@ async checkEndpoint(baseUrl: string, apiKey: string | null, model: string | null
     else return { status: "error", error: e  as any };
 }
 },
+async listModels(baseUrl: string, apiKey: string | null) : Promise<Result<string[], CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_models", { baseUrl, apiKey }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async runAgent(request: AgentRunRequest) : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("run_agent", { request }) };
@@ -366,7 +374,14 @@ permissions?: PermissionPolicyWire | null;
  * Halt the run after this many consecutive destructive tool calls.
  * `0` disables the cap. `None` uses the engine default (3).
  */
-consecutive_destructive_cap?: number | null; 
+consecutive_destructive_cap?: number | null;
+/**
+ * Permit `focus_window` MCP calls. When `Some(false)` the runner
+ * suppresses every `focus_window` call with a synthetic skip,
+ * regardless of app kind or CDP state — useful for background-run
+ * policies. `None` leaves the engine default (`true`) in place.
+ */
+allow_focus_window?: boolean | null;
 /**
  * Privacy kill switch: when false, the run is entirely in-memory.
  * No `.clickweave/runs/` directory is created and no trace files

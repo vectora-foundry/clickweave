@@ -41,3 +41,14 @@ pub async fn check_endpoint(
         .await
         .map_err(|e| error::CommandError::validation(e.to_string()))
 }
+
+#[tauri::command]
+#[specta::specta]
+pub async fn list_models(
+    base_url: String,
+    api_key: Option<String>,
+) -> Result<Vec<String>, error::CommandError> {
+    clickweave_llm::list_models(&base_url, api_key.as_deref())
+        .await
+        .map_err(|e| error::CommandError::validation(e.to_string()))
+}
