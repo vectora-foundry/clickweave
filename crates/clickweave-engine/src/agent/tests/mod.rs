@@ -537,6 +537,7 @@ async fn agent_state_reports_max_errors_reason() {
         build_workflow: false,
         use_cache: false,
         consecutive_destructive_cap: 0,
+        allow_focus_window: true,
     };
 
     let mut runner = AgentRunner::new(&agent_llm, config);
@@ -625,6 +626,7 @@ async fn agent_state_reports_loop_detected_on_identical_repeat_failure() {
         build_workflow: false,
         use_cache: false,
         consecutive_destructive_cap: 0,
+        allow_focus_window: true,
     };
 
     let mut runner = AgentRunner::new(&agent_llm, config);
@@ -866,6 +868,101 @@ impl ChatBackend for CapturingMockAgent {
     async fn fetch_model_info(&self) -> Result<Option<ModelInfo>> {
         Ok(None)
     }
+}
+
+// ---------------------------------------------------------------------------
+// reasoning_content stripping (Gemma 4 multi-turn hygiene)
+// ---------------------------------------------------------------------------
+
+/// After `append_assistant_message` runs, the transcript message pushed to
+/// `self.messages` must NOT carry `reasoning_content`, regardless of whether
+/// the model response included a thought block. Gemma 4's model card prohibits
+/// feeding prior-turn thought blocks back into subsequent requests.
+#[tokio::test]
+async fn append_assistant_message_strips_reasoning_content_from_transcript() {
+    // Set up a two-step run: one tool call (with reasoning_content on the
+    // response) followed by agent_done.  We capture every message slice
+    // passed to the LLM so we can inspect what was in the transcript on the
+    // second call.
+    let captured = Arc::new(Mutex::new(Vec::<Vec<Message>>::new()));
+
+    let tool_call_response = {
+        let mut msg = Message::assistant_tool_calls(vec![ToolCall {
+            id: "call_0".to_string(),
+            call_type: CallType::Function,
+            function: FunctionCall {
+                name: "click".to_string(),
+                arguments: serde_json::json!({"x": 100, "y": 200}),
+            },
+        }]);
+        // Simulate the model returning a thought block alongside the tool call.
+        msg.reasoning_content = Some("I need to click the button.".to_string());
+        ChatResponse {
+            id: "mock-r0".to_string(),
+            choices: vec![Choice {
+                index: 0,
+                message: msg,
+                finish_reason: Some("tool_calls".to_string()),
+            }],
+            usage: None,
+        }
+    };
+
+    let agent_llm = CapturingMockAgent::new(
+        vec![tool_call_response, MockAgent::done_response("done")],
+        Arc::clone(&captured),
+    );
+
+    let mcp = MockMcp::with_click_tool();
+    let config = AgentConfig {
+        max_steps: 5,
+        build_workflow: false,
+        use_cache: false,
+        ..Default::default()
+    };
+
+    let mut runner = AgentRunner::new(&agent_llm, config);
+    let workflow = clickweave_core::Workflow::new("Test");
+    let mcp_tools = mcp.tools_as_openai();
+
+    let state = runner
+        .run(
+            "Click the button".to_string(),
+            workflow,
+            &mcp,
+            None,
+            mcp_tools,
+            None,
+            &[],
+        )
+        .await
+        .unwrap();
+
+    assert!(state.completed, "run should have completed");
+
+    let calls = captured.lock().unwrap();
+    // The second LLM call (for agent_done) receives the transcript that
+    // append_assistant_message built after the first tool call.
+    assert!(
+        calls.len() >= 2,
+        "expected at least 2 LLM calls, got {}",
+        calls.len()
+    );
+    let second_call_messages = &calls[1];
+
+    // The assistant turn appended by append_assistant_message must have no
+    // reasoning_content — even though the model response carried one.
+    let assistant_msgs_with_reasoning: Vec<_> = second_call_messages
+        .iter()
+        .filter(|m| m.role == Role::Assistant && m.reasoning_content.is_some())
+        .collect();
+
+    assert!(
+        assistant_msgs_with_reasoning.is_empty(),
+        "transcript assistant messages must not carry reasoning_content; \
+         found {} message(s) with it set",
+        assistant_msgs_with_reasoning.len()
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -104,28 +104,37 @@ fn json_value_len(value: &Value) -> usize {
 }
 
 /// Collapse snapshot-producing tool-result payloads that have been superseded
-/// by a more recent call to the same tool.
+/// by a more recent snapshot-family call.
 ///
 /// Each tool listed in [`SNAPSHOT_PRODUCING_TOOLS`] embeds a full page view
-/// in its result. When several such calls occur back-to-back, older payloads
-/// rarely carry planning-relevant information — the newest snapshot reflects
-/// the current state of the page. Without supersession, every snapshot stays
-/// in history at full size and the prompt grows linearly with tool-call
-/// count, quickly exhausting the LLM's context window.
+/// in its result. The whole list is treated as a single **snapshot family**:
+/// once any family member captures fresher state (e.g. the agent switches
+/// from a `cdp_take_dom_snapshot` on one page to a `take_ax_snapshot` on a
+/// native window), every earlier family result is stale for planning
+/// purposes and can be collapsed. Without this family-wide supersession,
+/// switching tools between workflow phases leaves one full-size snapshot per
+/// tool name alive in history — enough to exhaust the context window on the
+/// second or third phase of a multi-app run.
 ///
-/// All but the most recent result for each snapshot tool is rewritten to a
-/// short placeholder. The `tool_call_id` is preserved so the OpenAI
-/// tool-call linkage stays valid — stripping it would produce an orphan
-/// `tool` message that some providers reject. Tool-call arguments (on the
-/// assistant side) are untouched; they are tiny.
+/// Only the single most recent snapshot-family result keeps its full body.
+/// All earlier family results are rewritten to a short placeholder. The
+/// `tool_call_id` is preserved so the OpenAI tool-call linkage stays valid —
+/// stripping it would produce an orphan `tool` message that some providers
+/// reject. Tool-call arguments (on the assistant side) are untouched; they
+/// are tiny.
 ///
 /// Returns `None` when no messages would change so callers can cheaply skip
 /// the log line and the copy in the common case.
 pub fn collapse_superseded_snapshots(messages: &[Message]) -> Option<Vec<Message>> {
-    // Find the latest tool-result index for each snapshot tool. Keyed by
-    // tool name (not call id) so the newest snapshot of every flavor
-    // survives even when multiple snapshot tools were used in the run.
-    let mut latest_index_by_tool: Vec<(&str, usize)> = Vec::new();
+    // Find the single latest tool-result index across the whole snapshot
+    // family. Treating the list as one family (rather than keying by tool
+    // name) ensures that when the agent switches tools — e.g. DOM snapshot
+    // on a web page, then an AX snapshot on a native app — the older
+    // snapshot still collapses. Previously each tool name had its own
+    // "latest" slot, so a Signal-phase `cdp_take_dom_snapshot` and
+    // `cdp_find_elements` survived all the way into a Calculator-phase
+    // `take_ax_snapshot`, piling multi-KB bodies into the prompt.
+    let mut latest_family_index: Option<usize> = None;
     for (idx, msg) in messages.iter().enumerate() {
         let Some(tool_name) = resolve_tool_name(messages, msg) else {
             continue;
@@ -133,19 +142,10 @@ pub fn collapse_superseded_snapshots(messages: &[Message]) -> Option<Vec<Message
         if !SNAPSHOT_PRODUCING_TOOLS.contains(&tool_name) {
             continue;
         }
-        if let Some(slot) = latest_index_by_tool
-            .iter_mut()
-            .find(|(name, _)| *name == tool_name)
-        {
-            slot.1 = idx;
-        } else {
-            latest_index_by_tool.push((tool_name, idx));
-        }
+        latest_family_index = Some(idx);
     }
 
-    if latest_index_by_tool.is_empty() {
-        return None;
-    }
+    let latest_family_index = latest_family_index?;
 
     // Clone once and rewrite in place. Pre-computing the set of
     // to-collapse indices would save allocations in the no-op case, but
@@ -159,10 +159,7 @@ pub fn collapse_superseded_snapshots(messages: &[Message]) -> Option<Vec<Message
         if !SNAPSHOT_PRODUCING_TOOLS.contains(&tool_name) {
             continue;
         }
-        let is_latest = latest_index_by_tool
-            .iter()
-            .any(|(name, latest)| *name == tool_name && *latest == idx);
-        if is_latest {
+        if idx == latest_family_index {
             continue;
         }
         // Idempotence: skip if already collapsed.
@@ -562,18 +559,20 @@ mod tests {
     }
 
     #[test]
-    fn collapse_leaves_most_recent_per_tool_name() {
-        // Interleaved snapshot tools. Each tool's own latest must survive,
-        // while its older entries are collapsed. The newest snapshot of a
-        // different tool must not be collapsed just because a newer snapshot
-        // of some other tool arrived afterward.
+    fn collapse_leaves_only_latest_snapshot_family_member() {
+        // Interleaved snapshot tools. The entire list of snapshot-producing
+        // tools is treated as one family, so only the single globally-latest
+        // family result survives. Older results from *any* snapshot tool —
+        // even ones whose specific tool name was not repeated — are
+        // collapsed, because the newest snapshot from a newer tool already
+        // reflects the current page/app state.
         let mut messages = vec![Message::system("System"), Message::user("Goal")];
         let specs = [
             ("cdp_find_elements", "a0"),
             ("cdp_take_dom_snapshot", "b0"),
-            ("cdp_find_elements", "a1"), // supersedes a0
+            ("cdp_find_elements", "a1"),
             ("cdp_wait_for", "c0"),
-            ("cdp_take_dom_snapshot", "b1"), // supersedes b0
+            ("cdp_take_dom_snapshot", "b1"), // globally latest
         ];
         for (tool, id) in specs {
             let (asst, result) = snapshot_pair(tool, id, 2);
@@ -584,7 +583,7 @@ mod tests {
         let collapsed = collapse_superseded_snapshots(&messages)
             .expect("supersession should fire for multi-tool history");
 
-        // Expected collapsed ids: a0 and b0 only.
+        // Everything except the final b1 must be collapsed.
         let collapsed_ids: Vec<String> = collapsed
             .iter()
             .filter(|m| m.role == Role::Tool)
@@ -594,7 +593,158 @@ mod tests {
             })
             .filter_map(|m| m.tool_call_id.clone())
             .collect();
-        assert_eq!(collapsed_ids, vec!["a0".to_string(), "b0".to_string()]);
+        assert_eq!(
+            collapsed_ids,
+            vec![
+                "a0".to_string(),
+                "b0".to_string(),
+                "a1".to_string(),
+                "c0".to_string(),
+            ],
+        );
+
+        // The latest family member (b1) still carries its full body.
+        let latest = collapsed
+            .iter()
+            .find(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("b1"))
+            .expect("b1 result must still be present");
+        let body_len = latest.content_text().map(|t| t.len()).unwrap_or(0);
+        assert!(
+            body_len > 1024,
+            "latest snapshot body was unexpectedly collapsed (len={})",
+            body_len
+        );
+    }
+
+    #[test]
+    fn collapse_supersedes_cross_phase_cdp_then_ax_snapshots() {
+        // Regression for the 40k-token overflow observed on 2026-04-21 at
+        // 18:25: a Signal-phase CDP workflow (`cdp_take_dom_snapshot` +
+        // `cdp_find_elements`) was followed by a Calculator AX phase
+        // (`take_ax_snapshot`). With per-tool-name supersession, all three
+        // snapshot bodies survived into the same prompt. Under family-wide
+        // supersession, only the final `take_ax_snapshot` keeps its body.
+        let mut messages = vec![Message::system("System"), Message::user("Goal")];
+
+        let signal_dom = snapshot_pair("cdp_take_dom_snapshot", "signal_dom", 8);
+        messages.push(signal_dom.0);
+        messages.push(signal_dom.1);
+
+        let signal_find = snapshot_pair("cdp_find_elements", "signal_find", 8);
+        messages.push(signal_find.0);
+        messages.push(signal_find.1);
+
+        let calc_ax = snapshot_pair("take_ax_snapshot", "calc_ax", 8);
+        messages.push(calc_ax.0);
+        messages.push(calc_ax.1);
+
+        let collapsed =
+            collapse_superseded_snapshots(&messages).expect("cross-phase collapse must fire");
+
+        // Signal-phase snapshots collapsed to placeholders.
+        for id in ["signal_dom", "signal_find"] {
+            let msg = collapsed
+                .iter()
+                .find(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some(id))
+                .unwrap_or_else(|| panic!("tool-result {id} missing"));
+            let text = msg.content_text().unwrap();
+            assert!(
+                text.starts_with(SUPERSEDED_PREFIX),
+                "{id} should be collapsed, got: {text:.60}"
+            );
+        }
+
+        // Calculator AX snapshot retains full body.
+        let calc = collapsed
+            .iter()
+            .find(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("calc_ax"))
+            .expect("calc_ax result missing");
+        assert!(
+            calc.content_text().map(|t| t.len()).unwrap_or(0) > 1024,
+            "latest AX snapshot should keep full body"
+        );
+    }
+
+    #[test]
+    fn collapse_brings_40k_token_history_below_model_ctx() {
+        // Simulate the conditions that blew past the local LLM's 40192-token
+        // context window: a long tail of snapshot-family tool results, each
+        // several KB, with a pair of small non-snapshot calls sprinkled in.
+        // After a single pass of family-wide supersession, the transcript
+        // must fit comfortably under the model's advertised `n_ctx`.
+        const MODEL_CTX: usize = 40_192;
+
+        let mut messages = vec![
+            Message::system("You are an agent."),
+            Message::user("## Goal\nMulti-phase workflow across Signal and Calculator"),
+        ];
+        // 14 snapshot-family calls, alternating tool names to simulate
+        // phase transitions. 14 KiB per result × 14 ≈ 196 KiB ≈ 50k tokens
+        // on its own, solidly past the 40k context window.
+        let rotation = [
+            "cdp_take_dom_snapshot",
+            "cdp_find_elements",
+            "cdp_wait_for",
+            "take_ax_snapshot",
+        ];
+        for i in 0..14 {
+            let tool = rotation[i % rotation.len()];
+            let (asst, result) = snapshot_pair(tool, &format!("snap_{i}"), 14);
+            messages.push(asst);
+            messages.push(result);
+        }
+        // A couple of small non-snapshot calls that must survive untouched.
+        let (asst, result) = snapshot_pair("click", "click_0", 1);
+        messages.push(asst);
+        messages.push(result);
+
+        let before = estimate_messages_tokens(&messages);
+        assert!(
+            before > MODEL_CTX,
+            "precondition: fixture should overflow model ctx, was {before}"
+        );
+
+        let collapsed = collapse_superseded_snapshots(&messages).expect("collapse should fire");
+        let after = estimate_messages_tokens(&collapsed);
+        assert!(
+            after < MODEL_CTX,
+            "collapsed history still exceeds model ctx: {after} > {MODEL_CTX}",
+        );
+        // And it must be dramatically smaller — the point is to keep room
+        // for the system prompt, tool schemas, and the next turn's reply.
+        assert!(
+            after * 4 < before,
+            "collapse barely helped: before={before} after={after}",
+        );
+    }
+
+    #[test]
+    fn collapse_treats_take_ax_snapshot_as_snapshot_tool() {
+        // AX snapshots are session-stateful — each call bumps the
+        // server-side generation, so uids from older snapshots are
+        // invalid on dispatch. Keeping older snapshot bodies in the
+        // transcript wastes tokens and tempts the LLM to reuse a stale
+        // uid, so they must be collapsed the same way CDP snapshots are.
+        let mut messages = vec![Message::system("System"), Message::user("Goal")];
+        for i in 0..3 {
+            let (asst, result) = snapshot_pair("take_ax_snapshot", &format!("ax_{}", i), 4);
+            messages.push(asst);
+            messages.push(result);
+        }
+
+        let collapsed = collapse_superseded_snapshots(&messages)
+            .expect("take_ax_snapshot supersession should fire");
+
+        let collapsed_ids: Vec<String> = collapsed
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .filter(|m| {
+                m.content_text()
+                    .is_some_and(|t| t.starts_with("[superseded "))
+            })
+            .filter_map(|m| m.tool_call_id.clone())
+            .collect();
+        assert_eq!(collapsed_ids, vec!["ax_0".to_string(), "ax_1".to_string()]);
     }
 
     #[test]

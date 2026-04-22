@@ -120,6 +120,7 @@ fn main() {
         launch_chrome_for_setup,
         confirmable_tools,
         check_endpoint,
+        list_models,
         run_agent,
         stop_agent,
         approve_agent_action,

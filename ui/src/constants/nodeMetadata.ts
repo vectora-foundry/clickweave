@@ -28,6 +28,10 @@ export const nodeMetadata: Record<string, { color: string; icon: string }> = {
   CdpClosePage:    { color: "#3b82f6", icon: "XP" },
   CdpSelectPage:   { color: "#3b82f6", icon: "SP" },
   CdpHandleDialog: { color: "#3b82f6", icon: "HD" },
+  // AX — macOS accessibility dispatch (background-safe)
+  AxClick:         { color: "#10b981", icon: "AX" },
+  AxSetValue:      { color: "#10b981", icon: "AV" },
+  AxSelect:        { color: "#10b981", icon: "AS" },
   // AI
   AiStep:          { color: "#4c9ee8", icon: "AI" },
   // Generic

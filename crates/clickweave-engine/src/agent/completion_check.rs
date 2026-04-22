@@ -6,9 +6,11 @@
 //! disagreement event so the user can decide what to do.
 //!
 //! This module contains the *pure* pieces (prompt construction, YES/NO
-//! parsing, screenshot-scope selection) so they can be unit tested with
-//! synthetic inputs. The orchestration that calls into MCP and the VLM
-//! lives in `loop_runner`.
+//! parsing, screenshot-scope selection, artifact persistence) so they can
+//! be unit tested with synthetic inputs. The orchestration that calls into
+//! MCP and the VLM lives in `loop_runner`.
+
+use std::path::Path;
 
 use crate::executor::screenshot::ScreenshotScope;
 
@@ -49,6 +51,57 @@ pub(crate) fn build_completion_prompt(goal: &str, summary: &str) -> String {
          Reply with YES or NO and a one-sentence explanation.",
         goal, summary,
     )
+}
+
+/// Write a completion-verification screenshot and metadata JSON to `artifacts_dir`.
+///
+/// Files are named `completion_verification_<ordinal>.png` and
+/// `completion_verification_<ordinal>.json`. The ordinal is supplied by the
+/// caller (monotonically incrementing across successive `verify_completion`
+/// calls in the same execution).
+///
+/// The JSON holds `{ "verdict": "yes"|"no", "reply": "...", "goal": "...",
+/// "summary": "..." }` so every verification call leaves forensic evidence
+/// regardless of verdict.
+///
+/// Returns `Ok(())` on success. Returns `Err` only when the base64 decode
+/// of `png_b64` fails; I/O errors for individual writes are returned so the
+/// caller can `warn!` and continue without tanking the run.
+pub(crate) fn persist_verification_artifacts(
+    artifacts_dir: &Path,
+    ordinal: u32,
+    verdict: VlmVerdict,
+    reply: &str,
+    goal: &str,
+    summary: &str,
+    png_b64: &str,
+) -> std::io::Result<()> {
+    use base64::Engine as _;
+
+    let png_bytes = base64::engine::general_purpose::STANDARD
+        .decode(png_b64)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    std::fs::create_dir_all(artifacts_dir)?;
+
+    let stem = format!("completion_verification_{ordinal}");
+
+    std::fs::write(artifacts_dir.join(format!("{stem}.png")), &png_bytes)?;
+
+    let verdict_str = match verdict {
+        VlmVerdict::Yes => "yes",
+        VlmVerdict::No => "no",
+    };
+    let meta = serde_json::json!({
+        "verdict": verdict_str,
+        "reply": reply,
+        "goal": goal,
+        "summary": summary,
+    });
+    let meta_bytes = serde_json::to_vec_pretty(&meta).map_err(std::io::Error::other)?;
+    std::fs::write(artifacts_dir.join(format!("{stem}.json")), meta_bytes)?;
+
+    Ok(())
 }
 
 /// Parse a VLM reply into a YES/NO verdict.
@@ -186,5 +239,136 @@ mod tests {
     fn scope_falls_back_to_screen_without_connection() {
         let scope = pick_completion_screenshot_scope(None);
         assert!(matches!(scope, ScreenshotScope::Screen));
+    }
+
+    // ── persist_verification_artifacts ──────────────────────────────────────
+
+    /// Minimal valid 1×1 transparent PNG encoded in base64.
+    const TINY_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+    #[test]
+    fn persist_yes_verdict_writes_png_and_json() {
+        let dir = std::env::temp_dir()
+            .join("clickweave_verif_test")
+            .join(uuid::Uuid::new_v4().to_string());
+
+        persist_verification_artifacts(
+            &dir,
+            0,
+            VlmVerdict::Yes,
+            "YES, the goal is achieved.",
+            "Open the settings page",
+            "I clicked the gear icon",
+            TINY_PNG_B64,
+        )
+        .expect("persist should succeed");
+
+        let png_path = dir.join("completion_verification_0.png");
+        let json_path = dir.join("completion_verification_0.json");
+
+        assert!(
+            png_path.exists(),
+            "PNG artifact must be written on YES verdict"
+        );
+        assert!(
+            json_path.exists(),
+            "JSON artifact must be written on YES verdict"
+        );
+
+        // PNG bytes must match the decoded input.
+        let png_bytes = std::fs::read(&png_path).unwrap();
+        use base64::Engine as _;
+        let expected = base64::engine::general_purpose::STANDARD
+            .decode(TINY_PNG_B64)
+            .unwrap();
+        assert_eq!(png_bytes, expected);
+
+        // JSON must record verdict = "yes".
+        let json_str = std::fs::read_to_string(&json_path).unwrap();
+        let meta: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(meta["verdict"], "yes");
+        assert_eq!(meta["goal"], "Open the settings page");
+        assert_eq!(meta["summary"], "I clicked the gear icon");
+        assert_eq!(meta["reply"], "YES, the goal is achieved.");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn persist_no_verdict_writes_png_and_json() {
+        let dir = std::env::temp_dir()
+            .join("clickweave_verif_test")
+            .join(uuid::Uuid::new_v4().to_string());
+
+        persist_verification_artifacts(
+            &dir,
+            0,
+            VlmVerdict::No,
+            "NO, the page still shows an error.",
+            "Submit the form",
+            "I clicked the submit button",
+            TINY_PNG_B64,
+        )
+        .expect("persist should succeed");
+
+        let json_path = dir.join("completion_verification_0.json");
+        let json_str = std::fs::read_to_string(&json_path).unwrap();
+        let meta: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(meta["verdict"], "no");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn persist_ordinal_suffix_prevents_collision() {
+        let dir = std::env::temp_dir()
+            .join("clickweave_verif_test")
+            .join(uuid::Uuid::new_v4().to_string());
+
+        for ordinal in 0..3 {
+            persist_verification_artifacts(
+                &dir,
+                ordinal,
+                VlmVerdict::Yes,
+                "YES.",
+                "goal",
+                "summary",
+                TINY_PNG_B64,
+            )
+            .expect("persist should succeed");
+        }
+
+        for ordinal in 0..3u32 {
+            assert!(
+                dir.join(format!("completion_verification_{ordinal}.png"))
+                    .exists()
+            );
+            assert!(
+                dir.join(format!("completion_verification_{ordinal}.json"))
+                    .exists()
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn persist_invalid_base64_returns_error() {
+        let dir = std::env::temp_dir()
+            .join("clickweave_verif_test")
+            .join(uuid::Uuid::new_v4().to_string());
+
+        let result = persist_verification_artifacts(
+            &dir,
+            0,
+            VlmVerdict::Yes,
+            "YES.",
+            "goal",
+            "summary",
+            "not-valid-base64!!!",
+        );
+        assert!(result.is_err(), "invalid base64 must return an error");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

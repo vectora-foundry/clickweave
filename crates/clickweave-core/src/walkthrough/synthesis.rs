@@ -7,7 +7,7 @@ use super::event_coalescing::{
 };
 use super::event_interpretation::{WindowControl, shortcut_display_name};
 use super::target_resolution::{
-    CdpElementData, ClickEnrichment, build_target_candidates, score_confidence,
+    AxElementData, CdpElementData, ClickEnrichment, build_target_candidates, score_confidence,
 };
 use super::types::{
     ActionConfidence, ScreenshotKind, ScreenshotMeta, TargetCandidate, WalkthroughAction,
@@ -222,7 +222,26 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 }
 
                 // Build target candidates and score confidence via extracted functions.
-                let ax_for_candidates = ax_label.map(|(label, role, _subrole)| (label, role));
+                // Promote the ax_label to an AX dispatch descriptor when the
+                // role is actionable AND CDP is not in play (an element
+                // resolved by the in-page JS listener is a strong signal
+                // the target belongs to a web view, not a native AX tree).
+                let ax_for_candidates = ax_label
+                    .as_ref()
+                    .map(|(label, role, _)| (label.clone(), role.clone()));
+                let ax_dispatch_resolved = match (&ax_label, &cdp_resolved) {
+                    (Some((label, Some(role), _)), None)
+                        if !label.is_empty()
+                            && super::types::is_actionable_ax_role(Some(role.as_str())) =>
+                    {
+                        Some(AxElementData {
+                            role: role.clone(),
+                            name: label.clone(),
+                            parent_name: None,
+                        })
+                    }
+                    _ => None,
+                };
 
                 let enrichment = ClickEnrichment {
                     ax_label: ax_for_candidates,
@@ -230,6 +249,7 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                     ocr_annotations: ocr_annotations.as_ref().map(|a| *a),
                     crop_candidate,
                     cdp_resolved,
+                    ax_resolved: ax_dispatch_resolved,
                     click_x: *x,
                     click_y: *y,
                 };
@@ -382,9 +402,9 @@ pub fn synthesize_draft(
     workflow_name: &str,
 ) -> crate::Workflow {
     use crate::{
-        CdpClickParams, CdpHoverParams, CdpTarget, ClickParams, ClickTarget, Edge, FocusTarget,
-        FocusWindowParams, HoverParams, Node, NodeType, Position, PressKeyParams, ScrollParams,
-        TypeTextParams, Workflow,
+        AxClickParams, AxSelectParams, AxTarget, CdpClickParams, CdpHoverParams, CdpTarget,
+        ClickParams, ClickTarget, Edge, FocusTarget, FocusWindowParams, HoverParams, Node,
+        NodeType, Position, PressKeyParams, ScrollParams, TypeTextParams, Workflow,
     };
 
     let mut workflow = Workflow {
@@ -459,7 +479,18 @@ pub fn synthesize_draft(
                     };
                     (NodeType::Click(params), name)
                 } else {
-                    // Check for CDP element candidate first (structured target).
+                    // Structured targets take precedence over free-form
+                    // text. AxElement (macOS native dispatch) first, then
+                    // CdpElement (browser DOM), then text labels, then
+                    // coordinates.
+                    let ax_candidate = action.target_candidates.iter().find_map(|c| match c {
+                        TargetCandidate::AxElement {
+                            role,
+                            name,
+                            parent_name,
+                        } => Some((role.clone(), name.clone(), parent_name.clone())),
+                        _ => None,
+                    });
                     let cdp_candidate = action.target_candidates.iter().find_map(|c| match c {
                         TargetCandidate::CdpElement { name, .. } => Some(name),
                         _ => None,
@@ -471,7 +502,39 @@ pub fn synthesize_draft(
                         .iter()
                         .find_map(|c| c.preferred_label().map(|s| s.to_string()));
 
-                    if let Some(cdp_name) = cdp_candidate {
+                    if let Some((role, name, parent_name)) = ax_candidate {
+                        // AXRow / AXOutlineRow targets fire AXSelectedRows
+                        // on the enclosing outline/table, not AXPress —
+                        // ax_select is the right MCP entry point.
+                        let label = if name.is_empty() {
+                            role.clone()
+                        } else {
+                            name.clone()
+                        };
+                        let is_row = role == "AXRow" || role == "AXOutlineRow";
+                        let ax_target = AxTarget::Descriptor {
+                            role,
+                            name,
+                            parent_name,
+                        };
+                        if is_row {
+                            (
+                                NodeType::AxSelect(AxSelectParams {
+                                    target: ax_target,
+                                    ..Default::default()
+                                }),
+                                format!("Select '{label}'"),
+                            )
+                        } else {
+                            (
+                                NodeType::AxClick(AxClickParams {
+                                    target: ax_target,
+                                    ..Default::default()
+                                }),
+                                format!("Click '{label}'"),
+                            )
+                        }
+                    } else if let Some(cdp_name) = cdp_candidate {
                         (
                             NodeType::CdpClick(CdpClickParams {
                                 target: CdpTarget::ExactLabel(cdp_name.clone()),
@@ -1556,6 +1619,138 @@ mod tests {
                 }
                 other => panic!("Expected Hover, got {:?}", other),
             }
+        }
+
+        #[test]
+        fn test_synthesize_click_with_ax_element_emits_ax_click() {
+            // A recorded click on an AXButton should become an AxClick node
+            // (not a Click node), so replay can dispatch via ax_click
+            // without moving the cursor.
+            let action = WalkthroughAction {
+                id: Uuid::new_v4(),
+                kind: WalkthroughActionKind::Click {
+                    x: 100.0,
+                    y: 200.0,
+                    button: MouseButton::Left,
+                    click_count: 1,
+                },
+                app_name: Some("Calculator".into()),
+                window_title: None,
+                target_candidates: vec![
+                    TargetCandidate::AxElement {
+                        role: "AXButton".into(),
+                        name: "Submit".into(),
+                        parent_name: None,
+                    },
+                    // Plain AX label kept as fallback for the legacy
+                    // coordinate path.
+                    TargetCandidate::AccessibilityLabel {
+                        label: "Submit".into(),
+                        role: Some("AXButton".into()),
+                    },
+                    TargetCandidate::Coordinates { x: 100.0, y: 200.0 },
+                ],
+                artifact_paths: vec![],
+                source_event_ids: vec![],
+                confidence: ActionConfidence::High,
+                warnings: vec![],
+                screenshot_meta: None,
+                candidate: false,
+            };
+            let wf = synthesize_draft(&[action], Uuid::new_v4(), "test");
+            assert_eq!(wf.nodes.len(), 1);
+            match &wf.nodes[0].node_type {
+                crate::NodeType::AxClick(p) => {
+                    assert_eq!(
+                        p.target,
+                        crate::AxTarget::Descriptor {
+                            role: "AXButton".into(),
+                            name: "Submit".into(),
+                            parent_name: None,
+                        }
+                    );
+                }
+                other => panic!("Expected AxClick, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn test_synthesize_click_on_ax_row_emits_ax_select() {
+            // Sidebar / outline rows fire AXSelectedRows on the enclosing
+            // outline, not AXPress — synthesis must route them through
+            // ax_select.
+            let action = WalkthroughAction {
+                id: Uuid::new_v4(),
+                kind: WalkthroughActionKind::Click {
+                    x: 50.0,
+                    y: 300.0,
+                    button: MouseButton::Left,
+                    click_count: 1,
+                },
+                app_name: Some("System Settings".into()),
+                window_title: None,
+                target_candidates: vec![TargetCandidate::AxElement {
+                    role: "AXRow".into(),
+                    name: "Wi-Fi".into(),
+                    parent_name: Some("Sidebar".into()),
+                }],
+                artifact_paths: vec![],
+                source_event_ids: vec![],
+                confidence: ActionConfidence::High,
+                warnings: vec![],
+                screenshot_meta: None,
+                candidate: false,
+            };
+            let wf = synthesize_draft(&[action], Uuid::new_v4(), "test");
+            assert_eq!(wf.nodes.len(), 1);
+            match &wf.nodes[0].node_type {
+                crate::NodeType::AxSelect(p) => {
+                    assert_eq!(
+                        p.target,
+                        crate::AxTarget::Descriptor {
+                            role: "AXRow".into(),
+                            name: "Wi-Fi".into(),
+                            parent_name: Some("Sidebar".into()),
+                        }
+                    );
+                }
+                other => panic!("Expected AxSelect, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn test_synthesize_cdp_takes_precedence_over_missing_ax() {
+            // Sanity: when the click was in a browser (CDP resolved, no
+            // AX descriptor), synthesis still emits CdpClick.
+            let action = WalkthroughAction {
+                id: Uuid::new_v4(),
+                kind: WalkthroughActionKind::Click {
+                    x: 50.0,
+                    y: 50.0,
+                    button: MouseButton::Left,
+                    click_count: 1,
+                },
+                app_name: Some("Google Chrome".into()),
+                window_title: None,
+                target_candidates: vec![TargetCandidate::CdpElement {
+                    name: "Sign in".into(),
+                    role: Some("button".into()),
+                    href: None,
+                    parent_role: None,
+                    parent_name: None,
+                }],
+                artifact_paths: vec![],
+                source_event_ids: vec![],
+                confidence: ActionConfidence::High,
+                warnings: vec![],
+                screenshot_meta: None,
+                candidate: false,
+            };
+            let wf = synthesize_draft(&[action], Uuid::new_v4(), "test");
+            assert!(matches!(
+                wf.nodes[0].node_type,
+                crate::NodeType::CdpClick(_)
+            ));
         }
 
         #[test]

@@ -3,10 +3,11 @@
 //! Used by both the agent (tool args → NodeType) and the executor (NodeType → tool args).
 
 use crate::{
-    AppKind, CdpClickParams, CdpClosePageParams, CdpFillParams, CdpHandleDialogParams,
-    CdpHoverParams, CdpNavigateParams, CdpNewPageParams, CdpPressKeyParams, CdpSelectPageParams,
-    CdpTarget, CdpTypeParams, CdpWaitParams, ClickParams, ClickTarget, DragParams, FindAppParams,
-    FindImageParams, FindTextParams, FocusTarget, FocusWindowParams, HoverParams, LaunchAppParams,
+    AppKind, AxClickParams, AxSelectParams, AxSetValueParams, AxTarget, CdpClickParams,
+    CdpClosePageParams, CdpFillParams, CdpHandleDialogParams, CdpHoverParams, CdpNavigateParams,
+    CdpNewPageParams, CdpPressKeyParams, CdpSelectPageParams, CdpTarget, CdpTypeParams,
+    CdpWaitParams, ClickParams, ClickTarget, DragParams, FindAppParams, FindImageParams,
+    FindTextParams, FocusTarget, FocusWindowParams, HoverParams, LaunchAppParams,
     McpToolCallParams, MouseButton, NodeType, PressKeyParams, QuitAppParams, ScreenshotMode,
     ScrollParams, TakeScreenshotParams, TypeTextParams,
 };
@@ -234,6 +235,15 @@ pub fn node_type_to_tool_invocation(
             }
             ("cdp_handle_dialog", args)
         }
+        // AX dispatch — uid is always provided because the executor resolves
+        // the descriptor to a fresh uid immediately before dispatch. The
+        // descriptor itself lives on the node and is not sent over the wire.
+        NodeType::AxClick(p) => ("ax_click", serde_json::json!({"uid": p.target.as_str()})),
+        NodeType::AxSetValue(p) => (
+            "ax_set_value",
+            serde_json::json!({"uid": p.target.as_str(), "value": p.value}),
+        ),
+        NodeType::AxSelect(p) => ("ax_select", serde_json::json!({"uid": p.target.as_str()})),
         NodeType::McpToolCall(p) => {
             let args = if p.arguments.is_null() {
                 serde_json::json!({})
@@ -554,6 +564,24 @@ pub fn tool_invocation_to_node_type(
         "cdp_take_snapshot" | "cdp_list_pages" => Ok(NodeType::McpToolCall(McpToolCallParams {
             tool_name: name.to_string(),
             arguments: args.clone(),
+        })),
+        // AX dispatch — macOS accessibility-tree actions. The agent passes a
+        // uid captured from the most recent `take_ax_snapshot`; we store it as
+        // `AxTarget::ResolvedUid`. An agent-loop post-hook upgrades this to
+        // `AxTarget::Descriptor { role, name }` using the snapshot so the node
+        // is replay-stable across snapshot generations.
+        "ax_click" => Ok(NodeType::AxClick(AxClickParams {
+            target: AxTarget::ResolvedUid(optional_str(args, "uid")),
+            ..Default::default()
+        })),
+        "ax_set_value" => Ok(NodeType::AxSetValue(AxSetValueParams {
+            target: AxTarget::ResolvedUid(optional_str(args, "uid")),
+            value: optional_str(args, "value"),
+            ..Default::default()
+        })),
+        "ax_select" => Ok(NodeType::AxSelect(AxSelectParams {
+            target: AxTarget::ResolvedUid(optional_str(args, "uid")),
+            ..Default::default()
         })),
         _ if known_tools
             .iter()
@@ -977,6 +1005,101 @@ mod tests {
                  and known_tools may be stale",
                 name
             );
+        }
+    }
+
+    // ── AX dispatch roundtrips ───────────────────────────────────────────
+
+    #[test]
+    fn roundtrip_ax_click_descriptor() {
+        // Descriptor on the node → outbound sends the descriptor's `name` as
+        // `uid`. Inbound reconstructs as `ResolvedUid` because the inbound
+        // path does not see the snapshot; agent-loop enrichment later
+        // re-upgrades it.
+        let nt = NodeType::AxClick(AxClickParams {
+            target: AxTarget::Descriptor {
+                role: "AXButton".into(),
+                name: "Submit".into(),
+                parent_name: None,
+            },
+            ..Default::default()
+        });
+        let inv = node_type_to_tool_invocation(&nt).unwrap();
+        assert_eq!(inv.name, "ax_click");
+        assert_eq!(inv.arguments["uid"], "Submit");
+        let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
+        assert!(
+            matches!(back, NodeType::AxClick(p) if p.target == AxTarget::ResolvedUid("Submit".into()))
+        );
+    }
+
+    #[test]
+    fn roundtrip_ax_click_resolved_uid() {
+        let nt = NodeType::AxClick(AxClickParams {
+            target: AxTarget::ResolvedUid("a42g3".into()),
+            ..Default::default()
+        });
+        let inv = node_type_to_tool_invocation(&nt).unwrap();
+        assert_eq!(inv.name, "ax_click");
+        assert_eq!(inv.arguments["uid"], "a42g3");
+        let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
+        assert!(
+            matches!(back, NodeType::AxClick(p) if p.target == AxTarget::ResolvedUid("a42g3".into()))
+        );
+    }
+
+    #[test]
+    fn roundtrip_ax_set_value() {
+        let nt = NodeType::AxSetValue(AxSetValueParams {
+            target: AxTarget::ResolvedUid("a10g1".into()),
+            value: "hello".into(),
+            ..Default::default()
+        });
+        let inv = node_type_to_tool_invocation(&nt).unwrap();
+        assert_eq!(inv.name, "ax_set_value");
+        assert_eq!(inv.arguments["uid"], "a10g1");
+        assert_eq!(inv.arguments["value"], "hello");
+        let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
+        match back {
+            NodeType::AxSetValue(p) => {
+                assert_eq!(p.target, AxTarget::ResolvedUid("a10g1".into()));
+                assert_eq!(p.value, "hello");
+            }
+            _ => panic!("expected AxSetValue"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_ax_select() {
+        let nt = NodeType::AxSelect(AxSelectParams {
+            target: AxTarget::ResolvedUid("a7g2".into()),
+            ..Default::default()
+        });
+        let inv = node_type_to_tool_invocation(&nt).unwrap();
+        assert_eq!(inv.name, "ax_select");
+        assert_eq!(inv.arguments["uid"], "a7g2");
+        let back = tool_invocation_to_node_type(&inv.name, &inv.arguments, &[]).unwrap();
+        assert!(
+            matches!(back, NodeType::AxSelect(p) if p.target == AxTarget::ResolvedUid("a7g2".into()))
+        );
+    }
+
+    #[test]
+    fn ax_tools_resolve_without_known_tools() {
+        // AX tools are macOS-only on the MCP server side, so in a non-macOS
+        // known_tools list they won't appear — but when replayed on macOS or
+        // deserialized from a persisted workflow, we still need to map them.
+        let empty: Vec<Value> = vec![];
+        for (name, args) in [
+            ("ax_click", serde_json::json!({"uid": "a1g1"})),
+            (
+                "ax_set_value",
+                serde_json::json!({"uid": "a2g1", "value": "x"}),
+            ),
+            ("ax_select", serde_json::json!({"uid": "a3g1"})),
+        ] {
+            let result = tool_invocation_to_node_type(name, &args, &empty);
+            assert!(result.is_ok(), "'{}' must be hardcoded", name);
         }
     }
 }

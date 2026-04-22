@@ -107,6 +107,12 @@ pub struct AgentRunRequest {
     /// `0` disables the cap. `None` uses the engine default (3).
     #[serde(default)]
     pub consecutive_destructive_cap: Option<usize>,
+    /// Permit `focus_window` MCP calls. When `Some(false)` the runner
+    /// suppresses every `focus_window` call with a synthetic skip,
+    /// regardless of app kind or CDP state — useful for background-run
+    /// policies. `None` leaves the engine default (`true`) in place.
+    #[serde(default)]
+    pub allow_focus_window: Option<bool>,
     /// Privacy kill switch: when false, the run is entirely in-memory.
     /// No `.clickweave/runs/` directory is created and no trace files
     /// or cache files are written. When `None`, persistence is on —
@@ -364,6 +370,7 @@ pub async fn run_agent(
 
     let permission_policy: Option<PermissionPolicy> = request.permissions.map(Into::into);
     let consecutive_destructive_cap = request.consecutive_destructive_cap;
+    let allow_focus_window = request.allow_focus_window;
 
     let cancel_token = CancellationToken::new();
     let agent_token = cancel_token.clone();
@@ -437,7 +444,7 @@ pub async fn run_agent(
         // Thinking is explicitly enabled: small agent models need a
         // reasoning pass to avoid pattern-matching salient literals from the
         // goal text into tool arguments.
-        let llm = clickweave_llm::LlmClient::new(agent_config.clone().with_thinking(true));
+        let llm = clickweave_llm::LlmClient::new(agent_config.clone().with_thinking(false));
         // Vision backend: reuse the agent endpoint (the user already has this
         // configured) with thinking disabled and a low token budget — the
         // post-done check only needs to emit YES/NO + a sentence. If the
@@ -449,12 +456,15 @@ pub async fn run_agent(
         if let Some(cap) = consecutive_destructive_cap {
             config.consecutive_destructive_cap = cap;
         }
+        if let Some(allow) = allow_focus_window {
+            config.allow_focus_window = allow;
+        }
 
         // Begin storage execution and load cross-run state under a single lock.
         // Storage init failure prevents the run from starting — durable tracing
         // must be available before executing any agent actions.
         let storage = task_storage;
-        let (variant_context, cache) = {
+        let (variant_context, cache, verification_artifacts_dir) = {
             let mut guard = storage.lock().unwrap();
             match guard.begin_execution() {
                 Ok(_) => {}
@@ -479,7 +489,12 @@ pub async fn run_agent(
             let variant_index =
                 VariantIndex::load_existing(&guard.variant_index_path(), guard.base_path());
             let cache = AgentCache::load_from_path(&guard.agent_cache_path());
-            (variant_index.as_context_text(), cache)
+            let verification_artifacts_dir = guard.execution_artifacts_dir();
+            (
+                variant_index.as_context_text(),
+                cache,
+                verification_artifacts_dir,
+            )
         };
 
         let channels = AgentChannels {
@@ -506,6 +521,7 @@ pub async fn run_agent(
                 run_uuid,
                 anchor_uuid,
                 prior_turns,
+                verification_artifacts_dir,
             ) => res,
             _ = agent_token.cancelled() => {
                 let _ = emit_handle.emit(

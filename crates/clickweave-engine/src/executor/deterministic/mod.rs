@@ -1,3 +1,4 @@
+pub(crate) mod ax;
 pub(crate) mod best_effort;
 pub(crate) mod cdp;
 mod click;
@@ -337,6 +338,34 @@ impl<C: ChatBackend> WorkflowExecutor<C> {
         if let NodeType::CdpPressKey(p) = node_type {
             return self
                 .execute_cdp_press_key(p, mcp, node_run.as_deref(), retry_ctx)
+                .await;
+        }
+
+        // AX dispatch (macOS): snapshot + descriptor-resolve + dispatch,
+        // retrying once on `snapshot_expired`. The executor owns the
+        // snapshot lifecycle here because a cached node from a prior run
+        // has a uid that is definitely stale, and deterministic replay
+        // must re-resolve by role+name.
+        if let NodeType::AxClick(p) = node_type {
+            return self
+                .resolve_and_ax_click(node_id, &p.target, mcp, node_run.as_deref(), retry_ctx)
+                .await;
+        }
+        if let NodeType::AxSetValue(p) = node_type {
+            return self
+                .resolve_and_ax_set_value(
+                    node_id,
+                    &p.target,
+                    &p.value,
+                    mcp,
+                    node_run.as_deref(),
+                    retry_ctx,
+                )
+                .await;
+        }
+        if let NodeType::AxSelect(p) = node_type {
+            return self
+                .resolve_and_ax_select(node_id, &p.target, mcp, node_run.as_deref(), retry_ctx)
                 .await;
         }
 

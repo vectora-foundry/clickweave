@@ -11,6 +11,7 @@ Layout under the workflow dir:
 <workflow_dir>/
   decisions.json            ← workflow-level decision cache
   agent_cache.json          ← workflow-level agent decision cache (persists across runs)
+  agent_chat.json           ← user prompt(s) + assistant replies for this workflow (the "scenario")
   variant_index.jsonl       ← workflow-level variant index (one line per execution)
   <execution_dir>/          ← YYYY-MM-DD_HH-MM-SS_<short_uuid>, one per workflow execution
     events.jsonl            ← execution-level events: agent step events (step_completed, step_failed) + control-flow (branch_evaluated, loop_iteration)
@@ -22,8 +23,13 @@ Layout under the workflow dir:
 ```
 
 - Authoritative source: `crates/clickweave-core/src/storage.rs` (`RunStorage`)
-- **When debugging runtime issues**, always check the most recent run logs first. Start with the execution-level `events.jsonl` for the agent/step-level narrative, then drop into each `<node_name>/events.jsonl` for tool-level detail.
+- **When debugging runtime issues**, always start by reading the scenario, then the trace logs — in this order:
+  1. **The user query / chat log:** `<workflow_dir>/agent_chat.json` — the user's prompt + assistant replies for the run. Without this you don't know what the agent was *trying* to do.
+  2. **Execution-level trace:** `<execution_dir>/events.jsonl` — agent/step-level narrative (`step_completed`, `step_failed`, `sub_action`, `node_added`, `edge_added`).
+  3. **Per-node trace:** `<execution_dir>/<node_name>/events.jsonl` — tool-level detail.
+  4. **Application log:** `~/Library/Logs/Clickweave/clickweave.YYYY-MM-DD.txt` (see Application Logs) — correlate LLM tool-call lines (`clickweave_llm::client`) and engine dispatch (`clickweave_engine::agent::loop_runner`) against the events above. Mismatches between LLM tool calls and `step_completed` counts are a strong bug signal.
 - If an execution dir has no `<node_name>/` subdir, the agent failed before any node run was created — the exec-level `events.jsonl` is the only trace.
+- Never reason about a run from just one layer. Always cross-reference the chat (intent) against the events (what the engine emitted) against the app log (what the LLM actually called).
 
 ## Walkthrough Session Logs
 - **Saved projects:** `<project>/.clickweave/walkthroughs/<session_dir>/`
@@ -50,9 +56,18 @@ Layout under the workflow dir:
   - `frontend/architecture.md` — React stack, directory layout, Zustand slices, graph editor behavior
   - `mcp/integration.md` — MCP client lifecycle, tool mapping, protocol types
 
-## Design & Implementation Plans
-- Location: `internal_docs/plans/` (gitignored, local-only)
-- Naming: `YYYY-MM-DD_HH-MM-SS-<topic>.md` (e.g., `2026-02-12_10-07-02-app-name-resolution.md`)
+## Design Docs & Implementation Plans
+- **Design docs** (durable decision record) live in a separate private repo — see `.claude/issues.local.md` for the path convention. Do not commit design docs to this public repo.
+- **Implementation plans** (ephemeral guidance for the coding agent): `internal_docs/plans/` (gitignored, local-only), named `YYYY-MM-DD_HH-MM-SS-<topic>.md`. Scoped to one execution, not a durable artifact.
+- **Design reviews** (Codex review output on design docs): `internal_docs/design-reviews/` (gitignored).
+- **Plan reviews** (Codex review output on implementation plans): `internal_docs/plan-reviews/` (gitignored).
+- **Code reviews** (external-reviewer findings + response tables): `internal_docs/code-reviews/` (gitignored). Use this format as the template for handoff reports' codex-review section.
+- **Handoff reports** (autonomous-run output from the `execute-plan` skill): `internal_docs/handoff/<date>_<topic>.md` (gitignored).
+
+## Worktree & Branch Conventions
+- **Worktree root:** `/Users/x0/Work/clickweave-worktrees/`. One worktree per autonomous run (keyed by design-doc topic). Created by `git worktree add <root>/<topic> -b feat/<topic> <base>`.
+- **Branch naming:** `feat/<topic>` for feature work; topic mirrors the design-doc filename (e.g. `feat/ax-virtual-cursor`).
+- **Base branch:** the approved plan's header declares the base branch the worktree should branch from. If absent, ask before proceeding.
 
 ## Issue Conventions
 - **Issues repo is separate from this code repo.** Do not file issues against this repo.

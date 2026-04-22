@@ -237,7 +237,7 @@ impl WorkflowExecutor {
             .map(|cfg| LlmClient::new(cfg.clone().with_max_tokens(4096).with_thinking(false)));
         Self {
             workflow,
-            agent: LlmClient::new(agent_config.with_thinking(true)),
+            agent: LlmClient::new(agent_config.with_thinking(false)),
             fast: fast_config.map(|c| LlmClient::new(c.with_thinking(false))),
             supervision: supervision_config.map(|c| LlmClient::new(c.with_thinking(false))),
             verdict_fast,

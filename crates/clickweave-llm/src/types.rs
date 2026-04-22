@@ -156,8 +156,11 @@ pub struct Message {
     pub role: Role,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<Content>,
-    /// Thinking-model scratchpad. Captured from assistant responses and echoed
-    /// back in subsequent requests so the model can build on prior reasoning.
+    /// Thinking-model scratchpad captured from assistant responses for logging
+    /// and observability. Must NOT be fed back into subsequent requests:
+    /// Gemma 4's model card prohibits echoing prior-turn thought blocks, and
+    /// doing so causes context accumulation and degraded tool selection.
+    /// `LlmClient` strips this field before serializing outbound requests.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

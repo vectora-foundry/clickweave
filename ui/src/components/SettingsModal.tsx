@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChromeProfile } from "../bindings";
 import { commands } from "../bindings";
 import type { EndpointConfig } from "../store/useAppStore";
@@ -85,16 +85,202 @@ interface SettingsModalProps {
 const inputClass =
   "w-full rounded bg-[var(--bg-input)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:ring-1 focus:ring-[var(--accent-coral)]";
 
-const endpointFields: {
-  key: keyof EndpointConfig;
-  label: string;
-  type: string;
-  placeholder?: string;
-}[] = [
-  { key: "baseUrl", label: "Base URL", type: "text" },
-  { key: "model", label: "Model", type: "text" },
-  { key: "apiKey", label: "API Key", type: "password", placeholder: "Optional" },
-];
+/**
+ * Pure helper — determines which model to select after a fresh model list
+ * fetch. Exported for unit testing.
+ *
+ * Rules (in priority order):
+ * 1. If `currentModel` exactly matches an entry in `models`, keep it.
+ * 2. If `currentModel` matches an entry fuzzily (equal after stripping
+ *    `.gguf` / `.bin` suffixes, or either side `endsWith` the other's
+ *    bare form), canonicalize to the server's id. This mirrors the
+ *    backend `check_endpoint` acceptance rules so the stored config is
+ *    not rewritten to a different quantization — but we use the server's
+ *    string as the actual value, so the rendered `<select>` has a
+ *    matching `<option>` and the control does not go blank.
+ * 3. If there is exactly one model, select it.
+ * 4. Otherwise select the first model and return a note so the caller can
+ *    surface it to the user.
+ *
+ * Returns `{ model, note }` where `note` is non-null only when the current
+ * model was not found and the list had multiple entries.
+ */
+export function selectModel(
+  models: string[],
+  currentModel: string,
+): { model: string; note: string | null } {
+  if (models.length === 0) {
+    return { model: currentModel, note: null };
+  }
+  if (models.includes(currentModel)) {
+    return { model: currentModel, note: null };
+  }
+  const stripExt = (s: string) =>
+    s.endsWith(".gguf") ? s.slice(0, -".gguf".length)
+    : s.endsWith(".bin") ? s.slice(0, -".bin".length)
+    : s;
+  const currentBare = stripExt(currentModel);
+  const fuzzyMatch = models.find((m) => {
+    const bare = stripExt(m);
+    return bare === currentBare || bare.endsWith(currentBare) || currentBare.endsWith(bare);
+  });
+  if (fuzzyMatch !== undefined) {
+    return { model: fuzzyMatch, note: null };
+  }
+  if (models.length === 1) {
+    return { model: models[0], note: null };
+  }
+  return {
+    model: models[0],
+    note: `model updated to first available: ${models[0]}`,
+  };
+}
+
+type ModelFetchState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ok"; models: string[] }
+  | { status: "error"; error: string; models: string[] };
+
+function ModelDropdown({
+  config,
+  onChange,
+}: {
+  config: EndpointConfig;
+  onChange: (config: EndpointConfig) => void;
+}) {
+  const [fetchState, setFetchState] = useState<ModelFetchState>({ status: "idle" });
+  const [note, setNote] = useState<string | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  // Generation counter invalidates in-flight /models responses from a
+  // previous (baseUrl, apiKey) pair. Bumped in the effect on every
+  // endpoint-field change AND in the explicit refresh button, so late
+  // responses from a prior endpoint (including one in flight during the
+  // 400ms debounce or after baseUrl was cleared) cannot write stale
+  // fields back into the store.
+  const fetchGenRef = useRef(0);
+
+  const fetchModels = useCallback(
+    async (cfg: EndpointConfig, gen: number) => {
+      if (!cfg.baseUrl.trim()) {
+        setFetchState({ status: "idle" });
+        return;
+      }
+      setFetchState({ status: "loading" });
+      const result = await commands.listModels(cfg.baseUrl, cfg.apiKey || null);
+      if (gen !== fetchGenRef.current) {
+        return;
+      }
+      if (result.status === "ok") {
+        const { model, note: newNote } = selectModel(result.data, cfg.model);
+        setFetchState({ status: "ok", models: result.data });
+        setNote(newNote);
+        if (model !== cfg.model) {
+          onChange({ ...cfg, model });
+        }
+      } else {
+        setFetchState({
+          status: "error",
+          error: result.error.message ?? "Could not fetch models",
+          models: cfg.model ? [cfg.model] : [],
+        });
+        setNote(null);
+      }
+    },
+    [onChange],
+  );
+
+  // Ref to the latest config so the deferred fetch inside setTimeout
+  // always reconciles against the model the user has NOW, not the one
+  // captured at effect-run time. Without this, a user model change during
+  // the 400ms debounce window gets clobbered by an old snapshot when the
+  // fetch response lands.
+  const configRef = useRef(config);
+  configRef.current = config;
+
+  // Debounced fetch on baseUrl / apiKey change. We intentionally do not
+  // react to config.model changes here — a model swap alone shouldn't
+  // trigger a new /models probe, and including `config` as a whole would
+  // make this effect fire on every parent re-render. The generation is
+  // bumped unconditionally so any in-flight fetch is invalidated even
+  // while the debounce is still pending or when baseUrl was cleared.
+  // The dropdown also enters `loading` state immediately (before the
+  // timeout) so the user cannot change `model` during the debounce
+  // window and race the pending fetch.
+  useEffect(() => {
+    clearTimeout(debounceRef.current);
+    const gen = ++fetchGenRef.current;
+    if (!config.baseUrl.trim()) {
+      setFetchState({ status: "idle" });
+      return;
+    }
+    setFetchState({ status: "loading" });
+    debounceRef.current = setTimeout(() => {
+      fetchModels(configRef.current, gen);
+    }, 400);
+    return () => clearTimeout(debounceRef.current);
+    // Only re-run when connection details change, not on every model change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.baseUrl, config.apiKey, fetchModels]);
+
+  const isLoading = fetchState.status === "loading";
+  const availableModels =
+    fetchState.status === "ok"
+      ? fetchState.models
+      : fetchState.status === "error"
+        ? fetchState.models
+        : config.model
+          ? [config.model]
+          : [];
+
+  const noUrl = !config.baseUrl.trim();
+
+  return (
+    <div>
+      <label className="mb-1 block text-xs text-[var(--text-secondary)]">Model</label>
+      <div className="flex items-center gap-1.5">
+        <select
+          value={config.model}
+          onChange={(e) => {
+            setNote(null);
+            onChange({ ...config, model: e.target.value });
+          }}
+          disabled={noUrl || isLoading}
+          className={`${inputClass} flex-1`}
+        >
+          {noUrl ? (
+            <option value="">Enter base URL first</option>
+          ) : isLoading ? (
+            <option value="">Loading models...</option>
+          ) : availableModels.length === 0 ? (
+            <option value="">No models found</option>
+          ) : (
+            availableModels.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))
+          )}
+        </select>
+        <button
+          onClick={() => fetchModels(config, ++fetchGenRef.current)}
+          disabled={noUrl || isLoading}
+          title="Refresh model list"
+          className="shrink-0 rounded bg-[var(--bg-input)] px-2 py-1.5 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-40"
+        >
+          ↻
+        </button>
+      </div>
+      {fetchState.status === "error" && (
+        <p className="mt-1 text-[10px] text-red-500" title={fetchState.error}>
+          Could not fetch models — showing saved value
+        </p>
+      )}
+      {note && <p className="mt-1 text-[10px] text-yellow-500">{note}</p>}
+    </div>
+  );
+}
 
 function EndpointFields({
   config,
@@ -105,20 +291,26 @@ function EndpointFields({
 }) {
   return (
     <div className="space-y-2">
-      {endpointFields.map((field) => (
-        <div key={field.key}>
-          <label className="mb-1 block text-xs text-[var(--text-secondary)]">
-            {field.label}
-          </label>
-          <input
-            type={field.type}
-            value={config[field.key]}
-            onChange={(e) => onChange({ ...config, [field.key]: e.target.value })}
-            placeholder={field.placeholder}
-            className={`${inputClass}${field.placeholder ? " placeholder-[var(--text-muted)]" : ""}`}
-          />
-        </div>
-      ))}
+      <div>
+        <label className="mb-1 block text-xs text-[var(--text-secondary)]">Base URL</label>
+        <input
+          type="text"
+          value={config.baseUrl}
+          onChange={(e) => onChange({ ...config, baseUrl: e.target.value })}
+          className={inputClass}
+        />
+      </div>
+      <ModelDropdown config={config} onChange={onChange} />
+      <div>
+        <label className="mb-1 block text-xs text-[var(--text-secondary)]">API Key</label>
+        <input
+          type="password"
+          value={config.apiKey}
+          onChange={(e) => onChange({ ...config, apiKey: e.target.value })}
+          placeholder="Optional"
+          className={`${inputClass} placeholder-[var(--text-muted)]`}
+        />
+      </div>
     </div>
   );
 }

@@ -12,6 +12,15 @@ pub(crate) struct CdpElementData {
     pub parent_name: Option<String>,
 }
 
+/// macOS accessibility element descriptor resolved at record time. Distinct
+/// from [`CdpElementData`] because AX targets go through the native AX tree
+/// (`take_ax_snapshot` + `ax_click` et al) instead of the CDP DOM.
+pub(crate) struct AxElementData {
+    pub role: String,
+    pub name: String,
+    pub parent_name: Option<String>,
+}
+
 /// Enrichment data collected during the click lookahead pass.
 ///
 /// Aggregated from the enrichment events that follow a `MouseClicked` event
@@ -27,6 +36,11 @@ pub(crate) struct ClickEnrichment<'a> {
     pub crop_candidate: Option<(String, String)>,
     /// CDP-resolved element.
     pub cdp_resolved: Option<CdpElementData>,
+    /// macOS AX element descriptor — populated when the clicked element
+    /// carries an actionable role AND the app is native (i.e. CDP is
+    /// not in play). Enables dispatch via `ax_click` / `ax_set_value` /
+    /// `ax_select` without moving the cursor.
+    pub ax_resolved: Option<AxElementData>,
     /// Click coordinates.
     pub click_x: f64,
     pub click_y: f64,
@@ -37,6 +51,18 @@ pub(crate) struct ClickEnrichment<'a> {
 /// Returns candidates in priority order: CDP > accessibility label > VLM > OCR > image crop > coordinates.
 pub(crate) fn build_target_candidates(enrichment: &ClickEnrichment<'_>) -> Vec<TargetCandidate> {
     let mut candidates = Vec::new();
+
+    // AX element (macOS native dispatch) takes precedence over CDP: when
+    // both are present (uncommon; CDP is for browsers, AX is for native),
+    // the recording is almost certainly a native app whose AX descriptor
+    // is more stable than whatever the browser surfaced.
+    if let Some(ax) = &enrichment.ax_resolved {
+        candidates.push(TargetCandidate::AxElement {
+            role: ax.role.clone(),
+            name: ax.name.clone(),
+            parent_name: ax.parent_name.clone(),
+        });
+    }
 
     // CDP element from click listener is the highest-priority target.
     if let Some(cdp) = &enrichment.cdp_resolved {
@@ -113,6 +139,9 @@ pub(crate) fn score_confidence(candidates: &[TargetCandidate]) -> ActionConfiden
     if candidates
         .iter()
         .any(|c| matches!(c, TargetCandidate::CdpElement { .. }))
+        || candidates
+            .iter()
+            .any(|c| matches!(c, TargetCandidate::AxElement { .. }))
         || candidates.iter().any(|c| c.is_actionable_ax_label())
     {
         ActionConfidence::High
@@ -247,7 +276,12 @@ mod tests {
     }
 
     #[test]
-    fn test_click_with_ax_label_and_vlm_label_keeps_ax_first() {
+    fn test_click_with_actionable_ax_role_emits_ax_dispatch_candidate_first() {
+        // An actionable AX role (AXButton here) now drives an AxElement
+        // candidate at the top of the list, so walkthrough synthesis can
+        // produce NodeType::AxClick. The plain AccessibilityLabel + VLM
+        // candidates are preserved as lower-priority fallbacks for the
+        // coordinate-click path.
         use crate::walkthrough::synthesis::normalize_events;
 
         let events = vec![
@@ -278,17 +312,28 @@ mod tests {
         ];
         let (actions, _) = normalize_events(&events);
         assert_eq!(actions.len(), 1);
-        // AX label should be first candidate
-        assert!(matches!(
-            &actions[0].target_candidates[0],
-            TargetCandidate::AccessibilityLabel { label, .. } if label == "Submit"
-        ));
-        // VLM label should be second
+        // AxElement is first: AX dispatch path is now preferred for
+        // actionable native roles.
+        assert!(
+            matches!(
+                &actions[0].target_candidates[0],
+                TargetCandidate::AxElement { role, name, .. }
+                    if role == "AXButton" && name == "Submit",
+            ),
+            "got candidates: {:?}",
+            actions[0].target_candidates,
+        );
+        // AccessibilityLabel kept as legacy coordinate-click fallback.
         assert!(matches!(
             &actions[0].target_candidates[1],
+            TargetCandidate::AccessibilityLabel { label, .. } if label == "Submit"
+        ));
+        // VLM label falls in third.
+        assert!(matches!(
+            &actions[0].target_candidates[2],
             TargetCandidate::VlmLabel { label } if label == "Submit Button"
         ));
-        // Actionable AX label means High confidence
+        // An AxElement target is High confidence.
         assert_eq!(actions[0].confidence, ActionConfidence::High);
     }
 
@@ -399,6 +444,7 @@ mod tests {
                 parent_role: None,
                 parent_name: None,
             }),
+            ax_resolved: None,
             click_x: 100.0,
             click_y: 200.0,
         };
@@ -424,6 +470,7 @@ mod tests {
             ocr_annotations: None,
             crop_candidate: None,
             cdp_resolved: None,
+            ax_resolved: None,
             click_x: 100.0,
             click_y: 200.0,
         };

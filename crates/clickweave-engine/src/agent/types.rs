@@ -134,6 +134,18 @@ pub struct AgentConfig {
     /// Halt the run after this many consecutive destructive tool calls.
     /// `0` disables the cap entirely.
     pub consecutive_destructive_cap: usize,
+    /// Whether the agent is allowed to execute `focus_window` at all.
+    ///
+    /// Defaults to `true` (existing behavior — `focus_window` runs normally
+    /// unless one of the AX / CDP-scoped guards in `loop_runner.rs`
+    /// suppresses it). When set to `false`, every `focus_window` call is
+    /// suppressed unconditionally at the dispatch site — no probe for app
+    /// kind, no CDP-connected check — so the run is guaranteed not to
+    /// steal foreground from the user. This is the "run this workflow in
+    /// the background" policy: when the LLM would otherwise fall back to
+    /// coordinate-based tools that genuinely need focus, the returned
+    /// skip message nudges it toward AX / CDP dispatch instead.
+    pub allow_focus_window: bool,
 }
 
 impl Default for AgentConfig {
@@ -144,6 +156,7 @@ impl Default for AgentConfig {
             build_workflow: true,
             use_cache: true,
             consecutive_destructive_cap: DEFAULT_CONSECUTIVE_DESTRUCTIVE_CAP,
+            allow_focus_window: true,
         }
     }
 }

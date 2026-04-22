@@ -9,9 +9,12 @@ export const ACTIONABLE_AX_ROLES = new Set([
 ]);
 
 /** Find the index of the preferred target candidate, mirroring backend `synthesize_draft` logic.
- *  Priority: actionable AX label > VlmLabel/OcrText > ImageCrop > Coordinates. */
+ *  Priority: AX dispatch > CDP element > actionable AX label > VlmLabel/OcrText > ImageCrop > Coordinates. */
 export function preferredTargetIndex(candidates: TargetCandidate[]): number {
-  // CDP-verified elements are most reliable
+  // AX dispatch descriptor wins on macOS native apps.
+  const axIdx = candidates.findIndex((c) => c.type === "AxElement");
+  if (axIdx >= 0) return axIdx;
+  // CDP-verified elements are most reliable for web.
   const cdpIdx = candidates.findIndex((c) => c.type === "CdpElement");
   if (cdpIdx >= 0) return cdpIdx;
   const idx = candidates.findIndex((c) => {
@@ -44,6 +47,7 @@ function pointerActionLabel(prefix: string, action: WalkthroughAction, x: number
   if (best && best.type !== "Coordinates" && best.type !== "ImageCrop") {
     const label = (best.type === "OcrText") ? best.text
       : (best.type === "CdpElement") ? best.name
+      : (best.type === "AxElement") ? best.name
       : (best.type === "WindowControl") ? best.action
       : best.label;
     return `${prefix} '${label.length > 25 ? label.slice(0, 25) + "\u2026" : label}'`;
@@ -78,6 +82,7 @@ export function targetCandidateLabel(candidate: TargetCandidate): string {
     case "ImageCrop": return "Image crop";
     case "Coordinates": return `(${candidate.x}, ${candidate.y})`;
     case "CdpElement": return `"${candidate.name}"`;
+    case "AxElement": return `"${candidate.name}"`;
     case "WindowControl": return candidate.action;
   }
 }
@@ -90,6 +95,7 @@ export function targetCandidateMethod(candidate: TargetCandidate): string {
     case "ImageCrop": return "Image template";
     case "Coordinates": return "Screen coordinates";
     case "CdpElement": return "DevTools DOM";
+    case "AxElement": return "AX dispatch";
     case "WindowControl": return "Window control";
   }
 }
@@ -102,6 +108,7 @@ export function targetCandidateIcon(candidate: TargetCandidate): string {
     case "ImageCrop": return "\u{1F5BC}";
     case "Coordinates": return "\u{1F4CD}";
     case "CdpElement": return "\u{1F310}";
+    case "AxElement": return "\u{1F3AF}";
     case "WindowControl": return "\u{1F6AA}";
   }
 }

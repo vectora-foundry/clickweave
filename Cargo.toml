@@ -35,3 +35,13 @@ clickweave-core = { path = "crates/clickweave-core" }
 clickweave-engine = { path = "crates/clickweave-engine" }
 clickweave-llm = { path = "crates/clickweave-llm" }
 clickweave-mcp = { path = "crates/clickweave-mcp" }
+
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.dev.build-override]
+opt-level = 3

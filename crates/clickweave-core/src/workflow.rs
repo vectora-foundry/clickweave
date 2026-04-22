@@ -229,6 +229,10 @@ pub enum NodeType {
     CdpClosePage(CdpClosePageParams),
     CdpSelectPage(CdpSelectPageParams),
     CdpHandleDialog(CdpHandleDialogParams),
+    // AX — macOS accessibility-tree dispatch (background-safe)
+    AxClick(AxClickParams),
+    AxSetValue(AxSetValueParams),
+    AxSelect(AxSelectParams),
     // AI
     AiStep(AiStepParams),
     // Generic
@@ -268,7 +272,10 @@ impl NodeType {
             | Self::CdpNewPage(_)
             | Self::CdpClosePage(_)
             | Self::CdpSelectPage(_)
-            | Self::CdpHandleDialog(_) => OutputRole::Action,
+            | Self::CdpHandleDialog(_)
+            | Self::AxClick(_)
+            | Self::AxSetValue(_)
+            | Self::AxSelect(_) => OutputRole::Action,
 
             Self::AiStep(_) => OutputRole::Ai,
 
@@ -290,7 +297,10 @@ impl NodeType {
             | Self::Scroll(_)
             | Self::FocusWindow(_)
             | Self::LaunchApp(_)
-            | Self::QuitApp(_) => NodeContext::Native,
+            | Self::QuitApp(_)
+            | Self::AxClick(_)
+            | Self::AxSetValue(_)
+            | Self::AxSelect(_) => NodeContext::Native,
 
             Self::CdpWait(_)
             | Self::CdpClick(_)
@@ -327,7 +337,10 @@ impl NodeType {
     pub fn is_text_input(&self) -> bool {
         matches!(
             self,
-            NodeType::TypeText(_) | NodeType::CdpFill(_) | NodeType::CdpType(_)
+            NodeType::TypeText(_)
+                | NodeType::CdpFill(_)
+                | NodeType::CdpType(_)
+                | NodeType::AxSetValue(_)
         )
     }
 
@@ -335,6 +348,9 @@ impl NodeType {
     /// Used to identify predecessor nodes that should be re-run before retrying
     /// a text-input node.
     pub fn is_focus_establishing(&self) -> bool {
+        // `AxClick` deliberately excluded — it dispatches without stealing
+        // focus, so it does not re-establish keyboard focus for a following
+        // text-input node.
         matches!(self, NodeType::Click(_) | NodeType::CdpClick(_))
     }
 
@@ -357,6 +373,9 @@ impl NodeType {
             NodeType::CdpClick(p) => Some(p.target.as_str()).filter(|s| !s.is_empty()),
             NodeType::CdpHover(p) => Some(p.target.as_str()).filter(|s| !s.is_empty()),
             NodeType::CdpWait(p) => Some(p.text.as_str()).filter(|s| !s.is_empty()),
+            NodeType::AxClick(p) => Some(p.target.as_str()).filter(|s| !s.is_empty()),
+            NodeType::AxSetValue(p) => Some(p.target.as_str()).filter(|s| !s.is_empty()),
+            NodeType::AxSelect(p) => Some(p.target.as_str()).filter(|s| !s.is_empty()),
             _ => None,
         }
     }
@@ -387,6 +406,9 @@ impl NodeType {
             NodeType::CdpClosePage(_) => "CDP Close Page",
             NodeType::CdpSelectPage(_) => "CDP Select Page",
             NodeType::CdpHandleDialog(_) => "CDP Handle Dialog",
+            NodeType::AxClick(_) => "AX Click",
+            NodeType::AxSetValue(_) => "AX Set Value",
+            NodeType::AxSelect(_) => "AX Select",
             NodeType::AiStep(_) => "AI Step",
             NodeType::McpToolCall(_) => "MCP Tool Call",
             NodeType::AppDebugKitOp(_) => "AppDebugKit Op",
@@ -464,6 +486,9 @@ impl NodeType {
                     "CDP dismissed dialog".to_string()
                 }
             }
+            NodeType::AxClick(p) => format!("AX clicked element '{}'", p.target.as_str()),
+            NodeType::AxSetValue(p) => format!("AX set value to '{}'", p.value),
+            NodeType::AxSelect(p) => format!("AX selected row '{}'", p.target.as_str()),
             NodeType::McpToolCall(p) => format!("Called tool '{}'", p.tool_name),
             NodeType::AppDebugKitOp(p) => format!("Called AppDebugKit '{}'", p.operation_name),
             _ => self.display_name().to_string(),
@@ -477,10 +502,13 @@ impl NodeType {
             NodeType::FindText(_) => "🔍",
             NodeType::FindImage(_) => "🖼",
             NodeType::FindApp(_) => "🔍",
-            NodeType::Click(_) | NodeType::CdpClick(_) => "🖱",
+            NodeType::Click(_) | NodeType::CdpClick(_) | NodeType::AxClick(_) => "🖱",
             NodeType::Hover(_) | NodeType::CdpHover(_) => "👆",
             NodeType::Drag(_) => "↔",
-            NodeType::TypeText(_) | NodeType::CdpType(_) | NodeType::CdpFill(_) => "⌨",
+            NodeType::TypeText(_)
+            | NodeType::CdpType(_)
+            | NodeType::CdpFill(_)
+            | NodeType::AxSetValue(_) => "⌨",
             NodeType::PressKey(_) | NodeType::CdpPressKey(_) => "⌨",
             NodeType::Scroll(_) => "📜",
             NodeType::FocusWindow(_) => "🪟",
@@ -492,6 +520,7 @@ impl NodeType {
             NodeType::CdpClosePage(_) => "🗑",
             NodeType::CdpSelectPage(_) => "📑",
             NodeType::CdpHandleDialog(_) => "💬",
+            NodeType::AxSelect(_) => "✅",
             NodeType::McpToolCall(_) | NodeType::AppDebugKitOp(_) => "🔧",
             NodeType::Unknown => "❓",
         }
@@ -528,6 +557,9 @@ impl NodeType {
             Self::CdpClosePage(p) => p.verification(),
             Self::CdpSelectPage(p) => p.verification(),
             Self::CdpHandleDialog(p) => p.verification(),
+            Self::AxClick(p) => p.verification(),
+            Self::AxSetValue(p) => p.verification(),
+            Self::AxSelect(p) => p.verification(),
             _ => None,
         }
     }
@@ -586,6 +618,10 @@ impl NodeType {
             NodeType::CdpClosePage(CdpClosePageParams::default()),
             NodeType::CdpSelectPage(CdpSelectPageParams::default()),
             NodeType::CdpHandleDialog(CdpHandleDialogParams::default()),
+            // AX (macOS accessibility dispatch) — Action
+            NodeType::AxClick(AxClickParams::default()),
+            NodeType::AxSetValue(AxSetValueParams::default()),
+            NodeType::AxSelect(AxSelectParams::default()),
             // AI
             NodeType::AiStep(AiStepParams::default()),
             // Generic
@@ -621,6 +657,9 @@ impl NodeType {
             "CDP Close Page" => NodeType::CdpClosePage(CdpClosePageParams::default()),
             "CDP Select Page" => NodeType::CdpSelectPage(CdpSelectPageParams::default()),
             "CDP Handle Dialog" => NodeType::CdpHandleDialog(CdpHandleDialogParams::default()),
+            "AX Click" => NodeType::AxClick(AxClickParams::default()),
+            "AX Set Value" => NodeType::AxSetValue(AxSetValueParams::default()),
+            "AX Select" => NodeType::AxSelect(AxSelectParams::default()),
             "AI Step" => NodeType::AiStep(AiStepParams::default()),
             "MCP Tool Call" => NodeType::McpToolCall(McpToolCallParams::default()),
             "AppDebugKit Op" => NodeType::AppDebugKitOp(AppDebugKitParams::default()),
@@ -835,6 +874,75 @@ mod tests {
         let node_b = wf.find_node(b).unwrap();
         assert_eq!(node_a.auto_id, "find_text_1");
         assert_eq!(node_b.auto_id, "find_text_2");
+    }
+
+    /// Regression test for Round 1 finding R1.L1: every variant in
+    /// `all_defaults()` must round-trip through `display_name` →
+    /// `default_for_name`. The two registries were originally out of sync
+    /// for the AX variants — this test pins the round-trip so any future
+    /// variant addition that forgets one side fails the test rather than
+    /// silently dropping off the Tauri palette.
+    #[test]
+    fn display_name_and_default_for_name_round_trip_all_defaults() {
+        for nt in NodeType::all_defaults() {
+            let name = nt.display_name();
+            let resolved = NodeType::default_for_name(name).unwrap_or_else(|| {
+                panic!(
+                    "default_for_name is missing an arm for display_name \"{}\"",
+                    name
+                )
+            });
+            assert_eq!(
+                std::mem::discriminant(&nt),
+                std::mem::discriminant(&resolved),
+                "default_for_name(\"{}\") returned the wrong NodeType variant",
+                name,
+            );
+        }
+    }
+
+    /// Regression test for Round 1 finding R1.M1: AX dispatch nodes must
+    /// surface their configured verification through
+    /// `NodeType::verification()`. Before the fix the match arm fell
+    /// through to `_ => None`, silently dropping any configured
+    /// verification.
+    #[test]
+    fn ax_dispatch_nodes_surface_verification_config() {
+        use crate::output_schema::{VerificationConfig, VerificationMethod};
+
+        let verification = VerificationConfig {
+            verification_method: Some(VerificationMethod::Vlm),
+            verification_assertion: Some("button is highlighted".to_string()),
+        };
+
+        let click = NodeType::AxClick(AxClickParams {
+            target: AxTarget::ResolvedUid("a1g1".into()),
+            verification: verification.clone(),
+        });
+        let set_value = NodeType::AxSetValue(AxSetValueParams {
+            target: AxTarget::ResolvedUid("a2g1".into()),
+            value: "hello".into(),
+            verification: verification.clone(),
+        });
+        let select = NodeType::AxSelect(AxSelectParams {
+            target: AxTarget::ResolvedUid("a3g1".into()),
+            verification: verification.clone(),
+        });
+
+        for (label, nt) in [
+            ("AxClick", click),
+            ("AxSetValue", set_value),
+            ("AxSelect", select),
+        ] {
+            let got = nt.verification().unwrap_or_else(|| {
+                panic!("{label}::verification() returned None despite configured method")
+            });
+            assert_eq!(got.verification_method, verification.verification_method);
+            assert_eq!(
+                got.verification_assertion,
+                verification.verification_assertion
+            );
+        }
     }
 }
 

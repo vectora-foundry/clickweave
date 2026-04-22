@@ -67,8 +67,12 @@ pub struct LlmConfig {
     pub model: String,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
-    /// Extra provider-specific fields to include in the request body
-    /// (e.g. `{"chat_template_kwargs": {"enable_thinking": false}}`).
+    /// Extra provider-specific fields to include in the request body.
+    /// Defaults to `{"chat_template_kwargs": {"enable_thinking": false}}` — this is
+    /// not merely illustrative; it is the actual default. The explicit `false` is
+    /// required because server-side templates for Gemma 4 and Qwen 3 default to
+    /// reasoning mode ON, which would silently add ~15× latency for any caller
+    /// that constructs `LlmConfig::default()` without an explicit `.with_thinking()` chain.
     pub extra_body: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -93,7 +97,7 @@ impl LlmConfig {
 
 impl Default for LlmConfig {
     fn default() -> Self {
-        Self {
+        let base = Self {
             // LM Studio default
             base_url: "http://localhost:1234/v1".to_string(),
             api_key: None,
@@ -101,7 +105,11 @@ impl Default for LlmConfig {
             temperature: Some(0.7),
             max_tokens: Some(4096),
             extra_body: serde_json::Map::new(),
-        }
+        };
+        // Explicit `enable_thinking: false` so the server template default (which is ON
+        // for Gemma 4 / Qwen 3) cannot silently add latency to callers that forget to
+        // chain `.with_thinking(false)`.
+        base.with_thinking(false)
     }
 }
 
@@ -214,9 +222,28 @@ impl ChatBackend for LlmClient {
             self.config.base_url.trim_end_matches('/')
         );
 
+        // Strip reasoning_content from all assistant messages before sending.
+        // Gemma 4 (and other thinking-capable models) must not receive prior
+        // turns' thought blocks in subsequent requests — only visible content
+        // and tool_calls should be echoed back. This is a defense-in-depth
+        // guard; the primary guard lives in AgentRunner::append_assistant_message.
+        let sanitized: Vec<Message> = messages
+            .iter()
+            .map(|m| {
+                if m.role == Role::Assistant && m.reasoning_content.is_some() {
+                    Message {
+                        reasoning_content: None,
+                        ..m.clone()
+                    }
+                } else {
+                    m.clone()
+                }
+            })
+            .collect();
+
         let request = ChatRequest {
             model: &self.config.model,
-            messages,
+            messages: &sanitized,
             tools,
             temperature: options.temperature.or(self.config.temperature),
             max_tokens: options.max_tokens.or(self.config.max_tokens),
@@ -442,6 +469,61 @@ pub async fn check_endpoint(
     }
 }
 
+/// Fetch the list of model IDs available at `{base_url}/models`.
+///
+/// Hits GET `{base_url}/models` with a 5-second timeout, parses the
+/// OpenAI-shaped `{ "data": [{ "id": "..." }, ...] }` response, and returns
+/// the raw `id` strings in the order the server returns them.
+///
+/// Returns `Err` when:
+/// - The HTTP request fails or times out.
+/// - The server responds with a non-2xx status.
+/// - The body is not valid JSON or does not contain a `data` array.
+pub async fn list_models(base_url: &str, api_key: Option<&str>) -> Result<Vec<String>> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .context("HTTP client error")?;
+
+    let mut req = client.get(&url);
+    if let Some(key) = api_key {
+        req = req.bearer_auth(key);
+    }
+
+    let resp = match req.send().await {
+        Ok(resp) if resp.status().is_success() => resp,
+        Ok(resp) => {
+            anyhow::bail!(
+                "Endpoint responded with status {} at {}",
+                resp.status(),
+                url
+            );
+        }
+        Err(e) if e.is_timeout() => {
+            anyhow::bail!("Endpoint timed out after 5s at {}", url);
+        }
+        Err(e) => {
+            return Err(anyhow!(e)).with_context(|| format!("Cannot reach endpoint at {}", url));
+        }
+    };
+
+    let body = resp.text().await.context("Failed to read response")?;
+    let json: serde_json::Value =
+        serde_json::from_str(&body).map_err(|_| anyhow!("Endpoint did not return valid JSON"))?;
+
+    let data = json["data"].as_array().ok_or_else(|| {
+        anyhow!("Response missing 'data' array; endpoint may not be OpenAI-compatible")
+    })?;
+
+    let ids: Vec<String> = data
+        .iter()
+        .filter_map(|m| m["id"].as_str().map(String::from))
+        .collect();
+
+    Ok(ids)
+}
+
 /// System prompt for the agent (text-only, no images).
 pub fn workflow_system_prompt() -> &'static str {
     r#"You are a UI automation assistant executing an AI Step node within a workflow.
@@ -455,6 +537,23 @@ You have access to MCP tools for native UI interaction:
 - scroll: scroll at a position
 - list_apps: list running applications (use user_apps_only=true to filter system processes)
 - list_windows / focus_window: manage windows (focus_window accepts app_name, window_id, or pid)
+
+macOS accessibility (AX) tools — prefer these over click / type_text when available:
+- take_ax_snapshot: capture the focused app's AX tree as text (uids look like `a42g3`)
+- ax_click: dispatch a press against the element at the given uid (buttons, menu items, checkboxes)
+- ax_set_value: write a value into a text field by uid (no keystrokes, no focus steal)
+- ax_select: select a row inside NSOutlineView / NSTableView by its uid (sidebars, rule lists)
+
+AX tools dispatch in the background — the cursor does NOT move and the target app does
+NOT steal focus, so they are the preferred choice whenever you can see the element you
+need in a snapshot. They only work when the server advertises them (macOS only).
+
+CRITICAL AX rule — snapshots are session-stateful. Each take_ax_snapshot bumps the
+generation counter; uids from a prior snapshot are rejected with `snapshot_expired`.
+So: take_ax_snapshot immediately before every ax_click / ax_set_value / ax_select, in
+the same tool sequence. Do not reuse a uid after any intervening action or any other
+tool call that could cause the tree to change. If a dispatch returns `snapshot_expired`,
+take a fresh snapshot and try again.
 
 For each step, you will receive:
 - A prompt describing the objective
@@ -471,10 +570,11 @@ their analysis as a VLM_IMAGE_SUMMARY message containing a JSON object with:
 Use find_text / find_image for precise coordinate targeting. Do not guess coordinates.
 
 Strategy:
-1. If you need to see the screen, take a screenshot to observe the current state
-2. Use find_text or find_image to locate targets precisely
-3. Perform the required input actions (click, type, scroll)
-4. Verify the result with another screenshot if needed
+1. If you need to see the screen, take a screenshot OR take_ax_snapshot to observe state
+2. Use take_ax_snapshot + ax_* tools for macOS apps when the element is in the AX tree
+3. Fall back to find_text / find_image + click for coordinate-based targeting
+4. Perform the required input actions
+5. Verify the result with another screenshot or snapshot if needed
 
 When you have completed the step's objective, respond with a JSON object:
 {"step_complete": true, "summary": "Brief description of what was done"}
@@ -755,6 +855,22 @@ mod tests {
     }
 
     #[test]
+    fn default_config_disables_thinking() {
+        // LlmConfig::default() must emit enable_thinking: false so that
+        // Gemma 4 / Qwen 3 server templates cannot silently enable reasoning mode.
+        let cfg = LlmConfig::default();
+        let kwargs = cfg
+            .extra_body
+            .get("chat_template_kwargs")
+            .expect("chat_template_kwargs must be present in default config");
+        assert_eq!(
+            kwargs["enable_thinking"],
+            serde_json::json!(false),
+            "default config must explicitly disable thinking to prevent latency surprises"
+        );
+    }
+
+    #[test]
     fn message_captures_reasoning_content_from_response() {
         let body = r#"{
             "id": "x",
@@ -777,13 +893,42 @@ mod tests {
     }
 
     #[test]
-    fn message_reasoning_content_round_trips_through_request() {
+    fn assistant_reasoning_content_stripped_from_request() {
+        // When an assistant message with reasoning_content is passed through
+        // the sanitization that LlmClient applies before every request, the
+        // outgoing ChatRequest body must not contain the thought block.
+        use crate::types::{ChatRequest, Role};
         let mut msg = Message::assistant("");
         msg.reasoning_content = Some("prior thought".to_string());
-        let serialized = serde_json::to_string(&msg).unwrap();
+
+        // Apply the same sanitization LlmClient uses in chat_with_options.
+        let sanitized: Vec<Message> = std::slice::from_ref(&msg)
+            .iter()
+            .map(|m| {
+                if m.role == Role::Assistant && m.reasoning_content.is_some() {
+                    Message {
+                        reasoning_content: None,
+                        ..m.clone()
+                    }
+                } else {
+                    m.clone()
+                }
+            })
+            .collect();
+
+        let extra = serde_json::Map::new();
+        let request = ChatRequest {
+            model: "test-model",
+            messages: &sanitized,
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            extra_body: &extra,
+        };
+        let serialized = serde_json::to_string(&request).unwrap();
         assert!(
-            serialized.contains("\"reasoning_content\":\"prior thought\""),
-            "reasoning_content must survive serialization for next-turn context"
+            !serialized.contains("reasoning_content"),
+            "reasoning_content must be absent from the outbound request body; got: {serialized}"
         );
     }
 
@@ -821,6 +966,62 @@ mod tests {
         assert!(
             matches!(&messages[1].content, Some(Content::Parts(parts)) if parts.len() >= 2),
             "VLM user message should contain text + image parts"
+        );
+    }
+
+    // ---- list_models parse tests (pure, no network) ----
+
+    /// Helper: call the parse logic of `list_models` against a fixture JSON body
+    /// without making a real HTTP request. Extracts the same logic by parsing
+    /// the body directly.
+    fn parse_models_response(body: &str) -> Result<Vec<String>> {
+        let json: serde_json::Value =
+            serde_json::from_str(body).map_err(|_| anyhow!("not valid JSON"))?;
+        let data = json["data"].as_array().ok_or_else(|| {
+            anyhow!("Response missing 'data' array; endpoint may not be OpenAI-compatible")
+        })?;
+        Ok(data
+            .iter()
+            .filter_map(|m| m["id"].as_str().map(String::from))
+            .collect())
+    }
+
+    #[test]
+    fn list_models_parses_openai_shaped_response_with_multiple_models() {
+        let body = r#"{
+            "object": "list",
+            "data": [
+                {"id": "ModelA-Q8_0.gguf", "object": "model"},
+                {"id": "ModelB-Q6_K.gguf", "object": "model"}
+            ]
+        }"#;
+        let ids = parse_models_response(body).unwrap();
+        assert_eq!(ids, vec!["ModelA-Q8_0.gguf", "ModelB-Q6_K.gguf"]);
+    }
+
+    #[test]
+    fn list_models_parses_single_model_response() {
+        let body = r#"{"data": [{"id": "only-model"}]}"#;
+        let ids = parse_models_response(body).unwrap();
+        assert_eq!(ids, vec!["only-model"]);
+    }
+
+    #[test]
+    fn list_models_returns_err_when_data_array_missing() {
+        let body = r#"{"object": "list", "models": []}"#;
+        let err = parse_models_response(body).unwrap_err();
+        assert!(
+            err.to_string().contains("'data' array"),
+            "error should mention missing data array, got: {err}"
+        );
+    }
+
+    #[test]
+    fn list_models_returns_err_for_non_json_body() {
+        let err = parse_models_response("not json at all").unwrap_err();
+        assert!(
+            err.to_string().contains("not valid JSON"),
+            "error should indicate invalid JSON, got: {err}"
         );
     }
 }
