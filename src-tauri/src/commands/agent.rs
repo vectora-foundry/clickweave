@@ -437,7 +437,7 @@ pub async fn run_agent(
         // Thinking is explicitly enabled: small agent models need a
         // reasoning pass to avoid pattern-matching salient literals from the
         // goal text into tool arguments.
-        let llm = clickweave_llm::LlmClient::new(agent_config.clone().with_thinking(true));
+        let llm = clickweave_llm::LlmClient::new(agent_config.clone().with_thinking(false));
         // Vision backend: reuse the agent endpoint (the user already has this
         // configured) with thinking disabled and a low token budget — the
         // post-done check only needs to emit YES/NO + a sentence. If the

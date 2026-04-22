@@ -67,8 +67,12 @@ pub struct LlmConfig {
     pub model: String,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
-    /// Extra provider-specific fields to include in the request body
-    /// (e.g. `{"chat_template_kwargs": {"enable_thinking": false}}`).
+    /// Extra provider-specific fields to include in the request body.
+    /// Defaults to `{"chat_template_kwargs": {"enable_thinking": false}}` — this is
+    /// not merely illustrative; it is the actual default. The explicit `false` is
+    /// required because server-side templates for Gemma 4 and Qwen 3 default to
+    /// reasoning mode ON, which would silently add ~15× latency for any caller
+    /// that constructs `LlmConfig::default()` without an explicit `.with_thinking()` chain.
     pub extra_body: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -93,7 +97,7 @@ impl LlmConfig {
 
 impl Default for LlmConfig {
     fn default() -> Self {
-        Self {
+        let base = Self {
             // LM Studio default
             base_url: "http://localhost:1234/v1".to_string(),
             api_key: None,
@@ -101,7 +105,11 @@ impl Default for LlmConfig {
             temperature: Some(0.7),
             max_tokens: Some(4096),
             extra_body: serde_json::Map::new(),
-        }
+        };
+        // Explicit `enable_thinking: false` so the server template default (which is ON
+        // for Gemma 4 / Qwen 3) cannot silently add latency to callers that forget to
+        // chain `.with_thinking(false)`.
+        base.with_thinking(false)
     }
 }
 
@@ -789,6 +797,22 @@ mod tests {
             .with_thinking(true);
         let kwargs = &cfg.extra_body["chat_template_kwargs"];
         assert_eq!(kwargs["enable_thinking"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn default_config_disables_thinking() {
+        // LlmConfig::default() must emit enable_thinking: false so that
+        // Gemma 4 / Qwen 3 server templates cannot silently enable reasoning mode.
+        let cfg = LlmConfig::default();
+        let kwargs = cfg
+            .extra_body
+            .get("chat_template_kwargs")
+            .expect("chat_template_kwargs must be present in default config");
+        assert_eq!(
+            kwargs["enable_thinking"],
+            serde_json::json!(false),
+            "default config must explicitly disable thinking to prevent latency surprises"
+        );
     }
 
     #[test]
