@@ -1,5 +1,5 @@
 /// Parsed response from upstream `cdp_find_elements`.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct CdpFindElementsResponse {
     #[serde(default)]
     pub page_url: String,
@@ -9,7 +9,7 @@ pub struct CdpFindElementsResponse {
     pub matches: Vec<CdpFindElementMatch>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct CdpFindElementMatch {
     pub uid: String,
     #[serde(default)]
