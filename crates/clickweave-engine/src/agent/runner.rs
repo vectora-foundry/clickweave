@@ -163,6 +163,45 @@ impl StateRunner {
         warnings
     }
 
+    /// Rewrite raw AX uid references in a workflow node into replay-stable
+    /// `AxTarget::Descriptor` payloads using the current
+    /// `last_native_ax_snapshot` body. Port of
+    /// `loop_runner.rs::enrich_ax_descriptor` — D15 moves the source of
+    /// truth off the transcript onto `WorldModel`.
+    ///
+    /// No-op when no native AX snapshot has been captured yet, when the
+    /// node type is not an AX dispatch variant, when the target is already
+    /// a `Descriptor`, or when the uid is not present in the snapshot.
+    pub fn enrich_ax_descriptor(&self, node_type: &mut clickweave_core::NodeType) {
+        use clickweave_core::{AxTarget, NodeType};
+
+        let Some(ax) = &self.world_model.last_native_ax_snapshot else {
+            return;
+        };
+
+        let target: &mut AxTarget = match node_type {
+            NodeType::AxClick(p) => &mut p.target,
+            NodeType::AxSetValue(p) => &mut p.target,
+            NodeType::AxSelect(p) => &mut p.target,
+            _ => return,
+        };
+
+        let uid = match target {
+            AxTarget::ResolvedUid(uid) if !uid.is_empty() => uid.clone(),
+            _ => return,
+        };
+
+        let parsed = crate::agent::world_model::parse_ax_snapshot(&ax.value.ax_tree_text);
+        let Some(entry) = parsed.into_iter().find(|e| e.uid == uid) else {
+            return;
+        };
+        *target = AxTarget::Descriptor {
+            role: entry.role,
+            name: entry.name.unwrap_or_default(),
+            parent_name: entry.parent_name,
+        };
+    }
+
     /// After a successful tool call, refresh the world model's identity
     /// fields that the tool just captured. Non-snapshot tools are no-ops.
     pub fn update_continuity_after_tool_success(&mut self, tool_name: &str, body: &str) {
@@ -360,6 +399,144 @@ mod continuity_tests {
         r.update_continuity_after_tool_success("cdp_click", "ok");
         assert!(r.world_model.last_native_ax_snapshot.is_none());
         assert!(r.world_model.last_screenshot.is_none());
+    }
+}
+
+#[cfg(test)]
+mod ax_enrichment_tests {
+    use super::*;
+    use clickweave_core::{
+        AxClickParams, AxSelectParams, AxSetValueParams, AxTarget, McpToolCallParams, NodeType,
+    };
+
+    fn runner_with_snapshot(body: &str) -> StateRunner {
+        use crate::agent::world_model::{AxSnapshotData, Fresh, FreshnessSource};
+        let mut r = StateRunner::new_for_test("g".to_string());
+        r.world_model.last_native_ax_snapshot = Some(Fresh {
+            value: AxSnapshotData {
+                snapshot_id: "a1g1".to_string(),
+                element_count: 3,
+                captured_at_step: 0,
+                ax_tree_text: body.to_string(),
+            },
+            written_at: 0,
+            source: FreshnessSource::DirectObservation,
+            ttl_steps: None,
+        });
+        r
+    }
+
+    #[test]
+    fn enrich_ax_click_resolved_uid_to_descriptor() {
+        let r = runner_with_snapshot("uid=a5g2 AXButton \"Continue\"\n");
+        let mut nt = NodeType::AxClick(AxClickParams {
+            target: AxTarget::ResolvedUid("a5g2".into()),
+            ..Default::default()
+        });
+        r.enrich_ax_descriptor(&mut nt);
+        match nt {
+            NodeType::AxClick(p) => assert_eq!(
+                p.target,
+                AxTarget::Descriptor {
+                    role: "AXButton".into(),
+                    name: "Continue".into(),
+                    parent_name: None,
+                }
+            ),
+            _ => panic!("expected AxClick"),
+        }
+    }
+
+    #[test]
+    fn upgrade_preserves_parent_name_for_outline_rows() {
+        // NSOutlineView rows often share (role, name) across sections, so
+        // the parent anchor is what makes the descriptor unambiguous.
+        let snapshot = concat!(
+            "uid=a1g1 AXOutline \"Sidebar\"\n",
+            "  uid=a2g1 AXGroup \"Network\"\n",
+            "    uid=a3g1 AXRow \"Wi-Fi\"\n",
+        );
+        let r = runner_with_snapshot(snapshot);
+        let mut nt = NodeType::AxSelect(AxSelectParams {
+            target: AxTarget::ResolvedUid("a3g1".into()),
+            ..Default::default()
+        });
+        r.enrich_ax_descriptor(&mut nt);
+        match nt {
+            NodeType::AxSelect(p) => assert_eq!(
+                p.target,
+                AxTarget::Descriptor {
+                    role: "AXRow".into(),
+                    name: "Wi-Fi".into(),
+                    parent_name: Some("Network".into()),
+                }
+            ),
+            _ => panic!("expected AxSelect"),
+        }
+    }
+
+    #[test]
+    fn enrich_preserves_value_on_ax_set_value() {
+        let r = runner_with_snapshot("uid=a10g1 AXTextField \"Email\"\n");
+        let mut nt = NodeType::AxSetValue(AxSetValueParams {
+            target: AxTarget::ResolvedUid("a10g1".into()),
+            value: "preserved".into(),
+            ..Default::default()
+        });
+        r.enrich_ax_descriptor(&mut nt);
+        match nt {
+            NodeType::AxSetValue(p) => {
+                assert_eq!(p.value, "preserved");
+                assert_eq!(
+                    p.target,
+                    AxTarget::Descriptor {
+                        role: "AXTextField".into(),
+                        name: "Email".into(),
+                        parent_name: None,
+                    }
+                );
+            }
+            _ => panic!("expected AxSetValue"),
+        }
+    }
+
+    #[test]
+    fn enrich_is_noop_when_uid_not_in_snapshot() {
+        let r = runner_with_snapshot("uid=a1g1 AXButton \"Other\"\n");
+        let mut nt = NodeType::AxClick(AxClickParams {
+            target: AxTarget::ResolvedUid("a99g9".into()),
+            ..Default::default()
+        });
+        r.enrich_ax_descriptor(&mut nt);
+        match nt {
+            NodeType::AxClick(p) => assert_eq!(p.target, AxTarget::ResolvedUid("a99g9".into())),
+            _ => panic!("expected AxClick"),
+        }
+    }
+
+    #[test]
+    fn enrich_is_noop_for_non_ax_nodes() {
+        let r = runner_with_snapshot("uid=a1g1 AXButton \"X\"\n");
+        let mut nt = NodeType::McpToolCall(McpToolCallParams {
+            tool_name: "click".into(),
+            arguments: serde_json::json!({}),
+        });
+        r.enrich_ax_descriptor(&mut nt);
+        assert!(matches!(nt, NodeType::McpToolCall(_)));
+    }
+
+    #[test]
+    fn enrich_is_noop_when_no_snapshot_captured() {
+        let r = StateRunner::new_for_test("g".to_string());
+        let mut nt = NodeType::AxClick(AxClickParams {
+            target: AxTarget::ResolvedUid("a5g2".into()),
+            ..Default::default()
+        });
+        r.enrich_ax_descriptor(&mut nt);
+        match nt {
+            NodeType::AxClick(p) => assert_eq!(p.target, AxTarget::ResolvedUid("a5g2".into())),
+            _ => panic!("expected AxClick"),
+        }
     }
 }
 

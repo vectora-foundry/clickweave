@@ -69,6 +69,11 @@ pub struct AxElement {
     pub depth: u32,
     pub focused: bool,
     pub disabled: bool,
+    /// Name of the nearest named ancestor (by indentation depth). Used by
+    /// `StateRunner::enrich_ax_descriptor` to rewrite raw AX uids into
+    /// replay-stable `AxTarget::Descriptor` payloads where the parent
+    /// anchor disambiguates common (role, name) pairs such as outline rows.
+    pub parent_name: Option<String>,
 }
 
 /// Parsed OCR match from `find_text` responses.
@@ -392,12 +397,33 @@ fn parse_window_list(body: &str) -> Result<Vec<WindowRef>, String> {
 
 /// Parse native `take_ax_snapshot` text output into structured `AxElement`s.
 /// The format is documented in `native-devtools-mcp/src/tools/ax_snapshot.rs::format_snapshot`.
+///
+/// Walks an ancestor stack keyed on indentation depth so each element's
+/// `parent_name` is the `name` of the nearest preceding line one depth
+/// shallower that carried a non-empty name. Mirrors the derivation in
+/// `crate::executor::deterministic::ax::parse_ax_snapshot`.
 pub fn parse_ax_snapshot(text: &str) -> Vec<AxElement> {
     let mut out = Vec::new();
+    let mut ancestor_stack: Vec<(u32, String)> = Vec::new();
     for line in text.lines() {
-        if let Some(el) = parse_ax_line(line) {
-            out.push(el);
+        let Some(mut el) = parse_ax_line(line) else {
+            continue;
+        };
+        // Drop ancestors at the same depth or deeper.
+        while let Some((d, _)) = ancestor_stack.last() {
+            if *d >= el.depth {
+                ancestor_stack.pop();
+            } else {
+                break;
+            }
         }
+        el.parent_name = ancestor_stack.last().map(|(_, n)| n.clone());
+        if let Some(name) = el.name.clone()
+            && !name.is_empty()
+        {
+            ancestor_stack.push((el.depth, name));
+        }
+        out.push(el);
     }
     out
 }
@@ -462,6 +488,7 @@ fn parse_ax_line(line: &str) -> Option<AxElement> {
         depth,
         focused,
         disabled,
+        parent_name: None,
     })
 }
 
@@ -641,6 +668,30 @@ mod tests {
         let parsed = parse_ax_snapshot(text);
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].role, "button");
+    }
+
+    #[test]
+    fn parse_ax_snapshot_derives_parent_name_from_indentation() {
+        let text = "\
+uid=a1g1 list \"Networks\"
+  uid=a2g1 row \"Wi-Fi\"
+    uid=a3g1 textbox \"Password\"
+";
+        let parsed = parse_ax_snapshot(text);
+        assert_eq!(parsed[0].parent_name, None); // root
+        assert_eq!(parsed[1].parent_name.as_deref(), Some("Networks"));
+        assert_eq!(parsed[2].parent_name.as_deref(), Some("Wi-Fi"));
+    }
+
+    #[test]
+    fn parse_ax_snapshot_parent_name_skips_unnamed_ancestor() {
+        let text = "\
+uid=a1g1 generic
+  uid=a2g1 button \"Submit\"
+";
+        let parsed = parse_ax_snapshot(text);
+        // Ancestor had no name; children get None.
+        assert_eq!(parsed[1].parent_name, None);
     }
 
     #[test]
