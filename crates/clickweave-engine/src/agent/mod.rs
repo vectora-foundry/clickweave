@@ -10,6 +10,7 @@ mod recovery;
 mod task_state;
 mod transition;
 mod types;
+mod world_model;
 
 pub use loop_runner::{AgentRunner, ApprovalGate};
 pub use permissions::{PermissionAction, PermissionPolicy, PermissionRule, ToolAnnotations};
