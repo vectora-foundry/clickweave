@@ -21,6 +21,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
+async-trait = "0.1"
 thiserror = "2.0"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 tokio = { version = "1.0", features = ["full"] }

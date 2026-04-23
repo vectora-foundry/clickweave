@@ -215,6 +215,181 @@ impl WorldModel {
     }
 }
 
+/// Minimal MCP surface the world model's refresh path needs. Implemented by
+/// the runner against the real `McpClient`; stubbed in unit tests.
+#[async_trait::async_trait]
+pub trait WorldModelObserver: Send + Sync {
+    /// Run an MCP observation tool and return its text body. `Ok(None)` when
+    /// the tool is not available in the current MCP session (e.g. CDP not
+    /// attached, AX permissions denied). `Err` for hard failures.
+    async fn observe(
+        &self,
+        tool_name: &str,
+        args: serde_json::Value,
+    ) -> Result<Option<String>, String>;
+}
+
+impl WorldModel {
+    /// Re-fetch invalid fields via the observer. Never fails hard: partial
+    /// failures elevate uncertainty but leave other fields reachable.
+    ///
+    /// Tool selection:
+    /// - `elements`: try `cdp_find_elements` first; fall back to
+    ///   `take_ax_snapshot` when the observer returns `Ok(None)`.
+    /// - `focused_app`: parse from `list_apps` (the row with `focused=true`).
+    /// - `window_list`: parse from `list_windows`.
+    /// - `modal_present` / `dialog_present` are inferred by the runner at
+    ///   dispatch time, not refreshed directly here.
+    pub async fn refresh_invalid_fields<O: WorldModelObserver + ?Sized>(
+        &mut self,
+        obs: &O,
+        step_index: usize,
+    ) -> Result<(), String> {
+        // P2.H1: try CDP first; fall back to AX when CDP is not attached in
+        // this MCP session (observer returns Ok(None)).
+        if self.elements.is_none() {
+            let try_result = obs
+                .observe(
+                    "cdp_find_elements",
+                    serde_json::json!({ "query": "", "max_results": 300 }),
+                )
+                .await;
+            match try_result {
+                Ok(Some(body)) => match serde_json::from_str::<
+                    clickweave_core::cdp::CdpFindElementsResponse,
+                >(&body)
+                {
+                    Ok(resp) => {
+                        let els: Vec<ObservedElement> =
+                            resp.matches.into_iter().map(ObservedElement::Cdp).collect();
+                        self.elements = Some(Fresh {
+                            value: els,
+                            written_at: step_index,
+                            source: FreshnessSource::DirectObservation,
+                            ttl_steps: Some(2),
+                        });
+                    }
+                    Err(_) => {
+                        self.uncertainty.score = (self.uncertainty.score + 0.1).min(1.0);
+                        self.uncertainty
+                            .reasons
+                            .push("cdp_find_elements parse failed".to_string());
+                    }
+                },
+                Ok(None) => {
+                    // CDP unavailable — try AX.
+                    match obs.observe("take_ax_snapshot", serde_json::json!({})).await {
+                        Ok(Some(body)) => {
+                            let parsed = parse_ax_snapshot(&body);
+                            let els: Vec<ObservedElement> =
+                                parsed.into_iter().map(ObservedElement::Ax).collect();
+                            self.elements = Some(Fresh {
+                                value: els,
+                                written_at: step_index,
+                                source: FreshnessSource::DirectObservation,
+                                ttl_steps: Some(2),
+                            });
+                        }
+                        Ok(None) => {
+                            self.uncertainty.score = (self.uncertainty.score + 0.1).min(1.0);
+                            self.uncertainty
+                                .reasons
+                                .push("neither CDP nor AX available".to_string());
+                        }
+                        Err(e) => {
+                            self.uncertainty.score = (self.uncertainty.score + 0.15).min(1.0);
+                            self.uncertainty
+                                .reasons
+                                .push(format!("take_ax_snapshot: {}", e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.uncertainty.score = (self.uncertainty.score + 0.15).min(1.0);
+                    self.uncertainty
+                        .reasons
+                        .push(format!("cdp_find_elements: {}", e));
+                }
+            }
+        }
+
+        if self.focused_app.is_none()
+            && let Ok(Some(body)) = obs.observe("list_apps", serde_json::json!({})).await
+            && let Ok(focused) = parse_focused_app_from_list(&body)
+        {
+            self.focused_app = Some(Fresh {
+                value: focused,
+                written_at: step_index,
+                source: FreshnessSource::DirectObservation,
+                ttl_steps: Some(4),
+            });
+        }
+        if self.window_list.is_none()
+            && let Ok(Some(body)) = obs.observe("list_windows", serde_json::json!({})).await
+            && let Ok(wins) = parse_window_list(&body)
+        {
+            self.window_list = Some(Fresh {
+                value: wins,
+                written_at: step_index,
+                source: FreshnessSource::DirectObservation,
+                ttl_steps: Some(4),
+            });
+        }
+
+        Ok(())
+    }
+}
+
+/// Parse `list_apps` output into a `FocusedApp`. Shape mirrors the live
+/// probe path in `loop_runner.rs`.
+fn parse_focused_app_from_list(body: &str) -> Result<FocusedApp, String> {
+    #[derive(serde::Deserialize)]
+    struct AppRow {
+        name: String,
+        #[serde(default)]
+        kind: String,
+        pid: i32,
+        #[serde(default)]
+        focused: bool,
+    }
+    let rows: Vec<AppRow> =
+        serde_json::from_str(body).map_err(|e| format!("list_apps parse: {}", e))?;
+    let focused = rows
+        .into_iter()
+        .find(|r| r.focused)
+        .ok_or_else(|| "no focused app in list_apps output".to_string())?;
+    let kind = match focused.kind.as_str() {
+        "ElectronApp" | "electron_app" => AppKind::ElectronApp,
+        "ChromeBrowser" | "chrome_browser" => AppKind::ChromeBrowser,
+        _ => AppKind::Native,
+    };
+    Ok(FocusedApp {
+        name: focused.name,
+        kind,
+        pid: focused.pid,
+    })
+}
+
+/// Parse `list_windows` output into `Vec<WindowRef>`.
+fn parse_window_list(body: &str) -> Result<Vec<WindowRef>, String> {
+    #[derive(serde::Deserialize)]
+    struct WinRow {
+        app_name: String,
+        title: String,
+        pid: i32,
+    }
+    let rows: Vec<WinRow> =
+        serde_json::from_str(body).map_err(|e| format!("list_windows parse: {}", e))?;
+    Ok(rows
+        .into_iter()
+        .map(|w| WindowRef {
+            app_name: w.app_name,
+            title: w.title,
+            pid: w.pid,
+        })
+        .collect())
+}
+
 /// Parse native `take_ax_snapshot` text output into structured `AxElement`s.
 /// The format is documented in `native-devtools-mcp/src/tools/ax_snapshot.rs::format_snapshot`.
 pub fn parse_ax_snapshot(text: &str) -> Vec<AxElement> {
@@ -491,5 +666,102 @@ mod tests {
     fn parse_ocr_matches_rejects_malformed_json() {
         let bad = "not json";
         assert!(parse_ocr_matches(bad).is_err());
+    }
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::*;
+    use async_trait::async_trait;
+
+    struct StubObserver;
+
+    #[async_trait]
+    impl WorldModelObserver for StubObserver {
+        async fn observe(
+            &self,
+            tool_name: &str,
+            _args: serde_json::Value,
+        ) -> Result<Option<String>, String> {
+            match tool_name {
+                "cdp_find_elements" => Ok(Some(
+                    r#"{"page_url":"https://example.com/","source":"cdp","matches":[{"uid":"d1","role":"button","label":"OK","tag":"button"}]}"#
+                        .to_string(),
+                )),
+                "take_ax_snapshot" => Ok(Some("uid=a1g1 button \"OK\"".to_string())),
+                _ => Ok(None),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_repopulates_elements_via_cdp_when_available() {
+        // P2.H1: CDP availability is signaled by the observer returning
+        // Ok(Some(_)) from cdp_find_elements. The observer is the
+        // authoritative source for "CDP is currently attached".
+        let mut wm = WorldModel::default();
+        wm.apply_events(vec![InvalidationEvent::CdpNavigation {
+            new_url: "https://example.com/".to_string(),
+        }]);
+        let obs = StubObserver;
+        wm.refresh_invalid_fields(&obs, 1).await.unwrap();
+        let els = wm.elements.as_ref().unwrap();
+        assert!(
+            matches!(els.value.first(), Some(ObservedElement::Cdp(_))),
+            "elements must be repopulated via CDP path when the observer returns a CDP body"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_falls_back_to_ax_when_cdp_returns_none() {
+        struct AxOnlyObserver;
+        #[async_trait]
+        impl WorldModelObserver for AxOnlyObserver {
+            async fn observe(
+                &self,
+                tool_name: &str,
+                _args: serde_json::Value,
+            ) -> Result<Option<String>, String> {
+                match tool_name {
+                    "cdp_find_elements" => Ok(None),
+                    "take_ax_snapshot" => Ok(Some("uid=a1g1 button \"OK\"".to_string())),
+                    _ => Ok(None),
+                }
+            }
+        }
+        let mut wm = WorldModel::default();
+        // `elements` is already None in Default; refresh should still fill it.
+        wm.refresh_invalid_fields(&AxOnlyObserver, 1).await.unwrap();
+        let els = wm.elements.as_ref().unwrap();
+        assert!(
+            matches!(els.value.first(), Some(ObservedElement::Ax(_))),
+            "expected AX fallback when cdp_find_elements returns None"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_failure_elevates_uncertainty_but_does_not_panic() {
+        struct FailObserver;
+        #[async_trait]
+        impl WorldModelObserver for FailObserver {
+            async fn observe(
+                &self,
+                _tool_name: &str,
+                _args: serde_json::Value,
+            ) -> Result<Option<String>, String> {
+                Err("mcp unavailable".to_string())
+            }
+        }
+        let mut wm = WorldModel::default();
+        wm.apply_events(vec![InvalidationEvent::CdpNavigation {
+            new_url: String::new(),
+        }]);
+        let before = wm.uncertainty.score;
+        let res = wm.refresh_invalid_fields(&FailObserver, 1).await;
+        assert!(
+            res.is_ok(),
+            "refresh must not surface error — returns Ok and elevates uncertainty"
+        );
+        assert!(wm.uncertainty.score > before);
     }
 }
