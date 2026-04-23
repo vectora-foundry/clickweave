@@ -148,6 +148,68 @@ impl StateRunner {
             && self.task_state.subgoal_stack.is_empty()
             && self.task_state.watch_slots.is_empty()
     }
+
+    /// Apply the batch of task-state mutations from an `AgentTurn`, in
+    /// order. Invalid mutations become warnings but do not abort the pass —
+    /// subsequent mutations and the action still run. Matches the
+    /// error-path table in the spec.
+    pub fn apply_mutations(&mut self, muts: &[TaskStateMutation]) -> Vec<String> {
+        let mut warnings = Vec::new();
+        for m in muts {
+            if let Err(e) = self.task_state.apply(m, self.step_index) {
+                warnings.push(format!("{}", e));
+            }
+        }
+        warnings
+    }
+
+    /// After a successful tool call, refresh the world model's identity
+    /// fields that the tool just captured. Non-snapshot tools are no-ops.
+    pub fn update_continuity_after_tool_success(&mut self, tool_name: &str, body: &str) {
+        use crate::agent::world_model::{
+            AxSnapshotData, Fresh, FreshnessSource, ScreenshotRef, parse_ax_snapshot,
+        };
+        match tool_name {
+            "take_ax_snapshot" => {
+                let parsed = parse_ax_snapshot(body);
+                let snapshot_id = parsed
+                    .first()
+                    .map(|e| e.uid.clone())
+                    .unwrap_or_else(|| format!("ax-{}", self.step_index));
+                self.world_model.last_native_ax_snapshot = Some(Fresh {
+                    value: AxSnapshotData {
+                        snapshot_id,
+                        element_count: parsed.len(),
+                        captured_at_step: self.step_index,
+                        ax_tree_text: body.to_string(),
+                    },
+                    written_at: self.step_index,
+                    source: FreshnessSource::DirectObservation,
+                    ttl_steps: Some(8),
+                });
+            }
+            "take_screenshot" => {
+                let id = serde_json::from_str::<serde_json::Value>(body)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("screenshot_id")
+                            .and_then(|s| s.as_str())
+                            .map(String::from)
+                    })
+                    .unwrap_or_else(|| format!("ss-{}", self.step_index));
+                self.world_model.last_screenshot = Some(Fresh {
+                    value: ScreenshotRef {
+                        screenshot_id: id,
+                        captured_at_step: self.step_index,
+                    },
+                    written_at: self.step_index,
+                    source: FreshnessSource::DirectObservation,
+                    ttl_steps: Some(8),
+                });
+            }
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -217,6 +279,87 @@ mod cache_gate_tests {
         r.consecutive_errors = 1;
         r.observe();
         assert!(!r.is_replay_eligible());
+    }
+}
+
+#[cfg(test)]
+mod turn_application_tests {
+    use super::*;
+    use crate::agent::task_state::TaskStateMutation;
+
+    #[test]
+    fn mutations_apply_in_order_before_action() {
+        let mut r = StateRunner::new_for_test("g".to_string());
+        let turn = AgentTurn {
+            mutations: vec![
+                TaskStateMutation::PushSubgoal {
+                    text: "a".to_string(),
+                },
+                TaskStateMutation::PushSubgoal {
+                    text: "b".to_string(),
+                },
+            ],
+            action: AgentAction::AgentDone {
+                summary: "done".to_string(),
+            },
+        };
+        let warnings = r.apply_mutations(&turn.mutations);
+        assert!(warnings.is_empty());
+        assert_eq!(r.task_state.subgoal_stack.len(), 2);
+        assert_eq!(r.task_state.subgoal_stack[1].text, "b");
+    }
+
+    #[test]
+    fn invalid_mutation_produces_warning_but_others_still_apply() {
+        let mut r = StateRunner::new_for_test("g".to_string());
+        let muts = vec![
+            TaskStateMutation::PushSubgoal {
+                text: "a".to_string(),
+            },
+            TaskStateMutation::RefuteHypothesis { index: 99 },
+            TaskStateMutation::PushSubgoal {
+                text: "b".to_string(),
+            },
+        ];
+        let warnings = r.apply_mutations(&muts);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(r.task_state.subgoal_stack.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod continuity_tests {
+    use super::*;
+
+    #[test]
+    fn take_ax_snapshot_success_populates_last_native_ax_snapshot() {
+        let mut r = StateRunner::new_for_test("g".to_string());
+        r.step_index = 5;
+        let body = "uid=a1g3 button \"OK\"\n  uid=a2g3 textbox";
+        r.update_continuity_after_tool_success("take_ax_snapshot", body);
+        let ax = r.world_model.last_native_ax_snapshot.as_ref().unwrap();
+        assert_eq!(ax.value.captured_at_step, 5);
+        assert!(ax.value.element_count >= 2);
+        assert!(ax.value.ax_tree_text.contains("uid=a1g3"));
+    }
+
+    #[test]
+    fn take_screenshot_success_populates_last_screenshot_ref() {
+        let mut r = StateRunner::new_for_test("g".to_string());
+        r.step_index = 4;
+        let body = r#"{"screenshot_id":"ss-abc","width":1440,"height":900}"#;
+        r.update_continuity_after_tool_success("take_screenshot", body);
+        let s = r.world_model.last_screenshot.as_ref().unwrap();
+        assert_eq!(s.value.screenshot_id, "ss-abc");
+        assert_eq!(s.value.captured_at_step, 4);
+    }
+
+    #[test]
+    fn non_snapshot_tool_does_not_touch_continuity() {
+        let mut r = StateRunner::new_for_test("g".to_string());
+        r.update_continuity_after_tool_success("cdp_click", "ok");
+        assert!(r.world_model.last_native_ax_snapshot.is_none());
+        assert!(r.world_model.last_screenshot.is_none());
     }
 }
 
