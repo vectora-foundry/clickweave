@@ -12,7 +12,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::task_state::TaskStateMutation;
+use crate::agent::phase::{self, PhaseSignals};
+use crate::agent::task_state::{TaskState, TaskStateMutation};
+use crate::agent::types::{AgentCache, AgentConfig, AgentState};
+use crate::agent::world_model::{InvalidationEvent, WorldModel};
 
 /// The one action an `AgentTurn` must carry (D10).
 ///
@@ -40,6 +43,119 @@ pub enum AgentAction {
 pub struct AgentTurn {
     pub mutations: Vec<TaskStateMutation>,
     pub action: AgentAction,
+}
+
+/// State-spine runner. Owns the harness-side `WorldModel` + `TaskState` and
+/// drives a single-pass ReAct loop: observe -> render -> decide -> apply ->
+/// dispatch -> continuity -> invalidate.
+///
+/// Phase 2c: the struct carries a superset of fields — the minimum the new
+/// control loop exercises plus the "compatibility fields" the Phase 3 cutover
+/// needs to preserve the existing `run_agent_workflow` seam
+/// (`(AgentState, AgentCache)` tuple). Fields the live Phase 2c tests don't
+/// touch are covered by the module-wide `#![allow(dead_code)]`.
+pub struct StateRunner {
+    // --- Core state-spine fields ---
+    pub world_model: WorldModel,
+    pub task_state: TaskState,
+    pub step_index: usize,
+    pub consecutive_errors: usize,
+    pub last_replan_step: Option<usize>,
+    pub pending_events: Vec<InvalidationEvent>,
+
+    // --- Compatibility fields (P2.H4) ---
+    // Carried so the Phase 3 cutover can swap the public seam without
+    // silently dropping what callers rely on today.
+    pub config: AgentConfig,
+    pub state: AgentState,
+    pub workflow: clickweave_core::Workflow,
+    pub cache: AgentCache,
+    pub last_node_id: Option<uuid::Uuid>,
+    pub recent_destructive_tools: Vec<String>,
+
+    // --- Collaborators (builder-style) ---
+    pub storage: Option<std::sync::Arc<std::sync::Mutex<clickweave_core::storage::RunStorage>>>,
+    pub run_id: uuid::Uuid,
+}
+
+impl StateRunner {
+    pub fn new(goal: String, config: AgentConfig) -> Self {
+        let workflow = clickweave_core::Workflow::default();
+        let state = AgentState::new(workflow.clone());
+        Self {
+            world_model: WorldModel::default(),
+            task_state: TaskState::new(goal),
+            step_index: 0,
+            consecutive_errors: 0,
+            last_replan_step: None,
+            pending_events: Vec::new(),
+            config,
+            state,
+            workflow,
+            cache: AgentCache::default(),
+            last_node_id: None,
+            recent_destructive_tools: Vec::new(),
+            storage: None,
+            run_id: uuid::Uuid::new_v4(),
+        }
+    }
+
+    pub fn with_cache(mut self, cache: AgentCache) -> Self {
+        self.cache = cache;
+        self
+    }
+
+    pub fn with_run_id(mut self, run_id: uuid::Uuid) -> Self {
+        self.run_id = run_id;
+        self
+    }
+
+    /// Consume the runner and return `(AgentState, AgentCache)` — matches the
+    /// existing `run_agent_workflow` seam so the Tauri call site keeps
+    /// working without a public-surface change at cutover.
+    pub fn into_state_and_cache(self) -> (AgentState, AgentCache) {
+        (self.state, self.cache)
+    }
+
+    #[cfg(test)]
+    pub fn new_for_test(goal: String) -> Self {
+        Self::new(goal, AgentConfig::default())
+    }
+
+    pub fn queue_invalidation(&mut self, e: InvalidationEvent) {
+        self.pending_events.push(e);
+    }
+
+    /// Apply any pending invalidation events and re-infer the phase from
+    /// structural signals.
+    pub fn observe(&mut self) {
+        let events = std::mem::take(&mut self.pending_events);
+        self.world_model.apply_events(events);
+        self.task_state.phase = phase::infer(&PhaseSignals {
+            stack_depth: self.task_state.subgoal_stack.len(),
+            consecutive_errors: self.consecutive_errors,
+            last_replan_step: self.last_replan_step,
+            current_step: self.step_index,
+        });
+    }
+}
+
+#[cfg(test)]
+mod observe_tests {
+    use super::*;
+
+    #[test]
+    fn observe_applies_pending_events_and_infers_phase() {
+        let mut runner = StateRunner::new_for_test("goal".to_string());
+        runner.queue_invalidation(InvalidationEvent::FocusChanging {
+            tool: "launch_app".to_string(),
+        });
+        runner.observe();
+        assert_eq!(
+            runner.task_state.phase,
+            crate::agent::phase::Phase::Exploring
+        );
+    }
 }
 
 #[cfg(test)]
