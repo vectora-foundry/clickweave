@@ -138,6 +138,16 @@ impl StateRunner {
             current_step: self.step_index,
         });
     }
+
+    /// Whether the step is eligible to be served from `AgentCache` without
+    /// asking the LLM (D17). Only in `Phase::Exploring` with an empty
+    /// subgoal stack and no active watch slots — anything else means the
+    /// LLM has in-flight intent that a cached decision would clobber.
+    pub fn is_replay_eligible(&self) -> bool {
+        self.task_state.phase == crate::agent::phase::Phase::Exploring
+            && self.task_state.subgoal_stack.is_empty()
+            && self.task_state.watch_slots.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -155,6 +165,58 @@ mod observe_tests {
             runner.task_state.phase,
             crate::agent::phase::Phase::Exploring
         );
+    }
+}
+
+#[cfg(test)]
+mod cache_gate_tests {
+    use super::*;
+    use crate::agent::task_state::{TaskStateMutation, WatchSlotName};
+
+    #[test]
+    fn replay_eligible_only_in_exploring_with_empty_state() {
+        let mut r = StateRunner::new_for_test("g".to_string());
+        r.observe();
+        assert!(r.is_replay_eligible());
+    }
+
+    #[test]
+    fn replay_not_eligible_with_active_subgoal() {
+        let mut r = StateRunner::new_for_test("g".to_string());
+        r.task_state
+            .apply(
+                &TaskStateMutation::PushSubgoal {
+                    text: "x".to_string(),
+                },
+                1,
+            )
+            .unwrap();
+        r.observe();
+        assert!(!r.is_replay_eligible());
+    }
+
+    #[test]
+    fn replay_not_eligible_with_active_watch_slot() {
+        let mut r = StateRunner::new_for_test("g".to_string());
+        r.task_state
+            .apply(
+                &TaskStateMutation::SetWatchSlot {
+                    name: WatchSlotName::PendingModal,
+                    note: "n".to_string(),
+                },
+                1,
+            )
+            .unwrap();
+        r.observe();
+        assert!(!r.is_replay_eligible());
+    }
+
+    #[test]
+    fn replay_not_eligible_when_recovering() {
+        let mut r = StateRunner::new_for_test("g".to_string());
+        r.consecutive_errors = 1;
+        r.observe();
+        assert!(!r.is_replay_eligible());
     }
 }
 
