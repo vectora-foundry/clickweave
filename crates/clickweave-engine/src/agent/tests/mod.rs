@@ -538,6 +538,7 @@ async fn agent_state_reports_max_errors_reason() {
         use_cache: false,
         consecutive_destructive_cap: 0,
         allow_focus_window: true,
+        ..AgentConfig::default()
     };
 
     let mut runner = AgentRunner::new(&agent_llm, config);
@@ -627,6 +628,7 @@ async fn agent_state_reports_loop_detected_on_identical_repeat_failure() {
         use_cache: false,
         consecutive_destructive_cap: 0,
         allow_focus_window: true,
+        ..AgentConfig::default()
     };
 
     let mut runner = AgentRunner::new(&agent_llm, config);

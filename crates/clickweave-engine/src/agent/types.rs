@@ -146,6 +146,14 @@ pub struct AgentConfig {
     /// coordinate-based tools that genuinely need focus, the returned
     /// skip message nudges it toward AX / CDP dispatch instead.
     pub allow_focus_window: bool,
+    /// Maximum elements to render in the state block (D19).
+    /// Defaults to 300 to match `cdp_find_elements { max_results: 300 }`.
+    pub state_block_max_elements: usize,
+    /// Recent-N window for compaction (D12).
+    pub recent_n: usize,
+    /// Uncertainty threshold above which the state block marks fields
+    /// as "?" rather than rendering their nominal value (D14).
+    pub uncertainty_threshold: f32,
 }
 
 impl Default for AgentConfig {
@@ -157,6 +165,9 @@ impl Default for AgentConfig {
             use_cache: true,
             consecutive_destructive_cap: DEFAULT_CONSECUTIVE_DESTRUCTIVE_CAP,
             allow_focus_window: true,
+            state_block_max_elements: 300,
+            recent_n: 6,
+            uncertainty_threshold: 0.75,
         }
     }
 }
