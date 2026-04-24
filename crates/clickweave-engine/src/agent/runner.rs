@@ -283,6 +283,22 @@ impl StateRunner {
         &self.cdp_state
     }
 
+    /// Test-only entry point into the selected-page snapshot helper so
+    /// the agent-vs-executor parity suite can exercise exactly the code
+    /// path the live run would hit, rather than poking fields. Ported
+    /// from `AgentRunner::snapshot_selected_page_url_for_test`
+    /// (`loop_runner.rs:373`) for 3a.7.a test migration.
+    #[cfg(test)]
+    pub(crate) async fn snapshot_selected_page_url_for_test(
+        &mut self,
+        app_name: &str,
+        pid: i32,
+        mcp: &(impl crate::executor::Mcp + ?Sized),
+    ) {
+        crate::cdp_lifecycle::snapshot_selected_page_url(mcp, &mut self.cdp_state, app_name, pid)
+            .await;
+    }
+
     pub fn queue_invalidation(&mut self, e: InvalidationEvent) {
         self.pending_events.push(e);
     }
@@ -2621,7 +2637,10 @@ impl StateRunner {
 
                     self.state.completed = true;
                     self.state.summary = Some(summary.clone());
-                    self.state.terminal_reason = Some(TerminalReason::Completed { summary });
+                    self.state.terminal_reason = Some(TerminalReason::Completed {
+                        summary: summary.clone(),
+                    });
+                    self.emit_event(AgentEvent::GoalComplete { summary }).await;
                     break;
                 }
                 TurnOutcome::Replan { reason } => {
