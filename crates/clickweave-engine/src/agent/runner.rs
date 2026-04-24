@@ -2244,14 +2244,19 @@ impl StateRunner {
             let elements = self.fetch_elements(mcp).await;
 
             // Mirror the observation into the world model so the state
-            // block renderer can print the interactive-element surface.
-            // Without this the renderer's `wm.elements` branch never
-            // fires and the LLM loses its per-turn uid/label vocabulary.
-            // CDP-only: native AX elements are surfaced through the
-            // `take_ax_snapshot` tool-result body (no runner plumbing),
-            // and OCR / AX trees are published by dedicated paths.
+            // block renderer can print the interactive-element surface
+            // and the current CDP page context. Without this the
+            // renderer's `wm.elements` / `wm.cdp_page` branches never
+            // fire and the LLM loses its per-turn uid/label vocabulary
+            // and page URL. CDP-only: native AX elements are surfaced
+            // through the `take_ax_snapshot` tool-result body (no
+            // runner plumbing), and OCR / AX trees are published by
+            // dedicated paths.
             {
-                use crate::agent::world_model::{Fresh, FreshnessSource, ObservedElement};
+                use crate::agent::transition::page_fingerprint;
+                use crate::agent::world_model::{
+                    CdpPageState, Fresh, FreshnessSource, ObservedElement,
+                };
                 let observed: Vec<ObservedElement> =
                     elements.iter().cloned().map(ObservedElement::Cdp).collect();
                 if !observed.is_empty() {
@@ -2266,6 +2271,23 @@ impl StateRunner {
                     // or parse failure) — drop the stale cache so the
                     // renderer does not print last turn's surface.
                     self.world_model.elements = None;
+                }
+                // `fetch_elements` writes the response `page_url` into
+                // `state.current_url`. Mirror it (plus an elements-derived
+                // fingerprint) into `world_model.cdp_page` so the state
+                // block carries the page URL documented in
+                // `docs/reference/engine/execution.md`.
+                let url = self.state.current_url.clone();
+                if !url.is_empty() {
+                    self.world_model.cdp_page = Some(Fresh {
+                        value: CdpPageState {
+                            url,
+                            page_fingerprint: page_fingerprint(&elements),
+                        },
+                        written_at: self.step_index,
+                        source: FreshnessSource::DirectObservation,
+                        ttl_steps: Some(2),
+                    });
                 }
             }
 
