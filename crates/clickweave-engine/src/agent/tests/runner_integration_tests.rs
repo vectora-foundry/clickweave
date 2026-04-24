@@ -3498,3 +3498,253 @@ mod e2e_run_agent_workflow_tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Task 3.4: D17 `agent://*` event contract — TaskStateChanged /
+// WorldModelChanged / BoundaryRecordWritten emissions.
+// ---------------------------------------------------------------------------
+//
+// Asserts the three new `AgentEvent` variants fire with the runner's
+// `run_id` threaded through to the event payload, and that the
+// boundary-event emission tracks the corresponding `StepRecord`
+// persistence exactly.
+
+#[cfg(test)]
+mod state_spine_event_contract_tests {
+    use super::super::super::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
+    use crate::agent::runner::StateRunner;
+    use crate::agent::step_record::BoundaryKind;
+    use crate::agent::types::{AgentConfig, AgentEvent};
+    use crate::executor::Mcp;
+    use tokio::sync::mpsc;
+
+    fn drain_events(rx: &mut mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+        let mut out = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            out.push(ev);
+        }
+        out
+    }
+
+    /// A scripted run through `StateRunner::run` emits
+    /// `AgentEvent::WorldModelChanged` with the runner's `run_id`
+    /// stamped on every step (D17). `WorldModelChanged` must fire
+    /// once per step after `observe` — the scripted scenario runs
+    /// two tool calls and terminates on `agent_done`, so at least
+    /// one `WorldModelChanged` event must be observed.
+    #[tokio::test]
+    async fn world_model_changed_event_fires_per_step_with_run_id() {
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool(
+                "cdp_find_elements",
+                serde_json::json!({"query": "", "max_results": 300}),
+            ),
+            llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+        ]);
+        let mcp = StaticMcp::with_tools(&["cdp_find_elements", "cdp_click"])
+            .with_reply(
+                "cdp_find_elements",
+                r#"{"page_url":"about:blank","source":"cdp","matches":[]}"#,
+            )
+            .with_reply("cdp_click", "clicked");
+
+        let run_id = uuid::Uuid::new_v4();
+        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(32);
+        let runner = StateRunner::new("goal".to_string(), AgentConfig::default())
+            .with_run_id(run_id)
+            .with_events(event_tx);
+
+        let tools = mcp.tools_as_openai();
+        let _ = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                clickweave_core::Workflow::default(),
+                None,
+                tools,
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        let events = drain_events(&mut event_rx);
+        let world_events: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::WorldModelChanged { run_id: rid, diff } => {
+                    Some((*rid, diff.changed_fields.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !world_events.is_empty(),
+            "at least one WorldModelChanged event must fire across a multi-step run; events={:?}",
+            events,
+        );
+        for (rid, _fields) in &world_events {
+            assert_eq!(
+                *rid, run_id,
+                "every WorldModelChanged event must carry the runner's run_id",
+            );
+        }
+    }
+
+    /// A run that terminates on `agent_done` emits exactly one
+    /// `AgentEvent::BoundaryRecordWritten { Terminal, .. }` with the
+    /// runner's `run_id` (D17). The Terminal boundary write is the
+    /// canonical terminal gate, so a missing event here means the
+    /// Tauri-visible event seam dropped the last boundary signal.
+    #[tokio::test]
+    async fn boundary_record_written_fires_for_terminal_with_run_id() {
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool(
+                "cdp_find_elements",
+                serde_json::json!({"query": "", "max_results": 300}),
+            ),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+        ]);
+        let mcp = StaticMcp::with_tools(&["cdp_find_elements"]).with_reply(
+            "cdp_find_elements",
+            r#"{"page_url":"about:blank","source":"cdp","matches":[]}"#,
+        );
+
+        let run_id = uuid::Uuid::new_v4();
+        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(32);
+        let runner = StateRunner::new("goal".to_string(), AgentConfig::default())
+            .with_run_id(run_id)
+            .with_events(event_tx);
+
+        let tools = mcp.tools_as_openai();
+        let _ = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                clickweave_core::Workflow::default(),
+                None,
+                tools,
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        let events = drain_events(&mut event_rx);
+        let terminal_events: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    AgentEvent::BoundaryRecordWritten {
+                        boundary_kind: BoundaryKind::Terminal,
+                        ..
+                    }
+                )
+            })
+            .collect();
+        assert_eq!(
+            terminal_events.len(),
+            1,
+            "exactly one Terminal BoundaryRecordWritten event expected; events={:?}",
+            events,
+        );
+        match terminal_events[0] {
+            AgentEvent::BoundaryRecordWritten {
+                run_id: rid,
+                boundary_kind: BoundaryKind::Terminal,
+                ..
+            } => assert_eq!(
+                *rid, run_id,
+                "BoundaryRecordWritten must carry the runner's run_id",
+            ),
+            other => panic!("unreachable — filtered above; got {:?}", other),
+        }
+    }
+
+    /// Driving `StateRunner::run_turn` directly with a turn carrying a
+    /// `CompleteSubgoal` mutation emits `AgentEvent::TaskStateChanged`
+    /// (D17, because `apply_mutations` applied ≥1 mutation). Calling
+    /// `run_turn` with an empty mutation vec must not emit
+    /// `TaskStateChanged` — the event fires only when mutations land.
+    #[tokio::test]
+    async fn task_state_changed_fires_when_mutations_apply_not_otherwise() {
+        use crate::agent::runner::{AgentAction, AgentTurn, ToolExecutor};
+        use crate::agent::task_state::TaskStateMutation;
+        use async_trait::async_trait;
+
+        struct FixedOk;
+
+        #[async_trait]
+        impl ToolExecutor for FixedOk {
+            async fn call_tool(
+                &self,
+                _tool_name: &str,
+                _arguments: &serde_json::Value,
+            ) -> Result<String, String> {
+                Ok("ok".to_string())
+            }
+        }
+
+        let run_id = uuid::Uuid::new_v4();
+        let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(32);
+        let mut runner = StateRunner::new("goal".to_string(), AgentConfig::default())
+            .with_run_id(run_id)
+            .with_events(event_tx);
+
+        // Turn 1: mutation-only push. Expect TaskStateChanged.
+        let turn_push = AgentTurn {
+            mutations: vec![TaskStateMutation::PushSubgoal {
+                text: "A".to_string(),
+            }],
+            action: AgentAction::ToolCall {
+                tool_name: "cdp_click".to_string(),
+                arguments: serde_json::json!({}),
+                tool_call_id: "tc-1".to_string(),
+            },
+        };
+        let _ = runner.run_turn(&turn_push, &FixedOk).await;
+
+        // Turn 2: no mutations. Must NOT emit TaskStateChanged.
+        let turn_bare = AgentTurn {
+            mutations: vec![],
+            action: AgentAction::ToolCall {
+                tool_name: "cdp_click".to_string(),
+                arguments: serde_json::json!({}),
+                tool_call_id: "tc-2".to_string(),
+            },
+        };
+        let _ = runner.run_turn(&turn_bare, &FixedOk).await;
+
+        let events = drain_events(&mut event_rx);
+        let task_state_events: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::TaskStateChanged {
+                    run_id: rid,
+                    task_state,
+                } => Some((*rid, task_state.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            task_state_events.len(),
+            1,
+            "exactly one TaskStateChanged event expected (turn 1 had mutations, \
+             turn 2 did not); events={:?}",
+            events,
+        );
+        assert_eq!(
+            task_state_events[0].0, run_id,
+            "TaskStateChanged must carry the runner's run_id",
+        );
+        assert_eq!(
+            task_state_events[0].1.subgoal_stack.len(),
+            1,
+            "task_state payload must reflect the post-mutation stack depth",
+        );
+    }
+}

@@ -29,7 +29,7 @@ use crate::agent::recovery::{RecoveryAction, recovery_strategy};
 use crate::agent::task_state::{TaskState, TaskStateMutation};
 use crate::agent::types::{
     AgentCache, AgentCommand, AgentConfig, AgentEvent, AgentState, AgentStep, ApprovalRequest,
-    StepOutcome, TerminalReason,
+    StepOutcome, TerminalReason, WorldModelDiff,
 };
 use crate::agent::world_model::{InvalidationEvent, WorldModel};
 use crate::executor::Mcp;
@@ -603,8 +603,9 @@ impl StateRunner {
     /// [`Self::run`] right after `run_turn` reports `milestones_appended >
     /// 0`. Records the turn's batched mutations as `action_taken` so the
     /// subgoal summaries are recoverable from `events.jsonl` without a
-    /// separate transcript lookup.
-    fn write_subgoal_completed_records(&self, count: usize, turn: &AgentTurn) {
+    /// separate transcript lookup. Emits one
+    /// `AgentEvent::BoundaryRecordWritten` per persisted record (D17).
+    async fn write_subgoal_completed_records(&self, count: usize, turn: &AgentTurn) {
         let action_taken =
             serde_json::to_value(&turn.mutations).unwrap_or_else(|_| serde_json::json!([]));
         for _ in 0..count {
@@ -614,6 +615,12 @@ impl StateRunner {
                 serde_json::json!({"kind": "subgoal_completed"}),
             );
             self.write_step_record(&record);
+            self.emit_event(AgentEvent::BoundaryRecordWritten {
+                run_id: self.run_id,
+                boundary_kind: crate::agent::step_record::BoundaryKind::SubgoalCompleted,
+                step_index: record.step_index,
+            })
+            .await;
         }
     }
 
@@ -622,8 +629,8 @@ impl StateRunner {
     /// [`Self::run`] when a tool success cleared the consecutive-error
     /// streak. `action_taken` / `outcome` record the successful turn so
     /// Spec 2's episodic memory can reason about what resolved the
-    /// recovery.
-    fn write_recovery_succeeded_record(&self, turn: &AgentTurn, outcome: &TurnOutcome) {
+    /// recovery. Emits one `AgentEvent::BoundaryRecordWritten` (D17).
+    async fn write_recovery_succeeded_record(&self, turn: &AgentTurn, outcome: &TurnOutcome) {
         let action_taken =
             serde_json::to_value(&turn.action).unwrap_or_else(|_| serde_json::json!({}));
         let outcome_json = match outcome {
@@ -645,14 +652,21 @@ impl StateRunner {
             outcome_json,
         );
         self.write_step_record(&record);
+        self.emit_event(AgentEvent::BoundaryRecordWritten {
+            run_id: self.run_id,
+            boundary_kind: crate::agent::step_record::BoundaryKind::RecoverySucceeded,
+            step_index: record.step_index,
+        })
+        .await;
     }
 
     /// Persist the single `BoundaryKind::Terminal` record at run end (D8).
     /// Called exactly once from [`Self::run`] after the control loop has
     /// populated `state.terminal_reason`. Encodes the terminal reason into
     /// the outcome payload so the record is self-describing without a
-    /// cross-reference to the rest of `events.jsonl`.
-    fn write_terminal_record(&self) {
+    /// cross-reference to the rest of `events.jsonl`. Emits one
+    /// `AgentEvent::BoundaryRecordWritten` (D17).
+    async fn write_terminal_record(&self) {
         let terminal_reason = self.state.terminal_reason.as_ref();
         let outcome_json = terminal_reason
             .map(|tr| serde_json::to_value(tr).unwrap_or_else(|_| serde_json::json!({})))
@@ -677,6 +691,12 @@ impl StateRunner {
             outcome_json,
         );
         self.write_step_record(&record);
+        self.emit_event(AgentEvent::BoundaryRecordWritten {
+            run_id: self.run_id,
+            boundary_kind: crate::agent::step_record::BoundaryKind::Terminal,
+            step_index: record.step_index,
+        })
+        .await;
     }
 }
 
@@ -748,8 +768,29 @@ impl StateRunner {
             .len()
             .saturating_sub(milestones_before);
 
-        // 2. Observe: drain pending events + re-infer phase.
+        // 1a. Emit `TaskStateChanged` once per turn when `apply_mutations`
+        //     had anything to apply (D17). The event reflects the full
+        //     post-mutation state so subscribers never have to reassemble
+        //     it from the warnings vec.
+        if !turn.mutations.is_empty() {
+            self.emit_event(AgentEvent::TaskStateChanged {
+                run_id: self.run_id,
+                task_state: self.task_state.clone(),
+            })
+            .await;
+        }
+
+        // 2. Observe: snapshot field signatures → drain pending events +
+        //    re-infer phase → compute diff → emit `WorldModelChanged` (D17).
+        let pre_signatures = self.world_model.field_signatures();
         self.observe();
+        let post_signatures = self.world_model.field_signatures();
+        let diff = diff_world_model_signatures(&pre_signatures, &post_signatures);
+        self.emit_event(AgentEvent::WorldModelChanged {
+            run_id: self.run_id,
+            diff,
+        })
+        .await;
 
         // 3. Dispatch action.
         let outcome = match &turn.action {
@@ -1024,6 +1065,38 @@ pub(crate) fn extract_result_text(result: &clickweave_mcp::ToolCallResult) -> St
         }
     }
     parts.join("\n")
+}
+
+/// Pure diff over two `WorldModel::field_signatures()` snapshots.
+///
+/// Returns a `WorldModelDiff` whose `changed_fields` lists — in the
+/// order `field_signatures` emits them — every field name whose
+/// signature differs between `pre` and `post`. Used by `run_turn` to
+/// emit `AgentEvent::WorldModelChanged` once per step after `observe`.
+///
+/// Panics only in the programmer-error case where `pre` and `post`
+/// disagree on field ordering or length; `WorldModel::field_signatures`
+/// is deterministic so this should never happen at runtime.
+pub(crate) fn diff_world_model_signatures(
+    pre: &[(&'static str, Option<usize>)],
+    post: &[(&'static str, Option<usize>)],
+) -> WorldModelDiff {
+    debug_assert_eq!(
+        pre.len(),
+        post.len(),
+        "field_signatures must return a stable-length vec",
+    );
+    let mut changed_fields = Vec::new();
+    for (p, q) in pre.iter().zip(post.iter()) {
+        debug_assert_eq!(
+            p.0, q.0,
+            "field_signatures must return fields in the same order",
+        );
+        if p.1 != q.1 {
+            changed_fields.push(p.0.to_string());
+        }
+    }
+    WorldModelDiff { changed_fields }
 }
 
 impl StateRunner {
@@ -2417,7 +2490,8 @@ impl StateRunner {
             //     world_model immediately after the mutation burst, matching
             //     the semantic "the milestone just landed".
             if milestones_appended > 0 {
-                self.write_subgoal_completed_records(milestones_appended, &turn);
+                self.write_subgoal_completed_records(milestones_appended, &turn)
+                    .await;
             }
 
             // 5b. RecoverySucceeded boundary write — a tool success that
@@ -2431,7 +2505,7 @@ impl StateRunner {
                 && self.consecutive_errors == 0
                 && matches!(outcome, TurnOutcome::ToolSuccess { .. })
             {
-                self.write_recovery_succeeded_record(&turn, &outcome);
+                self.write_recovery_succeeded_record(&turn, &outcome).await;
             }
 
             // 6. Map the TurnOutcome into AgentStep + TerminalReason.
@@ -2702,7 +2776,7 @@ impl StateRunner {
         // run without any terminal_reason is a bug (no known code path
         // produces it), so the match_ is exhaustive on `Some`.
         if self.state.terminal_reason.is_some() {
-            self.write_terminal_record();
+            self.write_terminal_record().await;
         }
 
         Ok((self.state, self.cache))

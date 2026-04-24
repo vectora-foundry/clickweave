@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::agent::step_record::BoundaryKind;
+use crate::agent::task_state::TaskState;
+
 /// Default ceiling on agent observe-act iterations. Chosen to cover typical
 /// multi-step tasks (login → action → confirm) with headroom while keeping a
 /// runaway loop from burning through an LLM budget. Callers set a larger
@@ -99,6 +102,46 @@ pub enum AgentEvent {
         /// The VLM reasoning the operator saw before deciding.
         vlm_reasoning: String,
     },
+    /// Emitted after `apply_mutations` applies at least one mutation
+    /// during a turn. Carries the runner's `run_id` (D17) plus a
+    /// snapshot of the current `TaskState` so frontends can reflect
+    /// the updated subgoal stack / watch slots / phase without a round
+    /// trip through the durable trace.
+    TaskStateChanged {
+        run_id: Uuid,
+        task_state: TaskState,
+    },
+    /// Emitted once per step after `observe` runs, carrying a small
+    /// list of `WorldModel` field names whose freshness-wrapped value
+    /// changed during that step's observe phase. Consumers use the
+    /// diff to decide which state-block sections to re-render.
+    WorldModelChanged {
+        run_id: Uuid,
+        diff: WorldModelDiff,
+    },
+    /// Emitted every time a boundary `StepRecord` is persisted to
+    /// `events.jsonl` (D8 / Task 3a.6.5). Lets the frontend surface
+    /// boundary milestones without re-reading the durable trace.
+    BoundaryRecordWritten {
+        run_id: Uuid,
+        boundary_kind: BoundaryKind,
+        step_index: usize,
+    },
+}
+
+/// Per-step diff of the harness-owned `WorldModel`. Carries the field
+/// names whose freshness-wrapped value changed during the current
+/// step's `observe` pass (D17). Intentionally minimal — the frontend
+/// only needs a re-render hint, not the full snapshot. Field order
+/// matches `WorldModel`'s definition.
+#[derive(Debug, Clone, Default, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct WorldModelDiff {
+    /// Names of `WorldModel` fields whose value changed this step.
+    /// Stable field names: `focused_app`, `window_list`, `cdp_page`,
+    /// `elements`, `modal_present`, `dialog_present`,
+    /// `last_screenshot`, `last_native_ax_snapshot`, `uncertainty`.
+    pub changed_fields: Vec<String>,
 }
 
 /// Operator decision for a pending `CompletionDisagreement`.

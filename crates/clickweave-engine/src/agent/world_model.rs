@@ -185,6 +185,55 @@ impl WorldModel {
         self.uncertainty.reasons = reasons;
     }
 
+    /// Per-field presence + freshness signature used by the runner to
+    /// compute a `WorldModelDiff` across an observe boundary (D17).
+    ///
+    /// Each entry is `(field_name, signature)`. The signature is
+    /// `Some(written_at)` when the slot is populated — `written_at`
+    /// monotonically advances on every write, so a change (including
+    /// a same-value re-write) flips the signature. `None` encodes an
+    /// absent slot. The `uncertainty` score is not Fresh-wrapped; we
+    /// hash its reason count + discretised score so a recompute that
+    /// shifts either surfaces as a diff.
+    ///
+    /// Pure and cheap: zero allocation beyond the returned vec. The
+    /// runner snapshots signatures pre-observe, applies events, then
+    /// re-snapshots and diffs.
+    pub fn field_signatures(&self) -> Vec<(&'static str, Option<usize>)> {
+        vec![
+            (
+                "focused_app",
+                self.focused_app.as_ref().map(|f| f.written_at),
+            ),
+            (
+                "window_list",
+                self.window_list.as_ref().map(|f| f.written_at),
+            ),
+            ("cdp_page", self.cdp_page.as_ref().map(|f| f.written_at)),
+            ("elements", self.elements.as_ref().map(|f| f.written_at)),
+            (
+                "modal_present",
+                self.modal_present.as_ref().map(|f| f.written_at),
+            ),
+            (
+                "dialog_present",
+                self.dialog_present.as_ref().map(|f| f.written_at),
+            ),
+            (
+                "last_screenshot",
+                self.last_screenshot.as_ref().map(|f| f.written_at),
+            ),
+            (
+                "last_native_ax_snapshot",
+                self.last_native_ax_snapshot.as_ref().map(|f| f.written_at),
+            ),
+            (
+                "uncertainty",
+                Some(uncertainty_signature(&self.uncertainty)),
+            ),
+        ]
+    }
+
     fn invalid_field_count(&self) -> usize {
         [
             self.focused_app.is_none(),
@@ -244,6 +293,16 @@ impl WorldModel {
             }
         }
     }
+}
+
+/// Discretised single-`usize` signature of an `UncertaintyScore`, used by
+/// `WorldModel::field_signatures` so a recompute that shifts the score
+/// bucket or the reasons list shows up as a diff. `score` is bucketed
+/// in 1% increments (rounded) and xor'd with the reason count so both
+/// axes of the score participate.
+fn uncertainty_signature(u: &UncertaintyScore) -> usize {
+    let bucket = (u.score.clamp(0.0, 1.0) * 100.0) as usize;
+    bucket ^ (u.reasons.len() << 16)
 }
 
 /// Minimal MCP surface the world model's refresh path needs. Implemented by
