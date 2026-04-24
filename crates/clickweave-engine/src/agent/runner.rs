@@ -115,6 +115,20 @@ pub struct StateRunner {
     /// same run do not overwrite each other. Mirrors
     /// `AgentRunner::verification_count` (`loop_runner.rs:189`).
     pub verification_count: u32,
+
+    // --- CDP lifecycle bookkeeping (Task 3a.6) ---
+    /// Shared CDP connection state — identical to the legacy field on
+    /// `AgentRunner` (`loop_runner.rs:171`). Populated when
+    /// [`Self::auto_connect_cdp`] succeeds and consulted by
+    /// [`Self::should_skip_focus_window`] and `verify_completion` so the
+    /// completion-verification screenshot targets the right window.
+    pub(crate) cdp_state: crate::cdp_lifecycle::CdpState,
+    /// Per-app `kind` hint learned from a structured MCP response
+    /// (`focus_window` / `launch_app` with `{"kind": "..."}`). Populated
+    /// before the CDP decision runs so subsequent `focus_window` calls
+    /// can be suppressed when AX / CDP dispatch is available. Mirrors
+    /// `AgentRunner::known_app_kinds` (`loop_runner.rs:181`).
+    pub(crate) known_app_kinds: HashMap<String, String>,
 }
 
 impl StateRunner {
@@ -142,6 +156,8 @@ impl StateRunner {
             permissions: PermissionPolicy::default(),
             verification_artifacts_dir: None,
             verification_count: 0,
+            cdp_state: crate::cdp_lifecycle::CdpState::new(),
+            known_app_kinds: HashMap::new(),
         }
     }
 
@@ -234,6 +250,37 @@ impl StateRunner {
     #[cfg(test)]
     pub fn new_for_test(goal: String) -> Self {
         Self::new(goal, AgentConfig::default())
+    }
+
+    /// Borrow the current CDP bookkeeping. Used by `verify_completion`
+    /// to target the screenshot scope at the connected window, and
+    /// (in tests) to assert CDP auto-connect side effects.
+    pub(crate) fn cdp_state(&self) -> &crate::cdp_lifecycle::CdpState {
+        &self.cdp_state
+    }
+
+    /// Seed `known_app_kinds` directly. Test-only — the live flow
+    /// populates this via [`Self::record_app_kind`] from the MCP
+    /// response shape.
+    #[cfg(test)]
+    pub(crate) fn record_app_kind_for_test(&mut self, app_name: &str, kind: &str) {
+        self.known_app_kinds
+            .insert(app_name.to_string(), kind.to_string());
+    }
+
+    /// Seed the active CDP connection identity. Test-only — the live
+    /// flow populates this through [`Self::auto_connect_cdp`].
+    #[cfg(test)]
+    pub(crate) fn set_cdp_connected_for_test(&mut self, app_name: &str, pid: i32) {
+        self.cdp_state.set_connected(app_name, pid);
+    }
+
+    /// Public-for-tests view of `cdp_state`. Keeps the field private
+    /// outside the module while letting integration tests assert the
+    /// post-tool auto-connect bookkeeping.
+    #[cfg(test)]
+    pub(crate) fn cdp_state_for_test(&self) -> &crate::cdp_lifecycle::CdpState {
+        &self.cdp_state
     }
 
     pub fn queue_invalidation(&mut self, e: InvalidationEvent) {
@@ -654,6 +701,87 @@ enum CapStatus {
     CapReached,
 }
 
+/// Why a `focus_window` MCP call was suppressed by the runner. Ported
+/// verbatim from `loop_runner::FocusSkipReason` (`loop_runner.rs:200`).
+///
+/// The LLM sees a synthetic `StepOutcome::Success` whose text comes from
+/// [`FocusSkipReason::llm_message`]; that text must stay byte-identical to
+/// the legacy strings so replay / transcript tests still pin the same
+/// contract.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum FocusSkipReason {
+    /// macOS Native target, full AX dispatch toolset available —
+    /// AX dispatch is focus-preserving so the real call is redundant.
+    AxAvailable,
+    /// Electron / Chrome target with a live CDP session and the minimum
+    /// CDP dispatch toolset — CDP operates on backgrounded windows.
+    CdpLive,
+    /// Operator flipped [`AgentConfig::allow_focus_window`] to `false`;
+    /// every focus_window is dropped regardless of kind or toolset.
+    PolicyDisabled,
+}
+
+impl FocusSkipReason {
+    const ALL: [Self; 3] = [Self::AxAvailable, Self::CdpLive, Self::PolicyDisabled];
+
+    /// Result text returned to the LLM in the synthetic
+    /// `StepOutcome::Success`. Must not drift from the strings the tests
+    /// pin — they encode the agent→LLM skip-contract.
+    pub(crate) const fn llm_message(self) -> &'static str {
+        match self {
+            Self::AxAvailable => {
+                "skipped focus_window: AX tools available; window focus not required"
+            }
+            Self::CdpLive => "skipped focus_window: CDP already live; focus not required",
+            Self::PolicyDisabled => {
+                "focus_window skipped: agent policy disallows focus changes. Use AX dispatch \
+                 (ax_click/ax_set_value/ax_select) or CDP (cdp_click/cdp_fill) instead — \
+                 these operate on background windows."
+            }
+        }
+    }
+
+    /// Terse summary for the `SubAction` event surface.
+    pub(crate) const fn sub_action_summary(self) -> &'static str {
+        match self {
+            Self::AxAvailable => "skipped: AX dispatch available",
+            Self::CdpLive => "skipped: CDP already live; focus not required",
+            Self::PolicyDisabled => "skipped: focus_window disabled by agent policy",
+        }
+    }
+
+    /// Recover the variant from an LLM-visible result text. Used by the
+    /// post-step bookkeeping predicate to keep synthetic skips invisible
+    /// to CDP auto-connect and workflow-node creation.
+    pub(crate) fn from_llm_message(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.llm_message() == text)
+    }
+}
+
+/// macOS AX-dispatch toolset — every tool required for the
+/// focus-preserving automation path. When the MCP server advertises
+/// **all** of these plus `take_ax_snapshot`, the agent can drive native
+/// apps without moving the cursor or raising windows, which makes a
+/// preceding `focus_window` call redundant (and focus-stealing).
+///
+/// Mirrors `loop_runner::AX_DISPATCH_TOOLSET` byte-for-byte.
+const AX_DISPATCH_TOOLSET: &[&str] = &["take_ax_snapshot", "ax_click", "ax_set_value", "ax_select"];
+
+/// Minimum CDP dispatch toolset required before the runner may suppress
+/// a `focus_window` against an Electron / Chrome-browser target. Kept
+/// conservative: `cdp_find_elements` + `cdp_click` is enough to prove
+/// the agent's next move will operate against the CDP target (all CDP
+/// operations are focus-preserving). Servers missing these tools fall
+/// through to the real `focus_window`.
+///
+/// Mirrors `loop_runner::CDP_DISPATCH_TOOLSET` byte-for-byte.
+const CDP_DISPATCH_TOOLSET: &[&str] = &["cdp_find_elements", "cdp_click"];
+
+/// True when every member of `toolset` is advertised by `mcp`.
+fn mcp_has_toolset<M: Mcp + ?Sized>(mcp: &M, toolset: &[&str]) -> bool {
+    toolset.iter().all(|name| mcp.has_tool(name))
+}
+
 /// Observation tools whose cached entries are stale on read. Mirrors
 /// `loop_runner::OBSERVATION_TOOLS` — duplicated here because the legacy
 /// list is a private `const` on `AgentRunner`, and lifting it to a shared
@@ -832,6 +960,416 @@ impl StateRunner {
         });
     }
 
+    // -----------------------------------------------------------------
+    // Task 3a.6: CDP auto-connect + synthetic focus_window skip
+    // -----------------------------------------------------------------
+
+    /// Record a per-app `kind` hint learned from a structured MCP
+    /// response or `probe_app`. Port of `AgentRunner::record_app_kind`
+    /// (`loop_runner.rs:2164`).
+    fn record_app_kind(&mut self, app_name: &str, kind: &str) {
+        self.known_app_kinds
+            .insert(app_name.to_string(), kind.to_string());
+    }
+
+    /// True when `(tool_name, result_text)` identifies a runner-skipped
+    /// `focus_window` — one of the synthetic successes that
+    /// [`Self::should_skip_focus_window`] emits. Post-step bookkeeping
+    /// (CDP auto-connect, workflow-node creation) consults this so the
+    /// skipped call stays invisible to both the CDP lifecycle and the
+    /// graph. Port of `AgentRunner::is_synthetic_focus_skip`.
+    pub(crate) fn is_synthetic_focus_skip(tool_name: &str, result_text: &str) -> bool {
+        tool_name == "focus_window" && FocusSkipReason::from_llm_message(result_text).is_some()
+    }
+
+    /// Decide whether to suppress a `focus_window` MCP call. Returns a
+    /// [`FocusSkipReason`] in three cases: (1) operator set
+    /// `allow_focus_window = false`, (2) Native app with full AX
+    /// dispatch toolset, (3) Electron / Chrome with a live CDP session
+    /// and the minimum CDP dispatch toolset. Otherwise `None` —
+    /// fall-through to the real MCP call.
+    ///
+    /// Port of `AgentRunner::should_skip_focus_window`
+    /// (`loop_runner.rs:2206`).
+    fn should_skip_focus_window<M: Mcp + ?Sized>(
+        &self,
+        arguments: &Value,
+        mcp: &M,
+    ) -> Option<FocusSkipReason> {
+        // User-policy short-circuit takes precedence over kind / toolset
+        // checks — the operator explicitly asked for "no focus changes,
+        // ever".
+        if !self.config.allow_focus_window {
+            return Some(FocusSkipReason::PolicyDisabled);
+        }
+        let app_name = arguments.get("app_name").and_then(Value::as_str)?;
+        match self.known_app_kinds.get(app_name).map(String::as_str) {
+            Some("Native") if mcp_has_toolset(mcp, AX_DISPATCH_TOOLSET) => {
+                Some(FocusSkipReason::AxAvailable)
+            }
+            Some("ElectronApp" | "ChromeBrowser")
+                if self.cdp_state.is_connected_to(app_name, 0)
+                    && mcp_has_toolset(mcp, CDP_DISPATCH_TOOLSET) =>
+            {
+                Some(FocusSkipReason::CdpLive)
+            }
+            _ => None,
+        }
+    }
+
+    /// Resolve the app identity for CDP probing from a successful
+    /// `focus_window` / `launch_app` call. Returns `(app_name, kind)`
+    /// where `kind` is a pre-classified `AppKind` string
+    /// (`"ElectronApp"`, `"ChromeBrowser"`, `"Native"`) when the MCP
+    /// server already told us. Port of
+    /// `AgentRunner::resolve_cdp_target` (`loop_runner.rs:1745`).
+    async fn resolve_cdp_target<M: Mcp + ?Sized>(
+        arguments: &Value,
+        result_text: &str,
+        mcp: &M,
+    ) -> Option<(String, Option<String>)> {
+        // 1. Structured MCP response (modern focus_window / launch_app).
+        if let Ok(parsed) = serde_json::from_str::<Value>(result_text)
+            && let Some(name) = parsed.get("app_name").and_then(Value::as_str)
+            && !name.is_empty()
+        {
+            let kind = parsed
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            return Some((name.to_string(), kind));
+        }
+        // 2. Direct argument (fast, backwards-compatible).
+        if let Some(name) = arguments["app_name"].as_str() {
+            return Some((name.to_string(), None));
+        }
+        // 3. pid → list_apps fallback.
+        if let Some(pid) = arguments["pid"].as_u64()
+            && mcp.has_tool("list_apps")
+        {
+            match mcp
+                .call_tool("list_apps", Some(serde_json::json!({})))
+                .await
+            {
+                Ok(r) if r.is_error != Some(true) => {
+                    let text = crate::cdp_lifecycle::extract_text(&r);
+                    if let Ok(entries) = serde_json::from_str::<Vec<Value>>(&text)
+                        && let Some(name) = entries.iter().find_map(|entry| {
+                            if entry["pid"].as_u64() == Some(pid) {
+                                entry["name"].as_str().map(str::to_owned)
+                            } else {
+                                None
+                            }
+                        })
+                    {
+                        return Some((name, None));
+                    }
+                    debug!(pid, "state-spine: list_apps returned no entry matching pid");
+                }
+                Ok(r) => {
+                    debug!(
+                        error = %extract_result_text(&r),
+                        "state-spine: list_apps returned error during CDP app-name resolution",
+                    );
+                }
+                Err(e) => {
+                    debug!(error = %e, "state-spine: list_apps call failed during CDP app-name resolution");
+                }
+            }
+        }
+        // 4. window_id → list_windows fallback.
+        if let Some(window_id) = arguments["window_id"].as_u64()
+            && mcp.has_tool("list_windows")
+        {
+            match mcp
+                .call_tool("list_windows", Some(serde_json::json!({})))
+                .await
+            {
+                Ok(r) if r.is_error != Some(true) => {
+                    let text = crate::cdp_lifecycle::extract_text(&r);
+                    if let Ok(entries) = serde_json::from_str::<Vec<Value>>(&text)
+                        && let Some(name) = entries.iter().find_map(|entry| {
+                            if entry["id"].as_u64() == Some(window_id) {
+                                entry["owner_name"]
+                                    .as_str()
+                                    .or_else(|| entry["name"].as_str())
+                                    .map(str::to_owned)
+                            } else {
+                                None
+                            }
+                        })
+                    {
+                        return Some((name, None));
+                    }
+                    debug!(
+                        window_id,
+                        "state-spine: list_windows returned no entry matching window_id",
+                    );
+                }
+                Ok(r) => {
+                    debug!(
+                        error = %extract_result_text(&r),
+                        "state-spine: list_windows returned error during CDP app-name resolution",
+                    );
+                }
+                Err(e) => {
+                    debug!(
+                        error = %e,
+                        "state-spine: list_windows call failed during CDP app-name resolution",
+                    );
+                }
+            }
+        }
+        None
+    }
+
+    /// Post-connect bookkeeping: mark `(app_name, 0)` as the active CDP
+    /// target and record the currently-selected page URL. Port of
+    /// `AgentRunner::on_cdp_connected` (`loop_runner.rs:1505`).
+    async fn on_cdp_connected<M: Mcp + ?Sized>(&mut self, app_name: &str, _port: u16, mcp: &M) {
+        self.cdp_state.set_connected(app_name, 0);
+        crate::cdp_lifecycle::snapshot_selected_page_url(mcp, &mut self.cdp_state, app_name, 0)
+            .await;
+    }
+
+    /// After a successful `launch_app` / `focus_window`, probe the app
+    /// type and auto-connect CDP for Electron / Chrome targets. Returns
+    /// `Some(port)` on success, `None` otherwise. Port of
+    /// `AgentRunner::auto_connect_cdp` (`loop_runner.rs:1326`). Keeps
+    /// best-effort semantics — every failure path logs and falls
+    /// through.
+    async fn auto_connect_cdp<M: Mcp + ?Sized>(
+        &mut self,
+        app_name: &str,
+        kind_hint: Option<&str>,
+        mcp: &M,
+    ) -> Option<u16> {
+        use crate::cdp_lifecycle;
+
+        if !mcp.has_tool("cdp_connect") {
+            return None;
+        }
+
+        // If the caller already classified the app, trust it and skip
+        // the `probe_app` round-trip.
+        let cdp_capable_from_hint = matches!(kind_hint, Some("ElectronApp" | "ChromeBrowser"));
+        if !cdp_capable_from_hint {
+            if matches!(kind_hint, Some("Native")) {
+                debug!(
+                    app = app_name,
+                    "state-spine: kind hint says Native, skipping CDP"
+                );
+                return None;
+            }
+            if !mcp.has_tool("probe_app") {
+                return None;
+            }
+
+            let probe_args = serde_json::json!({"app_name": app_name});
+            self.emit_event(AgentEvent::SubAction {
+                tool_name: "probe_app".to_string(),
+                summary: format!("Auto: probing {} for CDP support", app_name),
+            })
+            .await;
+            let probe_text = match mcp.call_tool("probe_app", Some(probe_args)).await {
+                Ok(r) => {
+                    self.emit_event(AgentEvent::SubAction {
+                        tool_name: "probe_app".to_string(),
+                        summary: format!("Auto: probed {} (ok)", app_name),
+                    })
+                    .await;
+                    extract_result_text(&r)
+                }
+                Err(e) => {
+                    self.emit_event(AgentEvent::SubAction {
+                        tool_name: "probe_app".to_string(),
+                        summary: format!("Auto: probe_app failed for {}: {}", app_name, e),
+                    })
+                    .await;
+                    debug!(app = app_name, error = %e, "state-spine: probe_app failed, skipping CDP");
+                    return None;
+                }
+            };
+
+            if !probe_text.contains("ElectronApp") && !probe_text.contains("ChromeBrowser") {
+                debug!(
+                    app = app_name,
+                    "state-spine: not an Electron/Chrome app, skipping CDP"
+                );
+                return None;
+            }
+        }
+
+        tracing::info!(
+            app = app_name,
+            "state-spine: detected Electron/Chrome app, connecting CDP"
+        );
+
+        // Reuse an already-running debug port if we can find one.
+        if let Some(port) = crate::executor::deterministic::cdp::existing_debug_port(app_name).await
+        {
+            tracing::info!(
+                app = app_name,
+                port,
+                "state-spine: reusing existing debug port"
+            );
+            if cdp_lifecycle::connect_with_retries(mcp, port).await.is_ok() {
+                self.on_cdp_connected(app_name, port, mcp).await;
+                return Some(port);
+            }
+        }
+
+        // Quit, relaunch with a debug port, then connect CDP.
+        let port = clickweave_core::cdp::rand_ephemeral_port();
+
+        self.emit_event(AgentEvent::SubAction {
+            tool_name: "quit_app".to_string(),
+            summary: format!("Auto: quitting {} for CDP relaunch", app_name),
+        })
+        .await;
+        let quit_outcome = cdp_lifecycle::quit_and_wait(mcp, app_name, &mut self.cdp_state).await;
+        let quit_summary = match quit_outcome {
+            cdp_lifecycle::QuitOutcome::Graceful => format!("Auto: {} quit confirmed", app_name),
+            cdp_lifecycle::QuitOutcome::TimedOut => {
+                format!("Auto: {} did not quit gracefully, force-killing", app_name)
+            }
+        };
+        self.emit_event(AgentEvent::SubAction {
+            tool_name: "quit_app".to_string(),
+            summary: quit_summary,
+        })
+        .await;
+
+        if matches!(quit_outcome, cdp_lifecycle::QuitOutcome::TimedOut) {
+            warn!(
+                app = app_name,
+                "state-spine: app did not quit gracefully, force-killing"
+            );
+            cdp_lifecycle::force_quit(mcp, app_name).await;
+        }
+
+        self.emit_event(AgentEvent::SubAction {
+            tool_name: "launch_app".to_string(),
+            summary: format!("Auto: relaunching {} with debug port {}", app_name, port),
+        })
+        .await;
+        match cdp_lifecycle::launch_with_debug_port(mcp, app_name, port).await {
+            Ok(()) => {
+                self.emit_event(AgentEvent::SubAction {
+                    tool_name: "launch_app".to_string(),
+                    summary: format!("Auto: relaunched {} (ok)", app_name),
+                })
+                .await;
+            }
+            Err(err) => {
+                warn!(
+                    app = app_name,
+                    error = %err,
+                    "state-spine: relaunch with debug port failed"
+                );
+                self.emit_event(AgentEvent::SubAction {
+                    tool_name: "launch_app".to_string(),
+                    summary: format!("Auto: relaunch failed for {}: {}", app_name, err),
+                })
+                .await;
+                let fallback = serde_json::json!({"app_name": app_name});
+                crate::executor::deterministic::best_effort_tool_call(
+                    mcp,
+                    "launch_app",
+                    Some(fallback),
+                    "state-spine fallback relaunch (debug-port launch failed)",
+                )
+                .await;
+                return None;
+            }
+        }
+
+        cdp_lifecycle::warmup_after_relaunch().await;
+
+        self.emit_event(AgentEvent::SubAction {
+            tool_name: "cdp_connect".to_string(),
+            summary: format!("Auto: connecting CDP on port {}", port),
+        })
+        .await;
+        match cdp_lifecycle::connect_with_retries(mcp, port).await {
+            Ok(()) => {
+                tracing::info!(app = app_name, port, "state-spine: CDP connected");
+                self.emit_event(AgentEvent::SubAction {
+                    tool_name: "cdp_connect".to_string(),
+                    summary: format!("Auto: CDP connected on port {} (ok)", port),
+                })
+                .await;
+                self.on_cdp_connected(app_name, port, mcp).await;
+                Some(port)
+            }
+            Err(last_err) => {
+                warn!(
+                    app = app_name,
+                    port,
+                    error = %last_err,
+                    "state-spine: CDP connection failed after retries",
+                );
+                self.emit_event(AgentEvent::SubAction {
+                    tool_name: "cdp_connect".to_string(),
+                    summary: format!("Auto: CDP connect failed on port {}", port),
+                })
+                .await;
+                None
+            }
+        }
+    }
+
+    /// Post-tool hook: after a successful `launch_app` / `focus_window`,
+    /// auto-connect CDP and refresh the MCP tool-cache so observation
+    /// gates see the newly-surfaced CDP tools. Also keeps `cdp_state`
+    /// in lock-step with `quit_app`. Port of
+    /// `AgentRunner::maybe_cdp_connect` (`loop_runner.rs:1673`).
+    async fn maybe_cdp_connect<M: Mcp + ?Sized>(
+        &mut self,
+        tool_name: &str,
+        arguments: &Value,
+        result_text: &str,
+        mcp: &M,
+    ) {
+        if tool_name != "launch_app" && tool_name != "focus_window" {
+            // Keep CDP state in lock-step with the underlying process.
+            if tool_name == "quit_app"
+                && let Some(name) = arguments.get("app_name").and_then(Value::as_str)
+            {
+                self.cdp_state.mark_app_quit(name);
+            }
+            return;
+        }
+        let Some((app_name, kind_hint)) =
+            Self::resolve_cdp_target(arguments, result_text, mcp).await
+        else {
+            return;
+        };
+        // Stash the kind BEFORE the CDP decision so the record is
+        // present even when CDP is skipped (Native short-circuit).
+        if let Some(kind) = kind_hint.as_deref() {
+            self.record_app_kind(&app_name, kind);
+        }
+        if let Some(cdp_port) = self
+            .auto_connect_cdp(&app_name, kind_hint.as_deref(), mcp)
+            .await
+        {
+            self.emit_event(AgentEvent::CdpConnected {
+                app_name: app_name.clone(),
+                port: cdp_port,
+            })
+            .await;
+            // Refresh the client-side tool cache so observation gates
+            // see CDP tools surfaced post-connect.
+            if let Err(e) = mcp.refresh_server_tool_list().await {
+                warn!(
+                    error = %e,
+                    "state-spine: post-CDP-connect tool-cache refresh failed",
+                );
+            }
+        }
+    }
+
     /// Evaluate the permission policy for a cached tool call.
     fn policy_for(
         &self,
@@ -939,11 +1477,11 @@ impl StateRunner {
 
         let vision = self.vision.as_ref()?.clone();
 
-        // StateRunner does not yet track a `CdpState` — Task 3a.6 adds
-        // auto-CDP-connect plumbing that will populate `connected_app`.
-        // Until then, the scope falls back to full-screen capture, which
-        // every MCP surface accepts.
-        let scope = pick_completion_screenshot_scope(None);
+        // Target the screenshot scope at the connected CDP app when we
+        // have one — Task 3a.6 wires `cdp_state` up via
+        // `maybe_cdp_connect`, so `connected_app` now flows through to
+        // the scope picker (matching legacy behaviour).
+        let scope = pick_completion_screenshot_scope(self.cdp_state.connected_app.as_ref());
         let Some((prepared_b64, mime)) = capture_screenshot_for_vlm(mcp, scope.clone()).await
         else {
             warn!(
@@ -1246,12 +1784,14 @@ impl StateRunner {
                 })
                 .await;
 
-                // TODO(task-3a.6): auto-CDP-connect after a cached
-                // launch_app / focus_window replay. State-transition
-                // tools already fall through above (branch 4c), so the
-                // only way this hook matters today is if the write-side
-                // filter ever relaxes — kept as an explicit marker so
-                // 3a.6 can grep for it.
+                // Auto-CDP-connect after a cached launch_app /
+                // focus_window replay. State-transition tools already
+                // fall through above (branch 4c) today, but the hook
+                // stays here so behaviour parity with the live path
+                // survives any future cache-filter relaxation, and so
+                // that a cached `quit_app` still clears CDP state.
+                self.maybe_cdp_connect(&cached_tool, &cached_args, &result_text, mcp)
+                    .await;
 
                 let step = AgentStep {
                     index: step_index,
@@ -1526,7 +2066,11 @@ impl StateRunner {
                     ReplayResult::FellThrough => {}
                 }
             }
-            // TODO(task-3a.6): pre-step CDP maybe-connect here.
+            // No pre-step CDP maybe-connect — legacy also defers the
+            // decision to the post-tool hook (`maybe_cdp_connect` after
+            // a successful `launch_app` / `focus_window`). CDP tools the
+            // LLM picks before a connection exists return a "not
+            // connected" MCP error that the recovery strategy absorbs.
 
             // 2. Compose the per-turn user message with the state block +
             // the previous tool body as the observation, then compact the
@@ -1555,6 +2099,71 @@ impl StateRunner {
             // 4. Parse the LLM response into an AgentTurn. Task 3a.1's
             // parser maps tool_calls[0] to the action; mutations stay empty.
             let turn = parse_agent_turn(&choice.message)?;
+
+            // 4a'. Synthetic `focus_window` skip. When the MCP surface +
+            // app kind lets us suppress the focus-stealing MCP call
+            // (Native + full AX toolset, Electron/Chrome with live CDP,
+            // or `allow_focus_window = false`), we emit a synthetic
+            // `Success` outcome whose body matches the legacy sentinel
+            // strings and advance the loop without dispatching. The
+            // runner records a step and a `StepCompleted` event so the
+            // call stays visible to the transcript / UI, but the
+            // workflow-graph filter (`is_synthetic_focus_skip`) keeps
+            // it out of the recorded workflow. Port of
+            // `AgentRunner::execute_response`'s focus_window guard
+            // (`loop_runner.rs:1931-1955`).
+            if let AgentAction::ToolCall {
+                tool_name,
+                arguments,
+                tool_call_id,
+            } = &turn.action
+                && tool_name == "focus_window"
+                && let Some(reason) = self.should_skip_focus_window(arguments, mcp)
+            {
+                self.emit_event(AgentEvent::SubAction {
+                    tool_name: "focus_window".to_string(),
+                    summary: reason.sub_action_summary().to_string(),
+                })
+                .await;
+                let skip_body = reason.llm_message().to_string();
+                debug!(
+                    tool = "focus_window",
+                    app = arguments
+                        .get("app_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(""),
+                    reason = skip_body,
+                    "state-spine: suppressing focus_window",
+                );
+                let step_idx_for_event = self.state.steps.len();
+                self.state.steps.push(AgentStep {
+                    index: step_idx_for_event,
+                    elements: elements.clone(),
+                    command: AgentCommand::ToolCall {
+                        tool_name: tool_name.clone(),
+                        arguments: arguments.clone(),
+                        tool_call_id: tool_call_id.clone(),
+                    },
+                    outcome: StepOutcome::Success(skip_body.clone()),
+                    page_url: self.state.current_url.clone(),
+                });
+                self.state.consecutive_errors = 0;
+                self.consecutive_errors = 0;
+                last_failure = None;
+                previous_result = Some(skip_body.clone());
+                self.emit_event(AgentEvent::StepCompleted {
+                    step_index: step_idx_for_event,
+                    tool_name: "focus_window".to_string(),
+                    summary: crate::agent::prompt_spine::truncate_summary(&skip_body, 120),
+                })
+                .await;
+                append_assistant_and_tool_result(
+                    &mut messages,
+                    &choice.message,
+                    previous_result.as_deref(),
+                );
+                continue;
+            }
 
             // 4a. Permission policy + approval gate for live `ToolCall`
             // actions. Mirrors `AgentRunner::execute_response`'s pre-
@@ -1762,8 +2371,16 @@ impl StateRunner {
                             }
                         }
                     }
-                    // TODO(task-3a.6): auto_connect_cdp + synthetic
-                    // focus_window skip go here.
+                    // Auto-connect CDP after a successful `launch_app`
+                    // / `focus_window` (Electron / Chrome targets only;
+                    // native apps short-circuit inside the helper).
+                    // Keeps `cdp_state` in lock-step with `quit_app`
+                    // too. Synthetic focus_window skips never reach
+                    // this arm — they short-circuit before tool
+                    // dispatch above (4a') — so the hook does not need
+                    // an is-synthetic guard here.
+                    self.maybe_cdp_connect(&tool_name, &tool_arguments, &tool_body, mcp)
+                        .await;
                 }
                 TurnOutcome::ToolError { tool_name, error } => {
                     let (command, step_outcome, tool_arguments) = match &turn.action {
@@ -2486,5 +3103,37 @@ mod agent_turn_parsing_tests {
         }"#;
         let turn: AgentTurn = serde_json::from_str(json).unwrap();
         assert!(matches!(turn.action, AgentAction::ToolCall { .. }));
+    }
+}
+
+/// Test-only re-exports for Task 3a.6 unit tests that need access to the
+/// otherwise-private CDP classifier helpers. Keeps the helpers private on
+/// the production surface while letting the integration tests exercise
+/// them directly.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use serde_json::Value;
+
+    use super::{FocusSkipReason, StateRunner};
+    use crate::executor::Mcp;
+
+    pub(crate) fn call_should_skip_focus_window<M: Mcp + ?Sized>(
+        runner: &StateRunner,
+        arguments: &Value,
+        mcp: &M,
+    ) -> Option<FocusSkipReason> {
+        runner.should_skip_focus_window(arguments, mcp)
+    }
+
+    pub(crate) async fn call_maybe_cdp_connect<M: Mcp + ?Sized>(
+        runner: &mut StateRunner,
+        tool_name: &str,
+        arguments: &Value,
+        result_text: &str,
+        mcp: &M,
+    ) {
+        runner
+            .maybe_cdp_connect(tool_name, arguments, result_text, mcp)
+            .await;
     }
 }
