@@ -8,7 +8,10 @@ use clickweave_core::cdp::CdpFindElementMatch;
 /// page visited for different goals produces different cache keys. The
 /// goal is trimmed and lowercased so trivial whitespace/casing differences
 /// (`"Login"` vs `" login "`) still hit the same cache entry.
-pub fn cache_key(goal: &str, elements: &[CdpFindElementMatch]) -> String {
+///
+/// Crate-internal: the cache module is private (`mod cache;` in `mod.rs`)
+/// so this helper is only reachable inside `clickweave-engine`.
+pub(crate) fn cache_key(goal: &str, elements: &[CdpFindElementMatch]) -> String {
     let fp = page_fingerprint(elements);
     let normalized = goal.trim().to_lowercase();
     format!("{}|{}", normalized, fp)
@@ -19,14 +22,23 @@ impl AgentCache {
     ///
     /// Returns the cached decision only if the element fingerprint still matches,
     /// ensuring stale cache entries are not reused when the page has changed.
-    pub fn lookup(&self, goal: &str, elements: &[CdpFindElementMatch]) -> Option<&CachedDecision> {
+    ///
+    /// Crate-internal: called by `StateRunner` during exact-replay.
+    pub(crate) fn lookup(
+        &self,
+        goal: &str,
+        elements: &[CdpFindElementMatch],
+    ) -> Option<&CachedDecision> {
         let key = cache_key(goal, elements);
         // The key already encodes the page fingerprint, so a hit implies fingerprint match.
         self.entries.get(&key)
     }
 
     /// Store a decision in the cache.
-    pub fn store(
+    ///
+    /// Crate-internal: prefer `store_with_node` in new code. Retained for
+    /// tests that do not need lineage tracking.
+    pub(crate) fn store(
         &mut self,
         goal: &str,
         elements: &[CdpFindElementMatch],
@@ -51,7 +63,9 @@ impl AgentCache {
     /// Store a decision in the cache and record the node UUID it produced.
     /// Prefer this over `store` — it keeps cache-lineage Vec correct so
     /// `evict_for_node` can prune the right entries later.
-    pub fn store_with_node(
+    ///
+    /// Crate-internal: called by `StateRunner` after a successful turn.
+    pub(crate) fn store_with_node(
         &mut self,
         goal: &str,
         elements: &[CdpFindElementMatch],
@@ -92,19 +106,27 @@ impl AgentCache {
     }
 
     /// Remove a cached decision for the given goal and elements.
-    pub fn remove(&mut self, goal: &str, elements: &[CdpFindElementMatch]) {
+    ///
+    /// Crate-internal: used by `StateRunner` when evicting a stale entry
+    /// after a cache hit fails validation or a user rejects a cached
+    /// action.
+    pub(crate) fn remove(&mut self, goal: &str, elements: &[CdpFindElementMatch]) {
         let key = cache_key(goal, elements);
         self.entries.remove(&key);
     }
 
     /// Load cache entries from a JSON string.
-    pub fn load(json: &str) -> Result<Self, serde_json::Error> {
+    ///
+    /// Crate-internal: external callers should use `load_from_path`.
+    pub(crate) fn load(json: &str) -> Result<Self, serde_json::Error> {
         let entries = serde_json::from_str(json)?;
         Ok(Self { entries })
     }
 
     /// Serialize cache entries to a JSON string.
-    pub fn save(&self) -> Result<String, serde_json::Error> {
+    ///
+    /// Crate-internal: external callers should use `save_to_path`.
+    pub(crate) fn save(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(&self.entries)
     }
 
