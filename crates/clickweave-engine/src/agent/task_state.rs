@@ -182,8 +182,9 @@ impl TaskState {
                     recorded_at_step: step_index,
                     refuted: false,
                 });
-                // Evict oldest entries when over cap.
-                while self.hypotheses.len() > HYPOTHESIS_RING_CAP {
+                // Evict oldest entries when over cap. Only one push per
+                // call, so at most one eviction is ever needed.
+                if self.hypotheses.len() > HYPOTHESIS_RING_CAP {
                     self.hypotheses.remove(0);
                 }
                 Ok(())

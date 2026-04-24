@@ -237,15 +237,7 @@ impl ChatBackend for EchoLlm {
         _options: &ChatOptions,
     ) -> Result<ChatResponse> {
         *self.calls.lock().unwrap() += 1;
-        Ok(ChatResponse {
-            id: "echo".to_string(),
-            choices: vec![Choice {
-                index: 0,
-                message: Message::assistant(&self.text),
-                finish_reason: Some("stop".to_string()),
-            }],
-            usage: None,
-        })
+        Ok(assistant_stop_response("echo", &self.text))
     }
 }
 
@@ -265,15 +257,7 @@ impl ChatBackend for YesVlm {
         _tools: Option<&[Value]>,
         _options: &ChatOptions,
     ) -> Result<ChatResponse> {
-        Ok(ChatResponse {
-            id: "yes-vlm".to_string(),
-            choices: vec![Choice {
-                index: 0,
-                message: Message::assistant("YES"),
-                finish_reason: Some("stop".to_string()),
-            }],
-            usage: None,
-        })
+        Ok(assistant_stop_response("yes-vlm", "YES"))
     }
 }
 
@@ -293,15 +277,10 @@ impl ChatBackend for NoVlm {
         _tools: Option<&[Value]>,
         _options: &ChatOptions,
     ) -> Result<ChatResponse> {
-        Ok(ChatResponse {
-            id: "no-vlm".to_string(),
-            choices: vec![Choice {
-                index: 0,
-                message: Message::assistant("NO: the screenshot does not match the goal"),
-                finish_reason: Some("stop".to_string()),
-            }],
-            usage: None,
-        })
+        Ok(assistant_stop_response(
+            "no-vlm",
+            "NO: the screenshot does not match the goal",
+        ))
     }
 }
 
@@ -517,8 +496,15 @@ pub fn llm_reply_tool_with_id(
 
 /// Build a `ChatResponse` that contains only assistant text (no tool call).
 pub fn llm_reply_text(text: &str) -> ChatResponse {
+    assistant_stop_response("scripted-text", text)
+}
+
+/// Shared builder for a `ChatResponse` that carries a single assistant
+/// message with `finish_reason: "stop"`. Used by the text-only stubs
+/// (`EchoLlm`, `YesVlm`, `NoVlm`, `llm_reply_text`).
+fn assistant_stop_response(id: &str, text: &str) -> ChatResponse {
     ChatResponse {
-        id: "scripted-text".to_string(),
+        id: id.to_string(),
         choices: vec![Choice {
             index: 0,
             message: Message::assistant(text),

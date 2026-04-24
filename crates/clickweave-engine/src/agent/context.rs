@@ -132,18 +132,11 @@ fn json_value_len(value: &Value) -> usize {
 /// loop-detection / recovery code that wants an in-place supersession pass
 /// without running the full compaction.
 pub fn collapse_superseded_snapshots(messages: &[Message]) -> Option<Vec<Message>> {
-    let mut latest_family_index: Option<usize> = None;
-    for (idx, msg) in messages.iter().enumerate() {
-        let Some(tool_name) = resolve_tool_name(messages, msg) else {
-            continue;
-        };
-        if !SNAPSHOT_PRODUCING_TOOLS.contains(&tool_name) {
-            continue;
-        }
-        latest_family_index = Some(idx);
-    }
-
-    let latest_family_index = latest_family_index?;
+    let is_snapshot_family = |msg: &Message| {
+        resolve_tool_name(messages, msg)
+            .is_some_and(|name| SNAPSHOT_PRODUCING_TOOLS.contains(&name))
+    };
+    let latest_family_index = messages.iter().rposition(is_snapshot_family)?;
 
     let mut out = messages.to_vec();
     let mut changed = false;

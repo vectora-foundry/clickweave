@@ -45,19 +45,7 @@ impl AgentCache {
         tool_name: String,
         arguments: serde_json::Value,
     ) {
-        let key = cache_key(goal, elements);
-        let fp = page_fingerprint(elements);
-        let entry = self.entries.entry(key).or_insert_with(|| CachedDecision {
-            tool_name: String::new(),
-            arguments: serde_json::Value::Null,
-            element_fingerprint: String::new(),
-            hit_count: 0,
-            produced_node_ids: Vec::new(),
-        });
-        entry.tool_name = tool_name;
-        entry.arguments = arguments;
-        entry.element_fingerprint = fp;
-        entry.hit_count += 1;
+        self.store_entry(goal, elements, tool_name, arguments, None);
     }
 
     /// Store a decision in the cache and record the node UUID it produced.
@@ -73,6 +61,20 @@ impl AgentCache {
         arguments: serde_json::Value,
         produced_node_id: uuid::Uuid,
     ) {
+        self.store_entry(goal, elements, tool_name, arguments, Some(produced_node_id));
+    }
+
+    /// Shared body for `store` and `store_with_node`. Inserts or updates
+    /// the entry keyed by `(goal, elements)` and optionally appends a
+    /// produced-node id for lineage tracking.
+    fn store_entry(
+        &mut self,
+        goal: &str,
+        elements: &[CdpFindElementMatch],
+        tool_name: String,
+        arguments: serde_json::Value,
+        produced_node_id: Option<uuid::Uuid>,
+    ) {
         let key = cache_key(goal, elements);
         let fp = page_fingerprint(elements);
         let entry = self.entries.entry(key).or_insert_with(|| CachedDecision {
@@ -86,7 +88,9 @@ impl AgentCache {
         entry.arguments = arguments;
         entry.element_fingerprint = fp;
         entry.hit_count += 1;
-        entry.produced_node_ids.push(produced_node_id);
+        if let Some(node_id) = produced_node_id {
+            entry.produced_node_ids.push(node_id);
+        }
     }
 
     /// Remove a node-id from any cache entry that tracks it. When an
