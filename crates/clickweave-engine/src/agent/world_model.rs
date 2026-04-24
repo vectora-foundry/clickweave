@@ -146,6 +146,15 @@ pub struct UncertaintySignals {
 }
 
 impl WorldModel {
+    /// Additively bump the uncertainty score (capped at 1.0) and append a
+    /// short reason string. Shared by `apply_events` and
+    /// `refresh_invalid_fields` so the cap + reason-append logic has one
+    /// home.
+    fn bump_uncertainty(&mut self, delta: f32, reason: String) {
+        self.uncertainty.score = (self.uncertainty.score + delta).min(1.0);
+        self.uncertainty.reasons.push(reason);
+    }
+
     /// Recompute the uncertainty score from signal set + current world
     /// model state per design-doc decision D14. Inputs: number of
     /// invalid (unobserved or invalidated-pending-refresh) fields,
@@ -245,8 +254,8 @@ impl WorldModel {
             self.last_screenshot.is_none(),
             self.last_native_ax_snapshot.is_none(),
         ]
-        .iter()
-        .filter(|present| **present)
+        .into_iter()
+        .filter(|present| *present)
         .count()
     }
 
@@ -271,10 +280,7 @@ impl WorldModel {
                     self.dialog_present = None;
                 }
                 InvalidationEvent::ToolFailed { tool } => {
-                    self.uncertainty.score = (self.uncertainty.score + 0.15).min(1.0);
-                    self.uncertainty
-                        .reasons
-                        .push(format!("tool_failed: {}", tool));
+                    self.bump_uncertainty(0.15, format!("tool_failed: {}", tool));
                 }
                 InvalidationEvent::SnapshotStale { age_steps } => {
                     if let Some(ref ax) = self.last_native_ax_snapshot
@@ -359,12 +365,7 @@ impl WorldModel {
                             ttl_steps: Some(2),
                         });
                     }
-                    Err(_) => {
-                        self.uncertainty.score = (self.uncertainty.score + 0.1).min(1.0);
-                        self.uncertainty
-                            .reasons
-                            .push("cdp_find_elements parse failed".to_string());
-                    }
+                    Err(_) => self.bump_uncertainty(0.1, "cdp_find_elements parse failed".into()),
                 },
                 Ok(None) => {
                     // CDP unavailable — try AX.
@@ -381,25 +382,14 @@ impl WorldModel {
                             });
                         }
                         Ok(None) => {
-                            self.uncertainty.score = (self.uncertainty.score + 0.1).min(1.0);
-                            self.uncertainty
-                                .reasons
-                                .push("neither CDP nor AX available".to_string());
+                            self.bump_uncertainty(0.1, "neither CDP nor AX available".into());
                         }
                         Err(e) => {
-                            self.uncertainty.score = (self.uncertainty.score + 0.15).min(1.0);
-                            self.uncertainty
-                                .reasons
-                                .push(format!("take_ax_snapshot: {}", e));
+                            self.bump_uncertainty(0.15, format!("take_ax_snapshot: {}", e));
                         }
                     }
                 }
-                Err(e) => {
-                    self.uncertainty.score = (self.uncertainty.score + 0.15).min(1.0);
-                    self.uncertainty
-                        .reasons
-                        .push(format!("cdp_find_elements: {}", e));
-                }
+                Err(e) => self.bump_uncertainty(0.15, format!("cdp_find_elements: {}", e)),
             }
         }
 
