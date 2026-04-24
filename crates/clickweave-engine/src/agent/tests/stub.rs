@@ -251,6 +251,11 @@ impl ChatBackend for NoVlm {
 pub struct StaticMcp {
     tools: Vec<Value>,
     replies: Mutex<HashMap<String, String>>,
+    /// Image replies, keyed by tool name. When set, the tool returns a
+    /// single `ToolContent::Image { data, mime_type }` block instead of the
+    /// text reply. Used by completion-verification tests that need
+    /// `take_screenshot` to return an image payload the VLM path can prep.
+    image_replies: Mutex<HashMap<String, (String, String)>>,
 }
 
 impl StaticMcp {
@@ -274,6 +279,7 @@ impl StaticMcp {
         Self {
             tools,
             replies: Mutex::new(HashMap::new()),
+            image_replies: Mutex::new(HashMap::new()),
         }
     }
 
@@ -285,6 +291,18 @@ impl StaticMcp {
             .insert(tool_name.to_string(), body.to_string());
         self
     }
+
+    /// Register a canned image reply for `tool_name`. Takes the already
+    /// base64-encoded image bytes plus its mime type; the stub returns a
+    /// single `ToolContent::Image` block when the tool is called. Used by
+    /// completion-verification tests for `take_screenshot`.
+    pub fn with_image_reply(self, tool_name: &str, base64_data: &str, mime_type: &str) -> Self {
+        self.image_replies.lock().unwrap().insert(
+            tool_name.to_string(),
+            (base64_data.to_string(), mime_type.to_string()),
+        );
+        self
+    }
 }
 
 impl Mcp for StaticMcp {
@@ -293,6 +311,17 @@ impl Mcp for StaticMcp {
         name: &str,
         _arguments: Option<Value>,
     ) -> anyhow::Result<ToolCallResult> {
+        // Image replies take precedence — they represent tools like
+        // `take_screenshot` whose normal shape is image content.
+        if let Some((data, mime_type)) = self.image_replies.lock().unwrap().get(name) {
+            return Ok(ToolCallResult {
+                content: vec![ToolContent::Image {
+                    data: data.clone(),
+                    mime_type: mime_type.clone(),
+                }],
+                is_error: None,
+            });
+        }
         let replies = self.replies.lock().unwrap();
         let text = replies
             .get(name)

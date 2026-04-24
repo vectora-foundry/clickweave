@@ -110,6 +110,11 @@ pub struct StateRunner {
     /// Directory for completion-verification artifacts (PNG + JSON).
     /// `None` disables artifact persistence.
     pub verification_artifacts_dir: Option<PathBuf>,
+    /// Monotonic counter feeding the `completion_verification_<n>.{png,json}`
+    /// filename ordinal so repeated `verify_completion` calls within the
+    /// same run do not overwrite each other. Mirrors
+    /// `AgentRunner::verification_count` (`loop_runner.rs:189`).
+    pub verification_count: u32,
 }
 
 impl StateRunner {
@@ -136,6 +141,7 @@ impl StateRunner {
             vision: None,
             permissions: PermissionPolicy::default(),
             verification_artifacts_dir: None,
+            verification_count: 0,
         }
     }
 
@@ -538,10 +544,12 @@ enum ReplayResult {
     FellThrough,
 }
 
-/// Result of requesting user approval for a cached tool action. Internal
-/// to the state-spine cache-replay path; lands in its own module when
-/// Task 3a.3 formalises the approval wiring.
-enum CachedApprovalResult {
+/// Result of requesting user approval for a tool action. Shared by both
+/// the cache-replay path (Task 3a.2) and the live dispatch path
+/// (Task 3a.3) — the only behavioural difference between the two is the
+/// `" (cached)"` suffix in the human-facing description, enforced by the
+/// single helper [`StateRunner::request_approval`] below.
+enum ApprovalResult {
     Approved,
     Rejected,
     Unavailable,
@@ -681,21 +689,28 @@ impl StateRunner {
         evaluate_permission(&self.permissions, tool_name, arguments, &ann)
     }
 
-    /// Prompt the operator for approval of a cached tool action. `None`
-    /// when no approval gate is configured. Mirrors
-    /// `AgentRunner::request_approval` — kept local to the state-spine
-    /// runner until Task 3a.3 extracts a shared helper.
-    async fn request_cached_approval(
+    /// Prompt the operator for approval of a tool action. Port of
+    /// `AgentRunner::request_approval` (`loop_runner.rs:1525-1565`). Returns
+    /// `None` when no approval gate is configured (auto-approve).
+    ///
+    /// `description_suffix` is appended to the human-facing description so
+    /// callers can distinguish live calls from cached replays (the cache
+    /// path passes `" (cached)"`; the live path passes `""`). This is the
+    /// only behavioural difference between cached and live approval —
+    /// sharing this helper avoids drift between the two paths.
+    async fn request_approval(
         &self,
         tool_name: &str,
         arguments: &Value,
         step_index: usize,
-    ) -> Option<CachedApprovalResult> {
+        description_suffix: &str,
+    ) -> Option<ApprovalResult> {
         let gate = self.approval_gate.as_ref()?;
         let description = format!(
-            "{} with {} (cached)",
+            "{} with {}{}",
             tool_name,
             serde_json::to_string(arguments).unwrap_or_default(),
+            description_suffix,
         );
         let request = ApprovalRequest {
             step_index,
@@ -706,12 +721,137 @@ impl StateRunner {
         let (resp_tx, resp_rx) = oneshot::channel();
         if gate.request_tx.send((request, resp_tx)).await.is_ok() {
             match resp_rx.await {
-                Ok(true) => Some(CachedApprovalResult::Approved),
-                Ok(false) => Some(CachedApprovalResult::Rejected),
-                Err(_) => Some(CachedApprovalResult::Unavailable),
+                Ok(true) => {
+                    debug!(tool = %tool_name, "state-spine: user approved action");
+                    Some(ApprovalResult::Approved)
+                }
+                Ok(false) => {
+                    tracing::info!(tool = %tool_name, "state-spine: user rejected action");
+                    Some(ApprovalResult::Rejected)
+                }
+                Err(_) => {
+                    warn!(tool = %tool_name, "state-spine: approval channel closed");
+                    Some(ApprovalResult::Unavailable)
+                }
             }
         } else {
-            Some(CachedApprovalResult::Unavailable)
+            warn!(tool = %tool_name, "state-spine: approval channel send failed");
+            Some(ApprovalResult::Unavailable)
+        }
+    }
+
+    /// Convenience wrapper for the cache-replay path — tags the approval
+    /// request description as `(cached)` so the UI can distinguish a live
+    /// dispatch from a replay.
+    async fn request_cached_approval(
+        &self,
+        tool_name: &str,
+        arguments: &Value,
+        step_index: usize,
+    ) -> Option<ApprovalResult> {
+        self.request_approval(tool_name, arguments, step_index, " (cached)")
+            .await
+    }
+
+    /// Verify an agent-reported completion against a fresh screenshot via
+    /// the VLM. Port of `AgentRunner::verify_completion`
+    /// (`loop_runner.rs:1580-1660`).
+    ///
+    /// Returns the prepared base64 screenshot + VLM reply **only when the
+    /// VLM disagreed** (verdict = NO). The caller uses that payload to
+    /// synthesise a `CompletionDisagreement` event and terminal reason.
+    /// When the VLM agrees, or any step of the verification path fails (no
+    /// vision backend, screenshot failure, VLM call failure, empty reply),
+    /// returns `None` and the caller falls through to the normal
+    /// `Completed` path — verification errors must not tank the run.
+    ///
+    /// On both YES and NO verdicts, a PNG screenshot + JSON metadata are
+    /// written to `self.verification_artifacts_dir` when set. Persistence
+    /// failures are logged at `warn` and do not affect the return value.
+    async fn verify_completion<M: Mcp + ?Sized>(
+        &mut self,
+        goal: &str,
+        summary: &str,
+        mcp: &M,
+    ) -> Option<(String, String)> {
+        use crate::agent::completion_check::{
+            VlmVerdict, build_completion_prompt, parse_yes_no, persist_verification_artifacts,
+            pick_completion_screenshot_scope,
+        };
+        use crate::executor::screenshot::capture_screenshot_for_vlm;
+
+        let vision = self.vision.as_ref()?.clone();
+
+        // StateRunner does not yet track a `CdpState` — Task 3a.6 adds
+        // auto-CDP-connect plumbing that will populate `connected_app`.
+        // Until then, the scope falls back to full-screen capture, which
+        // every MCP surface accepts.
+        let scope = pick_completion_screenshot_scope(None);
+        let Some((prepared_b64, mime)) = capture_screenshot_for_vlm(mcp, scope.clone()).await
+        else {
+            warn!(
+                scope = ?scope,
+                "state-spine: completion verification screenshot capture failed — skipping VLM check",
+            );
+            return None;
+        };
+
+        let messages = vec![Message::user_with_images(
+            build_completion_prompt(goal, summary),
+            vec![(prepared_b64.clone(), mime)],
+        )];
+        let raw_reply = match vision.chat_boxed(&messages, None).await {
+            Ok(resp) => resp
+                .choices
+                .first()
+                .and_then(|c| c.message.content_text())
+                .map(str::to_owned),
+            Err(e) => {
+                warn!(error = %e, "state-spine: VLM call failed — skipping completion check");
+                return None;
+            }
+        };
+        let reply = match raw_reply {
+            Some(r) if !r.trim().is_empty() => r,
+            _ => {
+                warn!("state-spine: VLM returned empty reply — skipping completion check");
+                return None;
+            }
+        };
+
+        let verdict = parse_yes_no(&reply);
+
+        // Persist artifacts for both verdicts so every verification call
+        // leaves forensic evidence. Failures are non-fatal.
+        if let Some(dir) = &self.verification_artifacts_dir {
+            let ordinal = self.verification_count;
+            if let Err(e) = persist_verification_artifacts(
+                dir,
+                ordinal,
+                verdict,
+                &reply,
+                goal,
+                summary,
+                &prepared_b64,
+            ) {
+                warn!(
+                    ordinal,
+                    error = %e,
+                    "state-spine: failed to persist completion-verification artifacts (non-fatal)",
+                );
+            }
+        }
+        self.verification_count += 1;
+
+        match verdict {
+            VlmVerdict::Yes => {
+                tracing::info!(reply = %reply, "state-spine: VLM confirmed completion");
+                None
+            }
+            VlmVerdict::No => {
+                tracing::info!(reply = %reply, "state-spine: VLM rejected completion");
+                Some((prepared_b64, reply))
+            }
         }
     }
 
@@ -871,7 +1011,7 @@ impl StateRunner {
                     .request_cached_approval(&cached_tool, &cached_args, step_index)
                     .await
                 {
-                    Some(CachedApprovalResult::Rejected) => {
+                    Some(ApprovalResult::Rejected) => {
                         // Branch 6: operator rejected — evict + replan.
                         self.cache.remove(goal, elements);
                         *last_cache_key = None;
@@ -891,7 +1031,7 @@ impl StateRunner {
                         *previous_result = Some("Replan: user rejected cached action".to_string());
                         return ReplayResult::Continue;
                     }
-                    Some(CachedApprovalResult::Unavailable) => {
+                    Some(ApprovalResult::Unavailable) => {
                         // Branch 7: approval channel gone — terminal.
                         self.state.terminal_reason = Some(TerminalReason::ApprovalUnavailable);
                         return ReplayResult::Break;
@@ -1246,6 +1386,101 @@ impl StateRunner {
             // parser maps tool_calls[0] to the action; mutations stay empty.
             let turn = parse_agent_turn(&choice.message)?;
 
+            // 4a. Permission policy + approval gate for live `ToolCall`
+            // actions. Mirrors `AgentRunner::execute_response`'s pre-
+            // dispatch policy check (`loop_runner.rs:1964-2013`). The
+            // cache-replay path has its own identical gate at
+            // `try_replay_cache`; observation tools bypass approval
+            // entirely on both paths.
+            if let AgentAction::ToolCall {
+                tool_name,
+                arguments,
+                tool_call_id,
+            } = &turn.action
+            {
+                let needs_approval = !is_observation_tool(tool_name, &annotations_by_tool);
+                if needs_approval {
+                    match self.policy_for(tool_name, arguments, &annotations_by_tool) {
+                        PermissionAction::Deny => {
+                            warn!(tool = %tool_name, "state-spine: tool denied by permission policy");
+                            let err_msg =
+                                format!("Tool `{}` denied by permission policy", tool_name);
+                            self.state.steps.push(AgentStep {
+                                index: self.state.steps.len(),
+                                elements: elements.clone(),
+                                command: AgentCommand::ToolCall {
+                                    tool_name: tool_name.clone(),
+                                    arguments: arguments.clone(),
+                                    tool_call_id: tool_call_id.clone(),
+                                },
+                                outcome: StepOutcome::Error(err_msg.clone()),
+                                page_url: self.state.current_url.clone(),
+                            });
+                            self.state.consecutive_errors += 1;
+                            self.consecutive_errors = self.state.consecutive_errors;
+                            previous_result = Some(err_msg);
+                            append_assistant_and_tool_result(
+                                &mut messages,
+                                &choice.message,
+                                previous_result.as_deref(),
+                            );
+                            continue;
+                        }
+                        PermissionAction::Allow => {
+                            // Policy pre-authorised this tool — skip the
+                            // approval prompt entirely.
+                            debug!(
+                                tool = %tool_name,
+                                "state-spine: permission policy allowed tool — skipping approval"
+                            );
+                        }
+                        PermissionAction::Ask => {
+                            match self
+                                .request_approval(tool_name, arguments, self.state.steps.len(), "")
+                                .await
+                            {
+                                Some(ApprovalResult::Rejected) => {
+                                    // Operator rejected: record a Replan
+                                    // step and re-observe next iteration
+                                    // — matches the cache-replay branch
+                                    // and the legacy `StepOutcome::Replan`
+                                    // return from `execute_response`.
+                                    self.state.steps.push(AgentStep {
+                                        index: self.state.steps.len(),
+                                        elements: elements.clone(),
+                                        command: AgentCommand::ToolCall {
+                                            tool_name: tool_name.clone(),
+                                            arguments: arguments.clone(),
+                                            tool_call_id: tool_call_id.clone(),
+                                        },
+                                        outcome: StepOutcome::Replan(
+                                            "User rejected action".to_string(),
+                                        ),
+                                        page_url: self.state.current_url.clone(),
+                                    });
+                                    previous_result =
+                                        Some("Replan: user rejected action".to_string());
+                                    append_assistant_and_tool_result(
+                                        &mut messages,
+                                        &choice.message,
+                                        previous_result.as_deref(),
+                                    );
+                                    continue;
+                                }
+                                Some(ApprovalResult::Unavailable) => {
+                                    warn!("state-spine: approval system unavailable — terminating");
+                                    self.state.terminal_reason =
+                                        Some(TerminalReason::ApprovalUnavailable);
+                                    break;
+                                }
+                                // Approved or no gate configured — proceed.
+                                Some(ApprovalResult::Approved) | None => {}
+                            }
+                        }
+                    }
+                }
+            }
+
             // 5. Apply mutations + dispatch the action via run_turn.
             let executor = McpToolExecutor { mcp };
             let (outcome, warnings) = self.run_turn(&turn, &executor).await;
@@ -1320,9 +1555,33 @@ impl StateRunner {
                     // TODO(task-3a.6): recovery strategy goes here.
                 }
                 TurnOutcome::Done { summary } => {
-                    // TODO(task-3a.3): verify_completion (VLM check) goes
-                    // here. The current skeleton accepts the agent's
-                    // self-reported completion verbatim.
+                    // Post-`agent_done` VLM verification. A NO verdict
+                    // halts the run and surfaces a disagreement event so
+                    // the user can adjudicate; a YES verdict (or any
+                    // verification error — no backend, screenshot failure,
+                    // empty reply, call failure) falls through to normal
+                    // completion. Verification must never tank the run.
+                    let disagreement = self.verify_completion(&goal, &summary, mcp).await;
+                    if let Some((screenshot_b64, vlm_reasoning)) = disagreement {
+                        warn!(
+                            "state-spine: VLM disagreed with agent_done — halting for user review"
+                        );
+                        self.emit_event(AgentEvent::CompletionDisagreement {
+                            screenshot_b64,
+                            vlm_reasoning: vlm_reasoning.clone(),
+                            agent_summary: summary.clone(),
+                        })
+                        .await;
+                        self.state.terminal_reason = Some(TerminalReason::CompletionDisagreement {
+                            agent_summary: summary.clone(),
+                            vlm_reasoning,
+                        });
+                        // Leave `state.completed` as `false` — the run
+                        // halts pending user decision instead of
+                        // re-planning automatically.
+                        break;
+                    }
+
                     self.state.completed = true;
                     self.state.summary = Some(summary.clone());
                     self.state.terminal_reason = Some(TerminalReason::Completed { summary });
