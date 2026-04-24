@@ -2243,6 +2243,32 @@ impl StateRunner {
             // 1. Observe — fetch elements + detect page transition.
             let elements = self.fetch_elements(mcp).await;
 
+            // Mirror the observation into the world model so the state
+            // block renderer can print the interactive-element surface.
+            // Without this the renderer's `wm.elements` branch never
+            // fires and the LLM loses its per-turn uid/label vocabulary.
+            // CDP-only: native AX elements are surfaced through the
+            // `take_ax_snapshot` tool-result body (no runner plumbing),
+            // and OCR / AX trees are published by dedicated paths.
+            {
+                use crate::agent::world_model::{Fresh, FreshnessSource, ObservedElement};
+                let observed: Vec<ObservedElement> =
+                    elements.iter().cloned().map(ObservedElement::Cdp).collect();
+                if !observed.is_empty() {
+                    self.world_model.elements = Some(Fresh {
+                        value: observed,
+                        written_at: self.step_index,
+                        source: FreshnessSource::DirectObservation,
+                        ttl_steps: Some(2),
+                    });
+                } else {
+                    // No elements this turn (page empty, CDP unavailable,
+                    // or parse failure) — drop the stale cache so the
+                    // renderer does not print last turn's surface.
+                    self.world_model.elements = None;
+                }
+            }
+
             // 1a. Cache-replay gate. `is_replay_eligible` enforces D17
             // (Phase::Exploring, empty subgoal stack, no watch slots);
             // `try_replay_cache` layers in the per-entry stale-on-read
@@ -2384,8 +2410,9 @@ impl StateRunner {
                             warn!(tool = %tool_name, "state-spine: tool denied by permission policy");
                             let err_msg =
                                 format!("Tool `{}` denied by permission policy", tool_name);
+                            let step_idx_for_event = self.state.steps.len();
                             self.state.steps.push(AgentStep {
-                                index: self.state.steps.len(),
+                                index: step_idx_for_event,
                                 elements: elements.clone(),
                                 command: AgentCommand::ToolCall {
                                     tool_name: tool_name.clone(),
@@ -2397,12 +2424,64 @@ impl StateRunner {
                             });
                             self.state.consecutive_errors += 1;
                             self.consecutive_errors = self.state.consecutive_errors;
-                            previous_result = Some(err_msg);
+                            previous_result = Some(err_msg.clone());
                             append_assistant_and_tool_result(
                                 &mut messages,
                                 &choice.message,
                                 previous_result.as_deref(),
                             );
+
+                            // Parity with the `TurnOutcome::ToolError` path
+                            // and the cache-replay Deny branch: emit
+                            // `StepFailed`, honor loop-detection on the
+                            // identical `(tool, args, error)` tuple, and
+                            // respect the `recovery_strategy` so repeated
+                            // policy denials hit the same `MaxErrorsReached`
+                            // terminal state as real MCP errors.
+                            self.emit_event(AgentEvent::StepFailed {
+                                step_index: step_idx_for_event,
+                                tool_name: tool_name.clone(),
+                                error: err_msg.clone(),
+                            })
+                            .await;
+
+                            let looped = matches!(
+                                last_failure.as_ref(),
+                                Some((prev_tool, prev_args, prev_err))
+                                    if prev_tool == tool_name
+                                        && prev_args == arguments
+                                        && prev_err == &err_msg
+                            );
+                            if looped {
+                                warn!(
+                                    tool = %tool_name,
+                                    "state-spine: identical policy-deny repeated — aborting"
+                                );
+                                self.state.terminal_reason =
+                                    Some(TerminalReason::LoopDetected {
+                                        tool_name: tool_name.clone(),
+                                        error: err_msg.clone(),
+                                    });
+                                break;
+                            }
+                            last_failure =
+                                Some((tool_name.clone(), arguments.clone(), err_msg.clone()));
+
+                            let action = recovery_strategy(
+                                self.state.consecutive_errors,
+                                self.config.max_consecutive_errors,
+                            );
+                            if matches!(action, RecoveryAction::Abort) {
+                                warn!(
+                                    errors = self.state.consecutive_errors,
+                                    "state-spine: too many consecutive policy denials — aborting"
+                                );
+                                self.state.terminal_reason =
+                                    Some(TerminalReason::MaxErrorsReached {
+                                        consecutive_errors: self.state.consecutive_errors,
+                                    });
+                                break;
+                            }
                             continue;
                         }
                         PermissionAction::Allow => {
@@ -2820,10 +2899,14 @@ fn append_assistant_and_tool_result(
         .and_then(|calls| calls.first())
     {
         messages.push(Message::assistant_tool_calls(vec![tc.clone()]));
-        messages.push(Message::tool_result(
-            &tc.id,
-            previous_result.unwrap_or("ok"),
-        ));
+        // Stamp the tool-result's `name` from the assistant's tool-call
+        // function name so `context::compact` can identify stale
+        // snapshot-family bodies by the `SNAPSHOT_TOOL_NAMES` set.
+        // Without this, production tool-result messages leave `name`
+        // unset and the snapshot-drop branch never fires for live runs.
+        let mut tool_msg = Message::tool_result(&tc.id, previous_result.unwrap_or("ok"));
+        tool_msg.name = Some(tc.function.name.clone());
+        messages.push(tool_msg);
     } else if let Some(text) = assistant.content_text() {
         messages.push(Message::assistant(text));
     }
