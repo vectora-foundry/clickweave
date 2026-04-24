@@ -4,6 +4,7 @@ use serde::Serialize;
 
 /// Harness-inferred phase of the agent run. Never authored by the LLM (D5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
     /// No active subgoal; the agent is deciding what to pursue.
@@ -110,5 +111,18 @@ mod tests {
             current_step: 5,
         });
         assert_eq!(p, Phase::Recovering);
+    }
+}
+
+#[cfg(all(test, feature = "specta"))]
+mod specta_derive_tests {
+    //! D17: `Phase` is part of the Tauri `agent://*` event payload surface
+    //! and must derive `specta::Type` so the bindings exporter picks it up.
+    use super::*;
+    use specta::{Generics, Type, TypeCollection};
+
+    #[test]
+    fn phase_derives_specta_type() {
+        let _: specta::DataType = Phase::inline(&mut TypeCollection::default(), Generics::NONE);
     }
 }

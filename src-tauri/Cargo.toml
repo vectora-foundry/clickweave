@@ -30,7 +30,7 @@ tracing-subscriber.workspace = true
 image.workspace = true
 regex = "1"
 clickweave-core = { workspace = true, features = ["specta"] }
-clickweave-engine.workspace = true
+clickweave-engine = { workspace = true, features = ["specta"] }
 clickweave-llm = { workspace = true, features = ["specta"] }
 clickweave-mcp.workspace = true
 

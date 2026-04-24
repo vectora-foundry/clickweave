@@ -10,6 +10,7 @@ use crate::agent::phase::Phase;
 pub const HYPOTHESIS_RING_CAP: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct SubgoalId(uuid::Uuid);
 
 impl SubgoalId {
@@ -25,6 +26,7 @@ impl Default for SubgoalId {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct Subgoal {
     pub id: SubgoalId,
     pub text: String,
@@ -33,6 +35,7 @@ pub struct Subgoal {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "snake_case")]
 #[allow(clippy::enum_variant_names)] // `Pending*` prefix is part of the LLM-facing schema (D10).
 pub enum WatchSlotName {
@@ -42,6 +45,7 @@ pub enum WatchSlotName {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct WatchSlot {
     pub name: WatchSlotName,
     pub note: String,
@@ -49,6 +53,7 @@ pub struct WatchSlot {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct Hypothesis {
     pub text: String,
     pub recorded_at_step: usize,
@@ -56,6 +61,7 @@ pub struct Hypothesis {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct Milestone {
     pub subgoal_id: SubgoalId,
     pub text: String,
@@ -65,6 +71,7 @@ pub struct Milestone {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct TaskState {
     pub goal: String,
     pub subgoal_stack: Vec<Subgoal>,
@@ -407,5 +414,51 @@ mod tests {
         s.apply(&TaskStateMutation::RefuteHypothesis { index: 0 }, 2)
             .unwrap();
         assert!(s.hypotheses[0].refuted);
+    }
+}
+
+#[cfg(all(test, feature = "specta"))]
+mod specta_derive_tests {
+    //! D17: `TaskState` and its transitive members are part of the Tauri
+    //! `agent://task_state_changed` event payload surface and must derive
+    //! `specta::Type` so the bindings exporter picks them up.
+    use super::*;
+    use specta::{Generics, Type, TypeCollection};
+
+    #[test]
+    fn task_state_derives_specta_type() {
+        let _: specta::DataType = TaskState::inline(&mut TypeCollection::default(), Generics::NONE);
+    }
+
+    #[test]
+    fn subgoal_derives_specta_type() {
+        let _: specta::DataType = Subgoal::inline(&mut TypeCollection::default(), Generics::NONE);
+    }
+
+    #[test]
+    fn subgoal_id_derives_specta_type() {
+        let _: specta::DataType = SubgoalId::inline(&mut TypeCollection::default(), Generics::NONE);
+    }
+
+    #[test]
+    fn watch_slot_derives_specta_type() {
+        let _: specta::DataType = WatchSlot::inline(&mut TypeCollection::default(), Generics::NONE);
+    }
+
+    #[test]
+    fn watch_slot_name_derives_specta_type() {
+        let _: specta::DataType =
+            WatchSlotName::inline(&mut TypeCollection::default(), Generics::NONE);
+    }
+
+    #[test]
+    fn hypothesis_derives_specta_type() {
+        let _: specta::DataType =
+            Hypothesis::inline(&mut TypeCollection::default(), Generics::NONE);
+    }
+
+    #[test]
+    fn milestone_derives_specta_type() {
+        let _: specta::DataType = Milestone::inline(&mut TypeCollection::default(), Generics::NONE);
     }
 }

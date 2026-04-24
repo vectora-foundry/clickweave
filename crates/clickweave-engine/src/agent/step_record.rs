@@ -12,6 +12,7 @@ use crate::agent::world_model::{
 };
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "snake_case")]
 pub enum BoundaryKind {
     Terminal,
@@ -20,6 +21,7 @@ pub enum BoundaryKind {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct AxSnapshotRef {
     pub snapshot_id: String,
     pub element_count: usize,
@@ -27,6 +29,7 @@ pub struct AxSnapshotRef {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ElementSummary {
     pub total: usize,
     pub by_role: HashMap<String, usize>,
@@ -37,6 +40,7 @@ pub struct ElementSummary {
 /// Drops `ax_tree_text` and the full element list. Keeps identity +
 /// signature data only. Used in `StepRecord` for `events.jsonl` writes.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct WorldModelSnapshot {
     pub focused_app: Option<FocusedApp>,
     pub window_list: Option<Vec<WindowRef>>,
@@ -91,6 +95,7 @@ fn element_summary(els: &[ObservedElement]) -> ElementSummary {
 /// A single boundary record written to `events.jsonl`. Spec 1 only writes;
 /// Spec 2 will read these for episodic memory.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct StepRecord {
     pub step_index: usize,
     pub boundary_kind: BoundaryKind,
@@ -179,5 +184,44 @@ mod tests {
         let json = serde_json::to_string(&snap).unwrap();
         assert!(!json.contains("\"uid\":\"d0\""));
         assert!(!json.contains("\"uid\":\"d9\""));
+    }
+}
+
+#[cfg(all(test, feature = "specta"))]
+mod specta_derive_tests {
+    //! D17: `StepRecord` and its projection types are part of the Tauri
+    //! `agent://boundary_record_written` event payload surface and must
+    //! derive `specta::Type` so the bindings exporter picks them up.
+    use super::*;
+    use specta::{Generics, Type, TypeCollection};
+
+    #[test]
+    fn boundary_kind_derives_specta_type() {
+        let _: specta::DataType =
+            BoundaryKind::inline(&mut TypeCollection::default(), Generics::NONE);
+    }
+
+    #[test]
+    fn ax_snapshot_ref_derives_specta_type() {
+        let _: specta::DataType =
+            AxSnapshotRef::inline(&mut TypeCollection::default(), Generics::NONE);
+    }
+
+    #[test]
+    fn element_summary_derives_specta_type() {
+        let _: specta::DataType =
+            ElementSummary::inline(&mut TypeCollection::default(), Generics::NONE);
+    }
+
+    #[test]
+    fn world_model_snapshot_derives_specta_type() {
+        let _: specta::DataType =
+            WorldModelSnapshot::inline(&mut TypeCollection::default(), Generics::NONE);
+    }
+
+    #[test]
+    fn step_record_derives_specta_type() {
+        let _: specta::DataType =
+            StepRecord::inline(&mut TypeCollection::default(), Generics::NONE);
     }
 }

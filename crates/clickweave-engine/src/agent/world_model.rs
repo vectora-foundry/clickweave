@@ -23,6 +23,7 @@ pub struct Fresh<T> {
 /// Classification for the currently-focused app. Mirrors the existing
 /// `AppKind` classification in `loop_runner.rs` — will unify in Phase 4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "snake_case")]
 pub enum AppKind {
     Native,
@@ -31,6 +32,7 @@ pub enum AppKind {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct FocusedApp {
     pub name: String,
     pub kind: AppKind,
@@ -38,6 +40,7 @@ pub struct FocusedApp {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct WindowRef {
     pub app_name: String,
     pub title: String,
@@ -45,6 +48,7 @@ pub struct WindowRef {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct CdpPageState {
     pub url: String,
     pub page_fingerprint: String,
@@ -88,6 +92,7 @@ pub struct OcrMatch {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ScreenshotRef {
     pub screenshot_id: String,
     pub captured_at_step: usize,
@@ -103,6 +108,7 @@ pub struct AxSnapshotData {
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct UncertaintyScore {
     pub score: f32, // 0.0 .. 1.0
     pub reasons: Vec<String>,
@@ -1087,5 +1093,43 @@ mod observation_union_tests {
         assert!(!is_state_transition_tool("cdp_click"));
         assert!(!is_state_transition_tool("take_ax_snapshot"));
         assert!(!is_state_transition_tool("ax_click"));
+    }
+}
+
+#[cfg(all(test, feature = "specta"))]
+mod specta_derive_tests {
+    //! D17: the `WorldModelSnapshot` surface types rendered into the
+    //! `agent://world_model_changed` event payload must derive
+    //! `specta::Type` so the bindings exporter picks them up.
+    use super::*;
+    use specta::{Generics, Type, TypeCollection};
+
+    #[test]
+    fn uncertainty_score_derives_specta_type() {
+        let _: specta::DataType =
+            UncertaintyScore::inline(&mut TypeCollection::default(), Generics::NONE);
+    }
+
+    #[test]
+    fn focused_app_derives_specta_type() {
+        let _: specta::DataType =
+            FocusedApp::inline(&mut TypeCollection::default(), Generics::NONE);
+    }
+
+    #[test]
+    fn window_ref_derives_specta_type() {
+        let _: specta::DataType = WindowRef::inline(&mut TypeCollection::default(), Generics::NONE);
+    }
+
+    #[test]
+    fn cdp_page_state_derives_specta_type() {
+        let _: specta::DataType =
+            CdpPageState::inline(&mut TypeCollection::default(), Generics::NONE);
+    }
+
+    #[test]
+    fn screenshot_ref_derives_specta_type() {
+        let _: specta::DataType =
+            ScreenshotRef::inline(&mut TypeCollection::default(), Generics::NONE);
     }
 }
