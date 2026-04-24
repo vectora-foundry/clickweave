@@ -7,7 +7,7 @@
 //!   Run 2's first new node.
 
 use super::{MockAgent, MockMcp};
-use crate::agent::loop_runner::AgentRunner;
+use crate::agent::StateRunner;
 use crate::agent::types::AgentConfig;
 use crate::executor::Mcp;
 use clickweave_core::Workflow;
@@ -29,13 +29,14 @@ async fn sequential_runs_chain_via_anchor() {
         ..Default::default()
     };
 
-    let mut runner1 = AgentRunner::new(&llm1, config.clone()).with_run_id(run_id_1);
+    let runner1 = StateRunner::new("send test".to_string(), config.clone()).with_run_id(run_id_1);
     let mcp_tools = mcp1.tools_as_openai();
-    let state1 = runner1
+    let (state1, _cache1) = runner1
         .run(
+            &llm1,
+            &mcp1,
             "send test".to_string(),
             Workflow::default(),
-            &mcp1,
             None,
             mcp_tools.clone(),
             None,
@@ -68,12 +69,13 @@ async fn sequential_runs_chain_via_anchor() {
         run_id: run_id_1,
     }];
 
-    let mut runner2 = AgentRunner::new(&llm2, config).with_run_id(run_id_2);
-    let state2 = runner2
+    let runner2 = StateRunner::new("wait for reply".to_string(), config).with_run_id(run_id_2);
+    let (state2, _cache2) = runner2
         .run(
+            &llm2,
+            &mcp2,
             "wait for reply".to_string(),
             Workflow::default(),
-            &mcp2,
             None,
             mcp2.tools_as_openai(),
             Some(last_id_1),
