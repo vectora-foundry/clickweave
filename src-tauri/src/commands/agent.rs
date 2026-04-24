@@ -429,6 +429,47 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
         // channel. Persisting it is handled in
         // `await_disagreement_resolution`.
         AgentEvent::CompletionDisagreementResolved { .. } => {}
+        AgentEvent::TaskStateChanged {
+            run_id: event_run_id,
+            task_state,
+        } => {
+            let _ = app.emit(
+                "agent://task_state_changed",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "event_run_id": event_run_id,
+                    "task_state": task_state,
+                }),
+            );
+        }
+        AgentEvent::WorldModelChanged {
+            run_id: event_run_id,
+            diff,
+        } => {
+            let _ = app.emit(
+                "agent://world_model_changed",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "event_run_id": event_run_id,
+                    "diff": diff,
+                }),
+            );
+        }
+        AgentEvent::BoundaryRecordWritten {
+            run_id: event_run_id,
+            boundary_kind,
+            step_index,
+        } => {
+            let _ = app.emit(
+                "agent://boundary_record_written",
+                serde_json::json!({
+                    "run_id": run_id,
+                    "event_run_id": event_run_id,
+                    "boundary_kind": boundary_kind,
+                    "step_index": step_index,
+                }),
+            );
+        }
     }
 }
 
@@ -1244,6 +1285,9 @@ mod run_agent_smoke_tests {
         "agent://sub_action",
         "agent://completion_disagreement",
         "agent://consecutive_destructive_cap_hit",
+        "agent://task_state_changed",
+        "agent://world_model_changed",
+        "agent://boundary_record_written",
     ];
 
     /// Rubric-10 gate (D-PR2): every `AgentEvent` the engine emits
@@ -1426,8 +1470,11 @@ mod run_agent_smoke_tests {
 
         // ── Assert: events.jsonl holds every forwarded event ───────
         // `events.jsonl` also contains StepRecord boundary writes
-        // (Task 3a.6.5) — filter those out via their `boundary_kind`
-        // discriminator so the count comparison is apples-to-apples.
+        // (Task 3a.6.5) and `AgentEvent::BoundaryRecordWritten`
+        // AgentEvents (Task 3.4). Both shapes carry `boundary_kind`,
+        // but only `AgentEvent` lines carry `serde(tag = "type")` —
+        // filter on `type` presence so the count comparison is
+        // apples-to-apples against the forwarded-event stream.
         let trace_raw = std::fs::read_to_string(&events_path)
             .unwrap_or_else(|e| panic!("read events.jsonl at {:?}: {}", events_path, e));
         let trace_json: Vec<serde_json::Value> = trace_raw
@@ -1437,7 +1484,7 @@ mod run_agent_smoke_tests {
             .collect();
         let agent_event_lines: Vec<&serde_json::Value> = trace_json
             .iter()
-            .filter(|v| v.get("boundary_kind").is_none())
+            .filter(|v| v.get("type").is_some())
             .collect();
         assert_eq!(
             agent_event_lines.len(),
