@@ -1,6 +1,6 @@
 # MCP Integration (Reference)
 
-Verified at commit: `4425c6c`
+Verified at commit: `57e04e0`
 
 Clickweave executes desktop/browser automation by spawning a single MCP server subprocess (`native-devtools-mcp`) and talking JSON-RPC over stdio via `McpClient`.
 
@@ -13,7 +13,7 @@ clickweave-engine
 clickweave-mcp::McpClient  <--- JSON-RPC --->  native-devtools-mcp
 ```
 
-A single `McpClient` handles both native desktop tools (click, find_text, etc.) and CDP browser tools (cdp_connect, cdp_click, cdp_take_snapshot, etc.). CDP tools are gated behind a `cdp_connect(port)` call on the server side.
+A single `McpClient` handles both native desktop tools (`click`, `find_text`, etc.) and CDP browser tools (`cdp_connect`, `cdp_click`, `cdp_find_elements`, `cdp_take_dom_snapshot`, `cdp_type_text`, etc.). The client caches the server's `tools/list` response and can refresh that cache after operations such as `cdp_connect`.
 
 ## McpClient Lifecycle
 
@@ -46,16 +46,20 @@ File: `crates/clickweave-mcp/src/client.rs`
 
 - `text` (`{ type: "text", text }`)
 - `image` (`{ type: "image", data, mimeType }`)
+- unknown content types are preserved as raw JSON
 
 If `is_error == true`, higher layers treat it as a tool failure.
 
 ### CDP Connection
 
-For Electron/Chrome apps, the executor calls:
+For Electron/Chrome apps, Clickweave connects to the app's remote debugging port before CDP-backed dispatch:
+
 - `cdp_connect({"port": N})` — connect to app's remote debugging port
 - `cdp_disconnect` — disconnect before switching to a different app
 
-CDP tools (`cdp_click`, `cdp_take_snapshot`, `cdp_evaluate_script`, etc.) are only available while connected. Only one CDP connection at a time is supported — switching apps requires disconnect/reconnect.
+Only one CDP connection at a time is supported; switching apps requires disconnect/reconnect. The deterministic executor ensures a live CDP session before CDP node dispatch. The state-spine agent runner auto-connects after successful `launch_app` / `focus_window` calls for Electron/Chrome targets and then refreshes the client-side tool cache so `has_tool()` reflects server-side availability.
+
+The agent's LLM-visible tool list is stable for the run. `run_agent_workflow` seeds it once from `mcp.tools_as_openai()`, and `StateRunner::run` appends only the harness-local completion/replan pseudo-tools. Later `refresh_server_tool_list()` calls update `has_tool()` for observation gates, not the list passed to the LLM.
 
 ### Concurrency
 
@@ -95,7 +99,20 @@ Client sends JSON-RPC 2.0 messages and parses server responses into typed struct
 }
 ```
 
-Used by the agent loop when passing the MCP tool surface to the agent LLM each step.
+Used by the deterministic executor and by the agent entry point when seeding the LLM-visible MCP tool surface at run start.
+
+## State-Spine Agent MCP Use
+
+Files:
+
+- `crates/clickweave-engine/src/agent/mod.rs` — seeds `mcp.tools_as_openai()` once per run
+- `crates/clickweave-engine/src/agent/runner.rs` — state-spine control loop and MCP dispatch
+- `crates/clickweave-engine/src/agent/prompt.rs` — stable system prompt and per-turn state block
+- `crates/clickweave-engine/src/agent/context.rs` — transcript compaction
+
+Per step, `StateRunner::run` observes the page with `cdp_find_elements` when `has_tool("cdp_find_elements")` is true, mirrors the response into `WorldModel.elements` and `WorldModel.cdp_page`, renders `<world_model>` / `<task_state>` into the next user turn, then dispatches exactly one `AgentAction`.
+
+Snapshot bodies are budget-managed by `context::compact`. It preserves `messages[0]` (system prompt) and `messages[1]` (goal block), folds superseded snapshot-family results across `cdp_take_dom_snapshot`, `cdp_find_elements`, and `take_ax_snapshot`, and omits copied snapshot observation bodies from prior user turns. Continuity data lives in `WorldModel.last_screenshot` and `WorldModel.last_native_ax_snapshot`; AX descriptor enrichment reads the native AX snapshot body from `WorldModel`, not by walking the transcript.
 
 ## NodeType <-> Tool Mapping
 
