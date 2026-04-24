@@ -2273,11 +2273,16 @@ impl StateRunner {
             // 1. Observe — fetch elements + detect page transition.
             //    Capture the pre-mirror world-model signatures so the
             //    `WorldModelChanged` diff emitted by `run_turn` sees the
-            //    direct-observation writes below (R4.M1). `run_turn`
-            //    consumes the value via `Option::take`, so a later test
-            //    path that calls `run_turn` directly keeps its
-            //    snapshot-and-diff fallback.
-            self.turn_pre_signatures = Some(self.world_model.field_signatures());
+            //    direct-observation writes below (R4.M1). Only seed the
+            //    baseline when it is empty: early-exit branches (cache
+            //    replay `Continue`/`Break`, policy deny, approval reject)
+            //    skip `run_turn` entirely, so the baseline must persist
+            //    across iterations until `run_turn.take()` consumes it
+            //    (R5.M1). `run_turn` falls back to an internal snapshot
+            //    when `None`, preserving the direct-driver test path.
+            if self.turn_pre_signatures.is_none() {
+                self.turn_pre_signatures = Some(self.world_model.field_signatures());
+            }
             let elements = self.fetch_elements(mcp).await;
 
             // Mirror the observation into the world model so the state
