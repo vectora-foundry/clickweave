@@ -842,3 +842,250 @@ mod refresh_tests {
         assert!(wm.uncertainty.score > before);
     }
 }
+
+#[cfg(test)]
+mod observation_union_tests {
+    //! Coverage for the observation / cacheability predicates that gate
+    //! approval bypass, cache eligibility, and workflow-node inclusion.
+    //!
+    //! Ported verbatim from `loop_runner::observation_union_tests` for
+    //! Task 3a.7.d. Legacy tests hit `AgentRunner::<B>::is_observation_tool`
+    //! etc. as generic associated fns; their `StateRunner` replacements
+    //! are free functions in `crate::agent::runner`, promoted to
+    //! `pub(crate)` so this module can exercise them without adding a
+    //! runner-shaped wrapper. The hardcoded-list ∪ readOnlyHint ∖
+    //! CONFIRMABLE_TOOLS semantics are identical to the legacy contract.
+    //!
+    //! NOTE on destination: the task plan specifies `world_model.rs` as
+    //! the new home for these tests, with the rationale that observation
+    //! merging is a `WorldModel::apply_events` / `refresh_invalid_fields`
+    //! concern. That rationale applies to a different axis — the tests
+    //! ported here target tool *classification*, which still lives as
+    //! free functions in `runner.rs`. Keeping the plan's file home so
+    //! Phase 3b's deletion of `loop_runner.rs` doesn't drop coverage.
+    use std::collections::HashMap;
+
+    use crate::agent::permissions::ToolAnnotations;
+    use crate::agent::runner::{
+        extract_result_text, is_ax_dispatch_tool, is_observation_tool, is_state_transition_tool,
+    };
+
+    fn is_observation(
+        tool_name: &str,
+        annotations_by_tool: &HashMap<String, ToolAnnotations>,
+    ) -> bool {
+        is_observation_tool(tool_name, annotations_by_tool)
+    }
+
+    #[test]
+    fn hardcoded_tool_is_observation_without_annotations() {
+        let annotations: HashMap<String, ToolAnnotations> = HashMap::new();
+        assert!(is_observation("take_screenshot", &annotations));
+        assert!(is_observation("cdp_find_elements", &annotations));
+    }
+
+    #[test]
+    fn readonly_hint_makes_novel_tool_observation() {
+        // Tool not in the hardcoded list becomes observation once the MCP
+        // manifest advertises `readOnlyHint = true`.
+        let mut annotations = HashMap::new();
+        annotations.insert(
+            "custom_inspect".to_string(),
+            ToolAnnotations {
+                read_only_hint: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(is_observation("custom_inspect", &annotations));
+    }
+
+    #[test]
+    fn missing_readonly_hint_is_not_observation() {
+        // A tool with no annotations and not in the hardcoded list must
+        // fall through to approval — the default-to-Ask path in the
+        // permission policy depends on it.
+        let annotations: HashMap<String, ToolAnnotations> = HashMap::new();
+        assert!(!is_observation("click", &annotations));
+        assert!(!is_observation("type_text", &annotations));
+    }
+
+    #[test]
+    fn readonly_hint_false_is_not_observation() {
+        let mut annotations = HashMap::new();
+        annotations.insert(
+            "custom_click".to_string(),
+            ToolAnnotations {
+                read_only_hint: Some(false),
+                ..Default::default()
+            },
+        );
+        assert!(!is_observation("custom_click", &annotations));
+    }
+
+    #[test]
+    fn confirmable_tool_always_requires_approval_even_with_readonly_hint() {
+        // Guardrail: the MCP server could (mis)advertise `launch_app` as
+        // read-only, but it still has user-visible side effects. Our
+        // hardcoded destructive list wins regardless.
+        let mut annotations = HashMap::new();
+        annotations.insert(
+            "launch_app".to_string(),
+            ToolAnnotations {
+                read_only_hint: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(!is_observation("launch_app", &annotations));
+        // Same for cdp_connect and quit_app:
+        annotations.insert(
+            "cdp_connect".to_string(),
+            ToolAnnotations {
+                read_only_hint: Some(true),
+                ..Default::default()
+            },
+        );
+        annotations.insert(
+            "quit_app".to_string(),
+            ToolAnnotations {
+                read_only_hint: Some(true),
+                ..Default::default()
+            },
+        );
+        assert!(!is_observation("cdp_connect", &annotations));
+        assert!(!is_observation("quit_app", &annotations));
+    }
+
+    #[test]
+    fn extract_result_text_joins_all_text_blocks_for_transcript() {
+        // Agent transcript must see every text block the tool returned.
+        // Dropping later blocks silently hides data from the LLM and from
+        // cache replay. JSON-parse sites use cdp_lifecycle::extract_text
+        // instead.
+        let result = clickweave_mcp::ToolCallResult {
+            content: vec![
+                clickweave_mcp::ToolContent::Text {
+                    text: "[{\"x\": 1}]".to_string(),
+                },
+                clickweave_mcp::ToolContent::Text {
+                    text: "trailing commentary".to_string(),
+                },
+            ],
+            is_error: None,
+        };
+        assert_eq!(
+            extract_result_text(&result),
+            "[{\"x\": 1}]\ntrailing commentary"
+        );
+    }
+
+    #[test]
+    fn extract_result_text_placeholder_for_image_only_result() {
+        let result = clickweave_mcp::ToolCallResult {
+            content: vec![clickweave_mcp::ToolContent::Image {
+                data: "b64data".to_string(),
+                mime_type: "image/png".to_string(),
+            }],
+            is_error: None,
+        };
+        let text = extract_result_text(&result);
+        assert!(text.contains("image"), "got {text:?}");
+        assert!(text.contains("image/png"), "got {text:?}");
+    }
+
+    #[test]
+    fn extract_result_text_empty_for_no_content() {
+        let result = clickweave_mcp::ToolCallResult {
+            content: vec![],
+            is_error: None,
+        };
+        assert_eq!(extract_result_text(&result), "");
+    }
+
+    #[test]
+    fn confirmable_tool_overrides_hardcoded_observation_list() {
+        // Belt-and-braces: even if someone adds a CONFIRMABLE tool to
+        // OBSERVATION_TOOLS by mistake, the guardrail still fires.
+        // (`launch_app` is not in `OBSERVATION_TOOLS` today, but this test
+        // pins the precedence rule independent of the specific list.)
+        let annotations: HashMap<String, ToolAnnotations> = HashMap::new();
+        assert!(!is_observation("launch_app", &annotations));
+        assert!(!is_observation("quit_app", &annotations));
+        assert!(!is_observation("cdp_connect", &annotations));
+    }
+
+    #[test]
+    fn take_ax_snapshot_is_observation_but_ax_dispatch_is_not() {
+        // Snapshot is read-only, should bypass the approval prompt and be
+        // eligible for transcript-level collapse. The three dispatch tools
+        // (ax_click / ax_set_value / ax_select) perform real side effects
+        // even though the cursor doesn't move — they must stay in the
+        // approval path, matching the MCP server's
+        // `readOnlyHint: false` / `destructiveHint: false` annotations.
+        let mut annotations: HashMap<String, ToolAnnotations> = HashMap::new();
+        annotations.insert(
+            "take_ax_snapshot".to_string(),
+            ToolAnnotations {
+                read_only_hint: Some(true),
+                ..Default::default()
+            },
+        );
+        annotations.insert(
+            "ax_click".to_string(),
+            ToolAnnotations {
+                read_only_hint: Some(false),
+                ..Default::default()
+            },
+        );
+        annotations.insert(
+            "ax_set_value".to_string(),
+            ToolAnnotations {
+                read_only_hint: Some(false),
+                ..Default::default()
+            },
+        );
+        annotations.insert(
+            "ax_select".to_string(),
+            ToolAnnotations {
+                read_only_hint: Some(false),
+                ..Default::default()
+            },
+        );
+        assert!(is_observation("take_ax_snapshot", &annotations));
+        assert!(!is_observation("ax_click", &annotations));
+        assert!(!is_observation("ax_set_value", &annotations));
+        assert!(!is_observation("ax_select", &annotations));
+    }
+
+    #[test]
+    fn ax_dispatch_tools_are_not_cacheable() {
+        // Cache eligibility on the write side AND replay on the read side
+        // must skip AX dispatch tools — their `uid` argument is scoped to
+        // one snapshot generation.
+        assert!(is_ax_dispatch_tool("ax_click"));
+        assert!(is_ax_dispatch_tool("ax_set_value"));
+        assert!(is_ax_dispatch_tool("ax_select"));
+        // Snapshot and sibling tools are not dispatch tools.
+        assert!(!is_ax_dispatch_tool("take_ax_snapshot"));
+        assert!(!is_ax_dispatch_tool("click"));
+        assert!(!is_ax_dispatch_tool("type_text"));
+    }
+
+    #[test]
+    fn state_transition_tools_are_not_cacheable() {
+        // Cache eligibility on the write side AND replay on the read side
+        // must skip state-transition tools. Their cache key encodes the
+        // pre-transition page, so replay re-fires the transition against
+        // unchanged elements — which caused double `step_completed` events
+        // and duplicate workflow nodes after the LLM issued a `launch_app`
+        // or `focus_window` that switched away from the current CDP target.
+        assert!(is_state_transition_tool("launch_app"));
+        assert!(is_state_transition_tool("focus_window"));
+        assert!(is_state_transition_tool("quit_app"));
+        assert!(is_state_transition_tool("cdp_connect"));
+        assert!(is_state_transition_tool("cdp_disconnect"));
+        // Content-acting and observation tools are not state transitions.
+        assert!(!is_state_transition_tool("cdp_click"));
+        assert!(!is_state_transition_tool("take_ax_snapshot"));
+        assert!(!is_state_transition_tool("ax_click"));
+    }
+}
