@@ -508,14 +508,17 @@ mod top_level_loop_tests {
     }
 
     /// The runner must have left `TODO(task-3a.N)` markers for every deferred
-    /// behaviour (cache replay, VLM, loop detection, destructive cap,
-    /// workflow-graph emission, CDP auto-connect, boundary writes). Later
-    /// tasks grep for these anchors as they wire each behaviour on.
+    /// behaviour (VLM, loop detection, destructive cap, workflow-graph
+    /// emission, CDP auto-connect, boundary writes). Later tasks grep for
+    /// these anchors as they wire each behaviour on.
     #[test]
     fn runner_source_retains_deferred_task_markers() {
         let runner_src = include_str!("../runner.rs");
+        // Task 3a.2 cache replay has landed — the `TODO(task-3a.2)`
+        // marker was removed when `try_replay_cache` was wired into
+        // `StateRunner::run`. The remaining markers track work that
+        // still has to land in later tasks.
         for marker in [
-            "TODO(task-3a.2)",
             "TODO(task-3a.3)",
             "TODO(task-3a.4)",
             "TODO(task-3a.5)",
@@ -531,5 +534,724 @@ mod top_level_loop_tests {
                     .trim_end_matches(')'),
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task 3a.2: cache replay
+// ---------------------------------------------------------------------------
+//
+// Exercise `StateRunner::try_replay_cache` through the public `run()` entry
+// point with `ScriptedLlm` + `StaticMcp`. The replay logic catalogues nine
+// branches (four fall-through guards × three approval outcomes × two
+// execution outcomes, with the Allow-path sharing the dispatch tail); each
+// test below pins one or more of those branches.
+//
+// All tests seed a single `CdpFindElementMatch` fixture into the MCP
+// response so the runner's `fetch_elements` produces a stable page
+// fingerprint that the pre-seeded cache key can match.
+
+#[cfg(test)]
+mod cache_replay_tests {
+    use super::super::stub::{ScriptedLlm, StaticMcp, llm_reply_tool};
+    use crate::agent::runner::StateRunner;
+    use crate::agent::types::{
+        AgentCache, AgentCommand, AgentConfig, ApprovalRequest, CachedDecision, StepOutcome,
+        TerminalReason,
+    };
+    use crate::executor::Mcp;
+    use clickweave_core::Workflow;
+    use clickweave_core::cdp::CdpFindElementMatch;
+    use tokio::sync::{mpsc, oneshot};
+
+    fn fixture_element() -> CdpFindElementMatch {
+        CdpFindElementMatch {
+            uid: "1_0".to_string(),
+            role: "button".to_string(),
+            label: "Submit".to_string(),
+            tag: "button".to_string(),
+            disabled: false,
+            parent_role: None,
+            parent_name: None,
+        }
+    }
+
+    /// MCP fixture: advertises `cdp_find_elements` + `cdp_click`; the
+    /// `cdp_find_elements` reply contains exactly one element so the
+    /// fingerprint is stable across runs.
+    fn build_mcp_with_one_element() -> StaticMcp {
+        let body = r#"{"page_url":"about:blank","source":"cdp","matches":[{"uid":"1_0","role":"button","label":"Submit","tag":"button","disabled":false,"parent_role":null,"parent_name":null}]}"#;
+        StaticMcp::with_tools(&["cdp_find_elements", "cdp_click"])
+            .with_reply("cdp_find_elements", body)
+            .with_reply("cdp_click", "clicked")
+    }
+
+    /// Build an `AgentCache` pre-seeded with one replayable entry keyed
+    /// against `fixture_element()`.
+    fn seeded_cache(tool: &str, args: serde_json::Value) -> AgentCache {
+        let mut cache = AgentCache::default();
+        cache.store("goal", &[fixture_element()], tool.to_string(), args);
+        cache
+    }
+
+    /// Run `StateRunner::run` with a deliberately tiny max_steps — plenty
+    /// for the canned scripts here, all of which terminate within 2 steps.
+    fn cfg_with_steps(steps: usize) -> AgentConfig {
+        AgentConfig {
+            max_steps: steps,
+            ..AgentConfig::default()
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Branches 8 & 9: success + hit-count bookkeeping
+    // -----------------------------------------------------------------
+
+    /// Branch 8 (success path): a cached `cdp_click` replays against MCP
+    /// without invoking the LLM for that iteration. The LLM is only
+    /// consulted after the cached replay to decide what to do next
+    /// (here, `agent_done`).
+    #[tokio::test]
+    async fn first_run_populates_cache_second_run_replays_without_llm_call() {
+        let cache = seeded_cache("cdp_click", serde_json::json!({"uid": "1_0"}));
+        let llm = ScriptedLlm::new(vec![llm_reply_tool(
+            "agent_done",
+            serde_json::json!({"summary": "done after cache replay"}),
+        )]);
+        let mcp = build_mcp_with_one_element();
+        let tools = mcp.tools_as_openai();
+        let runner = StateRunner::new("goal".to_string(), cfg_with_steps(5)).with_cache(cache);
+
+        let (state, _cache) = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                Workflow::default(),
+                None,
+                tools,
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        // Exactly one LLM call — the agent_done — because the first step
+        // was served from the cache.
+        assert_eq!(
+            llm.call_count(),
+            1,
+            "cache replay should skip the LLM call for step 0"
+        );
+        // The cached cdp_click is recorded as step 0 with the canned
+        // MCP reply ("clicked") as the outcome body.
+        assert!(!state.steps.is_empty());
+        let step0 = &state.steps[0];
+        match (&step0.command, &step0.outcome) {
+            (AgentCommand::ToolCall { tool_name, .. }, StepOutcome::Success(body)) => {
+                assert_eq!(tool_name, "cdp_click");
+                assert_eq!(body, "clicked");
+            }
+            other => panic!("unexpected step: {:?}", other),
+        }
+    }
+
+    /// Branch 8 (success path, continued): the successful replay bumps
+    /// `hit_count` on the cached entry.
+    #[tokio::test]
+    async fn replay_hit_increments_hit_count() {
+        let cache = seeded_cache("cdp_click", serde_json::json!({"uid": "1_0"}));
+        let llm = ScriptedLlm::new(vec![llm_reply_tool(
+            "agent_done",
+            serde_json::json!({"summary": "done"}),
+        )]);
+        let mcp = build_mcp_with_one_element();
+        let tools = mcp.tools_as_openai();
+        let runner = StateRunner::new("goal".to_string(), cfg_with_steps(5)).with_cache(cache);
+
+        let (_state, cache_out) = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                Workflow::default(),
+                None,
+                tools,
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        // Seeded entry started at hit_count=1 (from `store`). The replay
+        // should have bumped it to 2.
+        let entry = cache_out
+            .entries
+            .values()
+            .next()
+            .expect("cache keeps entry after successful replay");
+        assert_eq!(
+            entry.hit_count, 2,
+            "successful replay must bump hit_count by exactly 1"
+        );
+        // `produced_node_ids` stays empty: Task 3a.5 owns workflow-node
+        // reconstruction. This test pins the D11 shape (the field exists,
+        // serializes, but 3a.2 leaves it empty on replay).
+        assert!(
+            entry.produced_node_ids.is_empty(),
+            "Task 3a.5 owns produced_node_ids lineage on replay"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Branch 1 / eligibility gate
+    // -----------------------------------------------------------------
+
+    /// The top-level loop consults `is_replay_eligible` before even
+    /// peeking at the cache. With `use_cache = false` the replay path is
+    /// skipped — the LLM handles every iteration.
+    #[tokio::test]
+    async fn replay_disabled_when_use_cache_false() {
+        let cache = seeded_cache("cdp_click", serde_json::json!({"uid": "1_0"}));
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "done"})),
+        ]);
+        let mcp = build_mcp_with_one_element();
+        let tools = mcp.tools_as_openai();
+        let cfg = AgentConfig {
+            use_cache: false,
+            max_steps: 5,
+            ..AgentConfig::default()
+        };
+        let runner = StateRunner::new("goal".to_string(), cfg).with_cache(cache);
+
+        let (_state, _cache) = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                Workflow::default(),
+                None,
+                tools,
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        // Two LLM calls — replay gate short-circuited by use_cache=false.
+        assert_eq!(llm.call_count(), 2);
+    }
+
+    // -----------------------------------------------------------------
+    // Branch 4a/4b/4c: stale-on-read fall-throughs
+    // -----------------------------------------------------------------
+
+    /// Branch 4a: a cached observation tool (e.g. `cdp_find_elements`)
+    /// must fall through — stale write-side filter entries stay readable
+    /// but never replay.
+    #[tokio::test]
+    async fn cached_observation_tool_falls_through_to_llm() {
+        let cache = seeded_cache("cdp_find_elements", serde_json::json!({"query": ""}));
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "done"})),
+        ]);
+        let mcp = build_mcp_with_one_element();
+        let tools = mcp.tools_as_openai();
+        let runner = StateRunner::new("goal".to_string(), cfg_with_steps(5)).with_cache(cache);
+
+        let (state, _cache) = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                Workflow::default(),
+                None,
+                tools,
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        // The LLM was consulted for every step — the cached observation
+        // entry never fired.
+        assert_eq!(llm.call_count(), 2);
+        // Step 0 is the LLM-chosen cdp_click, not the cached
+        // cdp_find_elements.
+        match &state.steps[0].command {
+            AgentCommand::ToolCall { tool_name, .. } => assert_eq!(tool_name, "cdp_click"),
+            other => panic!("unexpected command: {:?}", other),
+        }
+    }
+
+    /// Branch 4b: a cached AX dispatch tool (uid is generation-scoped)
+    /// must fall through to the LLM.
+    #[tokio::test]
+    async fn cached_ax_dispatch_tool_falls_through_to_llm() {
+        let cache = seeded_cache("ax_click", serde_json::json!({"uid": "a1g2"}));
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "done"})),
+        ]);
+        let mcp = build_mcp_with_one_element();
+        let tools = mcp.tools_as_openai();
+        let runner = StateRunner::new("goal".to_string(), cfg_with_steps(5)).with_cache(cache);
+
+        let (_state, _cache) = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                Workflow::default(),
+                None,
+                tools,
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        assert_eq!(llm.call_count(), 2);
+    }
+
+    /// Branch 4c: cached state-transition tools (launch_app, focus_window,
+    /// quit_app, cdp_connect, cdp_disconnect) must fall through because
+    /// their cache key reflects the pre-transition page.
+    #[tokio::test]
+    async fn cached_state_transition_tool_falls_through_to_llm() {
+        let cache = seeded_cache("focus_window", serde_json::json!({"app_name": "Foo"}));
+        let llm = ScriptedLlm::new(vec![
+            llm_reply_tool("cdp_click", serde_json::json!({"uid": "1_0"})),
+            llm_reply_tool("agent_done", serde_json::json!({"summary": "done"})),
+        ]);
+        let mcp = build_mcp_with_one_element();
+        let tools = mcp.tools_as_openai();
+        let runner = StateRunner::new("goal".to_string(), cfg_with_steps(5)).with_cache(cache);
+
+        let (_state, _cache) = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                Workflow::default(),
+                None,
+                tools,
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        assert_eq!(llm.call_count(), 2);
+    }
+
+    // -----------------------------------------------------------------
+    // Branch 5: permission Deny evicts + records error step
+    // -----------------------------------------------------------------
+
+    /// Branch 5: a cached tool that the permission policy denies is
+    /// evicted, a step with `StepOutcome::Error` is recorded, and the
+    /// consecutive-errors counter ticks up.
+    #[tokio::test]
+    async fn cached_denied_tool_evicts_entry_and_records_error_step() {
+        use crate::agent::permissions::{PermissionAction, PermissionPolicy, PermissionRule};
+
+        let cache = seeded_cache("cdp_click", serde_json::json!({"uid": "1_0"}));
+        let policy = PermissionPolicy {
+            rules: vec![PermissionRule {
+                tool_pattern: "cdp_click".to_string(),
+                args_pattern: None,
+                action: PermissionAction::Deny,
+            }],
+            ..PermissionPolicy::default()
+        };
+
+        let llm = ScriptedLlm::new(vec![llm_reply_tool(
+            "agent_done",
+            serde_json::json!({"summary": "giving up"}),
+        )]);
+        let mcp = build_mcp_with_one_element();
+        let tools = mcp.tools_as_openai();
+        let runner = StateRunner::new("goal".to_string(), cfg_with_steps(5))
+            .with_cache(cache)
+            .with_permissions(policy);
+
+        let (state, cache_out) = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                Workflow::default(),
+                None,
+                tools,
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        // Denied entry was evicted from the cache.
+        assert!(
+            cache_out.entries.is_empty(),
+            "Deny must evict the cache entry"
+        );
+        // An error step was recorded for the denied cached call.
+        let error_step = state
+            .steps
+            .iter()
+            .find(|s| matches!(s.outcome, StepOutcome::Error(_)))
+            .expect("Deny produces an error step");
+        match &error_step.command {
+            AgentCommand::ToolCall { tool_name, .. } => assert_eq!(tool_name, "cdp_click"),
+            other => panic!("unexpected command: {:?}", other),
+        }
+        assert_eq!(state.consecutive_errors, 1);
+    }
+
+    /// Branch 5 terminal case: enough cached-Deny hits in a row to trip
+    /// `max_consecutive_errors` aborts the run with `MaxErrorsReached`.
+    #[tokio::test]
+    async fn cached_denied_tool_aborts_on_max_consecutive_errors() {
+        use crate::agent::permissions::{PermissionAction, PermissionPolicy, PermissionRule};
+
+        let mut cache = AgentCache::default();
+        // Seed the cache via the public API so the element fingerprint
+        // matches what `fetch_elements` produces — each replay removes
+        // and re-inserts the entry because Deny evicts, so we pre-seed
+        // one entry and rely on the LLM re-caching it. The simpler route
+        // is to set `max_consecutive_errors = 1` so a single denied
+        // replay is already terminal.
+        cache.store(
+            "goal",
+            &[fixture_element()],
+            "cdp_click".to_string(),
+            serde_json::json!({"uid": "1_0"}),
+        );
+        let policy = PermissionPolicy {
+            rules: vec![PermissionRule {
+                tool_pattern: "cdp_click".to_string(),
+                args_pattern: None,
+                action: PermissionAction::Deny,
+            }],
+            ..PermissionPolicy::default()
+        };
+        let cfg = AgentConfig {
+            max_consecutive_errors: 1,
+            max_steps: 5,
+            ..AgentConfig::default()
+        };
+
+        // The LLM never needs to reply — the runner should break out of
+        // the loop on MaxErrorsReached before it ever asks.
+        let llm = ScriptedLlm::new(vec![]);
+        let mcp = build_mcp_with_one_element();
+        let tools = mcp.tools_as_openai();
+        let runner = StateRunner::new("goal".to_string(), cfg)
+            .with_cache(cache)
+            .with_permissions(policy);
+
+        let (state, _cache) = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                Workflow::default(),
+                None,
+                tools,
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        assert!(matches!(
+            state.terminal_reason,
+            Some(TerminalReason::MaxErrorsReached {
+                consecutive_errors: 1
+            })
+        ));
+        assert_eq!(
+            llm.call_count(),
+            0,
+            "terminal break happens before LLM call"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Branches 6 & 7: approval Ask → Rejected / Unavailable
+    // -----------------------------------------------------------------
+
+    /// Branch 6: cached tool needs approval (Ask), operator rejects →
+    /// entry is evicted, a `Replan` step is recorded, the loop keeps
+    /// running.
+    #[tokio::test]
+    async fn cached_approval_rejected_evicts_and_replans() {
+        use crate::agent::permissions::{PermissionAction, PermissionPolicy, PermissionRule};
+
+        let cache = seeded_cache("cdp_click", serde_json::json!({"uid": "1_0"}));
+        let policy = PermissionPolicy {
+            rules: vec![PermissionRule {
+                tool_pattern: "cdp_click".to_string(),
+                args_pattern: None,
+                action: PermissionAction::Ask,
+            }],
+            ..PermissionPolicy::default()
+        };
+
+        let (approval_tx, mut approval_rx) =
+            mpsc::channel::<(ApprovalRequest, oneshot::Sender<bool>)>(4);
+        // Spawn a responder that replies "reject" once.
+        let responder = tokio::spawn(async move {
+            if let Some((_req, reply)) = approval_rx.recv().await {
+                let _ = reply.send(false);
+            }
+        });
+
+        let llm = ScriptedLlm::new(vec![llm_reply_tool(
+            "agent_done",
+            serde_json::json!({"summary": "done"}),
+        )]);
+        let mcp = build_mcp_with_one_element();
+        let tools = mcp.tools_as_openai();
+        let runner = StateRunner::new("goal".to_string(), cfg_with_steps(5))
+            .with_cache(cache)
+            .with_permissions(policy)
+            .with_approval(approval_tx);
+
+        let (state, cache_out) = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                Workflow::default(),
+                None,
+                tools,
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        responder.await.unwrap();
+
+        assert!(
+            cache_out.entries.is_empty(),
+            "rejected cached action must be evicted"
+        );
+        let replan_step = state
+            .steps
+            .iter()
+            .find(|s| matches!(s.outcome, StepOutcome::Replan(_)))
+            .expect("rejected approval produces a Replan step");
+        match &replan_step.command {
+            AgentCommand::ToolCall { tool_name, .. } => assert_eq!(tool_name, "cdp_click"),
+            other => panic!("unexpected command: {:?}", other),
+        }
+    }
+
+    /// Branch 7: cached tool needs approval (Ask) but the approval
+    /// channel is gone → terminal `ApprovalUnavailable`.
+    #[tokio::test]
+    async fn cached_approval_unavailable_is_terminal() {
+        use crate::agent::permissions::{PermissionAction, PermissionPolicy, PermissionRule};
+
+        let cache = seeded_cache("cdp_click", serde_json::json!({"uid": "1_0"}));
+        let policy = PermissionPolicy {
+            rules: vec![PermissionRule {
+                tool_pattern: "cdp_click".to_string(),
+                args_pattern: None,
+                action: PermissionAction::Ask,
+            }],
+            ..PermissionPolicy::default()
+        };
+
+        // Drop the receiver immediately so the send side fails.
+        let (approval_tx, approval_rx) =
+            mpsc::channel::<(ApprovalRequest, oneshot::Sender<bool>)>(1);
+        drop(approval_rx);
+
+        let llm = ScriptedLlm::new(vec![]);
+        let mcp = build_mcp_with_one_element();
+        let tools = mcp.tools_as_openai();
+        let runner = StateRunner::new("goal".to_string(), cfg_with_steps(5))
+            .with_cache(cache)
+            .with_permissions(policy)
+            .with_approval(approval_tx);
+
+        let (state, _cache) = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                Workflow::default(),
+                None,
+                tools,
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        assert!(matches!(
+            state.terminal_reason,
+            Some(TerminalReason::ApprovalUnavailable)
+        ));
+        assert_eq!(llm.call_count(), 0, "terminal break before LLM consulted");
+    }
+
+    // -----------------------------------------------------------------
+    // Branch 9: cached tool errors — fall through to LLM
+    // -----------------------------------------------------------------
+
+    /// Branch 9a: MCP returns a body with `is_error=true` for the cached
+    /// call → fall through to LLM for the current step.
+    #[tokio::test]
+    async fn cached_tool_mcp_error_falls_through_to_llm() {
+        // Build a custom MCP that returns a tool-error for cdp_click.
+        use crate::executor::Mcp;
+        use anyhow::Result;
+        use clickweave_mcp::{ToolCallResult, ToolContent};
+        use serde_json::Value;
+
+        struct ErroringMcp {
+            inner_find: String,
+        }
+        impl Mcp for ErroringMcp {
+            async fn call_tool(
+                &self,
+                name: &str,
+                _arguments: Option<Value>,
+            ) -> Result<ToolCallResult> {
+                if name == "cdp_find_elements" {
+                    Ok(ToolCallResult {
+                        content: vec![ToolContent::Text {
+                            text: self.inner_find.clone(),
+                        }],
+                        is_error: None,
+                    })
+                } else if name == "cdp_click" {
+                    Ok(ToolCallResult {
+                        content: vec![ToolContent::Text {
+                            text: "tool failed".to_string(),
+                        }],
+                        is_error: Some(true),
+                    })
+                } else {
+                    Ok(ToolCallResult {
+                        content: vec![ToolContent::Text {
+                            text: "ok".to_string(),
+                        }],
+                        is_error: None,
+                    })
+                }
+            }
+            fn has_tool(&self, name: &str) -> bool {
+                matches!(name, "cdp_find_elements" | "cdp_click")
+            }
+            fn tools_as_openai(&self) -> Vec<Value> {
+                vec![
+                    serde_json::json!({
+                        "type":"function","function":{"name":"cdp_find_elements","description":"stub","parameters":{"type":"object","properties":{}}}
+                    }),
+                    serde_json::json!({
+                        "type":"function","function":{"name":"cdp_click","description":"stub","parameters":{"type":"object","properties":{}}}
+                    }),
+                ]
+            }
+            async fn refresh_server_tool_list(&self) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let cache = seeded_cache("cdp_click", serde_json::json!({"uid": "1_0"}));
+        let llm = ScriptedLlm::new(vec![llm_reply_tool(
+            "agent_done",
+            serde_json::json!({"summary": "done"}),
+        )]);
+        let body = r#"{"page_url":"about:blank","source":"cdp","matches":[{"uid":"1_0","role":"button","label":"Submit","tag":"button","disabled":false,"parent_role":null,"parent_name":null}]}"#;
+        let mcp = ErroringMcp {
+            inner_find: body.to_string(),
+        };
+        let tools = mcp.tools_as_openai();
+        let runner = StateRunner::new("goal".to_string(), cfg_with_steps(5)).with_cache(cache);
+
+        let (state, cache_out) = runner
+            .run(
+                &llm,
+                &mcp,
+                "goal".to_string(),
+                Workflow::default(),
+                None,
+                tools,
+                None,
+                &[],
+            )
+            .await
+            .expect("run ok");
+
+        // The cached-cdp_click MCP error falls through; the LLM's
+        // `agent_done` completes the run.
+        assert_eq!(llm.call_count(), 1);
+        // The cached entry stays in place — a transient tool error is
+        // not grounds for eviction.
+        assert!(
+            cache_out
+                .entries
+                .contains_key(&super::super::super::cache::cache_key(
+                    "goal",
+                    &[fixture_element()]
+                )),
+            "tool-error fall-through must not evict the cache entry"
+        );
+        // No dispatched step was recorded for the failing replay —
+        // `FellThrough` branches intentionally let the LLM own the step.
+        assert!(
+            state
+                .steps
+                .iter()
+                .all(|s| !matches!(&s.command, AgentCommand::ToolCall { tool_name, .. } if tool_name == "cdp_click")),
+            "fall-through path does not record a step for the failed replay"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Pinned-JSON: D11 bit-for-bit CachedDecision compat
+    // -----------------------------------------------------------------
+
+    /// D11: a pre-3a `agent_cache.json` entry must deserialize into the
+    /// landed `CachedDecision` shape AND round-trip back to identical
+    /// JSON. Regression-pins the serialization format across Phase 3a.
+    #[test]
+    fn phase_3a_does_not_break_legacy_cache_entries() {
+        // The literal below is exactly what a pre-3a `agent_cache.json`
+        // entry looks like: the five landed fields, pretty-printed.
+        let legacy_json = r#"{
+  "tool_name": "cdp_click",
+  "arguments": {
+    "uid": "1_0"
+  },
+  "element_fingerprint": "1_0|button|Submit|button|",
+  "hit_count": 3,
+  "produced_node_ids": [
+    "550e8400-e29b-41d4-a716-446655440000"
+  ]
+}"#;
+        let decoded: CachedDecision =
+            serde_json::from_str(legacy_json).expect("legacy JSON deserializes");
+        assert_eq!(decoded.tool_name, "cdp_click");
+        assert_eq!(decoded.hit_count, 3);
+        assert_eq!(decoded.produced_node_ids.len(), 1);
+
+        // Re-serialize with pretty-printing so the whitespace matches
+        // the legacy format, and assert byte-for-byte equality.
+        let re_encoded = serde_json::to_string_pretty(&decoded)
+            .expect("CachedDecision re-serializes with pretty printing");
+        assert_eq!(
+            re_encoded, legacy_json,
+            "D11: CachedDecision JSON must round-trip bit-for-bit across Phase 3a"
+        );
     }
 }
