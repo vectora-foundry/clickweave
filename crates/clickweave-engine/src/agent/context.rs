@@ -36,7 +36,6 @@ const SUPERSEDED_PREFIX: &str = "[superseded ";
 /// flows can reference on a later turn. Collapsing an older screenshot
 /// would erase that id from the only transcript copy the agent has.
 pub(crate) const SNAPSHOT_PRODUCING_TOOLS: &[&str] = &[
-    "cdp_take_ax_snapshot",
     "cdp_take_dom_snapshot",
     "cdp_take_snapshot",
     "cdp_find_elements",
@@ -176,7 +175,6 @@ pub fn collapse_superseded_snapshots(messages: &[Message]) -> Option<Vec<Message
 const SNAPSHOT_TOOL_NAMES: &[&str] = &[
     "take_ax_snapshot",
     "take_screenshot",
-    "cdp_take_ax_snapshot",
     "cdp_take_dom_snapshot",
     "cdp_take_snapshot",
     "cdp_find_elements",

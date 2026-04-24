@@ -1426,7 +1426,7 @@ async fn malformed_tool_call_json_returns_error() {
 /// **Ignored under the state-spine runner (Task 3a.7.a)** — StateRunner's
 /// `context::compact` does not yet fold
 /// `collapse_superseded_snapshots` + `compact_step_summaries` into its
-/// compaction pipeline the way `loop_runner.rs:605-626` did. Re-enable
+/// compaction pipeline the way the legacy runner did. Re-enable
 /// this test in a follow-up once the runner-level compaction port lands
 /// (capability-gap ticket in Phase 3b scope).
 #[tokio::test]

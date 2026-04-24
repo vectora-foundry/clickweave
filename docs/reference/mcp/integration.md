@@ -132,7 +132,7 @@ Relevant files:
 - `src-tauri/src/mcp_resolve.rs`
 - `src-tauri/src/commands/agent.rs` — spawns the MCP client for the agent loop
 - `src-tauri/src/commands/executor.rs` — spawns the MCP client for deterministic workflow execution
-- `crates/clickweave-engine/src/agent/loop_runner.rs` — dispatches MCP tools step by step from agent decisions
+- `crates/clickweave-engine/src/agent/runner.rs` — state-spine runner that dispatches MCP tools step by step from agent decisions
 - `crates/clickweave-engine/src/executor/run_loop.rs` — dispatches MCP tools node by node for saved workflows
 
 ## App Detection

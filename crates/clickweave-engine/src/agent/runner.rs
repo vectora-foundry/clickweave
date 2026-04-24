@@ -5,8 +5,8 @@
 //! 0..N typed task-state mutations followed by exactly one action.
 //!
 //! Phase 2c: the runner type is built up incrementally across a series of
-//! tasks, alongside its tests. It is **not** wired into the public re-exports
-//! of `agent/mod.rs` — the cutover from `loop_runner.rs` lands in Phase 3.
+//! tasks, alongside its tests. Phase 3 landed the cutover, replacing the
+//! legacy runner with this state-spine module.
 
 #![allow(dead_code)] // Phase 2c: live wiring lands in Phase 3 cutover.
 
@@ -112,22 +112,22 @@ pub struct StateRunner {
     pub verification_artifacts_dir: Option<PathBuf>,
     /// Monotonic counter feeding the `completion_verification_<n>.{png,json}`
     /// filename ordinal so repeated `verify_completion` calls within the
-    /// same run do not overwrite each other. Mirrors
-    /// `AgentRunner::verification_count` (`loop_runner.rs:189`).
+    /// same run do not overwrite each other. Mirrors the legacy
+    /// `AgentRunner::verification_count` field.
     pub verification_count: u32,
 
     // --- CDP lifecycle bookkeeping (Task 3a.6) ---
-    /// Shared CDP connection state — identical to the legacy field on
-    /// `AgentRunner` (`loop_runner.rs:171`). Populated when
-    /// [`Self::auto_connect_cdp`] succeeds and consulted by
-    /// [`Self::should_skip_focus_window`] and `verify_completion` so the
-    /// completion-verification screenshot targets the right window.
+    /// Shared CDP connection state — identical to the legacy field on the
+    /// old `AgentRunner`. Populated when [`Self::auto_connect_cdp`]
+    /// succeeds and consulted by [`Self::should_skip_focus_window`] and
+    /// `verify_completion` so the completion-verification screenshot
+    /// targets the right window.
     pub(crate) cdp_state: crate::cdp_lifecycle::CdpState,
     /// Per-app `kind` hint learned from a structured MCP response
     /// (`focus_window` / `launch_app` with `{"kind": "..."}`). Populated
     /// before the CDP decision runs so subsequent `focus_window` calls
     /// can be suppressed when AX / CDP dispatch is available. Mirrors
-    /// `AgentRunner::known_app_kinds` (`loop_runner.rs:181`).
+    /// the legacy `AgentRunner::known_app_kinds` field.
     pub(crate) known_app_kinds: HashMap<String, String>,
 }
 
@@ -280,8 +280,8 @@ impl StateRunner {
     /// `auto_connect_cdp` → `on_cdp_connected`. Used by integration
     /// tests that want to exercise the post-CDP-connect focus_window
     /// skip path without the full quit/relaunch/connect choreography.
-    /// Port of `AgentRunner::seed_cdp_live_for_test`
-    /// (`loop_runner.rs:364`) for 3a.7.b test migration.
+    /// Port of the legacy `AgentRunner::seed_cdp_live_for_test` for
+    /// 3a.7.b test migration.
     #[cfg(test)]
     pub(crate) fn seed_cdp_live_for_test(&mut self, app_name: &str, kind: &str) {
         self.record_app_kind(app_name, kind);
@@ -299,8 +299,8 @@ impl StateRunner {
     /// Test-only entry point into the selected-page snapshot helper so
     /// the agent-vs-executor parity suite can exercise exactly the code
     /// path the live run would hit, rather than poking fields. Ported
-    /// from `AgentRunner::snapshot_selected_page_url_for_test`
-    /// (`loop_runner.rs:373`) for 3a.7.a test migration.
+    /// from the legacy `AgentRunner::snapshot_selected_page_url_for_test`
+    /// for 3a.7.a test migration.
     #[cfg(test)]
     pub(crate) async fn snapshot_selected_page_url_for_test(
         &mut self,
@@ -355,9 +355,9 @@ impl StateRunner {
 
     /// Rewrite raw AX uid references in a workflow node into replay-stable
     /// `AxTarget::Descriptor` payloads using the current
-    /// `last_native_ax_snapshot` body. Port of
-    /// `loop_runner.rs::enrich_ax_descriptor` — D15 moves the source of
-    /// truth off the transcript onto `WorldModel`.
+    /// `last_native_ax_snapshot` body. Port of the legacy
+    /// `enrich_ax_descriptor` helper — D15 moves the source of truth off
+    /// the transcript onto `WorldModel`.
     ///
     /// No-op when no native AX snapshot has been captured yet, when the
     /// node type is not an AX dispatch variant, when the target is already
@@ -406,7 +406,7 @@ impl StateRunner {
     /// first tool call is linked to the prior workflow graph when one is
     /// supplied. Every node is stamped with `source_run_id: self.run_id`.
     ///
-    /// Port of `AgentRunner::add_workflow_node` from `loop_runner.rs`.
+    /// Port of the legacy `AgentRunner::add_workflow_node`.
     pub async fn add_workflow_node(
         &mut self,
         tool_name: &str,
@@ -838,7 +838,7 @@ impl StateRunner {
 
 /// Control signal returned from [`StateRunner::try_replay_cache`].
 ///
-/// Mirrors `loop_runner::ReplayResult` semantics: `Continue` means the
+/// Mirrors the legacy `ReplayResult` semantics: `Continue` means the
 /// replay handled this iteration (success, policy-reject, or approval-
 /// reject) and the outer loop should `continue`; `Break` means a terminal
 /// condition was reached (approval unavailable, max-errors, destructive
@@ -861,7 +861,7 @@ enum ApprovalResult {
 }
 
 /// State of the consecutive-destructive-tool cap after a tool call.
-/// Mirrors `loop_runner::CapStatus` — private to `runner.rs`.
+/// Mirrors the legacy `CapStatus` — private to `runner.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CapStatus {
     /// Streak is still below the cap — run continues normally.
@@ -871,7 +871,7 @@ enum CapStatus {
 }
 
 /// Why a `focus_window` MCP call was suppressed by the runner. Ported
-/// verbatim from `loop_runner::FocusSkipReason` (`loop_runner.rs:200`).
+/// verbatim from the legacy `FocusSkipReason`.
 ///
 /// The LLM sees a synthetic `StepOutcome::Success` whose text comes from
 /// [`FocusSkipReason::llm_message`]; that text must stay byte-identical to
@@ -933,7 +933,7 @@ impl FocusSkipReason {
 /// apps without moving the cursor or raising windows, which makes a
 /// preceding `focus_window` call redundant (and focus-stealing).
 ///
-/// Mirrors `loop_runner::AX_DISPATCH_TOOLSET` byte-for-byte.
+/// Mirrors the legacy `AX_DISPATCH_TOOLSET` byte-for-byte.
 const AX_DISPATCH_TOOLSET: &[&str] = &["take_ax_snapshot", "ax_click", "ax_set_value", "ax_select"];
 
 /// Minimum CDP dispatch toolset required before the runner may suppress
@@ -943,7 +943,7 @@ const AX_DISPATCH_TOOLSET: &[&str] = &["take_ax_snapshot", "ax_click", "ax_set_v
 /// operations are focus-preserving). Servers missing these tools fall
 /// through to the real `focus_window`.
 ///
-/// Mirrors `loop_runner::CDP_DISPATCH_TOOLSET` byte-for-byte.
+/// Mirrors the legacy `CDP_DISPATCH_TOOLSET` byte-for-byte.
 const CDP_DISPATCH_TOOLSET: &[&str] = &["cdp_find_elements", "cdp_click"];
 
 /// True when every member of `toolset` is advertised by `mcp`.
@@ -952,9 +952,10 @@ fn mcp_has_toolset<M: Mcp + ?Sized>(mcp: &M, toolset: &[&str]) -> bool {
 }
 
 /// Observation tools whose cached entries are stale on read. Mirrors
-/// `loop_runner::OBSERVATION_TOOLS` — duplicated here because the legacy
-/// list is a private `const` on `AgentRunner`, and lifting it to a shared
-/// module is out of scope for Task 3a.2 (refactoring pass owned by 3b).
+/// the legacy `OBSERVATION_TOOLS` list — duplicated here because the
+/// legacy list was a private `const` on `AgentRunner`, and lifting it to
+/// a shared module is out of scope for Task 3a.2 (refactoring pass
+/// owned by 3b).
 const OBSERVATION_TOOLS: &[&str] = &[
     "take_screenshot",
     "list_apps",
@@ -975,12 +976,12 @@ const OBSERVATION_TOOLS: &[&str] = &[
 ];
 
 /// AX dispatch tools whose cached uid goes stale on every
-/// `take_ax_snapshot`. See `loop_runner::AX_DISPATCH_TOOLS`.
+/// `take_ax_snapshot`. See the legacy `AX_DISPATCH_TOOLS`.
 const AX_DISPATCH_TOOLS: &[&str] = &["ax_click", "ax_set_value", "ax_select"];
 
 /// Tools that transition app / window / CDP state. Their cache key
 /// reflects the pre-state, so replay would fire the transition a second
-/// time on unchanged elements. See `loop_runner::STATE_TRANSITION_TOOLS`.
+/// time on unchanged elements. See the legacy `STATE_TRANSITION_TOOLS`.
 const STATE_TRANSITION_TOOLS: &[&str] = &[
     "launch_app",
     "focus_window",
@@ -1030,7 +1031,7 @@ pub(crate) fn is_state_transition_tool(tool_name: &str) -> bool {
 
 /// Build an index from tool name → MCP annotations from the openai-
 /// shaped tool list. Tools without an `annotations` block produce the
-/// default (all-`None`) struct. Mirrors `loop_runner::build_annotations_index`.
+/// default (all-`None`) struct. Mirrors the legacy `build_annotations_index`.
 fn build_annotations_index(mcp_tools: &[Value]) -> HashMap<String, ToolAnnotations> {
     let mut index = HashMap::with_capacity(mcp_tools.len());
     for tool in mcp_tools {
@@ -1115,7 +1116,7 @@ impl StateRunner {
 
     /// Update the consecutive-destructive-call tracker after a successful
     /// tool call, and report whether the cap has now been hit. Port of
-    /// `AgentRunner::maybe_halt_on_destructive_cap` (`loop_runner.rs:421`).
+    /// the legacy `AgentRunner::maybe_halt_on_destructive_cap`.
     ///
     /// `destructive_hint == Some(true)` increments the streak; anything else
     /// resets it. A cap value of `0` disables the feature entirely, so the
@@ -1150,8 +1151,8 @@ impl StateRunner {
     /// Emits the cap-hit event and sets the terminal reason. Called once
     /// when `maybe_halt_on_destructive_cap` reports `CapStatus::CapReached`.
     /// Clears `recent_destructive_tools` afterwards so state serialization
-    /// reflects the drained streak. Port of
-    /// `AgentRunner::emit_destructive_cap_hit` (`loop_runner.rs:452`).
+    /// reflects the drained streak. Port of the legacy
+    /// `AgentRunner::emit_destructive_cap_hit`.
     async fn emit_destructive_cap_hit(&mut self) {
         let recent = std::mem::take(&mut self.state.recent_destructive_tools);
         let cap = self.config.consecutive_destructive_cap;
@@ -1176,8 +1177,8 @@ impl StateRunner {
     // -----------------------------------------------------------------
 
     /// Record a per-app `kind` hint learned from a structured MCP
-    /// response or `probe_app`. Port of `AgentRunner::record_app_kind`
-    /// (`loop_runner.rs:2164`).
+    /// response or `probe_app`. Port of the legacy
+    /// `AgentRunner::record_app_kind`.
     fn record_app_kind(&mut self, app_name: &str, kind: &str) {
         self.known_app_kinds
             .insert(app_name.to_string(), kind.to_string());
@@ -1200,8 +1201,7 @@ impl StateRunner {
     /// and the minimum CDP dispatch toolset. Otherwise `None` —
     /// fall-through to the real MCP call.
     ///
-    /// Port of `AgentRunner::should_skip_focus_window`
-    /// (`loop_runner.rs:2206`).
+    /// Port of the legacy `AgentRunner::should_skip_focus_window`.
     fn should_skip_focus_window<M: Mcp + ?Sized>(
         &self,
         arguments: &Value,
@@ -1232,8 +1232,8 @@ impl StateRunner {
     /// `focus_window` / `launch_app` call. Returns `(app_name, kind)`
     /// where `kind` is a pre-classified `AppKind` string
     /// (`"ElectronApp"`, `"ChromeBrowser"`, `"Native"`) when the MCP
-    /// server already told us. Port of
-    /// `AgentRunner::resolve_cdp_target` (`loop_runner.rs:1745`).
+    /// server already told us. Port of the legacy
+    /// `AgentRunner::resolve_cdp_target`.
     async fn resolve_cdp_target<M: Mcp + ?Sized>(
         arguments: &Value,
         result_text: &str,
@@ -1335,8 +1335,8 @@ impl StateRunner {
     }
 
     /// Post-connect bookkeeping: mark `(app_name, 0)` as the active CDP
-    /// target and record the currently-selected page URL. Port of
-    /// `AgentRunner::on_cdp_connected` (`loop_runner.rs:1505`).
+    /// target and record the currently-selected page URL. Port of the
+    /// legacy `AgentRunner::on_cdp_connected`.
     async fn on_cdp_connected<M: Mcp + ?Sized>(&mut self, app_name: &str, _port: u16, mcp: &M) {
         self.cdp_state.set_connected(app_name, 0);
         crate::cdp_lifecycle::snapshot_selected_page_url(mcp, &mut self.cdp_state, app_name, 0)
@@ -1345,10 +1345,9 @@ impl StateRunner {
 
     /// After a successful `launch_app` / `focus_window`, probe the app
     /// type and auto-connect CDP for Electron / Chrome targets. Returns
-    /// `Some(port)` on success, `None` otherwise. Port of
-    /// `AgentRunner::auto_connect_cdp` (`loop_runner.rs:1326`). Keeps
-    /// best-effort semantics — every failure path logs and falls
-    /// through.
+    /// `Some(port)` on success, `None` otherwise. Port of the legacy
+    /// `AgentRunner::auto_connect_cdp`. Keeps best-effort semantics —
+    /// every failure path logs and falls through.
     async fn auto_connect_cdp<M: Mcp + ?Sized>(
         &mut self,
         app_name: &str,
@@ -1533,8 +1532,8 @@ impl StateRunner {
     /// Post-tool hook: after a successful `launch_app` / `focus_window`,
     /// auto-connect CDP and refresh the MCP tool-cache so observation
     /// gates see the newly-surfaced CDP tools. Also keeps `cdp_state`
-    /// in lock-step with `quit_app`. Port of
-    /// `AgentRunner::maybe_cdp_connect` (`loop_runner.rs:1673`).
+    /// in lock-step with `quit_app`. Port of the legacy
+    /// `AgentRunner::maybe_cdp_connect`.
     async fn maybe_cdp_connect<M: Mcp + ?Sized>(
         &mut self,
         tool_name: &str,
@@ -1595,9 +1594,9 @@ impl StateRunner {
         evaluate_permission(&self.permissions, tool_name, arguments, &ann)
     }
 
-    /// Prompt the operator for approval of a tool action. Port of
-    /// `AgentRunner::request_approval` (`loop_runner.rs:1525-1565`). Returns
-    /// `None` when no approval gate is configured (auto-approve).
+    /// Prompt the operator for approval of a tool action. Port of the
+    /// legacy `AgentRunner::request_approval`. Returns `None` when no
+    /// approval gate is configured (auto-approve).
     ///
     /// `description_suffix` is appended to the human-facing description so
     /// callers can distinguish live calls from cached replays (the cache
@@ -1660,8 +1659,7 @@ impl StateRunner {
     }
 
     /// Verify an agent-reported completion against a fresh screenshot via
-    /// the VLM. Port of `AgentRunner::verify_completion`
-    /// (`loop_runner.rs:1580-1660`).
+    /// the VLM. Port of the legacy `AgentRunner::verify_completion`.
     ///
     /// Returns the prepared base64 screenshot + VLM reply **only when the
     /// VLM disagreed** (verdict = NO). The caller uses that payload to
@@ -1762,9 +1760,9 @@ impl StateRunner {
     }
 
     /// Attempt to serve the current iteration from the [`AgentCache`]
-    /// instead of asking the LLM. Port of
-    /// `AgentRunner::try_replay_cache` (`loop_runner.rs:748-1007`) —
-    /// preserves every branch of the legacy semantics per D11.
+    /// instead of asking the LLM. Port of the legacy
+    /// `AgentRunner::try_replay_cache` — preserves every branch of the
+    /// legacy semantics per D11.
     ///
     /// **Nine-branch catalogue (4 fall-through × 3 approval × 2 execution
     /// — approval Allow collapses with execution since it shares the
@@ -2319,9 +2317,8 @@ impl StateRunner {
             // runner records a step and a `StepCompleted` event so the
             // call stays visible to the transcript / UI, but the
             // workflow-graph filter (`is_synthetic_focus_skip`) keeps
-            // it out of the recorded workflow. Port of
-            // `AgentRunner::execute_response`'s focus_window guard
-            // (`loop_runner.rs:1931-1955`).
+            // it out of the recorded workflow. Port of the legacy
+            // `AgentRunner::execute_response`'s focus_window guard.
             if let AgentAction::ToolCall {
                 tool_name,
                 arguments,
@@ -2376,11 +2373,10 @@ impl StateRunner {
             }
 
             // 4a. Permission policy + approval gate for live `ToolCall`
-            // actions. Mirrors `AgentRunner::execute_response`'s pre-
-            // dispatch policy check (`loop_runner.rs:1964-2013`). The
-            // cache-replay path has its own identical gate at
-            // `try_replay_cache`; observation tools bypass approval
-            // entirely on both paths.
+            // actions. Mirrors the legacy `AgentRunner::execute_response`
+            // pre-dispatch policy check. The cache-replay path has its
+            // own identical gate at `try_replay_cache`; observation
+            // tools bypass approval entirely on both paths.
             if let AgentAction::ToolCall {
                 tool_name,
                 arguments,
@@ -2813,7 +2809,7 @@ fn openai_tools_to_mcp_tool_list(tools: &[Value]) -> Vec<clickweave_mcp::Tool> {
 }
 
 /// Append the assistant's response and its tool result onto the transcript,
-/// mirroring `loop_runner::AgentRunner::append_assistant_message`.
+/// mirroring the legacy `AgentRunner::append_assistant_message`.
 ///
 /// When the assistant returned `tool_calls`, the transcript gets the
 /// assistant message (tool_calls only) plus a matching `tool_result`. When
@@ -3360,7 +3356,7 @@ mod agent_turn_parsing_tests {
 
 #[cfg(test)]
 mod resolve_cdp_target_tests {
-    //! Ported verbatim from `loop_runner::resolve_cdp_target_tests`
+    //! Ported verbatim from the legacy `resolve_cdp_target_tests`
     //! for Task 3a.7.d. The legacy tests targeted
     //! `AgentRunner::<B>::resolve_cdp_target`; here they call
     //! `StateRunner::resolve_cdp_target` directly (no backend type
@@ -3482,8 +3478,8 @@ mod resolve_cdp_target_tests {
 
 #[cfg(test)]
 mod focus_skip_tests {
-    //! Ported verbatim from the focus_window skip guard section of
-    //! `loop_runner::observation_union_tests` for Task 3a.7.d. Exercises
+    //! Ported verbatim from the focus_window skip guard section of the
+    //! legacy runner's observation-union tests for Task 3a.7.d. Exercises
     //! `StateRunner::should_skip_focus_window` and its two sister
     //! predicates (`is_synthetic_focus_skip`, `mcp_has_toolset`) against
     //! the same matrix of kind / toolset / CDP-liveness / policy cases

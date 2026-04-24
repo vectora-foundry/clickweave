@@ -56,7 +56,7 @@
     </mxCell>
 
     <!-- ENGINE LAYER -->
-    <mxCell id="engine" value="&lt;b&gt;clickweave-engine&lt;/b&gt;&lt;hr size=&quot;1&quot;&gt;&lt;font style=&quot;font-size:10px&quot;&gt;agent/loop_runner.rs &amp;mdash; observe-act agent loop&lt;br&gt;agent/context.rs &amp;mdash; compaction + snapshot supersession&lt;br&gt;executor/run_loop.rs &amp;mdash; deterministic replay walk&lt;br&gt;executor/deterministic.rs &amp;mdash; tool-mapped execution&lt;br&gt;executor/supervision.rs &amp;mdash; Test-mode verification&lt;br&gt;verdict.rs &amp;mdash; inline verification verdicts&lt;/font&gt;" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;spacingRight=8;fontSize=12;" vertex="1" parent="1">
+    <mxCell id="engine" value="&lt;b&gt;clickweave-engine&lt;/b&gt;&lt;hr size=&quot;1&quot;&gt;&lt;font style=&quot;font-size:10px&quot;&gt;agent/runner.rs &amp;mdash; state-spine observe-act agent loop&lt;br&gt;agent/context.rs &amp;mdash; compaction + snapshot supersession&lt;br&gt;executor/run_loop.rs &amp;mdash; deterministic replay walk&lt;br&gt;executor/deterministic.rs &amp;mdash; tool-mapped execution&lt;br&gt;executor/supervision.rs &amp;mdash; Test-mode verification&lt;br&gt;verdict.rs &amp;mdash; inline verification verdicts&lt;/font&gt;" style="html=1;rounded=1;whiteSpace=wrap;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;spacingRight=8;fontSize=12;" vertex="1" parent="1">
       <mxGeometry x="490" y="100" width="300" height="170" as="geometry"/>
     </mxCell>
 

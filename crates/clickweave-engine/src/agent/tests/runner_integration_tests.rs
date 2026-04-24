@@ -8,7 +8,7 @@
 //!
 //! Phase 2c intentionally stops short of wiring `StateRunner` to a live
 //! `ChatBackend` + `McpClient` — the plan calls that out as Phase 3
-//! cutover work (the `loop_runner.rs` → `runner.rs` swap). The harness
+//! cutover work (the legacy runner → `runner.rs` swap). The harness
 //! below is sufficient to exercise the state-spine invariants the design
 //! doc requires.
 

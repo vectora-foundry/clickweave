@@ -152,7 +152,7 @@ Clickweave is a Tauri v2 hybrid app with a Rust backend and a React frontend.
 
 ### Data Flow
 
-**Agent loop:** UI → `run_agent` Tauri command → spawn MCP server → observe-act loop in `clickweave-engine::agent::loop_runner` → stream `agent://` events (step, node_added, edge_added, approval_required, complete, stopped) back to UI → persist the emitted tool calls as a workflow on disk
+**Agent loop:** UI → `run_agent` Tauri command → spawn MCP server → state-spine runner in `clickweave-engine::agent::runner` (observe-act loop driven by `TaskState` + `WorldModel` spines) → stream `agent://` events (step, node_added, edge_added, approval_required, task_state_changed, world_model_changed, boundary_record_written, complete, stopped) back to UI → persist the emitted tool calls as a workflow on disk
 
 **Deterministic execution:** UI → `run_workflow` Tauri command → `WorkflowExecutor::run()` → spawn MCP server → walk the saved tool-call sequence → per-step supervision in Test mode (screenshot → fast VLM → supervisor LLM judge → Retry/Skip/Abort) → record/replay LLM decisions via decision cache → stream `executor://` events to UI
 
@@ -323,7 +323,7 @@ The [Model Context Protocol (MCP)](https://modelcontextprotocol.io/specification
 This section helps AI agents navigate and understand the codebase.
 
 **Key Entry Points:**
-- **Agent Loop:** `crates/clickweave-engine/src/agent/loop_runner.rs` — observe-act loop that drives the agent LLM against MCP tools
+- **Agent Loop:** `crates/clickweave-engine/src/agent/runner.rs` — state-spine observe-act loop that drives the agent LLM against MCP tools (built on `TaskState` + `WorldModel` spines)
 - **Context Compaction:** `crates/clickweave-engine/src/agent/context.rs` — transcript compaction and snapshot supersession
 - **Execution Loop:** `crates/clickweave-engine/src/executor/run_loop.rs` — deterministic replay of saved workflows
 - **Supervision:** `crates/clickweave-engine/src/executor/supervision.rs` — per-step fast-VLM + supervisor LLM verification pipeline

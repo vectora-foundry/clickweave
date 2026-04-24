@@ -16,9 +16,8 @@ mod types;
 mod world_model;
 
 // `ApprovalGate` lives in `approval` so the state-spine runner can own it
-// without a cyclic dep on the legacy `loop_runner`. Phase 3b deletes the
-// legacy runner; this re-export keeps external callers pointed at a stable
-// path.
+// without a cyclic dep on the legacy runner. Phase 3b deleted the legacy
+// runner; this re-export keeps external callers pointed at a stable path.
 pub use approval::ApprovalGate;
 pub use permissions::{PermissionAction, PermissionPolicy, PermissionRule, ToolAnnotations};
 pub use prior_turns::{PriorTurn, build_goal_block};
@@ -89,11 +88,11 @@ where
     B: ChatBackend,
     M: Mcp + ?Sized,
 {
-    // Phase 3b Task 3.3 deleted the legacy `loop_runner.rs`; this entry
-    // point now drives `StateRunner` directly. The `vision` parameter
-    // shape follows D-PR1: `Arc<dyn DynChatBackend>` so primary and
-    // VLM can be different concrete backend types without pushing a
-    // second generic through the Tauri command surface.
+    // Phase 3b Task 3.3 deleted the legacy runner; this entry point now
+    // drives `StateRunner` directly. The `vision` parameter shape follows
+    // D-PR1: `Arc<dyn DynChatBackend>` so primary and VLM can be different
+    // concrete backend types without pushing a second generic through the
+    // Tauri command surface.
     //
     // D18 (Task 3.5): variant context + prior-turn log are no longer
     // separate parameters. Callers compose them into `goal` via

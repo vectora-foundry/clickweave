@@ -21,7 +21,7 @@ pub struct Fresh<T> {
 }
 
 /// Classification for the currently-focused app. Mirrors the existing
-/// `AppKind` classification in `loop_runner.rs` — will unify in Phase 4.
+/// `AppKind` classification used by the runner — will unify in Phase 4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "snake_case")]
@@ -431,7 +431,7 @@ impl WorldModel {
 }
 
 /// Parse `list_apps` output into a `FocusedApp`. Shape mirrors the live
-/// probe path in `loop_runner.rs`.
+/// probe path the legacy runner used.
 fn parse_focused_app_from_list(body: &str) -> Result<FocusedApp, String> {
     #[derive(serde::Deserialize)]
     struct AppRow {
@@ -913,8 +913,8 @@ mod observation_union_tests {
     //! Coverage for the observation / cacheability predicates that gate
     //! approval bypass, cache eligibility, and workflow-node inclusion.
     //!
-    //! Ported verbatim from `loop_runner::observation_union_tests` for
-    //! Task 3a.7.d. Legacy tests hit `AgentRunner::<B>::is_observation_tool`
+    //! Ported verbatim from the legacy runner's observation-union tests
+    //! for Task 3a.7.d. Legacy tests hit `AgentRunner::<B>::is_observation_tool`
     //! etc. as generic associated fns; their `StateRunner` replacements
     //! are free functions in `crate::agent::runner`, promoted to
     //! `pub(crate)` so this module can exercise them without adding a
@@ -927,7 +927,7 @@ mod observation_union_tests {
     //! concern. That rationale applies to a different axis — the tests
     //! ported here target tool *classification*, which still lives as
     //! free functions in `runner.rs`. Keeping the plan's file home so
-    //! Phase 3b's deletion of `loop_runner.rs` doesn't drop coverage.
+    //! Phase 3b's deletion of the legacy runner doesn't drop coverage.
     use std::collections::HashMap;
 
     use crate::agent::permissions::ToolAnnotations;

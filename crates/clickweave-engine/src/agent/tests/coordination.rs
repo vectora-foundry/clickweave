@@ -888,7 +888,7 @@ async fn focus_window_still_runs_when_app_kind_is_unknown() {
 // the real `focus_window` would only disrupt the user's foreground.
 // The pre-CDP-connect case is still exercised by the unit-level
 // `should_skip_focus_window_defers_for_electron_or_chrome_without_live_cdp`
-// test (see loop_runner.rs); this integration test covers the
+// test (see `runner.rs`); this integration test covers the
 // post-connect dispatch flow at the `AgentChannels` boundary.
 // ---------------------------------------------------------------------------
 
