@@ -609,17 +609,11 @@ impl StateRunner {
         let action_taken =
             serde_json::to_value(&turn.mutations).unwrap_or_else(|_| serde_json::json!([]));
         for _ in 0..count {
-            let record = self.build_step_record(
+            self.persist_boundary_record(
                 crate::agent::step_record::BoundaryKind::SubgoalCompleted,
                 action_taken.clone(),
                 serde_json::json!({"kind": "subgoal_completed"}),
-            );
-            self.write_step_record(&record);
-            self.emit_event(AgentEvent::BoundaryRecordWritten {
-                run_id: self.run_id,
-                boundary_kind: crate::agent::step_record::BoundaryKind::SubgoalCompleted,
-                step_index: record.step_index,
-            })
+            )
             .await;
         }
     }
@@ -646,17 +640,11 @@ impl StateRunner {
             // variants never reach this path (see `run()`'s guard).
             _ => serde_json::json!({"kind": "tool_success"}),
         };
-        let record = self.build_step_record(
+        self.persist_boundary_record(
             crate::agent::step_record::BoundaryKind::RecoverySucceeded,
             action_taken,
             outcome_json,
-        );
-        self.write_step_record(&record);
-        self.emit_event(AgentEvent::BoundaryRecordWritten {
-            run_id: self.run_id,
-            boundary_kind: crate::agent::step_record::BoundaryKind::RecoverySucceeded,
-            step_index: record.step_index,
-        })
+        )
         .await;
     }
 
@@ -685,15 +673,28 @@ impl StateRunner {
                 })
             })
             .unwrap_or_else(|| outcome_json.clone());
-        let record = self.build_step_record(
+        self.persist_boundary_record(
             crate::agent::step_record::BoundaryKind::Terminal,
             action_taken,
             outcome_json,
-        );
+        )
+        .await;
+    }
+
+    /// Shared body for the three `write_*_record` boundary paths: build
+    /// the `StepRecord`, persist via `RunStorage`, and emit the matching
+    /// `BoundaryRecordWritten` event.
+    async fn persist_boundary_record(
+        &self,
+        boundary_kind: crate::agent::step_record::BoundaryKind,
+        action_taken: serde_json::Value,
+        outcome: serde_json::Value,
+    ) {
+        let record = self.build_step_record(boundary_kind.clone(), action_taken, outcome);
         self.write_step_record(&record);
         self.emit_event(AgentEvent::BoundaryRecordWritten {
             run_id: self.run_id,
-            boundary_kind: crate::agent::step_record::BoundaryKind::Terminal,
+            boundary_kind,
             step_index: record.step_index,
         })
         .await;
@@ -1033,19 +1034,17 @@ pub(crate) fn is_state_transition_tool(tool_name: &str) -> bool {
 /// shaped tool list. Tools without an `annotations` block produce the
 /// default (all-`None`) struct. Mirrors the legacy `build_annotations_index`.
 fn build_annotations_index(mcp_tools: &[Value]) -> HashMap<String, ToolAnnotations> {
-    let mut index = HashMap::with_capacity(mcp_tools.len());
-    for tool in mcp_tools {
-        let name = tool
-            .get("function")
-            .and_then(|f| f.get("name"))
-            .or_else(|| tool.get("name"))
-            .and_then(|v| v.as_str());
-        let Some(name) = name else {
-            continue;
-        };
-        index.insert(name.to_string(), ToolAnnotations::from_tool_json(tool));
-    }
-    index
+    mcp_tools
+        .iter()
+        .filter_map(|tool| {
+            let name = tool
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .or_else(|| tool.get("name"))
+                .and_then(Value::as_str)?;
+            Some((name.to_string(), ToolAnnotations::from_tool_json(tool)))
+        })
+        .collect()
 }
 
 /// Join all text content from a `ToolCallResult` into a single string —
@@ -1053,19 +1052,18 @@ fn build_annotations_index(mcp_tools: &[Value]) -> HashMap<String, ToolAnnotatio
 // `pub(crate)` so the ported `observation_union_tests` in
 // `crate::agent::world_model` can pin the joined-text contract (Task 3a.7.d).
 pub(crate) fn extract_result_text(result: &clickweave_mcp::ToolCallResult) -> String {
-    let mut parts: Vec<String> = Vec::with_capacity(result.content.len());
-    for content in &result.content {
-        match content {
-            clickweave_mcp::ToolContent::Text { text } => parts.push(text.clone()),
+    result
+        .content
+        .iter()
+        .map(|content| match content {
+            clickweave_mcp::ToolContent::Text { text } => text.clone(),
             clickweave_mcp::ToolContent::Image { mime_type, .. } => {
-                parts.push(format!("[image: {}]", mime_type));
+                format!("[image: {}]", mime_type)
             }
-            clickweave_mcp::ToolContent::Unknown(_) => {
-                parts.push("[unknown content]".to_string());
-            }
-        }
-    }
-    parts.join("\n")
+            clickweave_mcp::ToolContent::Unknown(_) => "[unknown content]".to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Pure diff over two `WorldModel::field_signatures()` snapshots.
@@ -1087,16 +1085,17 @@ pub(crate) fn diff_world_model_signatures(
         post.len(),
         "field_signatures must return a stable-length vec",
     );
-    let mut changed_fields = Vec::new();
-    for (p, q) in pre.iter().zip(post.iter()) {
-        debug_assert_eq!(
-            p.0, q.0,
-            "field_signatures must return fields in the same order",
-        );
-        if p.1 != q.1 {
-            changed_fields.push(p.0.to_string());
-        }
-    }
+    let changed_fields = pre
+        .iter()
+        .zip(post.iter())
+        .filter_map(|(p, q)| {
+            debug_assert_eq!(
+                p.0, q.0,
+                "field_signatures must return fields in the same order",
+            );
+            (p.1 != q.1).then(|| p.0.to_string())
+        })
+        .collect();
     WorldModelDiff { changed_fields }
 }
 
@@ -2132,26 +2131,21 @@ impl<M: Mcp + ?Sized> ToolExecutor for McpToolExecutor<'_, M> {
         tool_name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, String> {
-        match self.mcp.call_tool(tool_name, Some(arguments.clone())).await {
-            Ok(result) if result.is_error != Some(true) => {
-                let text = result
-                    .content
-                    .iter()
-                    .filter_map(|c| c.as_text())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                Ok(text)
-            }
-            Ok(result) => {
-                let text = result
-                    .content
-                    .iter()
-                    .filter_map(|c| c.as_text())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                Err(text)
-            }
-            Err(e) => Err(format!("{}", e)),
+        let result = self
+            .mcp
+            .call_tool(tool_name, Some(arguments.clone()))
+            .await
+            .map_err(|e| e.to_string())?;
+        let text = result
+            .content
+            .iter()
+            .filter_map(|c| c.as_text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if result.is_error == Some(true) {
+            Err(text)
+        } else {
+            Ok(text)
         }
     }
 }
@@ -2820,12 +2814,16 @@ fn append_assistant_and_tool_result(
     assistant: &Message,
     previous_result: Option<&str>,
 ) {
-    if let Some(tool_calls) = &assistant.tool_calls {
-        if let Some(tc) = tool_calls.first() {
-            messages.push(Message::assistant_tool_calls(vec![tc.clone()]));
-            let result_text = previous_result.unwrap_or("ok");
-            messages.push(Message::tool_result(&tc.id, result_text));
-        }
+    if let Some(tc) = assistant
+        .tool_calls
+        .as_ref()
+        .and_then(|calls| calls.first())
+    {
+        messages.push(Message::assistant_tool_calls(vec![tc.clone()]));
+        messages.push(Message::tool_result(
+            &tc.id,
+            previous_result.unwrap_or("ok"),
+        ));
     } else if let Some(text) = assistant.content_text() {
         messages.push(Message::assistant(text));
     }
