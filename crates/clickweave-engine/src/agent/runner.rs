@@ -10,11 +10,17 @@
 
 #![allow(dead_code)] // Phase 2c: live wiring lands in Phase 3 cutover.
 
-use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::sync::Arc;
 
+use clickweave_llm::DynChatBackend;
+use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, oneshot};
+
+use crate::agent::permissions::PermissionPolicy;
 use crate::agent::phase::{self, PhaseSignals};
 use crate::agent::task_state::{TaskState, TaskStateMutation};
-use crate::agent::types::{AgentCache, AgentConfig, AgentState};
+use crate::agent::types::{AgentCache, AgentConfig, AgentEvent, AgentState, ApprovalRequest};
 use crate::agent::world_model::{InvalidationEvent, WorldModel};
 
 /// The one action an `AgentTurn` must carry (D10).
@@ -76,6 +82,23 @@ pub struct StateRunner {
     // --- Collaborators (builder-style) ---
     pub storage: Option<std::sync::Arc<std::sync::Mutex<clickweave_core::storage::RunStorage>>>,
     pub run_id: uuid::Uuid,
+    /// Live event channel. When `None` the runner runs silently.
+    pub event_tx: Option<mpsc::Sender<AgentEvent>>,
+    /// Approval-gate channel pair. When `None` no prompt fires (the
+    /// permission policy is consulted in isolation).
+    pub approval_gate: Option<crate::agent::approval::ApprovalGate>,
+    /// Optional VLM backend used to verify `agent_done`. Stored as
+    /// `Arc<dyn DynChatBackend>` per D-PR1 so primary and VLM backends
+    /// can be different concrete types without polluting `StateRunner`'s
+    /// generics.
+    pub vision: Option<Arc<dyn DynChatBackend>>,
+    /// Permission policy consulted before every non-observation tool
+    /// call. Default policy denies nothing and asks for nothing —
+    /// matches the legacy behaviour.
+    pub permissions: PermissionPolicy,
+    /// Directory for completion-verification artifacts (PNG + JSON).
+    /// `None` disables artifact persistence.
+    pub verification_artifacts_dir: Option<PathBuf>,
 }
 
 impl StateRunner {
@@ -97,6 +120,11 @@ impl StateRunner {
             recent_destructive_tools: Vec::new(),
             storage: None,
             run_id: uuid::Uuid::new_v4(),
+            event_tx: None,
+            approval_gate: None,
+            vision: None,
+            permissions: PermissionPolicy::default(),
+            verification_artifacts_dir: None,
         }
     }
 
@@ -120,6 +148,52 @@ impl StateRunner {
     ) -> Self {
         self.storage = Some(storage);
         self
+    }
+
+    /// Attach a live event channel. Events emitted by the runner are
+    /// forwarded through this sender; `None` runs silently.
+    pub fn with_events(mut self, tx: mpsc::Sender<AgentEvent>) -> Self {
+        self.event_tx = Some(tx);
+        self
+    }
+
+    /// Attach an approval-gate channel. The runner sends
+    /// `(ApprovalRequest, oneshot::Sender<bool>)` pairs through it and
+    /// waits for a reply before dispatching every approval-gated tool.
+    pub fn with_approval(
+        mut self,
+        request_tx: mpsc::Sender<(ApprovalRequest, oneshot::Sender<bool>)>,
+    ) -> Self {
+        self.approval_gate = Some(crate::agent::approval::ApprovalGate { request_tx });
+        self
+    }
+
+    /// Attach a VLM backend used to verify `agent_done` against a fresh
+    /// screenshot (D-PR1: stored as `Arc<dyn DynChatBackend>` so the
+    /// VLM can be a different concrete backend from the primary).
+    pub fn with_vision(mut self, vlm: Arc<dyn DynChatBackend>) -> Self {
+        self.vision = Some(vlm);
+        self
+    }
+
+    /// Replace the default permission policy.
+    pub fn with_permissions(mut self, policy: PermissionPolicy) -> Self {
+        self.permissions = policy;
+        self
+    }
+
+    /// Set the directory where completion-verification artifacts are
+    /// persisted (PNG screenshot + JSON metadata).
+    pub fn with_verification_artifacts_dir(mut self, dir: PathBuf) -> Self {
+        self.verification_artifacts_dir = Some(dir);
+        self
+    }
+
+    /// Consume the runner and return the accumulated [`AgentCache`].
+    /// API parity with `AgentRunner::into_cache` — the Phase 3b cutover
+    /// keeps `run_agent_workflow`'s `(AgentState, AgentCache)` contract.
+    pub fn into_cache(self) -> AgentCache {
+        self.cache
     }
 
     /// Write a boundary `StepRecord` through the shared `RunStorage` handle.
@@ -388,6 +462,89 @@ impl StateRunner {
         self.step_index += 1;
 
         (outcome, warnings)
+    }
+}
+
+#[cfg(test)]
+mod builder_tests {
+    use super::*;
+    use clickweave_llm::{ChatBackend, ChatOptions, ChatResponse, Message};
+    use serde_json::Value;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    /// Minimal stub implementing `ChatBackend` so we can confirm the
+    /// blanket `DynChatBackend` impl lets us stash one behind `Arc<dyn>`.
+    #[derive(Default)]
+    struct YesVlmStub;
+    impl ChatBackend for YesVlmStub {
+        fn model_name(&self) -> &str {
+            "yes-vlm"
+        }
+        async fn chat_with_options(
+            &self,
+            _messages: &[Message],
+            _tools: Option<&[Value]>,
+            _options: &ChatOptions,
+        ) -> anyhow::Result<ChatResponse> {
+            Ok(ChatResponse {
+                id: "t".into(),
+                choices: vec![clickweave_llm::Choice {
+                    index: 0,
+                    message: Message::assistant("YES"),
+                    finish_reason: Some("stop".into()),
+                }],
+                usage: None,
+            })
+        }
+    }
+
+    #[test]
+    fn with_events_stores_sender() {
+        let (tx, _rx) = mpsc::channel::<AgentEvent>(8);
+        let r = StateRunner::new_for_test("g".to_string()).with_events(tx);
+        assert!(r.event_tx.is_some());
+    }
+
+    #[test]
+    fn with_approval_stores_gate() {
+        let (tx, _rx) = mpsc::channel::<(ApprovalRequest, oneshot::Sender<bool>)>(8);
+        let r = StateRunner::new_for_test("g".to_string()).with_approval(tx);
+        assert!(r.approval_gate.is_some());
+    }
+
+    #[test]
+    fn with_vision_stores_backend_as_arc_dyn() {
+        let vlm: Arc<dyn DynChatBackend> = Arc::new(YesVlmStub);
+        let r = StateRunner::new_for_test("g".to_string()).with_vision(vlm);
+        assert!(r.vision.is_some());
+    }
+
+    #[test]
+    fn with_permissions_replaces_default_policy() {
+        let policy = PermissionPolicy::default();
+        let r = StateRunner::new_for_test("g".to_string()).with_permissions(policy);
+        // Confirm the field is populated — the default policy is Copy-
+        // like and doesn't diverge from the constructor default, so the
+        // guarantee here is "no panic, no drop".
+        let _ = &r.permissions;
+    }
+
+    #[test]
+    fn with_verification_artifacts_dir_stores_path() {
+        let r = StateRunner::new_for_test("g".to_string())
+            .with_verification_artifacts_dir(PathBuf::from("/tmp/artifacts"));
+        assert_eq!(
+            r.verification_artifacts_dir.as_deref(),
+            Some(std::path::Path::new("/tmp/artifacts"))
+        );
+    }
+
+    #[test]
+    fn into_cache_returns_empty_cache_by_default() {
+        let r = StateRunner::new_for_test("g".to_string());
+        let cache = r.into_cache();
+        assert!(cache.entries.is_empty());
     }
 }
 

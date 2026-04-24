@@ -127,14 +127,12 @@ fn build_annotations_index(mcp_tools: &[Value]) -> HashMap<String, ToolAnnotatio
     index
 }
 
-/// Callback pair for requesting approval from the UI before executing a tool.
-///
-/// Each approval request uses a fresh `tokio::sync::oneshot` channel to avoid
-/// deadlocks — the runner sends an `ApprovalRequest` bundled with a oneshot
-/// `Sender<bool>`, and the UI responds exactly once.
-pub struct ApprovalGate {
-    pub request_tx: mpsc::Sender<(ApprovalRequest, tokio::sync::oneshot::Sender<bool>)>,
-}
+/// Re-export of [`crate::agent::approval::ApprovalGate`]. Phase 3a moved
+/// the type into its own module so the new state-spine `StateRunner` can
+/// own the gate without a cyclic dep on `loop_runner`. The legacy
+/// `AgentRunner` continues to construct it through this alias until
+/// Phase 3b deletes the legacy runner.
+pub use crate::agent::approval::ApprovalGate;
 
 /// The main agent runner that implements the observe-act loop.
 pub struct AgentRunner<'a, B: ChatBackend> {

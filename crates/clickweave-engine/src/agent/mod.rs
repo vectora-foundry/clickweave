@@ -1,3 +1,4 @@
+mod approval;
 mod cache;
 mod completion_check;
 mod context;
@@ -17,7 +18,12 @@ mod transition;
 mod types;
 mod world_model;
 
-pub use loop_runner::{AgentRunner, ApprovalGate};
+pub use loop_runner::AgentRunner;
+// `ApprovalGate` lives in `approval` so the state-spine runner can own it
+// without a cyclic dep on `loop_runner`. Re-exported under the same path
+// so existing call sites keep working until Phase 3b deletes the legacy
+// runner.
+pub use approval::ApprovalGate;
 pub use permissions::{PermissionAction, PermissionPolicy, PermissionRule, ToolAnnotations};
 pub use prior_turns::PriorTurn;
 pub use prompt::truncate_summary;
