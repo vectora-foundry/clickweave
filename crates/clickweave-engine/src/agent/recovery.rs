@@ -1,3 +1,7 @@
+// Task 3a.1: recovery strategy stays live through `AgentRunner` in the
+// legacy integration tests; Task 3a.6 re-wires it against `StateRunner::run`.
+#![allow(dead_code)]
+
 /// Action the agent should take after encountering an error.
 ///
 /// The agent loop always re-observes the page on the next iteration,

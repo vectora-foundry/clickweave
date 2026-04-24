@@ -1,3 +1,9 @@
+// Task 3a.1: page-transition detection stays live through `AgentRunner` in
+// the legacy integration tests; Task 3a.1+ will consume it via
+// `StateRunner::run` when the observe step starts comparing consecutive
+// element lists.
+#![allow(dead_code)]
+
 use clickweave_core::cdp::CdpFindElementMatch;
 use std::collections::BTreeSet;
 

@@ -1,3 +1,11 @@
+// Task 3a.1: the legacy prompt builders stay live through `AgentRunner` in
+// the legacy integration tests; the state-spine runner uses `prompt_spine`
+// instead. `prompt::{agent_done_tool, agent_replan_tool}` remain live
+// consumers, but the larger helpers (`system_prompt`, `goal_message`,
+// `step_message`) only surface through the legacy path until Task 3a.7
+// migrates it away.
+#![allow(dead_code)]
+
 use clickweave_core::cdp::CdpFindElementMatch;
 use serde_json::{Value, json};
 

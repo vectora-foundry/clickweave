@@ -31,8 +31,9 @@ pub use runner::{AgentAction, AgentTurn, StateRunner, ToolExecutor, TurnOutcome}
 pub use types::*;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use clickweave_llm::ChatBackend;
+use clickweave_llm::{ChatBackend, DynChatBackend};
 use clickweave_mcp::McpClient;
 
 /// Channels that can be attached to the agent runner for live feedback.
@@ -81,25 +82,27 @@ pub async fn run_agent_workflow<B: ChatBackend>(
     variant_context: Option<&str>,
     cache: Option<AgentCache>,
     channels: Option<AgentChannels>,
-    vision: Option<&B>,
+    vision: Option<Arc<dyn DynChatBackend>>,
     permissions: Option<PermissionPolicy>,
     run_id: uuid::Uuid,
     anchor_node_id: Option<uuid::Uuid>,
     prior_turns: Vec<prior_turns::PriorTurn>,
     verification_artifacts_dir: Option<PathBuf>,
-    _storage: Option<RunStorageHandle>,
+    storage: Option<RunStorageHandle>,
 ) -> anyhow::Result<(AgentState, AgentCache)> {
-    // Phase 3a: `_storage` is plumbed through now so the Tauri call site
-    // can hand its `Arc<Mutex<RunStorage>>` guard into the engine. It is
-    // consumed by `StateRunner::with_storage(...)` when the new top-level
-    // loop lands in Task 3a.1+. The legacy `AgentRunner` does not read it
-    // — `run_agent_workflow` continues to return `(AgentState, AgentCache)`.
+    // Task 3a.1 pivots this wrapper off the legacy `AgentRunner` onto
+    // `StateRunner`. The legacy runner stays alive in `loop_runner.rs`
+    // (the ~95 legacy integration tests still drive it directly); only
+    // this public entry point switches over. The `vision` parameter
+    // shape follows D-PR1: `Arc<dyn DynChatBackend>` so primary and
+    // VLM can be different concrete backend types without pushing a
+    // second generic through the Tauri command surface.
     let tools = mcp.tools_as_openai();
     let workflow = clickweave_core::Workflow::default();
-    let mut runner = match cache {
-        Some(c) => AgentRunner::with_cache(llm, config, c),
-        None => AgentRunner::new(llm, config),
-    };
+    let mut runner = StateRunner::new(goal.clone(), config);
+    if let Some(c) = cache {
+        runner = runner.with_cache(c);
+    }
     runner = runner.with_run_id(run_id);
     if let Some(ch) = channels {
         runner = runner
@@ -115,18 +118,21 @@ pub async fn run_agent_workflow<B: ChatBackend>(
     if let Some(dir) = verification_artifacts_dir {
         runner = runner.with_verification_artifacts_dir(dir);
     }
-    let state = runner
+    if let Some(s) = storage {
+        runner = runner.with_storage(s);
+    }
+    runner
         .run(
+            llm,
+            mcp,
             goal,
             workflow,
-            mcp,
             variant_context,
             tools,
             anchor_node_id,
             &prior_turns,
         )
-        .await?;
-    Ok((state, runner.into_cache()))
+        .await
 }
 
 #[cfg(test)]

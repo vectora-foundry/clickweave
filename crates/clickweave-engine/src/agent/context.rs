@@ -1,3 +1,9 @@
+// Task 3a.1: legacy context helpers stay live through `AgentRunner` in the
+// legacy integration tests; Task 3a.4 (loop detection / recovery) and
+// Task 3a.6 (CDP auto-connect) will consume them via `StateRunner::run`.
+// Mute lib-build dead_code until then.
+#![allow(dead_code)]
+
 use super::prompt::summarize_steps;
 use super::types::AgentStep;
 use clickweave_llm::{Content, Message, Role};

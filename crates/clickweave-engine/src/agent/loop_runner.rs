@@ -1,3 +1,10 @@
+// Task 3a.1: `run_agent_workflow` now constructs `StateRunner` instead of
+// `AgentRunner`, so most of this module's private helpers only stay live
+// through the legacy integration-test suite that hasn't migrated yet
+// (Task 3a.7). Mute the lib-build dead_code warnings here; each item's
+// `#[cfg(test)]` guard stays in place so accidental runtime use still errors.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 

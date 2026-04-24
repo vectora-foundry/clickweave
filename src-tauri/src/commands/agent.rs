@@ -450,8 +450,14 @@ pub async fn run_agent(
         // post-done check only needs to emit YES/NO + a sentence. If the
         // endpoint cannot process images, the VLM call errors and the loop
         // falls through to normal completion instead of tanking the run.
-        let vision =
-            clickweave_llm::LlmClient::new(agent_config.with_thinking(false).with_max_tokens(512));
+        // D-PR1: StateRunner stores vision as `Arc<dyn DynChatBackend>` so
+        // the primary backend and VLM can be different concrete types.
+        // Wrap at the Tauri seam; the blanket `impl<B: ChatBackend + Send
+        // + Sync> DynChatBackend for B` lets any concrete ChatBackend flow
+        // through `Arc::new(...)` without further plumbing.
+        let vision: std::sync::Arc<dyn clickweave_llm::DynChatBackend> = std::sync::Arc::new(
+            clickweave_llm::LlmClient::new(agent_config.with_thinking(false).with_max_tokens(512)),
+        );
         let mut config = AgentConfig::default();
         if let Some(cap) = consecutive_destructive_cap {
             config.consecutive_destructive_cap = cap;
@@ -512,7 +518,7 @@ pub async fn run_agent(
                 if variant_context.is_empty() { None } else { Some(&variant_context) },
                 Some(cache),
                 Some(channels),
-                Some(&vision),
+                Some(vision.clone()),
                 // Permission policy is threaded from the UI via the
                 // `run_agent` request; None means "use the default
                 // (empty-rules, allow_all=false, guardrail off)" which
