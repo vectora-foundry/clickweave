@@ -52,19 +52,16 @@ pub struct EpisodicWriter {
 }
 
 impl EpisodicWriter {
-    /// Spawn the consumer task. `event_tx`, when `Some`, will receive
-    /// `EpisodeWritten` / `EpisodePromoted` emissions once Phase 3
-    /// wires the corresponding `AgentEvent` variants through the
-    /// runner. Phase 2 keeps the parameter on the signature for
-    /// forward compatibility with that wiring; the per-request
-    /// emission paths inside the consumer are no-ops today (see the
-    /// inline TODOs).
+    /// Back-compat constructor for tests / callers that don't carry an
+    /// explicit store config. Delegates to [`Self::spawn_with_config`]
+    /// with `EpisodicStoreConfig::default()`. Production callers should
+    /// use `spawn_with_config` directly so the `AgentConfig`-derived
+    /// score weights, half-life, and per-scope caps reach the stores.
+    /// `event_tx`, when `Some`, receives `EpisodeWritten` /
+    /// `EpisodePromoted` emissions per the D33 contract.
     /// `run_id` is the runner's active-run UUID; it is captured at
     /// spawn time so emitted events pass the frontend's stale-run
     /// filter even after the runner moves on.
-    /// Back-compat constructor for tests / callers that don't carry an
-    /// explicit store config. Production callers go through
-    /// [`Self::spawn_with_config`].
     pub fn spawn(
         ctx: EpisodicContext,
         event_tx: Option<mpsc::Sender<crate::agent::types::AgentEvent>>,
@@ -76,11 +73,7 @@ impl EpisodicWriter {
     /// Production constructor. Opens the workflow-local and
     /// (optional) global stores with the *configured* score weights,
     /// half-life, and per-scope caps so values from `AgentConfig` are
-    /// honored end to end. `Self::spawn` opens both stores via
-    /// `SqliteEpisodicStore::new` which hard-codes the per-scope cap
-    /// to 500 — silently capping the global store regardless of
-    /// `AgentConfig::episodic_max_per_scope_global` — so production
-    /// callers must use this constructor instead.
+    /// honored end to end.
     pub fn spawn_with_config(
         ctx: EpisodicContext,
         store_config: EpisodicStoreConfig,
@@ -167,8 +160,15 @@ impl EpisodicWriter {
                             continue;
                         }
                         if let Some(g) = &global {
-                            match promote_matching_episodes(&wl, g, &workflow_hash, run_started_at)
-                                .await
+                            match promote_matching_episodes(
+                                &wl,
+                                g,
+                                &workflow_hash,
+                                run_started_at,
+                                event_tx_task.as_ref(),
+                                run_id,
+                            )
+                            .await
                             {
                                 Ok((promoted, skipped)) => {
                                     if let Some(tx) = &event_tx_task {
@@ -293,7 +293,7 @@ async fn handle_derive_and_insert(
     _recovery_success: crate::agent::step_record::StepRecord,
     recovery_actions: Vec<CompactAction>,
 ) -> Result<InsertOutcome, EpisodicError> {
-    // P1.C2: the runner computes the signature at snapshot-capture time
+    // The runner computes the signature at snapshot-capture time
     // using the same `compute_pre_state_signature` retrieval uses, so
     // reads and writes share a single source of truth. Re-deriving here
     // would yield a different value (`WorldModelSnapshot` is a lossy
@@ -347,7 +347,7 @@ async fn handle_derive_and_insert(
         created_at: now,
         last_seen_at: now,
         last_retrieved_at: None,
-        // P1.H3: populate with the events.jsonl ref captured at
+        // Populate with the events.jsonl ref captured at
         // snapshot time so D36's orphan-ref sweep has something to
         // resolve.
         step_record_refs: entry.events_jsonl_ref.clone().into_iter().collect(),
@@ -414,6 +414,8 @@ async fn promote_matching_episodes(
     global: &Arc<SqliteEpisodicStore>,
     workflow_hash: &str,
     run_started_at: chrono::DateTime<chrono::Utc>,
+    event_tx: Option<&mpsc::Sender<crate::agent::types::AgentEvent>>,
+    run_id: uuid::Uuid,
 ) -> Result<(Vec<String>, usize), EpisodicError> {
     // Route global writes through `SqliteEpisodicStore::insert` so
     // insert + dedup-merge + step_record_refs union + LRU prune all
@@ -467,12 +469,32 @@ async fn promote_matching_episodes(
         };
 
         match global.insert(candidate).await {
-            Ok(InsertOutcome::Inserted { episode_id })
-            | Ok(InsertOutcome::MergedWithExisting { episode_id, .. }) => {
-                promoted_ids.push(episode_id);
-            }
-            Ok(InsertOutcome::Dropped { .. }) => {
-                skipped += 1;
+            Ok(outcome) => {
+                // Capture the promoted ID (if any) before the
+                // outcome is consumed by the event-emission helper.
+                // D33 contract: `agent://episode_written` fires on
+                // every successful insert/merge with `scope: "global"`,
+                // matching the workflow-local emission path so
+                // consumers see both stores' writes through one event.
+                let promoted_id = match &outcome {
+                    InsertOutcome::Inserted { episode_id }
+                    | InsertOutcome::MergedWithExisting { episode_id, .. } => {
+                        Some(episode_id.clone())
+                    }
+                    InsertOutcome::Dropped { .. } => None,
+                };
+                if let Some(tx) = event_tx {
+                    let event = event_from_insert_outcome(
+                        run_id,
+                        outcome,
+                        crate::agent::episodic::EpisodeScope::Global,
+                    );
+                    let _ = tx.send(event).await;
+                }
+                match promoted_id {
+                    Some(id) => promoted_ids.push(id),
+                    None => skipped += 1,
+                }
             }
             Err(e) => {
                 tracing::warn!(error = %e, "episodic: global promotion insert failed");

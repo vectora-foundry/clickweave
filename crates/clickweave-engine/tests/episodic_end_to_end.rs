@@ -94,7 +94,7 @@ fn mk_episode_pre_seeded(scope: EpisodeScope, sig: &str, actions_hash: &str) -> 
         pre_state_snapshot: WorldModelSnapshot::default(),
         goal_subgoal_embedding: e.embed("login"),
         embedding_impl_id: e.impl_id().into(),
-        // P1.M3: occurrence_count >= 2 ensures should_promote returns
+        // occurrence_count >= 2 ensures should_promote returns
         // true even without prior global cross-confirmation.
         occurrence_count: 2,
         created_at: now,
@@ -203,11 +203,23 @@ async fn writer_emits_episode_promoted_event_on_clean_terminal() {
     writer.flush_for_tests().await;
 
     // Pull events until we hit EpisodePromoted (or time out).
+    // D33 contract: every successful promotion-pass insert/merge into
+    // the global store also fires an `EpisodeWritten` with
+    // `scope = Global` before the terminal `EpisodePromoted` summary.
     let mut promoted_seen = false;
+    let mut global_written_seen = false;
     while let Ok(maybe_event) =
         tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
     {
         match maybe_event {
+            Some(AgentEvent::EpisodeWritten {
+                scope: clickweave_engine::agent::episodic::EpisodeScope::Global,
+                run_id: ev_run_id,
+                ..
+            }) => {
+                assert_eq!(ev_run_id, run_id, "global EpisodeWritten must carry run_id");
+                global_written_seen = true;
+            }
             Some(AgentEvent::EpisodePromoted {
                 run_id: ev_run_id,
                 promoted_episode_ids,
@@ -228,6 +240,10 @@ async fn writer_emits_episode_promoted_event_on_clean_terminal() {
     assert!(
         promoted_seen,
         "EpisodePromoted event must fire on a clean-terminal PromotePass with eligible rows"
+    );
+    assert!(
+        global_written_seen,
+        "EpisodeWritten with scope=Global must fire before EpisodePromoted (D33 contract)"
     );
 }
 
