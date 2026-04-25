@@ -454,6 +454,66 @@ async fn writer_skip_promotion_does_not_touch_global_store() {
 }
 
 #[tokio::test]
+async fn promotion_dedup_writes_rfc3339_last_seen_at() {
+    // Regression: the global-dedup branch in `promote_matching_episodes`
+    // previously wrote `last_seen_at = datetime('now')`, which produces
+    // SQLite's default `YYYY-MM-DD HH:MM:SS` format. `row_to_episode`
+    // then parses `last_seen_at` strictly as RFC3339 and falls back to
+    // `Utc::now()` on failure, so a merged global row read after the
+    // run looked freshly seen on every retrieval and broke the
+    // recency-decay ordering. Ensure the merge path stores RFC3339.
+    let dir = tempfile::tempdir().unwrap();
+    let wl_path = dir.path().join("wl.sqlite");
+    let global_path = dir.path().join("global.sqlite");
+
+    // Pre-populate the global store with a row that shares the
+    // `(scope, pre_state_signature, recovery_actions_hash)` triple with
+    // the row we'll promote, forcing the INSERT OR IGNORE inside
+    // `promote_matching_episodes` to take the dedup-merge branch.
+    let global_store = SqliteEpisodicStore::new(&global_path, EpisodeScope::Global).unwrap();
+    let mut existing_global = mk_episode("sig_dedup", "hash_dedup", "different_workflow");
+    existing_global.scope = EpisodeScope::Global;
+    global_store.insert(existing_global).await.unwrap();
+
+    let wl_store = SqliteEpisodicStore::new(&wl_path, EpisodeScope::WorkflowLocal).unwrap();
+    let mut wl_row = mk_episode("sig_dedup", "hash_dedup", "w1");
+    wl_row.occurrence_count = 2; // qualifies for promotion
+    wl_store.insert(wl_row).await.unwrap();
+
+    let ctx = EpisodicContext {
+        enabled: true,
+        workflow_local_path: wl_path,
+        global_path: Some(global_path.clone()),
+        workflow_hash: "w1".into(),
+    };
+    let writer = EpisodicWriter::spawn(ctx, None, uuid::Uuid::new_v4()).unwrap();
+    writer
+        .queue(WriteRequest::PromotePass {
+            workflow_hash: "w1".into(),
+            terminal_kind: PromotionTerminalKind::Clean,
+            run_started_at: Utc::now() - chrono::Duration::hours(1),
+        })
+        .await
+        .unwrap();
+    writer.flush_for_tests().await;
+
+    // Read the merged global row's raw `last_seen_at` and assert it
+    // parses as RFC3339. A SQLite-default `YYYY-MM-DD HH:MM:SS` string
+    // would fail this parse — the symptom the fix addresses.
+    let global_store = SqliteEpisodicStore::new(&global_path, EpisodeScope::Global).unwrap();
+    assert_eq!(global_store.row_count_for_tests().unwrap(), 1);
+    let conn = rusqlite::Connection::open(&global_path).unwrap();
+    let raw_last_seen: String = conn
+        .query_row("SELECT last_seen_at FROM episodes LIMIT 1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    chrono::DateTime::parse_from_rfc3339(&raw_last_seen).unwrap_or_else(|e| {
+        panic!("merged-global last_seen_at must be RFC3339, got {raw_last_seen:?}: {e}")
+    });
+}
+
+#[tokio::test]
 async fn workflow_a_episodes_do_not_appear_in_workflow_b_retrievals() {
     // Cross-scope isolation canary (D34): two distinct workflow-local
     // stores must never see each other's rows, even when they share a

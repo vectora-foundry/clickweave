@@ -441,14 +441,23 @@ async fn promote_matching_episodes(
 
             if inserted == 0 {
                 // Dedup hit on global: bump occurrence_count + last_seen_at.
+                // Write `last_seen_at` as RFC3339 to match every other
+                // write path (`SqliteEpisodicStore::insert` /
+                // `update_after_retrieve` use `DateTime::to_rfc3339`).
+                // `row_to_episode` parses `last_seen_at` strictly as
+                // RFC3339 and falls back to `Utc::now()` on failure,
+                // which made merged global rows look freshly seen on
+                // every later retrieval and broke the recency-decay
+                // ordering used by `score_episode`.
+                let now_rfc3339 = chrono::Utc::now().to_rfc3339();
                 let _ = g.execute(
                     "UPDATE episodes
                         SET occurrence_count = occurrence_count + 1,
-                            last_seen_at = datetime('now')
+                            last_seen_at = ?3
                       WHERE scope = 'global'
                         AND pre_state_signature = ?1
                         AND recovery_actions_hash = ?2",
-                    params![row.1, row.6],
+                    params![row.1, row.6, now_rfc3339],
                 );
                 // Merged into an existing global row — still counts as
                 // promoted for telemetry.
