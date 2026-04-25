@@ -28,3 +28,6 @@ pub use types::{
     TriggeringError, WriteRequest,
 };
 pub use write::EpisodicWriter;
+
+#[cfg(test)]
+mod end_to_end_tests;
