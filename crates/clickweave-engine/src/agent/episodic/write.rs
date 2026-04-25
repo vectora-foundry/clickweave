@@ -97,7 +97,15 @@ impl EpisodicWriter {
                         {
                             Ok(outcome) => {
                                 if let Some(tx) = &event_tx_task {
-                                    let event = event_from_insert_outcome(run_id, outcome);
+                                    // `DeriveAndInsert` always targets the
+                                    // workflow-local store (Spec 2 D30).
+                                    // Promotion writes go through a
+                                    // separate path with their own event.
+                                    let event = event_from_insert_outcome(
+                                        run_id,
+                                        outcome,
+                                        crate::agent::episodic::EpisodeScope::WorkflowLocal,
+                                    );
                                     let _ = tx.send(event).await;
                                 }
                             }
@@ -123,8 +131,8 @@ impl EpisodicWriter {
                                         let event =
                                             crate::agent::types::AgentEvent::EpisodePromoted {
                                                 run_id,
-                                                count: promoted.len(),
-                                                skipped,
+                                                promoted_episode_ids: promoted,
+                                                skipped_count: skipped,
                                             };
                                         let _ = tx.send(event).await;
                                     }
@@ -302,12 +310,14 @@ async fn handle_derive_and_insert(
 fn event_from_insert_outcome(
     run_id: uuid::Uuid,
     outcome: InsertOutcome,
+    scope: crate::agent::episodic::EpisodeScope,
 ) -> crate::agent::types::AgentEvent {
     match outcome {
         InsertOutcome::Inserted { episode_id } => crate::agent::types::AgentEvent::EpisodeWritten {
             run_id,
-            episode_id,
             outcome: "inserted".into(),
+            episode_id,
+            scope,
             occurrence_count: 1,
         },
         InsertOutcome::MergedWithExisting {
@@ -315,14 +325,16 @@ fn event_from_insert_outcome(
             new_occurrence_count,
         } => crate::agent::types::AgentEvent::EpisodeWritten {
             run_id,
-            episode_id,
             outcome: "merged".into(),
+            episode_id,
+            scope,
             occurrence_count: new_occurrence_count,
         },
         InsertOutcome::Dropped { reason } => crate::agent::types::AgentEvent::EpisodeWritten {
             run_id,
-            episode_id: String::new(),
             outcome: format!("dropped: {reason}"),
+            episode_id: String::new(),
+            scope,
             occurrence_count: 0,
         },
     }

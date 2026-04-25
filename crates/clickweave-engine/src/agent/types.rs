@@ -128,43 +128,69 @@ pub enum AgentEvent {
         step_index: usize,
     },
     /// Emitted after the runner's episodic-retrieval pass returns at
-    /// least one candidate (Spec 2 D24). Triggered on run-start (step 0)
-    /// and on the `Exploring/Executing -> Recovering` phase transition.
+    /// least one candidate (Spec 2 D24). Triggered on run-start and on
+    /// the `Exploring/Executing -> Recovering` phase transition.
     /// `episode_ids` are the IDs of the retrieved episodes in
-    /// score-descending order; `scope_breakdown_workflow` and
-    /// `scope_breakdown_global` partition `count` across the two
-    /// stores so frontends can show provenance without re-walking
-    /// the payload.
+    /// score-descending order; `scope_breakdown` partitions `count`
+    /// across the two stores so frontends can show provenance without
+    /// re-walking the payload.
+    ///
+    /// Payload shape locked by Spec 2 D33
+    /// (`docs/design/2026-04-24_agent-episodic-memory.md:699`).
     EpisodesRetrieved {
         run_id: Uuid,
         trigger: crate::agent::episodic::RetrievalTrigger,
         count: usize,
         episode_ids: Vec<String>,
-        scope_breakdown_workflow: usize,
-        scope_breakdown_global: usize,
+        scope_breakdown: ScopeBreakdown,
     },
     /// Emitted by the episodic writer task after a `RecoverySucceeded`
-    /// recovery snapshot is persisted to the workflow-local SQLite store
-    /// (Spec 2 D30). Carries the `run_id` captured at writer-spawn so
-    /// the frontend's stale-run filter can drop late events from a
-    /// previous run. `outcome` is `"inserted"` or `"merged"`,
-    /// reflecting the dedup-aware insert path.
+    /// recovery snapshot is persisted to a SQLite store (Spec 2 D30).
+    /// Carries the `run_id` captured at writer-spawn so the frontend's
+    /// stale-run filter can drop late events from a previous run.
+    /// `outcome` is `"inserted"` or `"merged"`, reflecting the
+    /// dedup-aware insert path. `scope` identifies which store the
+    /// row landed in (workflow-local for the `DeriveAndInsert` write
+    /// path; global for promotion-time writes routed through the
+    /// shared store API).
+    ///
+    /// Payload shape locked by Spec 2 D33
+    /// (`docs/design/2026-04-24_agent-episodic-memory.md:700`).
     EpisodeWritten {
         run_id: Uuid,
-        episode_id: String,
         outcome: String,
+        episode_id: String,
+        scope: crate::agent::episodic::EpisodeScope,
         occurrence_count: u32,
     },
     /// Emitted by the episodic writer task after the run-terminal
     /// promotion pass copies one or more workflow-local episodes into
-    /// the global store (Spec 2 D31). `count` is the number of
-    /// episodes promoted in this pass; `skipped` is the number of
-    /// candidates the `should_promote` gate rejected.
+    /// the global store (Spec 2 D31). `promoted_episode_ids` lists
+    /// the global-store row IDs each candidate landed at (existing
+    /// row IDs on dedup-merge, freshly minted IDs on insert);
+    /// `skipped_count` is the number of candidates the
+    /// `should_promote` gate rejected.
+    ///
+    /// Payload shape locked by Spec 2 D33
+    /// (`docs/design/2026-04-24_agent-episodic-memory.md:701`).
     EpisodePromoted {
         run_id: Uuid,
-        count: usize,
-        skipped: usize,
+        promoted_episode_ids: Vec<String>,
+        skipped_count: usize,
     },
+}
+
+/// Scope partitioning carried by [`AgentEvent::EpisodesRetrieved`].
+/// Exists as a named type so frontends can address the breakdown
+/// shape directly instead of unpacking flat sibling fields, matching
+/// the locked Spec 2 D33 payload.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct ScopeBreakdown {
+    /// Number of retrieved episodes from the workflow-local store.
+    pub workflow: usize,
+    /// Number of retrieved episodes from the cross-workflow global store.
+    pub global: usize,
 }
 
 /// Per-step diff of the harness-owned `WorldModel`. Carries the field

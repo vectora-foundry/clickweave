@@ -509,8 +509,7 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
             trigger,
             count,
             episode_ids,
-            scope_breakdown_workflow,
-            scope_breakdown_global,
+            scope_breakdown,
         } => {
             let _ = app.emit(
                 "agent://episodes_retrieved",
@@ -520,15 +519,15 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                     "trigger": trigger,
                     "count": count,
                     "episode_ids": episode_ids,
-                    "scope_breakdown_workflow": scope_breakdown_workflow,
-                    "scope_breakdown_global": scope_breakdown_global,
+                    "scope_breakdown": scope_breakdown,
                 }),
             );
         }
         AgentEvent::EpisodeWritten {
             run_id: event_run_id,
-            episode_id,
             outcome,
+            episode_id,
+            scope,
             occurrence_count,
         } => {
             let _ = app.emit(
@@ -536,24 +535,25 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                 serde_json::json!({
                     "run_id": run_id,
                     "event_run_id": event_run_id,
-                    "episode_id": episode_id,
                     "outcome": outcome,
+                    "episode_id": episode_id,
+                    "scope": scope,
                     "occurrence_count": occurrence_count,
                 }),
             );
         }
         AgentEvent::EpisodePromoted {
             run_id: event_run_id,
-            count,
-            skipped,
+            promoted_episode_ids,
+            skipped_count,
         } => {
             let _ = app.emit(
                 "agent://episode_promoted",
                 serde_json::json!({
                     "run_id": run_id,
                     "event_run_id": event_run_id,
-                    "count": count,
-                    "skipped": skipped,
+                    "promoted_episode_ids": promoted_episode_ids,
+                    "skipped_count": skipped_count,
                 }),
             );
         }
@@ -1762,5 +1762,165 @@ mod run_agent_smoke_tests {
                 payload,
             );
         }
+    }
+
+    /// F2 acceptance test: pin the exact top-level JSON keys for the
+    /// three Spec 2 D33 episodic events. The locked contract lives at
+    /// `docs/design/2026-04-24_agent-episodic-memory.md:699-701`. A
+    /// future drift on either the engine event variant fields or the
+    /// `forward_agent_event` payload shape must fail this test loud.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn forward_agent_event_emits_locked_episodic_payload_shapes() {
+        use clickweave_engine::agent::ScopeBreakdown;
+        use clickweave_engine::agent::episodic::{EpisodeScope, RetrievalTrigger};
+        use std::collections::BTreeSet;
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+
+        let captured: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        for topic in [
+            "agent://episodes_retrieved",
+            "agent://episode_written",
+            "agent://episode_promoted",
+        ] {
+            let captured = Arc::clone(&captured);
+            handle.listen_any(topic, move |evt| {
+                captured
+                    .lock()
+                    .unwrap()
+                    .push((topic.to_string(), evt.payload().to_string()));
+            });
+        }
+
+        let run_id = uuid::Uuid::new_v4();
+        let run_id_str = run_id.to_string();
+
+        let retrieved = AgentEvent::EpisodesRetrieved {
+            run_id,
+            trigger: RetrievalTrigger::RunStart,
+            count: 2,
+            episode_ids: vec!["ep_a".into(), "ep_b".into()],
+            scope_breakdown: ScopeBreakdown {
+                workflow: 1,
+                global: 1,
+            },
+        };
+        let written = AgentEvent::EpisodeWritten {
+            run_id,
+            outcome: "inserted".into(),
+            episode_id: "ep_c".into(),
+            scope: EpisodeScope::WorkflowLocal,
+            occurrence_count: 1,
+        };
+        let promoted = AgentEvent::EpisodePromoted {
+            run_id,
+            promoted_episode_ids: vec!["ep_d".into()],
+            skipped_count: 3,
+        };
+
+        forward_agent_event(&handle, &run_id_str, &retrieved);
+        forward_agent_event(&handle, &run_id_str, &written);
+        forward_agent_event(&handle, &run_id_str, &promoted);
+
+        // Yield so listener tasks pick up the emits.
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+
+        let captured = captured.lock().unwrap();
+        let by_topic = |t: &str| -> serde_json::Value {
+            let raw = captured
+                .iter()
+                .find(|(topic, _)| topic == t)
+                .unwrap_or_else(|| panic!("no emission on {} — captured={:?}", t, captured))
+                .1
+                .clone();
+            serde_json::from_str(&raw).expect("payload is valid JSON")
+        };
+        let key_set = |v: &serde_json::Value| -> BTreeSet<String> {
+            v.as_object()
+                .expect("payload is an object")
+                .keys()
+                .cloned()
+                .collect()
+        };
+        let expect_keys = |actual: BTreeSet<String>, want: &[&str], topic: &str| {
+            let want_set: BTreeSet<String> = want.iter().map(|s| (*s).to_string()).collect();
+            assert_eq!(
+                actual, want_set,
+                "{} payload must carry exactly the locked Spec 2 D33 keys",
+                topic,
+            );
+        };
+
+        let r = by_topic("agent://episodes_retrieved");
+        // `event_run_id` is the harness-added forwarder echo of the
+        // engine-side `run_id`; the spec contract is on the engine
+        // payload's keys (which are the *other* fields). Both must be
+        // present in the emit per the existing forwarder pattern.
+        expect_keys(
+            key_set(&r),
+            &[
+                "run_id",
+                "event_run_id",
+                "trigger",
+                "count",
+                "episode_ids",
+                "scope_breakdown",
+            ],
+            "episodes_retrieved",
+        );
+        let breakdown = r.get("scope_breakdown").expect("scope_breakdown present");
+        let breakdown_keys: BTreeSet<String> = breakdown
+            .as_object()
+            .expect("scope_breakdown is an object")
+            .keys()
+            .cloned()
+            .collect();
+        expect_keys(
+            breakdown_keys,
+            &["workflow", "global"],
+            "episodes_retrieved.scope_breakdown",
+        );
+
+        let w = by_topic("agent://episode_written");
+        expect_keys(
+            key_set(&w),
+            &[
+                "run_id",
+                "event_run_id",
+                "outcome",
+                "episode_id",
+                "scope",
+                "occurrence_count",
+            ],
+            "episode_written",
+        );
+
+        let p = by_topic("agent://episode_promoted");
+        expect_keys(
+            key_set(&p),
+            &[
+                "run_id",
+                "event_run_id",
+                "promoted_episode_ids",
+                "skipped_count",
+            ],
+            "episode_promoted",
+        );
+        // `promoted_episode_ids` must carry the actual IDs, not be
+        // collapsed to a count.
+        let ids = p
+            .get("promoted_episode_ids")
+            .and_then(|v| v.as_array())
+            .expect("promoted_episode_ids is an array");
+        assert_eq!(
+            ids.len(),
+            1,
+            "exactly one promoted ID expected from synthetic event",
+        );
+        assert_eq!(ids[0].as_str(), Some("ep_d"));
     }
 }

@@ -597,8 +597,10 @@ impl StateRunner {
                     .iter()
                     .map(|r| r.episode.episode_id.clone())
                     .collect(),
-                scope_breakdown_workflow: workflow_count,
-                scope_breakdown_global: global_count,
+                scope_breakdown: crate::agent::types::ScopeBreakdown {
+                    workflow: workflow_count,
+                    global: global_count,
+                },
             };
             self.emit_event(event).await;
         }

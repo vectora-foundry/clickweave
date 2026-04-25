@@ -223,10 +223,10 @@ All three flow through `AgentRunRequest` (`episodic_enabled`, `retrieved_episode
   - `agent://task_state_changed` — full `TaskState` snapshot emitted after any turn that applied at least one mutation
   - `agent://world_model_changed` — emitted once per step after `observe`; payload carries a `WorldModelDiff { changed_fields: string[] }` re-render hint, not the full model
   - `agent://boundary_record_written` — emitted when the runner persists a `StepRecord`; payload `{ boundary_kind, step_index }` where `boundary_kind` is `"terminal" | "subgoal_completed" | "recovery_succeeded"`
-- Spec 2 episodic-memory additions (same stale-run filtering):
-  - `agent://episodes_retrieved` — payload `{ trigger: "run_start" | "recovering_entry", count, episode_ids: string[], scope_breakdown_workflow, scope_breakdown_global }`. Fired by the runner when a retrieval pass returned at least one candidate.
-  - `agent://episode_written` — payload `{ episode_id, outcome: "inserted" | "merged" | "dropped: <reason>", occurrence_count }`. Fired by the background `EpisodicWriter` task after each successful workflow-local insert / merge.
-  - `agent://episode_promoted` — payload `{ count, skipped }`. Fired once at run-terminal when the promotion pass copies eligible workflow-local episodes into the global cross-workflow store. The frontend can use this to confirm a clean-terminal opt-in run actually contributed episodes.
+- Spec 2 episodic-memory additions (same stale-run filtering; payload shapes locked by D33):
+  - `agent://episodes_retrieved` — payload `{ trigger: "run_start" | "recovering_entry", count, episode_ids: string[], scope_breakdown: { workflow, global } }`. Fired by the runner when a retrieval pass returned at least one candidate.
+  - `agent://episode_written` — payload `{ outcome: "inserted" | "merged" | "dropped: <reason>", episode_id, scope: "workflow_local" | "global", occurrence_count }`. Fired by the background `EpisodicWriter` task after each successful insert / merge.
+  - `agent://episode_promoted` — payload `{ promoted_episode_ids: string[], skipped_count }`. Fired once at run-terminal when the promotion pass copies eligible workflow-local episodes into the global cross-workflow store. IDs in `promoted_episode_ids` are the actual global-store row IDs (existing IDs on dedup-merge, freshly minted IDs on insert), so they always resolve in the global store.
 - `walkthrough://state`, `walkthrough://event`, `walkthrough://draft_ready`, `walkthrough://cdp-setup`
 - `recording-bar://action`
 - `menu://new`, `menu://open`, `menu://save`, `menu://toggle-sidebar`, `menu://toggle-logs`, `menu://run-workflow`, `menu://stop-workflow`

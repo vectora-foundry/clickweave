@@ -210,11 +210,14 @@ async fn writer_emits_episode_promoted_event_on_clean_terminal() {
         match maybe_event {
             Some(AgentEvent::EpisodePromoted {
                 run_id: ev_run_id,
-                count,
+                promoted_episode_ids,
                 ..
             }) => {
                 assert_eq!(ev_run_id, run_id);
-                assert!(count >= 1, "at least one episode should have been promoted");
+                assert!(
+                    !promoted_episode_ids.is_empty(),
+                    "at least one episode should have been promoted (with its ID)",
+                );
                 promoted_seen = true;
                 break;
             }
@@ -418,11 +421,14 @@ async fn single_writer_processes_derive_and_insert_then_promote_pass() {
             }
             AgentEvent::EpisodePromoted {
                 run_id: ev_run_id,
-                count,
+                promoted_episode_ids,
                 ..
             } => {
                 assert_eq!(ev_run_id, run_id, "EpisodePromoted must carry the run_id");
-                assert!(count >= 1, "at least one episode must be promoted");
+                assert!(
+                    !promoted_episode_ids.is_empty(),
+                    "at least one episode must be promoted (with its ID)",
+                );
                 promoted_seen = true;
             }
             _ => {}
