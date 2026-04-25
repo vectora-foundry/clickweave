@@ -66,13 +66,27 @@ pub fn build_system_prompt(tools: &[Tool]) -> String {
 
 /// Build the per-turn user message. State block first (above the observation),
 /// so the LLM reads world + task state before reacting to the observation.
+///
+/// `retrieved` is the optional Spec 2 episodic-memory result list. When
+/// non-empty, a `<retrieved_recoveries>` sibling block is spliced in
+/// after the state block and before the observation so the LLM sees
+/// remembered recoveries before reacting to the new observation (D23).
 pub fn build_user_turn_message(
     wm: &WorldModel,
     ts: &TaskState,
     current_step: usize,
     observation_text: &str,
+    retrieved: &[crate::agent::episodic::RetrievedEpisode],
 ) -> String {
     let mut out = render_step_input(wm, ts, current_step);
+
+    let recoveries_block =
+        crate::agent::episodic::render::render_retrieved_recoveries_block(retrieved);
+    if !recoveries_block.is_empty() {
+        out.push_str(&recoveries_block);
+        out.push('\n');
+    }
+
     if !observation_text.is_empty() {
         out.push_str("\n<observation>\n");
         out.push_str(observation_text);
@@ -195,7 +209,7 @@ mod state_spine_prompt_tests {
     fn user_turn_contains_state_block_and_observation() {
         let wm = WorldModel::default();
         let ts = TaskState::new("ship it".to_string());
-        let out = build_user_turn_message(&wm, &ts, 3, "observation text here");
+        let out = build_user_turn_message(&wm, &ts, 3, "observation text here", &[]);
         assert!(out.contains("<world_model>"));
         assert!(out.contains("<task_state>"));
         assert!(out.contains("observation text here"));
@@ -212,7 +226,7 @@ mod state_spine_prompt_tests {
     fn user_turn_without_observation_omits_observation_tag() {
         let wm = WorldModel::default();
         let ts = TaskState::new("ship it".to_string());
-        let out = build_user_turn_message(&wm, &ts, 0, "");
+        let out = build_user_turn_message(&wm, &ts, 0, "", &[]);
         assert!(out.contains("<world_model>"));
         assert!(!out.contains("<observation>"));
     }

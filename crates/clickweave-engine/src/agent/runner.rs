@@ -139,12 +139,94 @@ pub struct StateRunner {
     /// test/unit caller path is in effect and `run_turn` falls back to
     /// snapshotting signatures itself immediately before `observe()`.
     pub(crate) turn_pre_signatures: Option<Vec<(&'static str, Option<usize>)>>,
+
+    // --- Spec 2 episodic-memory fields (Phase 3) ---
+    pub(crate) episodic_ctx: crate::agent::episodic::EpisodicContext,
+    pub(crate) episodic_store: Option<std::sync::Arc<crate::agent::episodic::SqliteEpisodicStore>>,
+    pub(crate) episodic_global: Option<std::sync::Arc<crate::agent::episodic::SqliteEpisodicStore>>,
+    pub(crate) episodic_writer: Option<crate::agent::episodic::EpisodicWriter>,
+    pub(crate) recovering_snapshot: Option<crate::agent::episodic::types::RecoveringEntrySnapshot>,
+    pub(crate) recovery_actions_accumulator: Vec<crate::agent::episodic::types::CompactAction>,
+    pub(crate) last_failed_tool_name: Option<String>,
+    pub(crate) last_failed_error_kind: Option<String>,
+    pub(crate) episodic_run_started_at: chrono::DateTime<chrono::Utc>,
+    /// Cached events.jsonl path for the active execution; resolved
+    /// lazily when retrieval needs to populate
+    /// `RecoveringEntrySnapshot::events_jsonl_ref`.
+    pub(crate) episodic_events_ref: Option<String>,
 }
 
 impl StateRunner {
     pub fn new(goal: String, config: AgentConfig) -> Self {
+        Self::new_with_episodic(
+            goal,
+            config,
+            crate::agent::episodic::EpisodicContext::disabled(),
+        )
+    }
+
+    /// Construct a runner with an explicit Spec 2 [`EpisodicContext`].
+    ///
+    /// Production callers go through this constructor; the legacy
+    /// [`Self::new`] is preserved for the many integration tests that
+    /// don't care about episodic memory and pass the disabled context
+    /// implicitly.
+    ///
+    /// SQLite stores are opened here (they don't need the event channel
+    /// or run_id), but the [`EpisodicWriter`] is deferred to
+    /// [`Self::with_episodic_writer`] so it can capture the channel +
+    /// run_id seeded by [`Self::with_events`] / [`Self::with_run_id`]
+    /// (P2.H2 — without those the writer's emitted events would fail
+    /// the frontend's stale-run filter).
+    pub fn new_with_episodic(
+        goal: String,
+        config: AgentConfig,
+        episodic_ctx: crate::agent::episodic::EpisodicContext,
+    ) -> Self {
         let workflow = clickweave_core::Workflow::default();
         let state = AgentState::new(workflow.clone());
+
+        let (episodic_store, episodic_global) = if episodic_ctx.enabled && config.episodic_enabled {
+            use crate::agent::episodic::SqliteEpisodicStore;
+            use crate::agent::episodic::retrieval::ScoreWeights;
+            let weights = ScoreWeights {
+                structured: config.episodic_score_weights.structured,
+                text: config.episodic_score_weights.text,
+                occurrence: config.episodic_score_weights.occurrence,
+            };
+            let halflife = config.episodic_decay_halflife_days;
+            let wl = SqliteEpisodicStore::new_with_config(
+                    &episodic_ctx.workflow_local_path,
+                    crate::agent::episodic::EpisodeScope::WorkflowLocal,
+                    weights,
+                    halflife,
+                    config.episodic_max_per_scope_workflow,
+                )
+                .map(std::sync::Arc::new)
+                .map_err(|e| {
+                    tracing::warn!(error = %e, "episodic: failed to open workflow-local store; disabling");
+                    e
+                })
+                .ok();
+            let global = episodic_ctx
+                .global_path
+                .as_ref()
+                .and_then(|p| {
+                    SqliteEpisodicStore::new_with_config(
+                        p,
+                        crate::agent::episodic::EpisodeScope::Global,
+                        weights,
+                        halflife,
+                        config.episodic_max_per_scope_global,
+                    )
+                    .ok()
+                })
+                .map(std::sync::Arc::new);
+            (wl, global)
+        } else {
+            (None, None)
+        };
+
         Self {
             world_model: WorldModel::default(),
             task_state: TaskState::new(goal),
@@ -169,6 +251,16 @@ impl StateRunner {
             cdp_state: crate::cdp_lifecycle::CdpState::new(),
             known_app_kinds: HashMap::new(),
             turn_pre_signatures: None,
+            episodic_ctx,
+            episodic_store,
+            episodic_global,
+            episodic_writer: None,
+            recovering_snapshot: None,
+            recovery_actions_accumulator: Vec::new(),
+            last_failed_tool_name: None,
+            last_failed_error_kind: None,
+            episodic_run_started_at: chrono::Utc::now(),
+            episodic_events_ref: None,
         }
     }
 
@@ -231,6 +323,53 @@ impl StateRunner {
     pub fn with_verification_artifacts_dir(mut self, dir: PathBuf) -> Self {
         self.verification_artifacts_dir = Some(dir);
         self
+    }
+
+    /// Spawn the [`EpisodicWriter`] tied to this runner.
+    ///
+    /// MUST be called after [`Self::with_events`] and [`Self::with_run_id`]
+    /// (P2.H2): the writer captures both at spawn so emitted
+    /// `EpisodeWritten` / `EpisodePromoted` events carry the live `run_id`
+    /// and pass the frontend's stale-run filter. Calling before either
+    /// silently skips the writer (so episodic stays best-effort and the
+    /// agent run still proceeds — D32).
+    pub fn with_episodic_writer(mut self) -> Self {
+        if !self.episodic_active() {
+            return self;
+        }
+        let event_tx = self.event_tx.clone();
+        match crate::agent::episodic::EpisodicWriter::spawn(
+            self.episodic_ctx.clone(),
+            event_tx,
+            self.run_id,
+        ) {
+            Ok(w) => self.episodic_writer = Some(w),
+            Err(e) => tracing::warn!(error = %e, "episodic: failed to spawn writer"),
+        }
+        self
+    }
+
+    /// Whether the episodic memory layer is wired up and active for
+    /// this runner. Cheap, side-effect-free; safe to call from hot
+    /// paths.
+    pub(crate) fn episodic_active(&self) -> bool {
+        self.config.episodic_enabled && self.episodic_ctx.enabled && self.episodic_store.is_some()
+    }
+
+    /// Resolve the active execution's `events.jsonl` path through
+    /// `RunStorage`, caching the result so repeated calls don't take
+    /// the storage mutex repeatedly.
+    pub(crate) fn current_events_jsonl_ref(&mut self) -> Option<String> {
+        if let Some(cached) = &self.episodic_events_ref {
+            return Some(cached.clone());
+        }
+        let storage = self.storage.as_ref()?;
+        let guard = storage.lock().ok()?;
+        let exec_dir = guard.execution_dir_name()?;
+        let path = guard.base_path().join(exec_dir).join("events.jsonl");
+        let s = path.to_string_lossy().into_owned();
+        self.episodic_events_ref = Some(s.clone());
+        Some(s)
     }
 
     /// Consume the runner and return the accumulated [`AgentCache`].
@@ -325,6 +464,115 @@ impl StateRunner {
 
     pub fn queue_invalidation(&mut self, e: InvalidationEvent) {
         self.pending_events.push(e);
+    }
+
+    /// Spec 2: run an episodic-memory retrieval if the trigger conditions
+    /// hold (run-start or `Recovering` entry). On `Recovering` entry,
+    /// also captures the [`RecoveringEntrySnapshot`] for the eventual
+    /// write at the matching `Recovering -> Executing` exit.
+    ///
+    /// `prev_phase_at_top` is the phase as it was at the top of the
+    /// outer-loop iteration before `observe()` ran, so the
+    /// `Exploring/Executing -> Recovering` transition is detectable.
+    pub(crate) async fn try_retrieve_episodic(
+        &mut self,
+        prev_phase_at_top: crate::agent::phase::Phase,
+    ) -> Vec<crate::agent::episodic::RetrievedEpisode> {
+        use crate::agent::episodic::signature::compute_pre_state_signature;
+        use crate::agent::episodic::{
+            EpisodicStore as _, RetrievalQuery, RetrievalTrigger, RetrievedEpisode,
+        };
+        use crate::agent::phase::Phase;
+
+        if !self.episodic_active() {
+            return Vec::new();
+        }
+        let store = match &self.episodic_store {
+            Some(s) => s.clone(),
+            None => return Vec::new(),
+        };
+
+        let trigger = if self.step_index == 0 {
+            Some(RetrievalTrigger::RunStart)
+        } else if prev_phase_at_top != Phase::Recovering
+            && self.task_state.phase == Phase::Recovering
+        {
+            Some(RetrievalTrigger::RecoveringEntry)
+        } else {
+            None
+        };
+        let trigger = match trigger {
+            Some(t) => t,
+            None => return Vec::new(),
+        };
+
+        let active_slots: Vec<crate::agent::task_state::WatchSlotName> =
+            self.task_state.watch_slots.iter().map(|s| s.name).collect();
+        let sig = compute_pre_state_signature(&self.world_model, &active_slots);
+
+        // P1.C2: capture snapshot at retrieval time so the eventual
+        // write uses the same signature.
+        if matches!(trigger, RetrievalTrigger::RecoveringEntry) {
+            use crate::agent::episodic::types::{RecoveringEntrySnapshot, TriggeringError};
+            use crate::agent::step_record::WorldModelSnapshot;
+            let events_ref = self.current_events_jsonl_ref();
+            let snap = WorldModelSnapshot::from_world_model(&self.world_model);
+            self.recovering_snapshot = Some(RecoveringEntrySnapshot {
+                entered_at_step: self.step_index,
+                world_model_at_entry: snap,
+                task_state_at_entry: self.task_state.clone(),
+                triggering_error: TriggeringError {
+                    failed_tool: self.last_failed_tool_name.clone().unwrap_or_default(),
+                    error_kind: self.last_failed_error_kind.clone().unwrap_or_default(),
+                    consecutive_errors_at_entry: self.consecutive_errors as u32,
+                    step_index: self.step_index,
+                },
+                workflow_hash: self.episodic_ctx.workflow_hash.clone(),
+                pre_state_signature: sig.clone(),
+                active_watch_slots: active_slots.clone(),
+                events_jsonl_ref: events_ref,
+            });
+            self.recovery_actions_accumulator.clear();
+        }
+
+        let subgoal_owned = self.task_state.subgoal_stack.last().map(|s| s.text.clone());
+        let goal_owned = self.task_state.goal.clone();
+        let workflow_hash = self.episodic_ctx.workflow_hash.clone();
+        let now = chrono::Utc::now();
+
+        let q = RetrievalQuery {
+            trigger,
+            pre_state_signature: &sig,
+            goal: &goal_owned,
+            subgoal_text: subgoal_owned.as_deref(),
+            workflow_hash: &workflow_hash,
+            now,
+        };
+
+        let k_each = self.config.retrieved_episodes_k.max(1) * 2;
+        let mut wl_hits: Vec<RetrievedEpisode> =
+            store.retrieve(&q, k_each).await.unwrap_or_default();
+
+        let g_cap = self.config.episodic_global_cap_per_retrieval.max(1) * 2;
+        let mut g_hits: Vec<RetrievedEpisode> = match &self.episodic_global {
+            Some(g) => g.retrieve(&q, g_cap).await.unwrap_or_default(),
+            None => Vec::new(),
+        };
+
+        for h in &mut wl_hits {
+            h.score_breakdown.final_score *= self.config.episodic_workflow_priority_multiplier;
+        }
+        g_hits.truncate(self.config.episodic_global_cap_per_retrieval);
+
+        let mut merged: Vec<RetrievedEpisode> = wl_hits.into_iter().chain(g_hits).collect();
+        merged.sort_by(|a, b| {
+            crate::agent::episodic::embedder::nan_safe_desc(
+                a.score_breakdown.final_score,
+                b.score_breakdown.final_score,
+            )
+        });
+        merged.truncate(self.config.retrieved_episodes_k);
+        merged
     }
 
     /// Apply any pending invalidation events and re-infer the phase from
@@ -1075,6 +1323,22 @@ fn build_annotations_index(mcp_tools: &[Value]) -> HashMap<String, ToolAnnotatio
             Some((name.to_string(), ToolAnnotations::from_tool_json(tool)))
         })
         .collect()
+}
+
+/// Compress a tool-arguments JSON value into a short string suitable
+/// for the episodic [`CompactAction::brief_args`] field. Capped at
+/// 120 chars (a multi-byte-safe truncation) so a giant blob argument
+/// can never bloat the writer's payload.
+fn brief_summarize_args(arguments: &Value) -> String {
+    let s = serde_json::to_string(arguments).unwrap_or_default();
+    if s.len() <= 120 {
+        return s;
+    }
+    let cut = (0..=117)
+        .rev()
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(0);
+    format!("{}...", &s[..cut])
 }
 
 /// Join all text content from a `ToolCallResult` into a single string —
@@ -2233,7 +2497,8 @@ impl StateRunner {
         // composed by `build_goal_block` at the Tauri seam. Feed it
         // straight into the user turn so messages[1] is the single
         // run-specific slot.
-        let initial_user = build_user_turn_message(&self.world_model, &self.task_state, 0, &goal);
+        let initial_user =
+            build_user_turn_message(&self.world_model, &self.task_state, 0, &goal, &[]);
 
         let mut messages = vec![Message::system(system_text), Message::user(initial_user)];
 
@@ -2335,6 +2600,20 @@ impl StateRunner {
                 }
             }
 
+            // Spec 2 (P1.C1): re-infer phase from current consecutive-error
+            // counter BEFORE the cache gate / retrieval / render. The
+            // outer-loop top hasn't run `observe()` yet — `run_turn`'s
+            // internal observe runs AFTER mutations on the prior iteration,
+            // so this idempotent re-observe surfaces phase transitions
+            // (Executing -> Recovering) that the previous turn's error
+            // already triggered. Capturing `prev_phase_at_top` first gives
+            // us the "phase as it was at end of last iteration" needed
+            // for transition detection.
+            let prev_phase_at_top = self.task_state.phase;
+            if self.episodic_active() {
+                self.observe();
+            }
+
             // 1a. Cache-replay gate. `is_replay_eligible` enforces D17
             // (Phase::Exploring, empty subgoal stack, no watch slots);
             // `try_replay_cache` layers in the per-entry stale-on-read
@@ -2366,6 +2645,13 @@ impl StateRunner {
             // LLM picks before a connection exists return a "not
             // connected" MCP error that the recovery strategy absorbs.
 
+            // Spec 2: episodic retrieval on cache miss (P1.H7). Cache
+            // hits fast-pathed via `Continue` above, so we only land
+            // here on miss / fall-through. `try_retrieve_episodic`
+            // returns an empty vec when episodic is inactive or no
+            // trigger condition fires.
+            let retrieved = self.try_retrieve_episodic(prev_phase_at_top).await;
+
             // 2. Compose the per-turn user message with the state block +
             // the previous tool body as the observation, then compact the
             // history before the LLM call.
@@ -2375,6 +2661,7 @@ impl StateRunner {
                 &self.task_state,
                 self.step_index,
                 &step_obs,
+                &retrieved,
             );
             messages.push(Message::user(step_msg));
             messages = compact(messages, &budget);
@@ -2634,11 +2921,79 @@ impl StateRunner {
             //     to zero. Tool calls that never errored (previous_errors
             //     == 0) and repeated-error turns (consecutive_errors > 0)
             //     are both skipped.
+            // Spec 2: per-turn bookkeeping for the episodic write/retrieve
+            // path. Tool failures populate `last_failed_*` (consumed by
+            // `try_retrieve_episodic` when capturing a `Recovering`-entry
+            // snapshot); successes clear it. While in `Recovering`, push
+            // a `CompactAction` per dispatched tool so the eventual
+            // write carries the full recovery action sequence.
+            if self.episodic_active() {
+                match &outcome {
+                    TurnOutcome::ToolError { tool_name, error } => {
+                        self.last_failed_tool_name = Some(tool_name.clone());
+                        self.last_failed_error_kind = Some(error.clone());
+                    }
+                    TurnOutcome::ToolSuccess { .. } => {
+                        self.last_failed_tool_name = None;
+                        self.last_failed_error_kind = None;
+                    }
+                    _ => {}
+                }
+                if self.task_state.phase == crate::agent::phase::Phase::Recovering
+                    && let AgentAction::ToolCall {
+                        tool_name,
+                        arguments,
+                        ..
+                    } = &turn.action
+                {
+                    let outcome_kind = match &outcome {
+                        TurnOutcome::ToolSuccess { .. } => "ok",
+                        TurnOutcome::ToolError { .. } => "error",
+                        TurnOutcome::Done { .. } => "done",
+                        TurnOutcome::Replan { .. } => "replan",
+                    };
+                    let brief_args = brief_summarize_args(arguments);
+                    self.recovery_actions_accumulator.push(
+                        crate::agent::episodic::types::CompactAction {
+                            tool_name: tool_name.clone(),
+                            brief_args,
+                            outcome_kind: outcome_kind.to_string(),
+                        },
+                    );
+                }
+            }
+
             if previous_errors > 0
                 && self.consecutive_errors == 0
                 && matches!(outcome, TurnOutcome::ToolSuccess { .. })
             {
                 self.write_recovery_succeeded_record(&turn, &outcome).await;
+
+                // Spec 2: queue an episodic-memory write for this
+                // recovery (D30). Best-effort — backpressure / disabled
+                // writer / missing snapshot are all silent no-ops so
+                // the agent loop keeps running on D32.
+                if self.episodic_active()
+                    && let Some(entry) = self.recovering_snapshot.take()
+                    && let Some(writer) = &self.episodic_writer
+                {
+                    let actions = std::mem::take(&mut self.recovery_actions_accumulator);
+                    let record = self.build_step_record(
+                        crate::agent::step_record::BoundaryKind::RecoverySucceeded,
+                        serde_json::to_value(&turn.action)
+                            .unwrap_or_else(|_| serde_json::json!({})),
+                        serde_json::json!({"kind": "tool_success"}),
+                    );
+                    let _ = writer
+                        .queue(
+                            crate::agent::episodic::types::WriteRequest::DeriveAndInsert {
+                                entry: Box::new(entry),
+                                recovery_success: Box::new(record),
+                                recovery_actions: actions,
+                            },
+                        )
+                        .await;
+                }
             }
 
             // 6. Map the TurnOutcome into AgentStep + TerminalReason.
