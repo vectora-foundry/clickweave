@@ -155,14 +155,17 @@ fn sweep_episodic_workflow_local(runs_root: &Path, retention_days: u64) {
 /// every fresh row. 10 years is past any legitimate retention window
 /// (the UI clamp is also 3650 days), so saturating here is
 /// indistinguishable from "retain forever" in practice.
-fn delete_rows_older_than(conn: &rusqlite::Connection, retention_days: u64) {
+fn delete_rows_older_than(
+    conn: &rusqlite::Connection,
+    retention_days: u64,
+) -> Result<usize, rusqlite::Error> {
     const MAX_RETENTION_DAYS: u64 = 3650;
     let retention_days = retention_days.min(MAX_RETENTION_DAYS);
     let cutoff = chrono::Utc::now() - chrono::Duration::days(retention_days as i64);
-    let _ = conn.execute(
+    conn.execute(
         "DELETE FROM episodes WHERE datetime(created_at) < datetime(?1)",
         rusqlite::params![cutoff.to_rfc3339()],
-    );
+    )
 }
 
 fn sweep_workflow_local_db(
@@ -173,7 +176,13 @@ fn sweep_workflow_local_db(
     use rusqlite::{Connection, params};
     let conn = Connection::open(db).map_err(|e| e.to_string())?;
 
-    delete_rows_older_than(&conn, retention_days);
+    if let Err(e) = delete_rows_older_than(&conn, retention_days) {
+        tracing::warn!(
+            error = %e,
+            path = %db.display(),
+            "episodic: workflow-local age-cap delete failed",
+        );
+    }
 
     // (a) orphan-ref sweep. Rows with an empty refs list are skipped
     // (no way to tell whether their events.jsonl is gone or never
@@ -231,7 +240,13 @@ fn sweep_episodic_global(app_data_dir: &Path, retention_days: u64) {
             return;
         }
     };
-    delete_rows_older_than(&conn, retention_days);
+    if let Err(e) = delete_rows_older_than(&conn, retention_days) {
+        tracing::warn!(
+            error = %e,
+            path = %db.display(),
+            "episodic: global age-cap delete failed",
+        );
+    }
 }
 
 /// Kick off the expired-trace sweep on a detached OS thread so app
