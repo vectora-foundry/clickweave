@@ -127,13 +127,28 @@ pub enum AgentEvent {
         boundary_kind: BoundaryKind,
         step_index: usize,
     },
-    // `EpisodeWritten` and `EpisodePromoted` variants are added in
-    // Phase 3 alongside the runner integration that actually emits
-    // them. Phase 2's `EpisodicWriter` accepts an `event_tx` parameter
-    // for forward compatibility with that wiring, but the per-request
-    // emission paths inside the writer are stubbed (TODO comments) so
-    // adding the variants does not have to land before Phase 3 wires
-    // up the runner. See `episodic/write.rs`.
+    /// Emitted by the episodic writer task after a `RecoverySucceeded`
+    /// recovery snapshot is persisted to the workflow-local SQLite store
+    /// (Spec 2 D30). Carries the `run_id` captured at writer-spawn so
+    /// the frontend's stale-run filter can drop late events from a
+    /// previous run. `outcome` is `"inserted"` or `"merged"`,
+    /// reflecting the dedup-aware insert path.
+    EpisodeWritten {
+        run_id: Uuid,
+        episode_id: String,
+        outcome: String,
+        occurrence_count: u32,
+    },
+    /// Emitted by the episodic writer task after the run-terminal
+    /// promotion pass copies one or more workflow-local episodes into
+    /// the global store (Spec 2 D31). `count` is the number of
+    /// episodes promoted in this pass; `skipped` is the number of
+    /// candidates the `should_promote` gate rejected.
+    EpisodePromoted {
+        run_id: Uuid,
+        count: usize,
+        skipped: usize,
+    },
 }
 
 /// Per-step diff of the harness-owned `WorldModel`. Carries the field
@@ -204,6 +219,46 @@ pub struct AgentConfig {
     /// Uncertainty threshold above which the state block marks fields
     /// as "?" rather than rendering their nominal value (D14).
     pub uncertainty_threshold: f32,
+
+    // Spec 2 episodic memory fields ------------------------------------
+    /// Master kill-switch. If false, episodic is inactive regardless of
+    /// other state (D34).
+    pub episodic_enabled: bool,
+    /// Top-k episodes to retrieve (default 2).
+    pub retrieved_episodes_k: usize,
+    /// Per-scope LRU cap for the workflow-local store.
+    pub episodic_max_per_scope_workflow: usize,
+    /// Per-scope LRU cap for the global store.
+    pub episodic_max_per_scope_global: usize,
+    /// Half-life (in days) of the time-decay scoring factor.
+    pub episodic_decay_halflife_days: f32,
+    /// Score weights forwarded to the store at construction time.
+    pub episodic_score_weights: EpisodicScoreWeights,
+    /// Maximum number of global-tier hits that may show up in a single
+    /// retrieval before the workflow-priority merge truncates.
+    pub episodic_global_cap_per_retrieval: usize,
+    /// Multiplier applied to workflow-local scores before the cross-tier
+    /// merge — bumps in-workflow recoveries above global ones at equal
+    /// raw score (D21).
+    pub episodic_workflow_priority_multiplier: f32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct EpisodicScoreWeights {
+    pub structured: f32,
+    pub text: f32,
+    pub occurrence: f32,
+}
+
+impl Default for EpisodicScoreWeights {
+    fn default() -> Self {
+        Self {
+            structured: 0.6,
+            text: 0.3,
+            occurrence: 0.1,
+        }
+    }
 }
 
 impl Default for AgentConfig {
@@ -218,6 +273,14 @@ impl Default for AgentConfig {
             state_block_max_elements: 300,
             recent_n: 6,
             uncertainty_threshold: 0.75,
+            episodic_enabled: true,
+            retrieved_episodes_k: 2,
+            episodic_max_per_scope_workflow: 500,
+            episodic_max_per_scope_global: 2000,
+            episodic_decay_halflife_days: 90.0,
+            episodic_score_weights: EpisodicScoreWeights::default(),
+            episodic_global_cap_per_retrieval: 1,
+            episodic_workflow_priority_multiplier: 1.3,
         }
     }
 }

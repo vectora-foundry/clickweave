@@ -470,6 +470,16 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                 }),
             );
         }
+        // TODO(Phase 4): emit to frontend as `agent://episode_written` /
+        // `agent://episode_promoted`. Phase 3 only adds the engine-side
+        // emission; the Tauri fan-out + frontend store wiring lands in
+        // Phase 4.
+        AgentEvent::EpisodeWritten { .. } => {
+            tracing::trace!(?event, "episodic event awaiting Phase 4 fan-out");
+        }
+        AgentEvent::EpisodePromoted { .. } => {
+            tracing::trace!(?event, "episodic event awaiting Phase 4 fan-out");
+        }
     }
 }
 

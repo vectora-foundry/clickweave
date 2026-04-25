@@ -69,14 +69,6 @@ impl EpisodicWriter {
         event_tx: Option<mpsc::Sender<crate::agent::types::AgentEvent>>,
         run_id: uuid::Uuid,
     ) -> Result<Self, EpisodicError> {
-        // Phase 2 does not yet emit `AgentEvent::EpisodeWritten` /
-        // `EpisodePromoted` — the variants land in Phase 3 alongside
-        // the runner integration. Bind both forward-compat params to
-        // `_` to keep the function signature stable without a
-        // dead-code warning.
-        let _ = &event_tx;
-        let _ = run_id;
-
         let (tx, mut rx) = mpsc::channel::<WriteRequest>(CHANNEL_CAP);
         let flush = Arc::new(tokio::sync::Notify::new());
 
@@ -90,6 +82,7 @@ impl EpisodicWriter {
         };
 
         let flush_signal = flush.clone();
+        let event_tx_task = event_tx.clone();
         let join = tokio::spawn(async move {
             while let Some(req) = rx.recv().await {
                 match req {
@@ -106,13 +99,11 @@ impl EpisodicWriter {
                         )
                         .await
                         {
-                            Ok(_outcome) => {
-                                // TODO(Phase 3): translate `_outcome`
-                                // into `AgentEvent::EpisodeWritten` and
-                                // forward through `event_tx`. Phase 2
-                                // intentionally drops the result —
-                                // failure isolation (D32) means the
-                                // runner does not depend on the event.
+                            Ok(outcome) => {
+                                if let Some(tx) = &event_tx_task {
+                                    let event = event_from_insert_outcome(run_id, outcome);
+                                    let _ = tx.send(event).await;
+                                }
                             }
                             Err(e) => {
                                 tracing::warn!(error = %e, "episodic: derive_and_insert failed")
@@ -132,11 +123,16 @@ impl EpisodicWriter {
                             match promote_matching_episodes(&wl, g, &workflow_hash, run_started_at)
                                 .await
                             {
-                                Ok(_promoted) => {
-                                    // TODO(Phase 3): forward
-                                    // `AgentEvent::EpisodePromoted` via
-                                    // `event_tx` once the variant is
-                                    // declared on `AgentEvent`.
+                                Ok((promoted, skipped)) => {
+                                    if let Some(tx) = &event_tx_task {
+                                        let event =
+                                            crate::agent::types::AgentEvent::EpisodePromoted {
+                                                run_id,
+                                                count: promoted.len(),
+                                                skipped,
+                                            };
+                                        let _ = tx.send(event).await;
+                                    }
                                 }
                                 Err(e) => {
                                     tracing::warn!(error = %e, "episodic: promotion pass failed")
@@ -265,11 +261,43 @@ async fn handle_derive_and_insert(
     wl.insert(record).await
 }
 
-// `event_from_insert_outcome` (Phase 3) translates `InsertOutcome`
-// values into `AgentEvent::EpisodeWritten` for the runner-facing event
-// stream. The variant does not exist on `AgentEvent` yet — Phase 2
-// keeps the writer's emission path stubbed. When Phase 3 declares the
-// variant, the helper lands here next to the writer's consumer task.
+/// Translate an [`InsertOutcome`] into an [`AgentEvent::EpisodeWritten`]
+/// payload. `Inserted` and `MergedWithExisting` both surface as a
+/// single emission so frontends only have to handle one event shape;
+/// `outcome` distinguishes them. `Dropped` collapses to a 0-occurrence
+/// emission so subscribers can still observe the writer's decision —
+/// the runner does not currently produce `Dropped` outcomes (the
+/// store's `insert` returns either `Inserted` or `MergedWithExisting`),
+/// but we keep the mapping exhaustive in case future store rules add
+/// it.
+fn event_from_insert_outcome(
+    run_id: uuid::Uuid,
+    outcome: InsertOutcome,
+) -> crate::agent::types::AgentEvent {
+    match outcome {
+        InsertOutcome::Inserted { episode_id } => crate::agent::types::AgentEvent::EpisodeWritten {
+            run_id,
+            episode_id,
+            outcome: "inserted".into(),
+            occurrence_count: 1,
+        },
+        InsertOutcome::MergedWithExisting {
+            episode_id,
+            new_occurrence_count,
+        } => crate::agent::types::AgentEvent::EpisodeWritten {
+            run_id,
+            episode_id,
+            outcome: "merged".into(),
+            occurrence_count: new_occurrence_count,
+        },
+        InsertOutcome::Dropped { reason } => crate::agent::types::AgentEvent::EpisodeWritten {
+            run_id,
+            episode_id: String::new(),
+            outcome: format!("dropped: {reason}"),
+            occurrence_count: 0,
+        },
+    }
+}
 
 /// Walk workflow-local rows touched during this run and copy
 /// promotion-eligible ones into the global store. Returns the global
