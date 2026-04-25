@@ -40,10 +40,19 @@ export interface PersistedSettings {
   traceRetentionDays: number;
   /** Privacy: global kill switch for on-disk run traces. */
   storeTraces: boolean;
+  /** Spec 2 master kill switch for episodic memory. */
+  episodicEnabled: boolean;
+  /** Spec 2 retrieval depth — top-k episodes to retrieve per trigger. */
+  retrievedEpisodesK: number;
+  /** Spec 2 D35 privacy opt-in for the global cross-workflow store. */
+  episodicGlobalParticipation: boolean;
 }
 
 export const DEFAULT_TRACE_RETENTION_DAYS = 30;
 export const DEFAULT_STORE_TRACES = true;
+export const DEFAULT_EPISODIC_ENABLED = true;
+export const DEFAULT_RETRIEVED_EPISODES_K = 2;
+export const DEFAULT_EPISODIC_GLOBAL_PARTICIPATION = false;
 
 const SETTINGS_DEFAULTS: PersistedSettings = {
   supervisorConfig: DEFAULT_ENDPOINT,
@@ -56,6 +65,9 @@ const SETTINGS_DEFAULTS: PersistedSettings = {
   toolPermissions: DEFAULT_TOOL_PERMISSIONS,
   traceRetentionDays: DEFAULT_TRACE_RETENTION_DAYS,
   storeTraces: DEFAULT_STORE_TRACES,
+  episodicEnabled: DEFAULT_EPISODIC_ENABLED,
+  retrievedEpisodesK: DEFAULT_RETRIEVED_EPISODES_K,
+  episodicGlobalParticipation: DEFAULT_EPISODIC_GLOBAL_PARTICIPATION,
 };
 
 export async function loadSettings(): Promise<PersistedSettings> {
@@ -118,6 +130,11 @@ export async function loadSettings(): Promise<PersistedSettings> {
 
   const traceRetentionDays = await store.get<number>("traceRetentionDays");
   const storeTraces = await store.get<boolean>("storeTraces");
+  const episodicEnabled = await store.get<boolean>("episodicEnabled");
+  const retrievedEpisodesK = await store.get<number>("retrievedEpisodesK");
+  const episodicGlobalParticipation = await store.get<boolean>(
+    "episodicGlobalParticipation",
+  );
 
   return {
     supervisorConfig,
@@ -130,6 +147,12 @@ export async function loadSettings(): Promise<PersistedSettings> {
     toolPermissions: toolPermissions ?? SETTINGS_DEFAULTS.toolPermissions,
     traceRetentionDays: traceRetentionDays ?? SETTINGS_DEFAULTS.traceRetentionDays,
     storeTraces: storeTraces ?? SETTINGS_DEFAULTS.storeTraces,
+    episodicEnabled: episodicEnabled ?? SETTINGS_DEFAULTS.episodicEnabled,
+    retrievedEpisodesK:
+      retrievedEpisodesK ?? SETTINGS_DEFAULTS.retrievedEpisodesK,
+    episodicGlobalParticipation:
+      episodicGlobalParticipation ??
+      SETTINGS_DEFAULTS.episodicGlobalParticipation,
   };
 }
 

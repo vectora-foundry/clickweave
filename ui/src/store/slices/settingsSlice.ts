@@ -3,6 +3,9 @@ import type { EndpointConfig, PermissionLevel, ToolPermissions } from "../state"
 import { DEFAULT_ENDPOINT, DEFAULT_TOOL_PERMISSIONS, DEFAULT_FAST_ENABLED } from "../state";
 import { formatModelStatus, verifyConfiguredModels } from "../modelAvailability";
 import {
+  DEFAULT_EPISODIC_ENABLED,
+  DEFAULT_EPISODIC_GLOBAL_PARTICIPATION,
+  DEFAULT_RETRIEVED_EPISODES_K,
   DEFAULT_STORE_TRACES,
   DEFAULT_TRACE_RETENTION_DAYS,
   loadSettings,
@@ -22,6 +25,9 @@ export interface SettingsSlice {
   toolPermissions: ToolPermissions;
   traceRetentionDays: number;
   storeTraces: boolean;
+  episodicEnabled: boolean;
+  retrievedEpisodesK: number;
+  episodicGlobalParticipation: boolean;
   _settingsLoaded: boolean;
 
   loadSettingsFromDisk: () => void;
@@ -36,6 +42,9 @@ export interface SettingsSlice {
   setToolPermission: (toolName: string, level: PermissionLevel) => Promise<void>;
   setTraceRetentionDays: (days: number) => void;
   setStoreTraces: (enabled: boolean) => void;
+  setEpisodicEnabled: (enabled: boolean) => void;
+  setRetrievedEpisodesK: (n: number) => void;
+  setEpisodicGlobalParticipation: (enabled: boolean) => void;
 }
 
 function persistSetting<K extends keyof PersistedSettings>(
@@ -66,6 +75,9 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
   toolPermissions: DEFAULT_TOOL_PERMISSIONS,
   traceRetentionDays: DEFAULT_TRACE_RETENTION_DAYS,
   storeTraces: DEFAULT_STORE_TRACES,
+  episodicEnabled: DEFAULT_EPISODIC_ENABLED,
+  retrievedEpisodesK: DEFAULT_RETRIEVED_EPISODES_K,
+  episodicGlobalParticipation: DEFAULT_EPISODIC_GLOBAL_PARTICIPATION,
   _settingsLoaded: false,
 
   loadSettingsFromDisk: () => {
@@ -89,6 +101,14 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
             DEFAULT_TRACE_RETENTION_DAYS,
           ),
           storeTraces: s.storeTraces,
+          episodicEnabled: s.episodicEnabled,
+          retrievedEpisodesK: clampInt(
+            s.retrievedEpisodesK,
+            1,
+            10,
+            DEFAULT_RETRIEVED_EPISODES_K,
+          ),
+          episodicGlobalParticipation: s.episodicGlobalParticipation,
         });
         verifyConfiguredModels(s)
           .then((results) => {
@@ -122,4 +142,14 @@ export const createSettingsSlice: StateCreator<StoreState, [], [], SettingsSlice
       set,
     ),
   setStoreTraces: (enabled) => persistSetting("storeTraces", enabled, set),
+  setEpisodicEnabled: (enabled) =>
+    persistSetting("episodicEnabled", enabled, set),
+  setRetrievedEpisodesK: (n) =>
+    persistSetting(
+      "retrievedEpisodesK",
+      clampInt(n, 1, 10, DEFAULT_RETRIEVED_EPISODES_K),
+      set,
+    ),
+  setEpisodicGlobalParticipation: (enabled) =>
+    persistSetting("episodicGlobalParticipation", enabled, set),
 });

@@ -28,6 +28,9 @@ function makeSettings(overrides: Partial<PersistedSettings> = {}): PersistedSett
         toolPermissions: DEFAULT_TOOL_PERMISSIONS,
         traceRetentionDays: 30,
         storeTraces: true,
+        episodicEnabled: true,
+        retrievedEpisodesK: 2,
+        episodicGlobalParticipation: false,
         ...overrides,
     };
 }
