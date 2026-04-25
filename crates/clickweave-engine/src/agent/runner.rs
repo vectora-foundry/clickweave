@@ -149,7 +149,6 @@ pub struct StateRunner {
     pub(crate) recovery_actions_accumulator: Vec<crate::agent::episodic::types::CompactAction>,
     pub(crate) last_failed_tool_name: Option<String>,
     pub(crate) last_failed_error_kind: Option<String>,
-    pub(crate) episodic_run_started_at: chrono::DateTime<chrono::Utc>,
     /// Cached events.jsonl path for the active execution; resolved
     /// lazily when retrieval needs to populate
     /// `RecoveringEntrySnapshot::events_jsonl_ref`.
@@ -259,7 +258,6 @@ impl StateRunner {
             recovery_actions_accumulator: Vec::new(),
             last_failed_tool_name: None,
             last_failed_error_kind: None,
-            episodic_run_started_at: chrono::Utc::now(),
             episodic_events_ref: None,
         }
     }
@@ -493,17 +491,13 @@ impl StateRunner {
         };
 
         let trigger = if self.step_index == 0 {
-            Some(RetrievalTrigger::RunStart)
+            RetrievalTrigger::RunStart
         } else if prev_phase_at_top != Phase::Recovering
             && self.task_state.phase == Phase::Recovering
         {
-            Some(RetrievalTrigger::RecoveringEntry)
+            RetrievalTrigger::RecoveringEntry
         } else {
-            None
-        };
-        let trigger = match trigger {
-            Some(t) => t,
-            None => return Vec::new(),
+            return Vec::new();
         };
 
         let active_slots: Vec<crate::agent::task_state::WatchSlotName> =
