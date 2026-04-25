@@ -1190,6 +1190,31 @@ impl StateRunner {
     pub(crate) fn advance_recorded_step_index(&mut self) {
         self.step_index += 1;
     }
+
+    /// Record a permission-policy denial as the current "last failure"
+    /// so any subsequent `Recovering`-entry snapshot captures a real
+    /// `(failed_tool, error_kind)` pair instead of the empty defaults.
+    /// `error_kind` is the stable string `"policy_denied"` so episodic
+    /// retrieval can group denied-tool recoveries by failure family
+    /// without parsing the human-readable message.
+    ///
+    /// F6 fix: shared helper for cached-replay deny + live deny so the
+    /// two branches can't drift on the kind string and so adding the
+    /// snake_case error_kind in one place is enough.
+    pub(crate) fn record_policy_deny_failure(&mut self, tool_name: &str) {
+        self.last_failed_tool_name = Some(tool_name.to_string());
+        self.last_failed_error_kind = Some("policy_denied".to_string());
+    }
+
+    /// Mirror of `record_policy_deny_failure`'s clear half. Called by
+    /// every recovery-success path (live ToolSuccess in `run_turn`,
+    /// cache-replay success, synthetic focus-window skip) so a prior
+    /// deny / tool-error doesn't bleed into a later Recovering snapshot
+    /// after the agent has demonstrably recovered.
+    pub(crate) fn clear_last_failure_tracking(&mut self) {
+        self.last_failed_tool_name = None;
+        self.last_failed_error_kind = None;
+    }
 }
 
 /// Control signal returned from [`StateRunner::try_replay_cache`].
@@ -2264,6 +2289,10 @@ impl StateRunner {
                 };
                 self.state.steps.push(step);
                 self.advance_recorded_step_index();
+                // F6: a denied tool is the recovery-trigger event. Capture
+                // it as the last failure so the next `Recovering`-entry
+                // snapshot has a real `(failed_tool, error_kind)` pair.
+                self.record_policy_deny_failure(&cached_tool);
                 self.state.consecutive_errors += 1;
                 self.consecutive_errors = self.state.consecutive_errors;
                 *previous_result = Some(format!("Error: {}", err_msg));
@@ -2386,6 +2415,11 @@ impl StateRunner {
                 self.state.consecutive_errors = 0;
                 self.consecutive_errors = 0;
                 *last_failure = None;
+                // F6: clear the per-turn failure tracking so a prior
+                // policy-deny / tool-error doesn't bleed into a later
+                // `Recovering`-entry snapshot after the agent has
+                // demonstrably recovered via cache replay.
+                self.clear_last_failure_tracking();
                 *previous_result = Some(result_text);
                 *last_cache_key = Some(current_key);
 
@@ -2849,6 +2883,10 @@ impl StateRunner {
                 self.state.consecutive_errors = 0;
                 self.consecutive_errors = 0;
                 last_failure = None;
+                // F6: synthetic focus_window skip is a successful
+                // observation outcome — clear failure tracking the
+                // same way the live ToolSuccess path does.
+                self.clear_last_failure_tracking();
                 previous_result = Some(skip_body.clone());
                 self.emit_event(AgentEvent::StepCompleted {
                     step_index: step_idx_for_event,
@@ -2895,6 +2933,9 @@ impl StateRunner {
                                 page_url: self.state.current_url.clone(),
                             });
                             self.advance_recorded_step_index();
+                            // F6: shared with the cached-deny branch — see
+                            // `record_policy_deny_failure` for rationale.
+                            self.record_policy_deny_failure(tool_name);
                             self.state.consecutive_errors += 1;
                             self.consecutive_errors = self.state.consecutive_errors;
                             previous_result = Some(err_msg.clone());
@@ -3055,8 +3096,7 @@ impl StateRunner {
                         self.last_failed_error_kind = Some(error.clone());
                     }
                     TurnOutcome::ToolSuccess { .. } => {
-                        self.last_failed_tool_name = None;
-                        self.last_failed_error_kind = None;
+                        self.clear_last_failure_tracking();
                     }
                     _ => {}
                 }
@@ -4545,6 +4585,41 @@ mod f1_retrieval_gate_tests {
         assert_eq!(r.step_index, 1);
         r.advance_recorded_step_index();
         assert_eq!(r.step_index, 2);
+    }
+
+    #[tokio::test]
+    async fn record_policy_deny_failure_sets_stable_kind() {
+        // F6: both cached-deny and live-deny branches funnel through
+        // this helper, and the snapshot derived from
+        // `last_failed_*` populates `FailureSignature` on the
+        // eventual write. The `error_kind` must be the stable
+        // snake_case `policy_denied`, not a free-form string.
+        let mut r = StateRunner::new_for_test("g".to_string());
+        assert!(r.last_failed_tool_name.is_none());
+        assert!(r.last_failed_error_kind.is_none());
+
+        r.record_policy_deny_failure("cdp_click");
+        assert_eq!(r.last_failed_tool_name.as_deref(), Some("cdp_click"));
+        assert_eq!(
+            r.last_failed_error_kind.as_deref(),
+            Some("policy_denied"),
+            "policy-deny error_kind must be the stable snake_case string used by both branches",
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_last_failure_tracking_drops_both_fields() {
+        let mut r = StateRunner::new_for_test("g".to_string());
+        r.record_policy_deny_failure("ax_click");
+        r.clear_last_failure_tracking();
+        assert!(
+            r.last_failed_tool_name.is_none(),
+            "tool_name must be cleared after success",
+        );
+        assert!(
+            r.last_failed_error_kind.is_none(),
+            "error_kind must be cleared after success",
+        );
     }
 
     #[tokio::test]
