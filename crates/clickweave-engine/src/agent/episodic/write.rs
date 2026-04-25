@@ -73,13 +73,14 @@ impl EpisodicWriter {
         Self::spawn_with_config(ctx, EpisodicStoreConfig::default(), event_tx, run_id)
     }
 
-    /// Production constructor (F3 fix). Opens the workflow-local and
+    /// Production constructor. Opens the workflow-local and
     /// (optional) global stores with the *configured* score weights,
     /// half-life, and per-scope caps so values from `AgentConfig` are
-    /// honored end to end. The previous `Self::spawn` opened both
-    /// stores via `SqliteEpisodicStore::new`, which hard-coded the
-    /// per-scope cap to 500 — that silently capped the global store
-    /// regardless of `AgentConfig::episodic_max_per_scope_global`.
+    /// honored end to end. `Self::spawn` opens both stores via
+    /// `SqliteEpisodicStore::new` which hard-codes the per-scope cap
+    /// to 500 — silently capping the global store regardless of
+    /// `AgentConfig::episodic_max_per_scope_global` — so production
+    /// callers must use this constructor instead.
     pub fn spawn_with_config(
         ctx: EpisodicContext,
         store_config: EpisodicStoreConfig,
@@ -139,11 +140,12 @@ impl EpisodicWriter {
                             }
                             Err(e) => {
                                 tracing::warn!(error = %e, "episodic: derive_and_insert failed");
-                                // F7 fix: surface write failures through
-                                // the event channel as well so the UI /
-                                // event consumers learn that an episodic
-                                // write was lost. Bounded message with
-                                // a stable prefix; non-sensitive.
+                                // Surface write failures through the
+                                // event channel as well so the UI and
+                                // event consumers learn that an
+                                // episodic write was lost. Bounded
+                                // message with a stable `episodic:`
+                                // prefix; non-sensitive.
                                 if let Some(tx) = &event_tx_task {
                                     let _ = tx
                                         .send(crate::agent::types::AgentEvent::Warning {
@@ -181,7 +183,7 @@ impl EpisodicWriter {
                                 }
                                 Err(e) => {
                                     tracing::warn!(error = %e, "episodic: promotion pass failed");
-                                    // F7 fix: see DeriveAndInsert error
+                                    // See the DeriveAndInsert error
                                     // arm — same rationale, same prefix
                                     // scheme so consumers can match on
                                     // `episodic: ...` for memory-loss
@@ -413,19 +415,18 @@ async fn promote_matching_episodes(
     workflow_hash: &str,
     run_started_at: chrono::DateTime<chrono::Utc>,
 ) -> Result<(Vec<String>, usize), EpisodicError> {
-    // F3+F4 fix: route global writes through `SqliteEpisodicStore::insert`
-    // so insert + dedup-merge + step_record_refs union + LRU prune all
-    // share the same code path the workflow-local writes already use.
-    // The previous implementation duplicated the SQL inline, which:
-    //   - bypassed `prune_lru` so a configured global cap could grow
-    //     unbounded,
-    //   - lost provenance refs on dedup-merge (the existing global row's
-    //     `step_record_refs_json` was not unioned with the workflow-local
-    //     row's refs), and
-    //   - returned a freshly-minted `episode_id` to telemetry on a
-    //     dedup-merge even though that row was never actually inserted,
-    //     so `EpisodePromoted::promoted_episode_ids` carried IDs that
-    //     did not resolve in the global store.
+    // Route global writes through `SqliteEpisodicStore::insert` so
+    // insert + dedup-merge + step_record_refs union + LRU prune all
+    // share the same code path the workflow-local writes already
+    // use. Duplicating the SQL inline here would (a) bypass
+    // `prune_lru` so a configured global cap could grow unbounded,
+    // (b) lose provenance refs on dedup-merge (the existing global
+    // row's `step_record_refs_json` would not get unioned with the
+    // workflow-local row's refs), and (c) push a freshly-minted
+    // `episode_id` to telemetry on a dedup-merge even though that
+    // row was never actually inserted, so the IDs in
+    // `EpisodePromoted::promoted_episode_ids` would not resolve in
+    // the global store.
     let touched = wl.list_run_touched(workflow_hash, run_started_at).await?;
 
     let mut promoted_ids: Vec<String> = Vec::new();

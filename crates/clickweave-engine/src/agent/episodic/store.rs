@@ -226,11 +226,9 @@ impl SqliteEpisodicStore {
 /// `StateRunner::new_with_episodic` already feeds into the retrieval
 /// stores so the writer-owned stores can be opened with the *same*
 /// values instead of the back-compat defaults `Self::new` hands out.
-///
-/// F3 fix: prior to this struct, `EpisodicWriter::spawn` opened both
-/// stores via `SqliteEpisodicStore::new`, which hard-coded the
-/// per-scope cap to 500 — a configured 2000-row global cap was
-/// silently ignored on the write side.
+/// Without this, a configured 2000-row global cap is silently
+/// dropped on the write side because `Self::new` hard-codes the
+/// per-scope cap to 500.
 #[derive(Debug, Clone)]
 pub struct EpisodicStoreConfig {
     pub score_weights: ScoreWeights,
@@ -398,13 +396,12 @@ impl EpisodicStore for SqliteEpisodicStore {
 
             let fallback = structured_rows.is_empty();
             let candidates: Vec<EpisodeRecord> = if fallback {
-                // F5 fix: score every row in scope, ordered
-                // deterministically. The previous implementation
-                // sliced the first 200 rows in undefined SQLite row
-                // order, which (a) made the best semantic match
-                // invisible to scoring once a store grew past 200
-                // rows even within the configured 500/2000 cap, and
-                // (b) made fallback retrieval nondeterministic
+                // Score every row in scope, ordered deterministically.
+                // Slicing to the first N rows in undefined SQLite row
+                // order would (a) make the best semantic match
+                // invisible to scoring once the store grew past the
+                // slice even within the configured 500/2000 cap, and
+                // (b) make fallback retrieval nondeterministic
                 // because SQLite row order is not a stable contract.
                 // The configured per-scope cap (500 workflow / 2000
                 // global) is the only bound on candidate count, so

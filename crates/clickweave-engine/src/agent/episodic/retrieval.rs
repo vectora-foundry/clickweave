@@ -44,12 +44,12 @@ pub fn score(
     let occurrence_boost = ((candidate.occurrence_count as f32) + 1.0).ln();
 
     let age_days = (now - candidate.last_seen_at).num_seconds().max(0) as f32 / 86_400.0;
-    // F9 fix: true half-life decay. The previous formula
-    // `exp(-age_days / halflife_days)` is e-folding decay — at
-    // `age = halflife_days` it returns ~0.367, not 0.5. The config
-    // field is named `episodic_decay_halflife_days` and the design
-    // doc D28 explicitly calls 90 days a half-life, so the formula
-    // must satisfy `decay(halflife) == 0.5`.
+    // True half-life decay: `0.5 ^ (age / halflife)` so an episode
+    // exactly `halflife_days` old gets a `decay_factor` of 0.5. The
+    // config field is named `episodic_decay_halflife_days` and the
+    // design doc D28 calls 90 days a half-life, so the formula must
+    // satisfy `decay(halflife) == 0.5`. (Plain `exp(-age/halflife)`
+    // is e-folding decay and gives ~0.367 at one half-life.)
     let decay_factor = 0.5_f32.powf(age_days / halflife_days.max(1.0));
 
     let structured_contrib = if structured_matched { 1.0 } else { 0.0 };
@@ -134,10 +134,11 @@ mod tests {
         assert!(s_fresh.final_score > s_old.final_score);
     }
 
-    /// F9: the formula must satisfy `decay(halflife) == 0.5`. The
-    /// previous `exp(-age/halflife)` is e-folding decay and gives
-    /// ~0.367 at one half-life — under-weighting older episodes
-    /// relative to the spec contract and the config field name.
+    /// The formula must satisfy `decay(halflife) == 0.5` so the
+    /// `episodic_decay_halflife_days` config knob means what its
+    /// name says. Plain `exp(-age/halflife)` is e-folding decay
+    /// and gives ~0.367 at one half-life — under-weighting older
+    /// episodes relative to the spec contract.
     #[test]
     fn decay_at_zero_age_is_one() {
         let now = Utc::now();

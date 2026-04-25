@@ -445,16 +445,15 @@ async fn single_writer_processes_derive_and_insert_then_promote_pass() {
     );
 }
 
-// ── F8 acceptance test ─────────────────────────────────────────────
+// ── Run-terminal enqueue must not block ────────────────────────────
 //
-// The Tauri terminal path's promotion enqueue (`agent.rs:1010`) was
-// changed from `tx.send(...).await` to `tx.try_send(...)` so a
+// The Tauri terminal path enqueues `PromotePass` via `try_send` so a
 // saturated writer channel can't wedge cleanup before the
 // timeout-protected flush. This test pins the underlying primitive:
-// `EpisodicWriter::queue` (which already uses `try_send`) returns
+// `EpisodicWriter::queue` (which uses `try_send`) returns
 // `Backpressure` immediately when the channel is full, never
-// blocking the caller. The Tauri-side `try_send` change inherits
-// the same guarantee — it's a one-line swap to the same primitive.
+// blocking the caller. The Tauri-side `try_send` enqueue inherits
+// the same guarantee.
 
 #[tokio::test]
 async fn writer_queue_returns_backpressure_without_blocking_on_saturated_channel() {
@@ -515,14 +514,13 @@ async fn writer_queue_returns_backpressure_without_blocking_on_saturated_channel
     );
 }
 
-// ── F7 acceptance test ─────────────────────────────────────────────
+// ── Writer failures must surface as Warning events ─────────────────
 //
-// Writer-side derive/insert and promotion failures used to log via
-// `tracing::warn!` only — the durable event stream and UI never
-// learned that an episodic write was lost. After F7 those failure
-// arms also emit `AgentEvent::Warning` so consumers can distinguish
-// "no recovery happened" from "recovery succeeded but the write was
-// dropped."
+// Writer-side derive/insert and promotion failures must emit
+// `AgentEvent::Warning` so consumers can distinguish "no recovery
+// happened" from "recovery succeeded but the write was dropped."
+// Logging via `tracing::warn!` alone leaves the durable event
+// stream and UI in the dark.
 
 #[tokio::test]
 async fn writer_emits_warning_on_derive_and_insert_failure() {
@@ -530,7 +528,7 @@ async fn writer_emits_warning_on_derive_and_insert_failure() {
     // out from under the writer's open connection after spawn. The
     // next `wl.insert(...)` then fails inside SQLite ("no such
     // table: episodes"), the writer's `Err(_)` arm runs, and the
-    // F7 wiring must emit an `AgentEvent::Warning` so the dropped
+    // wiring must emit an `AgentEvent::Warning` so the dropped
     // write is visible in the durable event stream — not just in a
     // `tracing::warn!` log line.
 
@@ -580,7 +578,7 @@ async fn writer_emits_warning_on_derive_and_insert_failure() {
     }
     assert!(
         warning_seen,
-        "F7: derive/insert failure must emit AgentEvent::Warning, not just a tracing log",
+        "derive/insert failure must emit AgentEvent::Warning, not just a tracing log",
     );
 }
 
@@ -588,21 +586,22 @@ fn rusqlite_open(path: &std::path::Path) -> rusqlite::Connection {
     rusqlite::Connection::open(path).expect("open aux conn")
 }
 
-// ── F3+F4 acceptance tests ─────────────────────────────────────────
+// ── Writer-store config + unified promotion path ───────────────────
 //
-// Cover the writer-store config plumbing (F3) and the unified
-// promotion path that routes global writes through
-// `SqliteEpisodicStore::insert` instead of duplicating the SQL (F4).
+// Cover the writer-store config plumbing and the unified promotion
+// path that routes global writes through
+// `SqliteEpisodicStore::insert` instead of duplicating the SQL.
 //
 // Behavioural invariants exercised:
 //   - Writer-opened workflow + global stores honour the configured
-//     per-scope cap (F3 — was hard-coded to 500 before).
+//     per-scope cap (the back-compat `spawn` constructor hard-codes
+//     it to 500).
 //   - Default global cap is 2000, not the legacy 500.
 //   - Promotion of a workflow-local row whose
 //     `(pre_state_signature, recovery_actions_hash)` already exists
 //     in global returns the *existing* global ID (not a freshly
 //     minted one), unions `step_record_refs`, and bumps occurrence
-//     count — all of which the old duplicated SQL got wrong.
+//     count — all of which a duplicated inline SQL path gets wrong.
 
 use clickweave_engine::agent::episodic::store::EpisodicStoreConfig;
 
@@ -689,7 +688,7 @@ async fn writer_with_config_honours_global_cap_and_prunes() {
 
 #[tokio::test]
 async fn default_episodic_store_config_has_global_cap_2000() {
-    // Sanity check on the default constants — F3's regression hazard
+    // Sanity check on the default constants — the regression hazard
     // is silently shipping with a 500 cap because someone defaulted
     // the wrong number. Pin it.
     let cfg = EpisodicStoreConfig::default();

@@ -339,12 +339,12 @@ impl StateRunner {
             return self;
         }
         let event_tx = self.event_tx.clone();
-        // F3 fix: pass the configured store knobs through to the writer
-        // so its workflow-local + global stores honour the same
+        // Pass the configured store knobs through to the writer so
+        // its workflow-local + global stores honour the same
         // weights / half-life / per-scope caps the runner-side
-        // retrieval stores were opened with. Prior to this, the writer
-        // opened both stores via `SqliteEpisodicStore::new` which
-        // hard-coded the cap to 500.
+        // retrieval stores were opened with. The default `spawn`
+        // path opens both stores via `SqliteEpisodicStore::new`,
+        // which hard-codes the cap to 500.
         let store_config = crate::agent::episodic::store::EpisodicStoreConfig {
             score_weights: self.config.episodic_score_weights.into(),
             decay_halflife_days: self.config.episodic_decay_halflife_days,
@@ -1196,11 +1196,9 @@ impl StateRunner {
     /// `(failed_tool, error_kind)` pair instead of the empty defaults.
     /// `error_kind` is the stable string `"policy_denied"` so episodic
     /// retrieval can group denied-tool recoveries by failure family
-    /// without parsing the human-readable message.
-    ///
-    /// F6 fix: shared helper for cached-replay deny + live deny so the
-    /// two branches can't drift on the kind string and so adding the
-    /// snake_case error_kind in one place is enough.
+    /// without parsing the human-readable message. Shared helper for
+    /// cached-replay deny + live deny so the two branches can't
+    /// drift on the kind string.
     pub(crate) fn record_policy_deny_failure(&mut self, tool_name: &str) {
         self.last_failed_tool_name = Some(tool_name.to_string());
         self.last_failed_error_kind = Some("policy_denied".to_string());
@@ -2289,7 +2287,7 @@ impl StateRunner {
                 };
                 self.state.steps.push(step);
                 self.advance_recorded_step_index();
-                // F6: a denied tool is the recovery-trigger event. Capture
+                // A denied tool is the recovery-trigger event. Capture
                 // it as the last failure so the next `Recovering`-entry
                 // snapshot has a real `(failed_tool, error_kind)` pair.
                 self.record_policy_deny_failure(&cached_tool);
@@ -2415,7 +2413,7 @@ impl StateRunner {
                 self.state.consecutive_errors = 0;
                 self.consecutive_errors = 0;
                 *last_failure = None;
-                // F6: clear the per-turn failure tracking so a prior
+                // Clear the per-turn failure tracking so a prior
                 // policy-deny / tool-error doesn't bleed into a later
                 // `Recovering`-entry snapshot after the agent has
                 // demonstrably recovered via cache replay.
@@ -2883,7 +2881,7 @@ impl StateRunner {
                 self.state.consecutive_errors = 0;
                 self.consecutive_errors = 0;
                 last_failure = None;
-                // F6: synthetic focus_window skip is a successful
+                // Synthetic focus_window skip is a successful
                 // observation outcome — clear failure tracking the
                 // same way the live ToolSuccess path does.
                 self.clear_last_failure_tracking();
@@ -2933,7 +2931,7 @@ impl StateRunner {
                                 page_url: self.state.current_url.clone(),
                             });
                             self.advance_recorded_step_index();
-                            // F6: shared with the cached-deny branch — see
+                            // Shared with the cached-deny branch — see
                             // `record_policy_deny_failure` for rationale.
                             self.record_policy_deny_failure(tool_name);
                             self.state.consecutive_errors += 1;
@@ -3154,12 +3152,11 @@ impl StateRunner {
                             },
                         )
                         .await;
-                    // F7 fix: surface backpressure drops as a Warning
-                    // event so consumers can distinguish "no recovery
-                    // happened" from "recovery succeeded but the
-                    // episodic write was dropped." D32 keeps the
-                    // agent loop running either way; this is purely
-                    // observability.
+                    // Surface backpressure drops as a Warning event so
+                    // consumers can distinguish "no recovery happened"
+                    // from "recovery succeeded but the episodic write
+                    // was dropped." D32 keeps the agent loop running
+                    // either way; this is purely observability.
                     if let Err(e) = queue_result {
                         self.emit_event(AgentEvent::Warning {
                             message: format!("episodic: write dropped: backpressure ({e})"),
@@ -4503,15 +4500,14 @@ mod focus_skip_tests {
     }
 }
 
-/// F1 acceptance tests: D24/D29 run-start retrieval gate + step_index
-/// ownership. The gate (`episodic_run_start_retrieved`) replaces the
-/// drift-prone `step_index == 0` proxy; the helper
-/// (`advance_recorded_step_index`) is the single owner of `step_index`
-/// updates so the counter matches `state.steps.len()` across all
-/// recording paths (cache replay, synthetic skip, policy deny,
-/// approval reject, normal LLM turn).
+/// D24/D29 run-start retrieval gate + step_index ownership tests.
+/// The gate (`episodic_run_start_retrieved`) replaces the drift-prone
+/// `step_index == 0` proxy; the helper (`advance_recorded_step_index`)
+/// is the single owner of `step_index` updates so the counter matches
+/// `state.steps.len()` across all recording paths (cache replay,
+/// synthetic skip, policy deny, approval reject, normal LLM turn).
 #[cfg(test)]
-mod f1_retrieval_gate_tests {
+mod retrieval_gate_tests {
     use super::*;
     use crate::agent::episodic::{EpisodeScope, EpisodicContext, SqliteEpisodicStore};
     use crate::agent::phase::Phase;
@@ -4524,7 +4520,7 @@ mod f1_retrieval_gate_tests {
             enabled: true,
             workflow_local_path: wl_path.clone(),
             global_path: None,
-            workflow_hash: "f1-test-workflow".into(),
+            workflow_hash: "gate-test-workflow".into(),
         };
         let runner =
             StateRunner::new_with_episodic("goal".to_string(), AgentConfig::default(), ctx);
@@ -4601,7 +4597,7 @@ mod f1_retrieval_gate_tests {
 
     #[tokio::test]
     async fn record_policy_deny_failure_sets_stable_kind() {
-        // F6: both cached-deny and live-deny branches funnel through
+        // Both cached-deny and live-deny branches funnel through
         // this helper, and the snapshot derived from
         // `last_failed_*` populates `FailureSignature` on the
         // eventual write. The `error_kind` must be the stable

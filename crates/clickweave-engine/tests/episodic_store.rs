@@ -553,14 +553,14 @@ async fn workflow_a_episodes_do_not_appear_in_workflow_b_retrievals() {
     );
 }
 
-// ── F5 acceptance tests ────────────────────────────────────────────
+// ── Fallback retrieval scans every row in scope ────────────────────
 //
 // `retrieve` fallback path (no structured `pre_state_signature`
-// match) must score every row in scope, not the first 200 in
-// undefined SQLite row order. The previous `LIMIT 200` made the
-// best semantic match invisible once a store grew past 200 rows
-// even within the configured 500 / 2000 cap, and made fallback
-// results nondeterministic.
+// match) must score every row in scope, not a `LIMIT N` slice in
+// undefined SQLite row order. A slice would make the best semantic
+// match invisible once the store grew past N rows even within the
+// configured 500 / 2000 cap, and would make fallback results
+// nondeterministic.
 
 #[tokio::test]
 async fn fallback_scores_rows_past_the_old_200_limit() {
