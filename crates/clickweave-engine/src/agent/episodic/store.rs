@@ -15,7 +15,7 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use async_trait::async_trait;
 use rusqlite::{Connection, params};
@@ -24,6 +24,30 @@ use crate::agent::episodic::retrieval::ScoreWeights;
 use crate::agent::episodic::types::{
     EpisodeRecord, EpisodeScope, EpisodicError, InsertOutcome, RetrievalQuery, RetrievedEpisode,
 };
+
+/// Column list shared by every `SELECT * FROM episodes` query path. Kept
+/// as a const so the structured-stage and fallback-stage queries in
+/// `retrieve()` cannot drift apart.
+const EPISODE_SELECT_COLUMNS: &str = "episode_id, scope, workflow_hash, pre_state_signature, goal, subgoal_text, \
+     failure_signature_json, recovery_actions_json, recovery_actions_hash, \
+     outcome_summary, pre_state_snapshot_json, embedding_blob, embedding_impl_id, \
+     occurrence_count, created_at, last_seen_at, last_retrieved_at, \
+     step_record_refs_json";
+
+/// Lock the connection mutex, mapping poison errors into the
+/// `EpisodicError::Encode` variant so spawn_blocking closures can
+/// `?`-propagate.
+pub(crate) fn lock_conn(
+    conn: &Mutex<Connection>,
+) -> Result<MutexGuard<'_, Connection>, EpisodicError> {
+    conn.lock()
+        .map_err(|e| EpisodicError::Encode(format!("mutex poisoned: {e}")))
+}
+
+/// Map a `JoinError` from `spawn_blocking` into the `Encode` variant.
+pub(crate) fn join_err(e: tokio::task::JoinError) -> EpisodicError {
+    EpisodicError::Encode(format!("join: {e}"))
+}
 
 #[async_trait]
 pub trait EpisodicStore: Send + Sync {
@@ -130,10 +154,7 @@ impl SqliteEpisodicStore {
     /// Integration-test helper: returns the total row count. Not for
     /// production callers — use the retrieve/insert trait methods there.
     pub fn row_count_for_tests(&self) -> Result<u64, EpisodicError> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| EpisodicError::Encode(format!("mutex poisoned: {e}")))?;
+        let conn = lock_conn(&self.conn)?;
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM episodes", [], |r| r.get(0))?;
         Ok(n as u64)
     }
@@ -145,9 +166,7 @@ impl EpisodicStore for SqliteEpisodicStore {
         let conn = self.conn.clone();
         let outcome_result =
             tokio::task::spawn_blocking(move || -> Result<InsertOutcome, EpisodicError> {
-                let conn = conn
-                    .lock()
-                    .map_err(|e| EpisodicError::Encode(format!("mutex poisoned: {e}")))?;
+                let conn = lock_conn(&conn)?;
 
                 // Serialize JSON fields
                 let failure_json = serde_json::to_string(&episode.failure_signature)
@@ -243,7 +262,7 @@ impl EpisodicStore for SqliteEpisodicStore {
                 })
             })
             .await
-            .map_err(|e| EpisodicError::Encode(format!("join: {e}")))?;
+            .map_err(join_err)?;
 
         let outcome = outcome_result?;
 
@@ -274,19 +293,14 @@ impl EpisodicStore for SqliteEpisodicStore {
         let store_halflife = self.decay_halflife_days;
 
         tokio::task::spawn_blocking(move || -> Result<Vec<RetrievedEpisode>, EpisodicError> {
-            let conn = conn
-                .lock()
-                .map_err(|e| EpisodicError::Encode(format!("mutex poisoned: {e}")))?;
+            let conn = lock_conn(&conn)?;
 
             // Stage 1: structured exact-match on (scope, pre_state_signature).
-            let mut stmt = conn.prepare(
-                "SELECT episode_id, scope, workflow_hash, pre_state_signature, goal, subgoal_text,
-                        failure_signature_json, recovery_actions_json, recovery_actions_hash,
-                        outcome_summary, pre_state_snapshot_json, embedding_blob, embedding_impl_id,
-                        occurrence_count, created_at, last_seen_at, last_retrieved_at,
-                        step_record_refs_json
-                   FROM episodes WHERE scope = ?1 AND pre_state_signature = ?2",
-            )?;
+            let structured_sql = format!(
+                "SELECT {EPISODE_SELECT_COLUMNS} FROM episodes \
+                 WHERE scope = ?1 AND pre_state_signature = ?2"
+            );
+            let mut stmt = conn.prepare(&structured_sql)?;
             let structured_rows: Vec<EpisodeRecord> = stmt
                 .query_map(params![scope.as_str(), sig], row_to_episode)?
                 .filter_map(|r| r.ok())
@@ -294,14 +308,10 @@ impl EpisodicStore for SqliteEpisodicStore {
 
             let fallback = structured_rows.is_empty();
             let candidates: Vec<EpisodeRecord> = if fallback {
-                let mut stmt = conn.prepare(
-                    "SELECT episode_id, scope, workflow_hash, pre_state_signature, goal, subgoal_text,
-                            failure_signature_json, recovery_actions_json, recovery_actions_hash,
-                            outcome_summary, pre_state_snapshot_json, embedding_blob, embedding_impl_id,
-                            occurrence_count, created_at, last_seen_at, last_retrieved_at,
-                            step_record_refs_json
-                       FROM episodes WHERE scope = ?1 LIMIT 200",
-                )?;
+                let fallback_sql = format!(
+                    "SELECT {EPISODE_SELECT_COLUMNS} FROM episodes WHERE scope = ?1 LIMIT 200"
+                );
+                let mut stmt = conn.prepare(&fallback_sql)?;
                 stmt.query_map(params![scope.as_str()], row_to_episode)?
                     .filter_map(|r| r.ok())
                     .collect()
@@ -349,16 +359,14 @@ impl EpisodicStore for SqliteEpisodicStore {
                 .collect())
         })
         .await
-        .map_err(|e| EpisodicError::Encode(format!("join: {e}")))?
+        .map_err(join_err)?
     }
 
     async fn prune_lru(&self, cap: usize) -> Result<usize, EpisodicError> {
         let conn = self.conn.clone();
         let scope = self.scope;
         tokio::task::spawn_blocking(move || -> Result<usize, EpisodicError> {
-            let conn = conn
-                .lock()
-                .map_err(|e| EpisodicError::Encode(format!("mutex poisoned: {e}")))?;
+            let conn = lock_conn(&conn)?;
 
             let count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM episodes WHERE scope = ?1",
@@ -394,7 +402,7 @@ impl EpisodicStore for SqliteEpisodicStore {
             Ok(deleted)
         })
         .await
-        .map_err(|e| EpisodicError::Encode(format!("join: {e}")))?
+        .map_err(join_err)?
     }
 }
 

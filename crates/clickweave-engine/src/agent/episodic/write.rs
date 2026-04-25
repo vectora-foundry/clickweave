@@ -28,7 +28,7 @@ use ulid::Ulid;
 
 use crate::agent::episodic::embedder::{Embedder, HashedShingleEmbedder};
 use crate::agent::episodic::promotion::should_promote;
-use crate::agent::episodic::store::{EpisodicStore, SqliteEpisodicStore};
+use crate::agent::episodic::store::{EpisodicStore, SqliteEpisodicStore, join_err, lock_conn};
 use crate::agent::episodic::types::{
     CompactAction, EpisodeRecord, EpisodeScope, EpisodicContext, EpisodicError, FailureSignature,
     InsertOutcome, PromotionTerminalKind, RecoveringEntrySnapshot, RecoveryActionsHash,
@@ -324,12 +324,8 @@ async fn promote_matching_episodes(
     tokio::task::spawn_blocking(move || -> Result<(Vec<String>, usize), EpisodicError> {
         let mut promoted_ids: Vec<String> = Vec::new();
         let mut skipped: usize = 0;
-        let wl = wl_conn
-            .lock()
-            .map_err(|e| EpisodicError::Encode(format!("mutex poisoned: {e}")))?;
-        let g = g_conn
-            .lock()
-            .map_err(|e| EpisodicError::Encode(format!("mutex poisoned: {e}")))?;
+        let wl = lock_conn(&wl_conn)?;
+        let g = lock_conn(&g_conn)?;
 
         // P1.M3: only episodes touched (inserted or merged) during this
         // run participate. `last_seen_at` is bumped on both fresh insert
@@ -453,5 +449,5 @@ async fn promote_matching_episodes(
         Ok((promoted_ids, skipped))
     })
     .await
-    .map_err(|e| EpisodicError::Encode(format!("join: {e}")))?
+    .map_err(join_err)?
 }
