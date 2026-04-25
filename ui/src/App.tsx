@@ -75,7 +75,21 @@ function App() {
     })),
   );
 
-  const { supervisorConfig, agentConfig, fastConfig, fastEnabled, maxRepairAttempts, hoverDwellThreshold, supervisionDelayMs, toolPermissions, traceRetentionDays, storeTraces } = useStore(
+  const {
+    supervisorConfig,
+    agentConfig,
+    fastConfig,
+    fastEnabled,
+    maxRepairAttempts,
+    hoverDwellThreshold,
+    supervisionDelayMs,
+    toolPermissions,
+    traceRetentionDays,
+    storeTraces,
+    episodicEnabled,
+    retrievedEpisodesK,
+    episodicGlobalParticipation,
+  } = useStore(
     useShallow((s) => ({
       supervisorConfig: s.supervisorConfig,
       agentConfig: s.agentConfig,
@@ -87,6 +101,9 @@ function App() {
       toolPermissions: s.toolPermissions,
       traceRetentionDays: s.traceRetentionDays,
       storeTraces: s.storeTraces,
+      episodicEnabled: s.episodicEnabled,
+      retrievedEpisodesK: s.retrievedEpisodesK,
+      episodicGlobalParticipation: s.episodicGlobalParticipation,
     })),
   );
 
@@ -135,6 +152,11 @@ function App() {
   const setSupervisionDelayMs = useStore((s) => s.setSupervisionDelayMs);
   const setTraceRetentionDays = useStore((s) => s.setTraceRetentionDays);
   const setStoreTraces = useStore((s) => s.setStoreTraces);
+  const setEpisodicEnabled = useStore((s) => s.setEpisodicEnabled);
+  const setRetrievedEpisodesK = useStore((s) => s.setRetrievedEpisodesK);
+  const setEpisodicGlobalParticipation = useStore(
+    (s) => s.setEpisodicGlobalParticipation,
+  );
 
   // ── Workflow mutations ───────────────────────────────────────────
   const {
@@ -320,6 +342,9 @@ function App() {
         toolPermissions={toolPermissions}
         traceRetentionDays={traceRetentionDays}
         storeTraces={storeTraces}
+        episodicEnabled={episodicEnabled}
+        retrievedEpisodesK={retrievedEpisodesK}
+        episodicGlobalParticipation={episodicGlobalParticipation}
         onClose={() => setShowSettings(false)}
         onSupervisorConfigChange={setSupervisorConfig}
         onAgentConfigChange={setAgentConfig}
@@ -332,6 +357,9 @@ function App() {
         onToolPermissionChange={setToolPermission}
         onTraceRetentionDaysChange={setTraceRetentionDays}
         onStoreTracesChange={setStoreTraces}
+        onEpisodicEnabledChange={setEpisodicEnabled}
+        onRetrievedEpisodesKChange={setRetrievedEpisodesK}
+        onEpisodicGlobalParticipationChange={setEpisodicGlobalParticipation}
       />
 
       <VerdictModal />

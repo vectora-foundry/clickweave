@@ -4,15 +4,27 @@ const inputClass =
 interface ExecutionTabProps {
   maxRepairAttempts: number;
   supervisionDelayMs: number;
+  episodicEnabled: boolean;
+  retrievedEpisodesK: number;
+  episodicGlobalParticipation: boolean;
   onMaxRepairAttemptsChange: (n: number) => void;
   onSupervisionDelayMsChange: (ms: number) => void;
+  onEpisodicEnabledChange: (enabled: boolean) => void;
+  onRetrievedEpisodesKChange: (n: number) => void;
+  onEpisodicGlobalParticipationChange: (enabled: boolean) => void;
 }
 
 export function ExecutionTab({
   maxRepairAttempts,
   supervisionDelayMs,
+  episodicEnabled,
+  retrievedEpisodesK,
+  episodicGlobalParticipation,
   onMaxRepairAttemptsChange,
   onSupervisionDelayMsChange,
+  onEpisodicEnabledChange,
+  onRetrievedEpisodesKChange,
+  onEpisodicGlobalParticipationChange,
 }: ExecutionTabProps) {
   return (
     <div className="space-y-4 p-4">
@@ -69,6 +81,67 @@ export function ExecutionTab({
           />
           <p className="mt-1 text-[10px] text-[var(--text-muted)]">
             How long to wait before capturing the per-step supervision screenshot, giving the UI time to settle (0-10000ms).
+          </p>
+        </div>
+      </div>
+
+      <div>
+        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+          Agent Memory
+        </h3>
+        <p className="mb-2 text-[10px] text-[var(--text-muted)]">
+          Episodic memory lets the agent recall how it recovered from similar stuck states in past runs.
+        </p>
+
+        <div className="mb-3">
+          <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+            <input
+              type="checkbox"
+              checked={episodicEnabled}
+              onChange={(e) => onEpisodicEnabledChange(e.target.checked)}
+              className="accent-[var(--accent-coral)]"
+            />
+            Enable episodic memory
+          </label>
+        </div>
+
+        <div className="mb-3">
+          <label className="mb-1 block text-xs text-[var(--text-secondary)]">
+            Memory depth (episodes to retrieve per trigger)
+          </label>
+          <input
+            type="number"
+            min={1}
+            max={10}
+            value={retrievedEpisodesK}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              const clamped = Number.isFinite(n)
+                ? Math.max(1, Math.min(10, Math.floor(n)))
+                : 2;
+              onRetrievedEpisodesKChange(clamped);
+            }}
+            disabled={!episodicEnabled}
+            className={inputClass}
+          />
+        </div>
+
+        <div className="mb-3">
+          <label className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+            <input
+              type="checkbox"
+              checked={episodicGlobalParticipation}
+              onChange={(e) =>
+                onEpisodicGlobalParticipationChange(e.target.checked)
+              }
+              disabled={!episodicEnabled}
+              className="accent-[var(--accent-coral)]"
+            />
+            Share recoveries across workflows
+          </label>
+          <p className="ml-5 text-[10px] text-[var(--text-muted)]">
+            When on, recovery episodes from one workflow can be surfaced in another.
+            Default off keeps workflows isolated.
           </p>
         </div>
       </div>

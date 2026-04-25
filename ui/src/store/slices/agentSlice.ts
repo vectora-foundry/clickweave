@@ -235,6 +235,9 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       workflow,
       toolPermissions,
       storeTraces,
+      episodicEnabled,
+      retrievedEpisodesK,
+      episodicGlobalParticipation,
       messages,
       pushAssistantMessage,
     } = priorState;
@@ -330,6 +333,9 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
           run_id: runId,
           anchor_node_id: anchor,
           prior_turns: priorTurns,
+          episodic_enabled: episodicEnabled,
+          retrieved_episodes_k: retrievedEpisodesK,
+          episodic_global_participation: episodicGlobalParticipation,
         },
       });
     } catch (err) {

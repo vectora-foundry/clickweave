@@ -405,7 +405,25 @@ anchor_node_id?: string | null;
  * Prior conversation turns (goal + summary + run_id) injected
  * inline above the current goal. Runtime order = chronological.
  */
-prior_turns?: PriorTurnWire[] }
+prior_turns?: PriorTurnWire[];
+/**
+ * Spec 2 master kill switch for episodic memory on this run.
+ * `None` = inherit the engine default (`true`); `Some(false)` =
+ * run with episodic disabled regardless of `EpisodicContext`.
+ */
+episodic_enabled?: boolean | null;
+/**
+ * Spec 2 retrieval depth — top-k episodes returned per trigger.
+ * `None` = engine default (2). Clamped to `[1, 10]` at the
+ * Tauri seam.
+ */
+retrieved_episodes_k?: number | null;
+/**
+ * Spec 2 D35 privacy opt-in: when `true`, recoveries from this
+ * workflow may be promoted into the global cross-workflow store.
+ * Default off keeps workflows isolated.
+ */
+episodic_global_participation?: boolean | null }
 export type AiStepParams = { prompt: string; button_text: string | null; template_image: string | null; max_tool_calls: number | null; allowed_tools: string[] | null; timeout_ms?: number | null }
 export type AppDebugKitParams = { operation_name: string; parameters: JsonValue }
 /**

@@ -68,6 +68,9 @@ interface SettingsModalProps {
   toolPermissions: ToolPermissions;
   traceRetentionDays: number;
   storeTraces: boolean;
+  episodicEnabled: boolean;
+  retrievedEpisodesK: number;
+  episodicGlobalParticipation: boolean;
   onClose: () => void;
   onSupervisorConfigChange: (config: EndpointConfig) => void;
   onAgentConfigChange: (config: EndpointConfig) => void;
@@ -80,6 +83,9 @@ interface SettingsModalProps {
   onToolPermissionChange: (toolName: string, level: PermissionLevel) => void;
   onTraceRetentionDaysChange: (days: number) => void;
   onStoreTracesChange: (enabled: boolean) => void;
+  onEpisodicEnabledChange: (enabled: boolean) => void;
+  onRetrievedEpisodesKChange: (n: number) => void;
+  onEpisodicGlobalParticipationChange: (enabled: boolean) => void;
 }
 
 const inputClass =
@@ -456,6 +462,9 @@ export function SettingsModal({
   toolPermissions,
   traceRetentionDays,
   storeTraces,
+  episodicEnabled,
+  retrievedEpisodesK,
+  episodicGlobalParticipation,
   onClose,
   onSupervisorConfigChange,
   onAgentConfigChange,
@@ -468,6 +477,9 @@ export function SettingsModal({
   onToolPermissionChange,
   onTraceRetentionDaysChange,
   onStoreTracesChange,
+  onEpisodicEnabledChange,
+  onRetrievedEpisodesKChange,
+  onEpisodicGlobalParticipationChange,
 }: SettingsModalProps) {
   const [tab, setTab] = useState<SettingsTab>("general");
 
@@ -512,8 +524,16 @@ export function SettingsModal({
           <ExecutionTab
             maxRepairAttempts={maxRepairAttempts}
             supervisionDelayMs={supervisionDelayMs}
+            episodicEnabled={episodicEnabled}
+            retrievedEpisodesK={retrievedEpisodesK}
+            episodicGlobalParticipation={episodicGlobalParticipation}
             onMaxRepairAttemptsChange={onMaxRepairAttemptsChange}
             onSupervisionDelayMsChange={onSupervisionDelayMsChange}
+            onEpisodicEnabledChange={onEpisodicEnabledChange}
+            onRetrievedEpisodesKChange={onRetrievedEpisodesKChange}
+            onEpisodicGlobalParticipationChange={
+              onEpisodicGlobalParticipationChange
+            }
           />
         ) : tab === "privacy" ? (
           <PrivacyTab
