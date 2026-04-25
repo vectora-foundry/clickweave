@@ -679,12 +679,6 @@ pub async fn run_agent(
     // Live event channel: agent runner -> Tauri event emitter
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AgentEvent>(64);
 
-    // P3.H2: clone the event sender BEFORE it moves into `AgentChannels`
-    // so the run-terminal promotion writer can still emit
-    // `EpisodePromoted` with the active run_id even though the runner's
-    // own clone has already been dropped by then.
-    let promotion_event_tx = event_tx.clone();
-
     // Approval channel: agent runner sends requests, we forward to UI and store
     // the oneshot response sender in the handle for `approve_agent_action` to use.
     let (approval_tx, mut approval_rx) =
@@ -872,7 +866,7 @@ pub async fn run_agent(
         };
 
         match result {
-            Ok((state, updated_cache)) => {
+            Ok((state, updated_cache, writer_tx)) => {
                 // Persist the updated cache — skipped when the privacy
                 // kill switch is off so the workflow-level cache file
                 // stays as it was before the run.
@@ -987,17 +981,24 @@ pub async fn run_agent(
                 // attempted: clean completion → eligible; disagreement,
                 // loop, error, cancellation → SkipPromotion.
                 //
-                // The promotion writer is spawned fresh here (not the
-                // runner's own writer) so it owns its own SQLite handles
-                // and can drain its single PromotePass message
-                // independently of the runner shutdown sequence. We
-                // explicitly flush before the task exits so the
-                // `agent://episode_promoted` event lands before the
-                // `done_tx` cleanup signal closes the event forwarder.
-                if promotion_episodic_ctx.enabled && promotion_episodic_ctx.global_path.is_some() {
+                // `writer_tx` is a cloned sender for the *same* worker task
+                // the runner used for `DeriveAndInsert` requests. Queuing
+                // `PromotePass` on it reuses the existing SQLite connections
+                // (one workflow-local + one global), eliminating the second
+                // SQLite connection that the previous implementation opened
+                // by spawning a fresh `EpisodicWriter` here.
+                //
+                // The flush barrier (`WriteRequest::Flush` sentinel sent
+                // by `EpisodicWriter::flush`) is carried through the same
+                // channel, so the `agent://episode_promoted` event lands
+                // before the `done_tx` cleanup signal closes the event
+                // forwarder — same guarantee as before, single connection.
+                if promotion_episodic_ctx.enabled
+                    && promotion_episodic_ctx.global_path.is_some()
+                    && let Some(tx) = writer_tx
+                {
                     use clickweave_engine::agent::episodic::{
-                        EpisodicWriter, PromotionTerminalKind,
-                        types::WriteRequest as EpisodicWriteRequest,
+                        PromotionTerminalKind, types::WriteRequest as EpisodicWriteRequest,
                     };
                     let terminal_kind = match &resolved_terminal {
                         Some(TerminalReason::Completed { .. })
@@ -1006,20 +1007,32 @@ pub async fn run_agent(
                         }
                         _ => PromotionTerminalKind::SkipPromotion,
                     };
-                    if let Ok(writer) = EpisodicWriter::spawn(
-                        promotion_episodic_ctx.clone(),
-                        Some(promotion_event_tx.clone()),
-                        run_uuid,
-                    ) {
-                        let _ = writer
-                            .queue(EpisodicWriteRequest::PromotePass {
-                                workflow_hash: promotion_workflow_hash.clone(),
-                                terminal_kind,
-                                run_started_at: run_start_utc,
-                            })
-                            .await;
-                        writer.flush().await;
-                    }
+                    let _ = tx
+                        .send(EpisodicWriteRequest::PromotePass {
+                            workflow_hash: promotion_workflow_hash.clone(),
+                            terminal_kind,
+                            run_started_at: run_start_utc,
+                        })
+                        .await;
+                    // Flush sentinel: wait for the worker to ack so the
+                    // `EpisodePromoted` event is emitted before we signal
+                    // the event forwarder to close.
+                    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel::<()>();
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                        if tx
+                            .send(EpisodicWriteRequest::Flush { ack: ack_tx })
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                        let _ = ack_rx.await;
+                    })
+                    .await;
+                    // Drop `tx`: the runner's copy was dropped when `run`
+                    // returned; this is now the last sender. Dropping it
+                    // closes the channel and lets the worker task exit.
+                    drop(tx);
                 }
             }
             Err(e) => {
@@ -1599,7 +1612,7 @@ mod run_agent_smoke_tests {
         });
 
         // ── Act: drive the engine ──────────────────────────────────
-        let (state, _cache) = run_agent_workflow(
+        let (state, _cache, _writer_tx) = run_agent_workflow(
             &llm,
             AgentConfig::default(),
             "rubric-10 gate: forwarder + persistence contract".to_string(),

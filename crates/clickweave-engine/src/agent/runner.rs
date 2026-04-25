@@ -372,6 +372,23 @@ impl StateRunner {
         self.cache
     }
 
+    /// Clone the episodic writer's channel sender, if a writer is active.
+    ///
+    /// The returned sender shares the same worker task as the writer owned
+    /// by this runner — no second SQLite connection is opened. Callers can
+    /// enqueue `WriteRequest`s (including `PromotePass`) on it even after
+    /// `run` has consumed and dropped the runner, as long as they hold the
+    /// sender clone. Dropping the clone releases the channel once the
+    /// runner's own copy is also gone, allowing the worker to exit.
+    ///
+    /// Returns `None` when episodic is disabled or the writer was not yet
+    /// spawned.
+    pub(crate) fn writer_sender(
+        &self,
+    ) -> Option<tokio::sync::mpsc::Sender<crate::agent::episodic::types::WriteRequest>> {
+        self.episodic_writer.as_ref().map(|w| w.sender())
+    }
+
     /// Write a boundary `StepRecord` through the shared `RunStorage` handle.
     /// Silently no-ops when no storage is attached or the lock is poisoned
     /// — persistence is best-effort, never fatal.

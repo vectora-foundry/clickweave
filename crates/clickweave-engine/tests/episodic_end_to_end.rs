@@ -280,3 +280,161 @@ async fn writer_skips_promotion_on_skip_terminal_kind_and_emits_no_event() {
         }
     }
 }
+
+/// Regression guard for the unified-writer architectural fix:
+/// `DeriveAndInsert` and `PromotePass` must both be committed by the
+/// **same** worker task using the **same** SQLite connections.
+///
+/// Scenario:
+///  1. Spawn a single `EpisodicWriter` with both workflow-local and
+///     global paths.
+///  2. Clone the writer's sender — mirroring what `run_agent_workflow`
+///     now does via `runner.writer_sender()` before calling `.run()`.
+///  3. Enqueue two `DeriveAndInsert` messages for the same state
+///     signature on the writer itself; the second one triggers the
+///     store's merge path (occurrence_count → 2) and satisfies the
+///     `should_promote` gate. Flush after both.
+///  4. Drop the original writer — simulates `StateRunner::run`
+///     consuming and dropping the runner. The channel stays alive
+///     because the cloned sender is still held.
+///  5. Enqueue a `PromotePass` on the cloned sender, then flush with
+///     the Flush sentinel — simulates the Tauri post-run promotion.
+///  6. Assert that both an `EpisodeWritten` and an `EpisodePromoted`
+///     event were received, proving the insert rows from step 3 are
+///     visible to the promotion pass in step 5 (same connection, same
+///     committed transaction) and that a second SQLite connection was
+///     never needed.
+#[tokio::test]
+async fn single_writer_processes_derive_and_insert_then_promote_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    let wl_path = dir.path().join("workflow.sqlite");
+    let g_path = dir.path().join("global.sqlite");
+
+    let ctx = EpisodicContext {
+        enabled: true,
+        workflow_local_path: wl_path.clone(),
+        global_path: Some(g_path.clone()),
+        workflow_hash: "unified-writer-test".into(),
+    };
+
+    let (tx, mut rx) = mpsc::channel::<AgentEvent>(16);
+    let run_id = uuid::Uuid::new_v4();
+    let writer = EpisodicWriter::spawn(ctx.clone(), Some(tx), run_id).expect("spawn writer");
+
+    // Clone the sender before moving/dropping the writer — mirrors what
+    // `run_agent_workflow` does via `runner.writer_sender()`.
+    let cloned_sender = writer.sender();
+
+    // Use a run_started_at well before now so the promotion SQL filter
+    // (`last_seen_at >= run_started_at`) matches both inserted rows.
+    let run_started_at = chrono::Utc::now() - chrono::Duration::minutes(5);
+
+    // The same recovery_actions slice for both DeriveAndInsert messages
+    // ensures the same `recovery_actions_hash`, which is the store's
+    // uniqueness key (along with `pre_state_signature`). The second
+    // insert therefore triggers the merge path and bumps occurrence_count
+    // to 2, satisfying `should_promote`.
+    let actions = vec![CompactAction {
+        tool_name: "ax_click".into(),
+        brief_args: "uid=c3".into(),
+        outcome_kind: "ok".into(),
+    }];
+
+    // First insert — occurrence_count becomes 1 (fresh row).
+    writer
+        .queue(WriteRequest::DeriveAndInsert {
+            entry: Box::new(mk_recovery_snapshot(
+                "unified-writer-test",
+                "sig_unified_merge",
+            )),
+            recovery_success: Box::new(mk_step_record()),
+            recovery_actions: actions.clone(),
+        })
+        .await
+        .expect("queue first DeriveAndInsert");
+
+    // Second insert — same sig + same actions_hash → merge, count → 2.
+    writer
+        .queue(WriteRequest::DeriveAndInsert {
+            entry: Box::new(mk_recovery_snapshot(
+                "unified-writer-test",
+                "sig_unified_merge",
+            )),
+            recovery_success: Box::new(mk_step_record()),
+            recovery_actions: actions,
+        })
+        .await
+        .expect("queue second DeriveAndInsert");
+
+    // Flush to ensure both inserts are committed before we drop the writer.
+    writer.flush_for_tests().await;
+
+    // Drop the writer — simulates StateRunner::run returning and the
+    // runner going out of scope. The channel stays open because the
+    // cloned sender is still alive.
+    drop(writer);
+
+    // Enqueue the PromotePass on the cloned sender — simulates the
+    // Tauri command queuing promotion on the writer_tx returned by
+    // `run_agent_workflow`. This goes to the same worker task.
+    cloned_sender
+        .send(WriteRequest::PromotePass {
+            workflow_hash: "unified-writer-test".into(),
+            terminal_kind: PromotionTerminalKind::Clean,
+            run_started_at,
+        })
+        .await
+        .expect("send PromotePass");
+
+    // Flush sentinel: wait for the worker to ack so we know the
+    // promotion SQL committed before we collect events.
+    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel::<()>();
+    cloned_sender
+        .send(WriteRequest::Flush { ack: ack_tx })
+        .await
+        .expect("send Flush");
+    tokio::time::timeout(std::time::Duration::from_secs(1), ack_rx)
+        .await
+        .expect("flush ack in time")
+        .expect("ack received");
+
+    // Drop the cloned sender — channel now has no senders, worker exits.
+    drop(cloned_sender);
+
+    // Collect all events and assert both EpisodeWritten and
+    // EpisodePromoted arrived, confirming the DeriveAndInsert rows were
+    // visible to the PromotePass without a second SQLite connection.
+    let mut written_seen = false;
+    let mut promoted_seen = false;
+    while let Ok(Some(evt)) =
+        tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await
+    {
+        match evt {
+            AgentEvent::EpisodeWritten {
+                run_id: ev_run_id, ..
+            } => {
+                assert_eq!(ev_run_id, run_id, "EpisodeWritten must carry the run_id");
+                written_seen = true;
+            }
+            AgentEvent::EpisodePromoted {
+                run_id: ev_run_id,
+                count,
+                ..
+            } => {
+                assert_eq!(ev_run_id, run_id, "EpisodePromoted must carry the run_id");
+                assert!(count >= 1, "at least one episode must be promoted");
+                promoted_seen = true;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(
+        written_seen,
+        "EpisodeWritten must be emitted for the DeriveAndInsert requests"
+    );
+    assert!(
+        promoted_seen,
+        "EpisodePromoted must be emitted after PromotePass queued on the cloned sender"
+    );
+}

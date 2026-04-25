@@ -197,6 +197,23 @@ impl EpisodicWriter {
     pub async fn flush_for_tests(&self) {
         self.flush().await
     }
+
+    /// Return a clone of the internal channel sender.
+    ///
+    /// The returned sender shares the same worker task: messages sent on it
+    /// are processed by the same consumer loop and the same SQLite
+    /// connections, so there is no second database connection. The channel
+    /// stays alive until **all** senders — the one owned by the writer and
+    /// any clones — are dropped.
+    ///
+    /// Intended for callers that need to enqueue requests on the writer
+    /// after the writer itself has been moved into an inner scope (e.g.
+    /// `StateRunner::run` consumes the runner; the Tauri command can hold
+    /// a cloned sender, queue a `PromotePass` after `run` returns, then
+    /// drop the sender to let the worker exit cleanly).
+    pub fn sender(&self) -> mpsc::Sender<WriteRequest> {
+        self.tx.clone()
+    }
 }
 
 /// Build an `EpisodeRecord` from the recovery-window snapshot and

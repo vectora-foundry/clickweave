@@ -98,7 +98,17 @@ pub async fn run_agent_workflow<B, M>(
     // preserving the legacy "no episodic" behaviour for tests and
     // internal callers that don't construct paths.
     episodic_ctx: Option<crate::agent::episodic::EpisodicContext>,
-) -> anyhow::Result<(AgentState, AgentCache)>
+) -> anyhow::Result<(
+    AgentState,
+    AgentCache,
+    // A clone of the runner-owned episodic writer's channel sender. The
+    // Tauri caller enqueues `WriteRequest::PromotePass` on this sender
+    // after `run` returns so that the single worker task — and its single
+    // pair of SQLite connections — handles both `DeriveAndInsert` and
+    // `PromotePass`. Dropping the sender signals the worker to exit after
+    // draining. `None` when episodic is disabled for this run.
+    Option<tokio::sync::mpsc::Sender<crate::agent::episodic::types::WriteRequest>>,
+)>
 where
     B: ChatBackend,
     M: Mcp + ?Sized,
@@ -148,9 +158,20 @@ where
     // and `run_id` already seeded by `with_events` / `with_run_id`. The
     // writer is a no-op when `episodic_active()` is false.
     runner = runner.with_episodic_writer();
-    runner
+
+    // Clone the writer's channel sender *before* `run` consumes the
+    // runner. The clone shares the same worker task and SQLite connections
+    // — no second connection is opened. The caller (Tauri command) holds
+    // this sender to queue a run-terminal `PromotePass` on the same
+    // writer that processed all `DeriveAndInsert` requests during the run,
+    // eliminating the cross-connection visibility concern flagged in the
+    // architectural gap review (R1.H1).
+    let writer_tx = runner.writer_sender();
+
+    let (state, cache) = runner
         .run(llm, mcp, goal, workflow, tools, anchor_node_id)
-        .await
+        .await?;
+    Ok((state, cache, writer_tx))
 }
 
 /// Shared test doubles (`ScriptedLlm`, `StaticMcp`, `NullMcp`, `YesVlm`,

@@ -3177,7 +3177,7 @@ mod e2e_run_agent_workflow_tests {
             )
             .with_reply("cdp_click", "clicked");
 
-        let (state, _cache) = run_agent_workflow(
+        let (state, _cache, _writer_tx) = run_agent_workflow(
             &llm,
             AgentConfig::default(),
             "log me in".to_string(),
@@ -3283,7 +3283,7 @@ mod e2e_run_agent_workflow_tests {
             approval_tx,
         };
 
-        let (state, _cache) = run_agent_workflow(
+        let (state, _cache, _writer_tx) = run_agent_workflow(
             &llm,
             AgentConfig {
                 max_steps: 5,
@@ -3373,7 +3373,7 @@ mod e2e_run_agent_workflow_tests {
             .join("events.jsonl");
         let storage = Arc::new(Mutex::new(storage));
 
-        let (_state, _cache) = run_agent_workflow(
+        let (_state, _cache, _writer_tx) = run_agent_workflow(
             &llm,
             AgentConfig::default(),
             "exercise storage".to_string(),
@@ -3457,7 +3457,7 @@ mod variant_context_placement_tests {
             1000,
         );
 
-        let (_state, _cache) = run_agent_workflow(
+        let (_state, _cache, _writer_tx) = run_agent_workflow(
             &llm,
             AgentConfig::default(),
             goal_block,
@@ -3526,7 +3526,7 @@ mod variant_context_placement_tests {
 
         let goal_block = build_goal_block("just a goal", &[], None, 1000);
 
-        let (_state, _cache) = run_agent_workflow(
+        let (_state, _cache, _writer_tx) = run_agent_workflow(
             &llm,
             AgentConfig::default(),
             goal_block,
