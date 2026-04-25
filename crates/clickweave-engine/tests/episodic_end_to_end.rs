@@ -445,6 +445,76 @@ async fn single_writer_processes_derive_and_insert_then_promote_pass() {
     );
 }
 
+// ── F8 acceptance test ─────────────────────────────────────────────
+//
+// The Tauri terminal path's promotion enqueue (`agent.rs:1010`) was
+// changed from `tx.send(...).await` to `tx.try_send(...)` so a
+// saturated writer channel can't wedge cleanup before the
+// timeout-protected flush. This test pins the underlying primitive:
+// `EpisodicWriter::queue` (which already uses `try_send`) returns
+// `Backpressure` immediately when the channel is full, never
+// blocking the caller. The Tauri-side `try_send` change inherits
+// the same guarantee — it's a one-line swap to the same primitive.
+
+#[tokio::test]
+async fn writer_queue_returns_backpressure_without_blocking_on_saturated_channel() {
+    use clickweave_engine::agent::episodic::EpisodicError;
+
+    // Spawn a writer with a stalled worker by never draining via
+    // flush. Saturate the cap-64 channel by queuing requests
+    // back-to-back; once full, queue must error fast.
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = EpisodicContext {
+        enabled: true,
+        workflow_local_path: dir.path().join("wl.sqlite"),
+        global_path: None,
+        workflow_hash: "bp-w".into(),
+    };
+    let writer = EpisodicWriter::spawn(ctx, None, uuid::Uuid::new_v4()).expect("spawn");
+
+    // Build a minimal valid request shape we can clone cheaply.
+    let make_req = || WriteRequest::DeriveAndInsert {
+        entry: Box::new(mk_recovery_snapshot("bp-w", "sig_bp")),
+        recovery_success: Box::new(mk_step_record()),
+        recovery_actions: vec![],
+    };
+
+    // Race the worker: enqueue many requests as fast as possible.
+    // The channel cap is 64; on a stalled worker we'll start
+    // returning Backpressure before too long. Bound the loop so a
+    // worker that drains exceptionally fast still terminates the
+    // test rather than spinning forever.
+    let start = std::time::Instant::now();
+    let bound = std::time::Duration::from_secs(2);
+    let mut saw_backpressure = false;
+    for _ in 0..2_000 {
+        if start.elapsed() > bound {
+            break;
+        }
+        match writer.queue(make_req()).await {
+            Ok(()) => continue,
+            Err(EpisodicError::Backpressure) => {
+                saw_backpressure = true;
+                break;
+            }
+            Err(other) => panic!("unexpected error from queue: {:?}", other),
+        }
+    }
+    assert!(
+        saw_backpressure,
+        "saturated writer channel must return Backpressure within {:?}; \
+         the production try_send swap inherits this nonblocking behavior",
+        bound,
+    );
+    // Total elapsed must stay well under the bound — proving
+    // try_send does not block waiting for a permit.
+    assert!(
+        start.elapsed() < bound,
+        "queue saturation took {:?}; must be nonblocking",
+        start.elapsed(),
+    );
+}
+
 // ── F7 acceptance test ─────────────────────────────────────────────
 //
 // Writer-side derive/insert and promotion failures used to log via
@@ -716,9 +786,7 @@ async fn promotion_dedup_returns_existing_global_id_and_unions_refs() {
     // step_record_refs in the merged global row contains *both*
     // the pre-existing ref and the workflow-local ref.
     use clickweave_engine::agent::episodic::store::EpisodicStore;
-    use clickweave_engine::agent::episodic::{
-        PreStateSignature, RetrievalQuery, RetrievalTrigger,
-    };
+    use clickweave_engine::agent::episodic::{PreStateSignature, RetrievalQuery, RetrievalTrigger};
     let pre_sig = PreStateSignature(sig.into());
     let query = RetrievalQuery {
         trigger: RetrievalTrigger::RunStart,

@@ -1007,13 +1007,32 @@ pub async fn run_agent(
                         }
                         _ => PromotionTerminalKind::SkipPromotion,
                     };
-                    let _ = tx
-                        .send(EpisodicWriteRequest::PromotePass {
-                            workflow_hash: promotion_workflow_hash.clone(),
-                            terminal_kind,
-                            run_started_at: run_start_utc,
-                        })
-                        .await;
+                    // F8 fix: use `try_send` instead of awaited `send`
+                    // so a saturated writer channel cannot wedge the
+                    // run-terminal path before the timeout-protected
+                    // flush below. Matches the runner's nonblocking
+                    // queue path (`EpisodicWriter::queue` →
+                    // `try_send`). On backpressure drop, surface a
+                    // Warning via the event forwarder so the UI sees
+                    // "promotion was dropped" instead of a silent
+                    // miss; D32 keeps the rest of terminal cleanup
+                    // running.
+                    if let Err(e) = tx.try_send(EpisodicWriteRequest::PromotePass {
+                        workflow_hash: promotion_workflow_hash.clone(),
+                        terminal_kind,
+                        run_started_at: run_start_utc,
+                    }) {
+                        tracing::warn!(error = %e, "episodic: PromotePass dropped at terminal");
+                        let _ = emit_handle.emit(
+                            "agent://warning",
+                            serde_json::json!({
+                                "run_id": task_run_id,
+                                "message": format!(
+                                    "episodic: promotion dropped: backpressure ({e})"
+                                ),
+                            }),
+                        );
+                    }
                     // Flush sentinel: wait for the worker to ack so the
                     // `EpisodePromoted` event is emitted before we signal
                     // the event forwarder to close.

@@ -3162,9 +3162,7 @@ impl StateRunner {
                     // observability.
                     if let Err(e) = queue_result {
                         self.emit_event(AgentEvent::Warning {
-                            message: format!(
-                                "episodic: write dropped: backpressure ({e})"
-                            ),
+                            message: format!("episodic: write dropped: backpressure ({e})"),
                         })
                         .await;
                     }
@@ -4648,11 +4646,7 @@ mod f1_retrieval_gate_tests {
         struct EmptyExec(Mutex<Vec<Result<String, String>>>);
         #[async_trait]
         impl ToolExecutor for EmptyExec {
-            async fn call_tool(
-                &self,
-                _: &str,
-                _: &serde_json::Value,
-            ) -> Result<String, String> {
+            async fn call_tool(&self, _: &str, _: &serde_json::Value) -> Result<String, String> {
                 let mut q = self.0.lock().unwrap();
                 q.pop().unwrap_or_else(|| Err("no result".into()))
             }

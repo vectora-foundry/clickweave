@@ -629,11 +629,7 @@ async fn fallback_ordering_is_deterministic_across_repeated_queries() {
     // must produce the same top-k across repeated calls.
     let e = HashedShingleEmbedder::default();
     for i in 0..30 {
-        let mut ep = mk_episode(
-            &format!("sig_tie_{i}"),
-            &format!("hash_tie_{i}"),
-            "tie-w",
-        );
+        let mut ep = mk_episode(&format!("sig_tie_{i}"), &format!("hash_tie_{i}"), "tie-w");
         ep.goal = "deterministic tie-break case".into();
         ep.subgoal_text = None;
         ep.goal_subgoal_embedding = e.embed(&ep.goal);
