@@ -2,6 +2,7 @@ mod approval;
 mod cache;
 mod completion_check;
 mod context;
+pub mod episodic;
 pub mod permissions;
 mod phase;
 pub mod prior_turns;
