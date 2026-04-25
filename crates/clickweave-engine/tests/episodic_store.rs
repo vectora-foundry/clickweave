@@ -552,3 +552,116 @@ async fn workflow_a_episodes_do_not_appear_in_workflow_b_retrievals() {
         "store B should remain empty"
     );
 }
+
+// ── F5 acceptance tests ────────────────────────────────────────────
+//
+// `retrieve` fallback path (no structured `pre_state_signature`
+// match) must score every row in scope, not the first 200 in
+// undefined SQLite row order. The previous `LIMIT 200` made the
+// best semantic match invisible once a store grew past 200 rows
+// even within the configured 500 / 2000 cap, and made fallback
+// results nondeterministic.
+
+#[tokio::test]
+async fn fallback_scores_rows_past_the_old_200_limit() {
+    use clickweave_engine::agent::episodic::HashedShingleEmbedder;
+    let dir = tempfile::tempdir().unwrap();
+    let store =
+        SqliteEpisodicStore::new(&dir.path().join("db.sqlite"), EpisodeScope::WorkflowLocal)
+            .unwrap();
+
+    // Insert 250 noise rows whose goal text is unrelated to the
+    // query, then one "needle" row whose goal embedding matches
+    // the query directly. The needle is inserted *last* so it
+    // would have ended up outside the legacy `LIMIT 200` window
+    // depending on SQLite's row order — we force the noise count
+    // above the old cap to make the regression visible.
+    let e = HashedShingleEmbedder::default();
+    for i in 0..250 {
+        let mut ep = mk_episode(
+            &format!("sig_noise_{i}"),
+            &format!("hash_noise_{i}"),
+            "fallback-w",
+        );
+        ep.goal = format!("noise unrelated topic number {i}");
+        ep.subgoal_text = None;
+        ep.goal_subgoal_embedding = e.embed(&ep.goal);
+        store.insert(ep).await.unwrap();
+    }
+    let mut needle = mk_episode("sig_needle", "hash_needle", "fallback-w");
+    needle.goal = "submit checkout payment confirmation".into();
+    needle.subgoal_text = None;
+    needle.goal_subgoal_embedding = e.embed(&needle.goal);
+    let needle_id = needle.episode_id.clone();
+    store.insert(needle).await.unwrap();
+
+    // Query has no structured match (signature does not appear in
+    // any row), forcing the fallback path. The query text matches
+    // the needle's goal text closely.
+    let no_match_sig = PreStateSignature("sig_does_not_exist".into());
+    let q = RetrievalQuery {
+        trigger: RetrievalTrigger::RunStart,
+        pre_state_signature: &no_match_sig,
+        goal: "submit checkout payment confirmation",
+        subgoal_text: None,
+        workflow_hash: "fallback-w",
+        now: Utc::now(),
+    };
+    let hits = store.retrieve(&q, 1).await.unwrap();
+    assert_eq!(hits.len(), 1, "top-1 fallback retrieval");
+    assert_eq!(
+        hits[0].episode.episode_id, needle_id,
+        "the semantically-best row must be returned even when it sits past the legacy 200-row window",
+    );
+}
+
+#[tokio::test]
+async fn fallback_ordering_is_deterministic_across_repeated_queries() {
+    use clickweave_engine::agent::episodic::HashedShingleEmbedder;
+    let dir = tempfile::tempdir().unwrap();
+    let store =
+        SqliteEpisodicStore::new(&dir.path().join("db.sqlite"), EpisodeScope::WorkflowLocal)
+            .unwrap();
+
+    // 30 rows with identical goal text so scoring is a tie on
+    // text-similarity. The deterministic ORDER BY in the fallback
+    // SQL (last_seen_at DESC, occurrence_count DESC, episode_id)
+    // must produce the same top-k across repeated calls.
+    let e = HashedShingleEmbedder::default();
+    for i in 0..30 {
+        let mut ep = mk_episode(
+            &format!("sig_tie_{i}"),
+            &format!("hash_tie_{i}"),
+            "tie-w",
+        );
+        ep.goal = "deterministic tie-break case".into();
+        ep.subgoal_text = None;
+        ep.goal_subgoal_embedding = e.embed(&ep.goal);
+        store.insert(ep).await.unwrap();
+    }
+
+    let no_match_sig = PreStateSignature("sig_does_not_exist".into());
+    let q = RetrievalQuery {
+        trigger: RetrievalTrigger::RunStart,
+        pre_state_signature: &no_match_sig,
+        goal: "deterministic tie-break case",
+        subgoal_text: None,
+        workflow_hash: "tie-w",
+        now: Utc::now(),
+    };
+
+    let hits1 = store.retrieve(&q, 5).await.unwrap();
+    let hits2 = store.retrieve(&q, 5).await.unwrap();
+    let ids1: Vec<&str> = hits1
+        .iter()
+        .map(|r| r.episode.episode_id.as_str())
+        .collect();
+    let ids2: Vec<&str> = hits2
+        .iter()
+        .map(|r| r.episode.episode_id.as_str())
+        .collect();
+    assert_eq!(
+        ids1, ids2,
+        "fallback retrieval must be deterministic across repeated queries",
+    );
+}

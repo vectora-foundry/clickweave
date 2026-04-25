@@ -398,8 +398,24 @@ impl EpisodicStore for SqliteEpisodicStore {
 
             let fallback = structured_rows.is_empty();
             let candidates: Vec<EpisodeRecord> = if fallback {
+                // F5 fix: score every row in scope, ordered
+                // deterministically. The previous implementation
+                // sliced the first 200 rows in undefined SQLite row
+                // order, which (a) made the best semantic match
+                // invisible to scoring once a store grew past 200
+                // rows even within the configured 500/2000 cap, and
+                // (b) made fallback retrieval nondeterministic
+                // because SQLite row order is not a stable contract.
+                // The configured per-scope cap (500 workflow / 2000
+                // global) is the only bound on candidate count, so
+                // a full-scope scan stays within design budget.
+                // Ordering by `last_seen_at DESC, occurrence_count
+                // DESC, episode_id` gives a stable tie-break across
+                // repeated queries.
                 let fallback_sql = format!(
-                    "SELECT {EPISODE_SELECT_COLUMNS} FROM episodes WHERE scope = ?1 LIMIT 200"
+                    "SELECT {EPISODE_SELECT_COLUMNS} FROM episodes \
+                     WHERE scope = ?1 \
+                     ORDER BY last_seen_at DESC, occurrence_count DESC, episode_id"
                 );
                 let mut stmt = conn.prepare(&fallback_sql)?;
                 stmt.query_map(params![scope.as_str()], row_to_episode)?
