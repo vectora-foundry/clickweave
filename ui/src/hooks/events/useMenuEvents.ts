@@ -28,6 +28,9 @@ export function useMenuEvents() {
     sub(listen("menu://toggle-logs", () => useStore.getState().toggleLogsDrawer()));
     sub(listen("menu://run-workflow", () => useStore.getState().runWorkflow()));
     sub(listen("menu://stop-workflow", () => useStore.getState().stopWorkflow()));
+    // D21 — on Overview this is a no-op (the embedded assistant card is
+    // always rendered); on Canvas it toggles the drawer surface via
+    // `assistantSurface`. The slice action handles both cases.
     sub(listen("menu://toggle-assistant", () => useStore.getState().toggleAssistant()));
 
     return () => {
