@@ -74,11 +74,11 @@ export function OverviewView() {
           </div>
         </div>
       )}
-      <div className="grid min-h-0 flex-1 grid-cols-12 gap-3 px-6 pb-3">
-        <div className="cw-card-stagger cw-card-stagger-1 col-span-7 min-h-0">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto px-6 pb-3 min-[900px]:grid-cols-12 min-[900px]:overflow-hidden">
+        <div className="cw-card-stagger cw-card-stagger-1 h-[340px] min-h-0 min-[900px]:col-span-7 min-[900px]:h-auto">
           <OverviewAssistantCard />
         </div>
-        <div className="col-span-5 grid min-h-0 grid-rows-2 gap-3">
+        <div className="grid h-[460px] min-h-0 grid-rows-2 gap-3 min-[900px]:col-span-5 min-[900px]:h-auto">
           <div className="cw-card-stagger cw-card-stagger-2 min-h-0">
             <LiveRuntimeCard />
           </div>

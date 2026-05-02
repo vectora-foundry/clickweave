@@ -38,11 +38,11 @@ function Bucket({ label, items }: { label: string; items: SkillSummary[] }) {
 
   return (
     <div className="cw-stats-chip flex min-w-0 flex-1 flex-col gap-1 rounded-[var(--radius-card)] border border-[var(--hairline)] bg-[var(--oxide)] px-3 py-2">
-      <div className="flex items-center justify-between">
-        <span className="text-[9px] font-medium uppercase tracking-[0.18em] text-[var(--text-muted)]">
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <span className="min-w-0 truncate text-[9px] font-medium uppercase tracking-[0.18em] text-[var(--text-muted)]">
           {label}
         </span>
-        <span className="font-mono text-[12px] text-[var(--text-primary)]">
+        <span className="shrink-0 font-mono text-[12px] text-[var(--text-primary)]">
           {items.length}
         </span>
       </div>
