@@ -34,7 +34,7 @@ ui/src/
 │   ├── NodePalette.tsx
 │   ├── LogsDrawer.tsx
 │   ├── FloatingToolbar.tsx
-│   ├── Header.tsx
+│   ├── shell/                    # AppShell, TitleBar, Sidebar, view router (see Phase 5 detail)
 │   ├── VerdictBar.tsx
 │   ├── VerdictModal.tsx
 │   ├── SettingsModal.tsx
