@@ -6,7 +6,12 @@ const storeMock = vi.hoisted(() => ({
     agentStatus: "idle" as "idle" | "running" | "complete" | "stopped" | "error",
     agentRunId: null as string | null,
     pendingApproval: null,
-    completionDisagreement: null,
+    completionDisagreement: null as {
+      runId?: string;
+      agentSummary: string;
+      vlmReasoning: string;
+      screenshotBase64: string;
+    } | null,
     consecutiveDestructiveCapHit: null,
     setConsecutiveDestructiveCapHit: vi.fn(),
     confirmDisagreementAsComplete: vi.fn(),
@@ -106,6 +111,30 @@ describe("AssistantThread", () => {
     );
 
     expect(screen.getByText(error)).toHaveClass("break-words");
+  });
+
+  it("wraps long completion-disagreement copy inside the thread", () => {
+    const summary = `Summary-${"UnbrokenSummary".repeat(20)}`;
+    const reasoning = `Reasoning-${"UnbrokenReasoning".repeat(20)}`;
+    storeMock.state.completionDisagreement = {
+      agentSummary: summary,
+      vlmReasoning: reasoning,
+      screenshotBase64: "",
+    };
+
+    render(
+      <AssistantThread
+        error={null}
+        messages={[]}
+        onSendMessage={() => {}}
+        showHeader={false}
+      />,
+    );
+
+    expect(screen.getByText(`Agent said: ${summary}`)).toHaveClass(
+      "break-words",
+    );
+    expect(screen.getByText(`VLM: ${reasoning}`)).toHaveClass("break-words");
   });
 
   it("renders the active run trace when agentStatus is running and a runId is set", () => {

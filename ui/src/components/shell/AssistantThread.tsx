@@ -233,7 +233,7 @@ export function AssistantThread({
           <p className="text-[11px] font-medium text-orange-300 mb-1">
             Completion check disagreed
           </p>
-          <p className="text-[11px] text-[var(--text-secondary)] mb-2">
+          <p className="break-words text-[11px] text-[var(--text-secondary)] mb-2">
             Agent said: {completionDisagreement.agentSummary}
           </p>
           <img
@@ -241,7 +241,7 @@ export function AssistantThread({
             alt="Screenshot captured when the agent reported completion"
             className="mb-2 max-h-48 w-full rounded border border-[var(--border)] object-contain"
           />
-          <p className="text-[11px] text-[var(--text-primary)] mb-2 whitespace-pre-wrap">
+          <p className="break-words text-[11px] text-[var(--text-primary)] mb-2 whitespace-pre-wrap">
             VLM: {completionDisagreement.vlmReasoning}
           </p>
           <div className="flex gap-2">
