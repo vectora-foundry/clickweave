@@ -101,7 +101,7 @@ export function AssistantThread({
   const hasMessages = messages.length > 0;
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[var(--bg-panel)]">
+    <div className="relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--bg-panel)]">
       {showHeader && (
         <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-2.5">
           <div className="flex items-center gap-2">
@@ -157,7 +157,7 @@ export function AssistantThread({
       {/* Intent — editable inline */}
       <IntentBar />
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
         {/* Messages */}
         <div className={`${hasMessages ? "" : "flex min-h-[120px] items-center justify-center"} px-3 py-3`}>
           {!hasMessages && (

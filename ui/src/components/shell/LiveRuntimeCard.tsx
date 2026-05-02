@@ -53,7 +53,7 @@ export function LiveRuntimeCard() {
   const elapsed = useElapsed(agentRunStartedAt, agentRunFinishedAt, live);
 
   return (
-    <section className="flex h-full flex-col overflow-hidden rounded-[var(--radius-card)] border border-[var(--hairline)] bg-[var(--oxide)]">
+    <section className="flex h-full min-w-0 flex-col overflow-hidden rounded-[var(--radius-card)] border border-[var(--hairline)] bg-[var(--oxide)]">
       <header className="flex items-center justify-between border-b border-[var(--hairline)] px-4 py-2.5">
         <div className="flex items-center gap-2">
           <span
@@ -96,7 +96,7 @@ export function LiveRuntimeCard() {
         />
       </dl>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
         {activeRunId ? (
           <RunTraceView runId={activeRunId} />
         ) : (

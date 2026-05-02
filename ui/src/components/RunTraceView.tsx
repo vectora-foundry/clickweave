@@ -69,15 +69,15 @@ export function RunTraceView({ runId }: { runId: string }) {
   }
 
   return (
-    <div className="run-trace-view mx-3 mb-2 rounded border border-[var(--border)] bg-[var(--bg-dark)]">
-      <div className="flex items-center gap-2 border-b border-[var(--border)] px-3 py-2">
+    <div className="run-trace-view mx-3 mb-2 min-w-0 rounded border border-[var(--border)] bg-[var(--bg-dark)]">
+      <div className="flex min-w-0 items-center gap-2 border-b border-[var(--border)] px-3 py-2">
         <PhaseChip phase={trace.phase} />
         <span className="min-w-0 flex-1 truncate text-xs text-[var(--text-secondary)]">
           {trace.activeSubgoal || "No active subgoal"}
         </span>
       </div>
 
-      <ol className="trace-steps max-h-72 space-y-2 overflow-y-auto px-3 py-2">
+      <ol className="trace-steps max-h-72 min-w-0 space-y-2 overflow-y-auto px-3 py-2">
         {entries.length === 0 ? (
           <li className="text-xs text-[var(--text-muted)]">Waiting for first step</li>
         ) : (

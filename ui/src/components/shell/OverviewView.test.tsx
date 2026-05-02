@@ -52,4 +52,44 @@ describe("OverviewView walkthrough entry", () => {
     expect(useStore.getState().currentView).toBe("canvas");
     expect(useStore.getState().walkthroughCdpModalOpen).toBe(true);
   });
+
+  it("allows overview grid columns to shrink around long runtime content", () => {
+    useStore.setState({
+      isNewWorkflow: false,
+      workflow: {
+        ...useStore.getState().workflow,
+        nodes: [
+          {
+            id: "node-1",
+            name: "Start",
+            node_type: { type: "Unknown" },
+            position: { x: 0, y: 0 },
+            enabled: true,
+            timeout_ms: null,
+            settle_ms: null,
+            retries: 0,
+            trace_level: "Minimal",
+            expected_outcome: null,
+          },
+        ],
+      },
+    });
+
+    const { container } = render(<OverviewView />);
+
+    const overviewGrid = container.querySelector(".grid.min-h-0.min-w-0.flex-1");
+    expect(overviewGrid).toBeInTheDocument();
+    expect(screen.getByTestId("overview-assistant-card").parentElement).toHaveClass(
+      "min-w-0",
+    );
+    expect(screen.getByTestId("live-runtime-card").parentElement).toHaveClass(
+      "min-w-0",
+    );
+    expect(screen.getByTestId("canvas-preview-card").parentElement).toHaveClass(
+      "min-w-0",
+    );
+    expect(
+      screen.getByTestId("live-runtime-card").parentElement?.parentElement,
+    ).toHaveClass("min-w-0");
+  });
 });
