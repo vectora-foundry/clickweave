@@ -29,7 +29,7 @@ export function Sidebar() {
                 aria-current={active ? "page" : undefined}
               >
                 {active && (
-                  <span className="absolute left-0 top-1.5 h-[calc(100%-12px)] w-0.5 rounded-full bg-[var(--accent-coral)]" />
+                  <span className="cw-sidebar-active-draw absolute left-0 top-1.5 h-[calc(100%-12px)] w-0.5 rounded-full bg-[var(--accent-coral)]" />
                 )}
                 <span className={active ? "ml-2" : ""}>{item.label}</span>
               </button>

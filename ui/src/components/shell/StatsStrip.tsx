@@ -37,7 +37,7 @@ function Bucket({ label, items }: { label: string; items: SkillSummary[] }) {
   const rest = items.slice(3);
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col gap-1 rounded-[var(--radius-card)] border border-[var(--hairline)] bg-[var(--oxide)] px-3 py-2">
+    <div className="cw-stats-chip flex min-w-0 flex-1 flex-col gap-1 rounded-[var(--radius-card)] border border-[var(--hairline)] bg-[var(--oxide)] px-3 py-2">
       <div className="flex items-center justify-between">
         <span className="text-[9px] font-medium uppercase tracking-[0.18em] text-[var(--text-muted)]">
           {label}

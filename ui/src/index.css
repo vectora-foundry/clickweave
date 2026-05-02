@@ -113,3 +113,30 @@ body::before {
   stroke: var(--accent-blue) !important;
   stroke-width: 3 !important;
 }
+
+/* ── Motion moments (D19) ────────────────────────────────────────────── */
+@keyframes cw-card-stagger {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes cw-bloom-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--bloom-coral); }
+  50% { box-shadow: 0 0 0 6px rgba(255,109,90,0.04); }
+}
+@keyframes cw-sidebar-draw {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+@keyframes cw-log-slide {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.cw-card-stagger { animation: cw-card-stagger 240ms cubic-bezier(0.22,1,0.36,1) both; }
+.cw-card-stagger-1 { animation-delay: 0ms; }
+.cw-card-stagger-2 { animation-delay: 60ms; }
+.cw-card-stagger-3 { animation-delay: 120ms; }
+.cw-bloom-pulse { animation: cw-bloom-pulse 1.4s ease-in-out infinite; }
+.cw-sidebar-active-draw { transform-origin: top; animation: cw-sidebar-draw 220ms cubic-bezier(0.33,1,0.68,1) forwards; }
+.cw-log-slide { animation: cw-log-slide 180ms cubic-bezier(0.5,0,0.5,1) both; }
+.cw-stats-chip { transition: border-color 120ms linear; }
+.cw-stats-chip:hover { border-color: var(--hairline-strong); }

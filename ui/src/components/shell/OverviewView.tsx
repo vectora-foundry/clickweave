@@ -73,12 +73,16 @@ export function OverviewView() {
         </div>
       )}
       <div className="grid min-h-0 flex-1 grid-cols-12 gap-3 px-6 pb-3">
-        <div className="col-span-7 min-h-0">
+        <div className="cw-card-stagger cw-card-stagger-1 col-span-7 min-h-0">
           <OverviewAssistantCard />
         </div>
         <div className="col-span-5 grid min-h-0 grid-rows-2 gap-3">
-          <LiveRuntimeCard />
-          <CanvasPreviewCard />
+          <div className="cw-card-stagger cw-card-stagger-2 min-h-0">
+            <LiveRuntimeCard />
+          </div>
+          <div className="cw-card-stagger cw-card-stagger-3 min-h-0">
+            <CanvasPreviewCard />
+          </div>
         </div>
       </div>
     </div>

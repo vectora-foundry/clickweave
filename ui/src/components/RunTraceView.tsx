@@ -81,7 +81,14 @@ export function RunTraceView({ runId }: { runId: string }) {
         {entries.length === 0 ? (
           <li className="text-xs text-[var(--text-muted)]">Waiting for first step</li>
         ) : (
-          entries.map((entry, index) => renderEntry(entry, index))
+          entries.map((entry, index) => {
+            const inProgress =
+              !trace.terminalFrame &&
+              entry.type === "step" &&
+              !entry.value.failed &&
+              index === entries.length - 1;
+            return renderEntry(entry, index, inProgress);
+          })
         )}
       </ol>
 
@@ -134,7 +141,7 @@ function TerminalFrameBlock({ frame }: { frame: TerminalFrame }) {
   );
 }
 
-function renderEntry(entry: TraceEntry, index: number) {
+function renderEntry(entry: TraceEntry, index: number, inProgress = false) {
   if (entry.type === "milestone") {
     return (
       <li
@@ -182,7 +189,7 @@ function renderEntry(entry: TraceEntry, index: number) {
         entry.value.failed
           ? "border-red-500/40 bg-red-500/10"
           : "border-[var(--border)] bg-[var(--bg-panel)]"
-      }`}
+      } ${inProgress ? "cw-bloom-pulse" : ""}`}
     >
       <div className="flex items-center gap-2">
         <span className="font-mono text-[10px] text-[var(--text-muted)]">
