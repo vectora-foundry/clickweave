@@ -1,10 +1,12 @@
 use super::error::CommandError;
 use super::types::*;
 use clickweave_core::variant_index::{VariantEntry, VariantIndex};
+use clickweave_engine::agent::episodic::EpisodicContext;
 use clickweave_engine::agent::skills::{SkillContext, SkillScope, SkillState, SkillStore, slugify};
 use clickweave_engine::agent::{
-    AgentChannels, AgentConfig, AgentEvent, ApprovalRequest, DisagreementResolutionAction,
-    PermissionAction, PermissionPolicy, PermissionRule, RunnerOutput, TerminalReason,
+    AgentChannels, AgentConfig, AgentEvent, AgentState, ApprovalRequest,
+    DisagreementResolutionAction, PermissionAction, PermissionPolicy, PermissionRule, RunnerOutput,
+    TerminalReason,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -730,6 +732,798 @@ fn spawn_skill_proposal_task(
     });
 }
 
+fn ensure_agent_idle(app: &tauri::AppHandle) -> Result<(), CommandError> {
+    let handle = app.state::<Mutex<AgentHandle>>();
+    let guard = handle.lock().unwrap();
+    if guard.cancel_token.is_some() || guard.task_handle.is_some() {
+        return Err(CommandError::already_running());
+    }
+    Ok(())
+}
+
+fn parse_workflow_id(request: &AgentRunRequest) -> Result<uuid::Uuid, CommandError> {
+    request
+        .workflow_id
+        .parse()
+        .map_err(|_| CommandError::validation("Invalid workflow ID"))
+}
+
+fn resolve_run_id(request: &AgentRunRequest) -> Result<(String, uuid::Uuid), CommandError> {
+    let run_id = request
+        .run_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let run_uuid = run_id
+        .parse()
+        .map_err(|_| CommandError::validation("Invalid run_id"))?;
+    Ok((run_id, run_uuid))
+}
+
+fn parse_anchor_node_id(request: &AgentRunRequest) -> Result<Option<uuid::Uuid>, CommandError> {
+    match request.anchor_node_id.as_deref() {
+        Some(s) if !s.is_empty() => s
+            .parse()
+            .map(Some)
+            .map_err(|_| CommandError::validation("Invalid anchor_node_id")),
+        _ => Ok(None),
+    }
+}
+
+fn parse_prior_turns(
+    request: &AgentRunRequest,
+) -> Result<Vec<clickweave_engine::agent::PriorTurn>, CommandError> {
+    request
+        .prior_turns
+        .iter()
+        .map(|t| {
+            let run_id: uuid::Uuid = t
+                .run_id
+                .parse()
+                .map_err(|_| CommandError::validation("Invalid prior_turn.run_id"))?;
+            Ok(clickweave_engine::agent::PriorTurn {
+                goal: t.goal.clone(),
+                summary: t.summary.clone(),
+                run_id,
+            })
+        })
+        .collect()
+}
+
+fn build_episodic_context(
+    app: &tauri::AppHandle,
+    storage: &Arc<Mutex<clickweave_core::storage::RunStorage>>,
+    request: &AgentRunRequest,
+    persist_traces: bool,
+    enabled: bool,
+    global_participation: bool,
+) -> Result<EpisodicContext, CommandError> {
+    if !persist_traces || !enabled {
+        return Ok(EpisodicContext::disabled());
+    }
+
+    let wl_path = storage.lock().unwrap().base_path().join("episodic.sqlite");
+    let global_path = if global_participation {
+        Some(app_data_episodic_path(app)?)
+    } else {
+        None
+    };
+    Ok(EpisodicContext {
+        enabled: true,
+        workflow_local_path: wl_path,
+        global_path,
+        workflow_hash: request.workflow_id.clone(),
+    })
+}
+
+fn build_skill_context(
+    app: &tauri::AppHandle,
+    storage: &Arc<Mutex<clickweave_core::storage::RunStorage>>,
+    request: &AgentRunRequest,
+    persist_traces: bool,
+    enabled: bool,
+    global_participation: bool,
+) -> Result<SkillContext, CommandError> {
+    let project_skills_dir = {
+        let guard = storage.lock().unwrap();
+        if persist_traces && enabled {
+            guard
+                .project_skills_dir()
+                .map_err(|e| CommandError::io(format!("resolve project skills dir: {e}")))?
+        } else {
+            guard.base_path().join("skills")
+        }
+    };
+    let global_skills_dir = if persist_traces && enabled && global_participation {
+        Some(app_data_global_skills_dir(app)?)
+    } else {
+        None
+    };
+    Ok(SkillContext {
+        enabled: persist_traces && enabled,
+        project_skills_dir,
+        global_skills_dir,
+        project_id: request.workflow_id.clone(),
+    })
+}
+
+fn agent_config_from_request(
+    consecutive_destructive_cap: Option<usize>,
+    allow_focus_window: Option<bool>,
+    episodic_settings_enabled: bool,
+    retrieved_episodes_k_override: Option<usize>,
+    skills_settings_enabled: bool,
+    applicable_skills_k_override: Option<usize>,
+    skills_global_participation: bool,
+) -> AgentConfig {
+    let mut config = AgentConfig::default();
+    if let Some(cap) = consecutive_destructive_cap {
+        config.consecutive_destructive_cap = cap;
+    }
+    if let Some(allow) = allow_focus_window {
+        config.allow_focus_window = allow;
+    }
+    config.episodic_enabled = episodic_settings_enabled;
+    if let Some(k) = retrieved_episodes_k_override {
+        config.retrieved_episodes_k = k.clamp(1, 10);
+    }
+    config.skills_enabled = skills_settings_enabled;
+    if let Some(k) = applicable_skills_k_override {
+        config.applicable_skills_k = k.clamp(1, 10);
+    }
+    config.skills_global_participation = skills_global_participation;
+    config
+}
+
+fn install_agent_run_handle(app: &tauri::AppHandle, cancel_token: CancellationToken, run_id: &str) {
+    let handle = app.state::<Mutex<AgentHandle>>();
+    let mut guard = handle.lock().unwrap();
+    guard.cancel_token = Some(cancel_token);
+    guard.run_id = Some(run_id.to_string());
+}
+
+fn store_agent_task_handle(
+    app: &tauri::AppHandle,
+    task_handle: tauri::async_runtime::JoinHandle<()>,
+) {
+    let handle = app.state::<Mutex<AgentHandle>>();
+    let mut guard = handle.lock().unwrap();
+    guard.task_handle = Some(task_handle);
+}
+
+fn spawn_agent_event_forwarder(
+    event_forwarder_token: CancellationToken,
+    mut event_rx: tokio::sync::mpsc::Receiver<RunnerOutput>,
+    event_storage: Arc<Mutex<clickweave_core::storage::RunStorage>>,
+    event_emit_handle: tauri::AppHandle,
+    event_run_id: String,
+    proposal_skill_ctx: SkillContext,
+    proposal_agent_config: clickweave_llm::LlmConfig,
+    events_done_tx: tokio::sync::oneshot::Sender<()>,
+) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::select! {
+                biased;
+                _ = event_forwarder_token.cancelled() => {
+                    drain_remaining_runner_outputs(
+                        &mut event_rx,
+                        &event_storage,
+                        &proposal_skill_ctx,
+                        proposal_agent_config.clone(),
+                    );
+                    break;
+                }
+                maybe_output = event_rx.recv() => {
+                    match maybe_output {
+                        Some(output) => handle_runner_output(
+                            output,
+                            &event_storage,
+                            &event_emit_handle,
+                            &event_run_id,
+                            &proposal_skill_ctx,
+                            proposal_agent_config.clone(),
+                        ),
+                        None => break,
+                    }
+                }
+            }
+        }
+        let _ = events_done_tx.send(());
+    });
+}
+
+fn drain_remaining_runner_outputs(
+    event_rx: &mut tokio::sync::mpsc::Receiver<RunnerOutput>,
+    event_storage: &Arc<Mutex<clickweave_core::storage::RunStorage>>,
+    proposal_skill_ctx: &SkillContext,
+    proposal_agent_config: clickweave_llm::LlmConfig,
+) {
+    while let Ok(output) = event_rx.try_recv() {
+        match output {
+            RunnerOutput::Event(event) => {
+                let _ = event_storage.lock().unwrap().append_agent_event(&event);
+            }
+            RunnerOutput::DrainBarrier { ack } => {
+                let _ = ack.send(());
+            }
+            RunnerOutput::SkillProposalNeeded {
+                skill_id, version, ..
+            } => {
+                spawn_skill_proposal_task(
+                    proposal_skill_ctx,
+                    proposal_agent_config.clone(),
+                    skill_id,
+                    version,
+                );
+            }
+        }
+    }
+}
+
+fn handle_runner_output(
+    output: RunnerOutput,
+    event_storage: &Arc<Mutex<clickweave_core::storage::RunStorage>>,
+    event_emit_handle: &tauri::AppHandle,
+    event_run_id: &str,
+    proposal_skill_ctx: &SkillContext,
+    proposal_agent_config: clickweave_llm::LlmConfig,
+) {
+    match output {
+        RunnerOutput::Event(event) => {
+            let _ = event_storage.lock().unwrap().append_agent_event(&event);
+            forward_agent_event(event_emit_handle, event_run_id, &event);
+            maybe_spawn_skill_proposal_task(&event, proposal_skill_ctx, proposal_agent_config);
+        }
+        RunnerOutput::DrainBarrier { ack } => {
+            let _ = ack.send(());
+        }
+        RunnerOutput::SkillProposalNeeded {
+            skill_id, version, ..
+        } => {
+            spawn_skill_proposal_task(proposal_skill_ctx, proposal_agent_config, skill_id, version);
+        }
+    }
+}
+
+fn spawn_approval_forwarder(
+    mut approval_rx: tokio::sync::mpsc::Receiver<(
+        ApprovalRequest,
+        tokio::sync::oneshot::Sender<bool>,
+    )>,
+    forwarder_token: CancellationToken,
+    approval_emit_handle: tauri::AppHandle,
+    approval_run_id: String,
+    approval_done_tx: tokio::sync::oneshot::Sender<()>,
+) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::select! {
+                req = approval_rx.recv() => {
+                    match req {
+                        Some((request, resp_tx)) => {
+                            if forwarder_token.is_cancelled() {
+                                let _ = resp_tx.send(false);
+                                break;
+                            }
+                            install_pending_approval(&approval_emit_handle, resp_tx);
+                            emit_approval_required(&approval_emit_handle, &approval_run_id, request);
+                        }
+                        None => break,
+                    }
+                }
+                _ = forwarder_token.cancelled() => {
+                    reject_queued_approval_requests(&mut approval_rx);
+                    break;
+                }
+            }
+        }
+        let _ = approval_done_tx.send(());
+    });
+}
+
+fn install_pending_approval(app: &tauri::AppHandle, resp_tx: tokio::sync::oneshot::Sender<bool>) {
+    let handle = app.state::<Mutex<AgentHandle>>();
+    let mut guard = handle.lock().unwrap();
+    guard.pending_approval_tx = Some(resp_tx);
+}
+
+fn emit_approval_required(app: &tauri::AppHandle, run_id: &str, request: ApprovalRequest) {
+    let _ = app.emit(
+        "agent://approval_required",
+        serde_json::json!({
+            "run_id": run_id,
+            "step_index": request.step_index,
+            "tool_name": request.tool_name,
+            "arguments": request.arguments,
+            "description": request.description,
+        }),
+    );
+}
+
+fn reject_queued_approval_requests(
+    approval_rx: &mut tokio::sync::mpsc::Receiver<(
+        ApprovalRequest,
+        tokio::sync::oneshot::Sender<bool>,
+    )>,
+) {
+    while let Ok((_req, resp_tx)) = approval_rx.try_recv() {
+        let _ = resp_tx.send(false);
+    }
+}
+
+fn spawn_agent_cleanup(
+    cleanup_handle: tauri::AppHandle,
+    done_rx: tokio::sync::oneshot::Receiver<()>,
+    events_done_rx: tokio::sync::oneshot::Receiver<()>,
+    approval_done_rx: tokio::sync::oneshot::Receiver<()>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let _ = done_rx.await;
+        let _ = events_done_rx.await;
+        let _ = approval_done_rx.await;
+
+        let handle = cleanup_handle.state::<Mutex<AgentHandle>>();
+        let mut guard = handle.lock().unwrap();
+        guard.cancel_token = None;
+        guard.task_handle = None;
+        guard.pending_approval_tx = None;
+        guard.pending_disagreement_tx = None;
+        guard.run_id = None;
+    });
+}
+
+struct AgentRunTaskInput {
+    mcp_binary_path: String,
+    agent_token: CancellationToken,
+    terminal_event_tx: tokio::sync::mpsc::Sender<RunnerOutput>,
+    emit_handle: tauri::AppHandle,
+    task_run_id: String,
+    done_tx: tokio::sync::oneshot::Sender<()>,
+    agent_config: clickweave_llm::LlmConfig,
+    consecutive_destructive_cap: Option<usize>,
+    allow_focus_window: Option<bool>,
+    episodic_settings_enabled: bool,
+    retrieved_episodes_k_override: Option<usize>,
+    skills_settings_enabled: bool,
+    applicable_skills_k_override: Option<usize>,
+    skills_global_participation: bool,
+    storage: Arc<Mutex<clickweave_core::storage::RunStorage>>,
+    event_tx: tokio::sync::mpsc::Sender<RunnerOutput>,
+    approval_tx: tokio::sync::mpsc::Sender<(ApprovalRequest, tokio::sync::oneshot::Sender<bool>)>,
+    goal: String,
+    prior_turns: Vec<clickweave_engine::agent::PriorTurn>,
+    permission_policy: Option<PermissionPolicy>,
+    run_uuid: uuid::Uuid,
+    anchor_uuid: Option<uuid::Uuid>,
+    episodic_ctx: EpisodicContext,
+    skill_ctx: SkillContext,
+    persist_traces: bool,
+    promotion_episodic_ctx: EpisodicContext,
+    promotion_workflow_hash: String,
+    run_start_utc: chrono::DateTime<chrono::Utc>,
+}
+
+fn spawn_agent_run_task(input: AgentRunTaskInput) -> tauri::async_runtime::JoinHandle<()> {
+    tauri::async_runtime::spawn(async move {
+        run_agent_task(input).await;
+    })
+}
+
+async fn run_agent_task(input: AgentRunTaskInput) {
+    let AgentRunTaskInput {
+        mcp_binary_path,
+        agent_token,
+        terminal_event_tx,
+        emit_handle,
+        task_run_id,
+        done_tx,
+        agent_config,
+        consecutive_destructive_cap,
+        allow_focus_window,
+        episodic_settings_enabled,
+        retrieved_episodes_k_override,
+        skills_settings_enabled,
+        applicable_skills_k_override,
+        skills_global_participation,
+        storage,
+        event_tx,
+        approval_tx,
+        goal,
+        prior_turns,
+        permission_policy,
+        run_uuid,
+        anchor_uuid,
+        episodic_ctx,
+        skill_ctx,
+        persist_traces,
+        promotion_episodic_ctx,
+        promotion_workflow_hash,
+        run_start_utc,
+    } = input;
+
+    let Some(mcp) = spawn_mcp_for_agent(
+        &mcp_binary_path,
+        &agent_token,
+        &terminal_event_tx,
+        &emit_handle,
+        &task_run_id,
+    )
+    .await
+    else {
+        let _ = done_tx.send(());
+        return;
+    };
+
+    let llm = clickweave_llm::LlmClient::new(agent_config.clone().with_thinking(false));
+    let vision: Arc<dyn clickweave_llm::DynChatBackend> = Arc::new(clickweave_llm::LlmClient::new(
+        agent_config.with_thinking(false).with_max_tokens(512),
+    ));
+    let config = agent_config_from_request(
+        consecutive_destructive_cap,
+        allow_focus_window,
+        episodic_settings_enabled,
+        retrieved_episodes_k_override,
+        skills_settings_enabled,
+        applicable_skills_k_override,
+        skills_global_participation,
+    );
+
+    let (variant_context, verification_artifacts_dir) = match initialize_agent_storage(&storage) {
+        Ok(v) => v,
+        Err(message) => {
+            emit_agent_task_error(&terminal_event_tx, &emit_handle, &task_run_id, message).await;
+            let _ = done_tx.send(());
+            return;
+        }
+    };
+
+    let goal_block = clickweave_engine::agent::build_goal_block(
+        &goal,
+        &prior_turns,
+        if variant_context.is_empty() {
+            None
+        } else {
+            Some(variant_context.as_str())
+        },
+        1000,
+    );
+    let channels = AgentChannels {
+        event_tx: event_tx.clone(),
+        approval_tx,
+    };
+
+    let result = tokio::select! {
+        res = clickweave_engine::agent::run_agent_workflow(
+            &llm,
+            config,
+            goal_block,
+            &mcp,
+            Some(channels),
+            Some(vision.clone()),
+            permission_policy,
+            run_uuid,
+            anchor_uuid,
+            verification_artifacts_dir,
+            Some(storage.clone()),
+            Some(episodic_ctx.clone()),
+            Some(skill_ctx.clone()),
+        ) => res,
+        _ = agent_token.cancelled() => {
+            emit_after_agent_event_drain(
+                &terminal_event_tx,
+                &emit_handle,
+                "agent://stopped",
+                serde_json::json!({ "run_id": task_run_id, "reason": "cancelled" }),
+            )
+            .await;
+            let _ = done_tx.send(());
+            return;
+        }
+    };
+
+    match result {
+        Ok((state, writer_tx)) => {
+            handle_agent_success(
+                state,
+                writer_tx,
+                &emit_handle,
+                &agent_token,
+                &storage,
+                &task_run_id,
+                &terminal_event_tx,
+                persist_traces,
+                &promotion_episodic_ctx,
+                &promotion_workflow_hash,
+                run_start_utc,
+            )
+            .await;
+        }
+        Err(e) => {
+            emit_agent_task_error(
+                &terminal_event_tx,
+                &emit_handle,
+                &task_run_id,
+                format!("{e}"),
+            )
+            .await;
+        }
+    }
+
+    let _ = done_tx.send(());
+}
+
+async fn spawn_mcp_for_agent(
+    mcp_binary_path: &str,
+    agent_token: &CancellationToken,
+    terminal_event_tx: &tokio::sync::mpsc::Sender<RunnerOutput>,
+    emit_handle: &tauri::AppHandle,
+    task_run_id: &str,
+) -> Option<clickweave_mcp::McpClient> {
+    tokio::select! {
+        res = clickweave_mcp::McpClient::spawn(mcp_binary_path, &[]) => {
+            match res {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    emit_agent_task_error(
+                        terminal_event_tx,
+                        emit_handle,
+                        task_run_id,
+                        format!("MCP spawn failed: {e}"),
+                    )
+                    .await;
+                    None
+                }
+            }
+        }
+        _ = agent_token.cancelled() => {
+            emit_after_agent_event_drain(
+                terminal_event_tx,
+                emit_handle,
+                "agent://stopped",
+                serde_json::json!({ "run_id": task_run_id, "reason": "cancelled" }),
+            )
+            .await;
+            None
+        }
+    }
+}
+
+fn initialize_agent_storage(
+    storage: &Arc<Mutex<clickweave_core::storage::RunStorage>>,
+) -> Result<(String, Option<std::path::PathBuf>), String> {
+    let mut guard = storage.lock().unwrap();
+    if let Err(e) = guard.begin_execution() {
+        return Err(format!("Run storage init failed: {e}"));
+    }
+    let variant_index = VariantIndex::load_existing(&guard.variant_index_path(), guard.base_path());
+    Ok((
+        variant_index.as_context_text(),
+        guard.execution_artifacts_dir(),
+    ))
+}
+
+async fn emit_agent_task_error(
+    terminal_event_tx: &tokio::sync::mpsc::Sender<RunnerOutput>,
+    emit_handle: &tauri::AppHandle,
+    task_run_id: &str,
+    message: String,
+) {
+    emit_after_agent_event_drain(
+        terminal_event_tx,
+        emit_handle,
+        "agent://error",
+        serde_json::json!({ "run_id": task_run_id, "message": message }),
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_agent_success(
+    state: AgentState,
+    writer_tx: Option<
+        tokio::sync::mpsc::Sender<clickweave_engine::agent::episodic::types::WriteRequest>,
+    >,
+    emit_handle: &tauri::AppHandle,
+    agent_token: &CancellationToken,
+    storage: &Arc<Mutex<clickweave_core::storage::RunStorage>>,
+    task_run_id: &str,
+    terminal_event_tx: &tokio::sync::mpsc::Sender<RunnerOutput>,
+    persist_traces: bool,
+    promotion_episodic_ctx: &EpisodicContext,
+    promotion_workflow_hash: &str,
+    run_start_utc: chrono::DateTime<chrono::Utc>,
+) {
+    let resolved_terminal = resolve_terminal_reason(
+        state.terminal_reason,
+        emit_handle,
+        agent_token,
+        storage,
+        task_run_id,
+    )
+    .await;
+    append_variant_entry(storage, persist_traces, &resolved_terminal);
+    emit_resolved_terminal(
+        terminal_event_tx,
+        emit_handle,
+        task_run_id,
+        &resolved_terminal,
+    )
+    .await;
+    queue_terminal_promotion(
+        writer_tx,
+        emit_handle,
+        task_run_id,
+        promotion_episodic_ctx,
+        promotion_workflow_hash,
+        run_start_utc,
+        &resolved_terminal,
+    )
+    .await;
+}
+
+async fn resolve_terminal_reason(
+    terminal_reason: Option<TerminalReason>,
+    emit_handle: &tauri::AppHandle,
+    agent_token: &CancellationToken,
+    storage: &Arc<Mutex<clickweave_core::storage::RunStorage>>,
+    task_run_id: &str,
+) -> Option<TerminalReason> {
+    match terminal_reason {
+        Some(TerminalReason::CompletionDisagreement {
+            agent_summary,
+            vlm_reasoning,
+        }) => {
+            await_disagreement_resolution(
+                emit_handle,
+                agent_token,
+                storage,
+                task_run_id,
+                agent_summary,
+                vlm_reasoning,
+            )
+            .await
+        }
+        other => other,
+    }
+}
+
+fn append_variant_entry(
+    storage: &Arc<Mutex<clickweave_core::storage::RunStorage>>,
+    persist_traces: bool,
+    resolved_terminal: &Option<TerminalReason>,
+) {
+    if !persist_traces {
+        return;
+    }
+    let (divergence_summary, success) = match resolved_terminal {
+        Some(reason) => (reason.divergence_summary(), reason.is_completed()),
+        None => ("Stopped: unknown reason".to_string(), false),
+    };
+    let variant_entry = VariantEntry {
+        execution_dir: storage
+            .lock()
+            .unwrap()
+            .execution_dir_name()
+            .unwrap_or("unknown")
+            .to_string(),
+        diverged_at_step: None,
+        divergence_summary,
+        success,
+    };
+    let _ = VariantIndex::append(
+        &storage.lock().unwrap().variant_index_path(),
+        &variant_entry,
+    );
+}
+
+async fn emit_resolved_terminal(
+    terminal_event_tx: &tokio::sync::mpsc::Sender<RunnerOutput>,
+    emit_handle: &tauri::AppHandle,
+    task_run_id: &str,
+    resolved_terminal: &Option<TerminalReason>,
+) {
+    match resolved_terminal {
+        Some(TerminalReason::Completed { summary })
+        | Some(TerminalReason::DisagreementConfirmed {
+            agent_summary: summary,
+        }) => {
+            emit_after_agent_event_drain(
+                terminal_event_tx,
+                emit_handle,
+                "agent://complete",
+                serde_json::json!({ "run_id": task_run_id, "summary": summary }),
+            )
+            .await;
+        }
+        Some(TerminalReason::DisagreementCancelled { .. }) => {
+            emit_after_agent_event_drain(
+                terminal_event_tx,
+                emit_handle,
+                "agent://stopped",
+                serde_json::json!({
+                    "run_id": task_run_id,
+                    "reason": "user_cancelled_disagreement",
+                }),
+            )
+            .await;
+        }
+        Some(reason) => {
+            let mut payload = serde_json::to_value(reason).unwrap_or_default();
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("run_id".to_string(), serde_json::json!(task_run_id));
+            }
+            emit_after_agent_event_drain(
+                terminal_event_tx,
+                emit_handle,
+                "agent://stopped",
+                payload,
+            )
+            .await;
+        }
+        None => {
+            emit_after_agent_event_drain(
+                terminal_event_tx,
+                emit_handle,
+                "agent://stopped",
+                serde_json::json!({ "run_id": task_run_id, "reason": "cancelled" }),
+            )
+            .await;
+        }
+    }
+}
+
+async fn queue_terminal_promotion(
+    writer_tx: Option<
+        tokio::sync::mpsc::Sender<clickweave_engine::agent::episodic::types::WriteRequest>,
+    >,
+    emit_handle: &tauri::AppHandle,
+    task_run_id: &str,
+    promotion_episodic_ctx: &EpisodicContext,
+    promotion_workflow_hash: &str,
+    run_start_utc: chrono::DateTime<chrono::Utc>,
+    resolved_terminal: &Option<TerminalReason>,
+) {
+    if !promotion_episodic_ctx.enabled || promotion_episodic_ctx.global_path.is_none() {
+        return;
+    }
+    let Some(tx) = writer_tx else {
+        return;
+    };
+    use clickweave_engine::agent::episodic::{
+        PromotionTerminalKind, types::WriteRequest as EpisodicWriteRequest,
+    };
+    let terminal_kind = match resolved_terminal {
+        Some(TerminalReason::Completed { .. }) => PromotionTerminalKind::Clean,
+        _ => PromotionTerminalKind::SkipPromotion,
+    };
+    if let Err(e) = tx.try_send(EpisodicWriteRequest::PromotePass {
+        workflow_hash: promotion_workflow_hash.to_string(),
+        terminal_kind,
+        run_started_at: run_start_utc,
+    }) {
+        tracing::warn!(error = %e, "episodic: PromotePass dropped at terminal");
+        let _ = emit_handle.emit(
+            "agent://warning",
+            serde_json::json!({
+                "run_id": task_run_id,
+                "message": format!("episodic: promotion dropped: backpressure ({e})"),
+            }),
+        );
+    }
+    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel::<()>();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        if tx
+            .send(EpisodicWriteRequest::Flush { ack: ack_tx })
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let _ = ack_rx.await;
+    })
+    .await;
+}
+
 // ── Commands ────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -738,22 +1532,12 @@ pub async fn run_agent(
     app: tauri::AppHandle,
     request: AgentRunRequest,
 ) -> Result<(), CommandError> {
-    {
-        let handle = app.state::<Mutex<AgentHandle>>();
-        let guard = handle.lock().unwrap();
-        if guard.cancel_token.is_some() || guard.task_handle.is_some() {
-            return Err(CommandError::already_running());
-        }
-    }
+    ensure_agent_idle(&app)?;
 
-    let agent_config = request.agent.into_llm_config(None);
     let mcp_binary_path =
         crate::mcp_resolve::resolve_mcp_binary().map_err(|e| CommandError::mcp(format!("{e}")))?;
 
-    let workflow_id: uuid::Uuid = request
-        .workflow_id
-        .parse()
-        .map_err(|_| CommandError::validation("Invalid workflow ID"))?;
+    let workflow_id = parse_workflow_id(&request)?;
 
     let mut storage = resolve_storage(
         &app,
@@ -773,39 +1557,10 @@ pub async fn run_agent(
     // The frontend may supply its own run_id so the user message bubble
     // can be tagged before `agent://started` arrives — honor it when
     // present and syntactically valid.
-    let run_id = request
-        .run_id
-        .clone()
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let run_uuid: uuid::Uuid = run_id
-        .parse()
-        .map_err(|_| CommandError::validation("Invalid run_id"))?;
+    let (run_id, run_uuid) = resolve_run_id(&request)?;
+    let anchor_uuid = parse_anchor_node_id(&request)?;
+    let prior_turns = parse_prior_turns(&request)?;
 
-    let anchor_uuid: Option<uuid::Uuid> = match request.anchor_node_id.as_deref() {
-        Some(s) if !s.is_empty() => Some(
-            s.parse()
-                .map_err(|_| CommandError::validation("Invalid anchor_node_id"))?,
-        ),
-        _ => None,
-    };
-
-    let prior_turns: Vec<clickweave_engine::agent::PriorTurn> = request
-        .prior_turns
-        .iter()
-        .map(|t| {
-            let run_id: uuid::Uuid = t
-                .run_id
-                .parse()
-                .map_err(|_| CommandError::validation("Invalid prior_turn.run_id"))?;
-            Ok::<_, CommandError>(clickweave_engine::agent::PriorTurn {
-                goal: t.goal.clone(),
-                summary: t.summary.clone(),
-                run_id,
-            })
-        })
-        .collect::<Result<_, CommandError>>()?;
-
-    let permission_policy: Option<PermissionPolicy> = request.permissions.map(Into::into);
     let consecutive_destructive_cap = request.consecutive_destructive_cap;
     let allow_focus_window = request.allow_focus_window;
     let episodic_settings_enabled = request.episodic_enabled.unwrap_or(true);
@@ -815,58 +1570,24 @@ pub async fn run_agent(
     let applicable_skills_k_override = request.applicable_skills_k;
     let skills_global_participation = request.skills_global_participation.unwrap_or(false);
 
-    // Spec 2 D34: construct the per-run EpisodicContext. The context is
-    // disabled when persistence is off (the privacy kill switch flips
-    // episodic with traces — there's nothing to derive episodes from
-    // without `events.jsonl`) or when the per-run kill switch from the
-    // UI is `false`. The workflow-local SQLite lives next to the rest of
-    // the workflow's runtime state under `RunStorage::base_path()`; the
-    // global store sits at the same `AppDataDir` root the trace-retention
-    // sweep walks, so D36's privacy sweep finds it.
-    let episodic_ctx = if persist_traces && episodic_settings_enabled {
-        let wl_path = storage.lock().unwrap().base_path().join("episodic.sqlite");
-        let global_path = if episodic_global_participation {
-            Some(app_data_episodic_path(&app)?)
-        } else {
-            None
-        };
-        clickweave_engine::agent::episodic::EpisodicContext {
-            enabled: true,
-            workflow_local_path: wl_path,
-            global_path,
-            workflow_hash: request.workflow_id.clone(),
-        }
-    } else {
-        clickweave_engine::agent::episodic::EpisodicContext::disabled()
-    };
-
-    // Spec 3: construct a per-run SkillContext at the Tauri boundary.
-    // The skills layer follows the same privacy gate as episodic memory:
-    // when trace persistence is off, no skill files are read or written.
-    let skill_ctx = {
-        let project_skills_dir = {
-            let guard = storage.lock().unwrap();
-            if persist_traces && skills_settings_enabled {
-                guard
-                    .project_skills_dir()
-                    .map_err(|e| CommandError::io(format!("resolve project skills dir: {e}")))?
-            } else {
-                guard.base_path().join("skills")
-            }
-        };
-        let global_skills_dir =
-            if persist_traces && skills_settings_enabled && skills_global_participation {
-                Some(app_data_global_skills_dir(&app)?)
-            } else {
-                None
-            };
-        SkillContext {
-            enabled: persist_traces && skills_settings_enabled,
-            project_skills_dir,
-            global_skills_dir,
-            project_id: request.workflow_id.clone(),
-        }
-    };
+    let episodic_ctx = build_episodic_context(
+        &app,
+        &storage,
+        &request,
+        persist_traces,
+        episodic_settings_enabled,
+        episodic_global_participation,
+    )?;
+    let skill_ctx = build_skill_context(
+        &app,
+        &storage,
+        &request,
+        persist_traces,
+        skills_settings_enabled,
+        skills_global_participation,
+    )?;
+    let agent_config = request.agent.into_llm_config(None);
+    let permission_policy: Option<PermissionPolicy> = request.permissions.map(Into::into);
 
     // Capture the run-start timestamp so PromotePass scopes promotion
     // to episodes touched during this run.
@@ -878,11 +1599,11 @@ pub async fn run_agent(
     let event_forwarder_token = cancel_token.clone();
 
     // Live event channel: agent runner -> Tauri event emitter
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<RunnerOutput>(64);
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel::<RunnerOutput>(64);
 
     // Approval channel: agent runner sends requests, we forward to UI and store
     // the oneshot response sender in the handle for `approve_agent_action` to use.
-    let (approval_tx, mut approval_rx) =
+    let (approval_tx, approval_rx) =
         tokio::sync::mpsc::channel::<(ApprovalRequest, tokio::sync::oneshot::Sender<bool>)>(1);
 
     let emit_handle = app.clone();
@@ -911,540 +1632,61 @@ pub async fn run_agent(
 
     // Install cancel_token and run_id before spawning so stop_agent() works
     // even during the spawn window (before task_handle is available).
-    {
-        let handle = app.state::<Mutex<AgentHandle>>();
-        let mut guard = handle.lock().unwrap();
-        guard.cancel_token = Some(cancel_token);
-        guard.run_id = Some(run_id.clone());
-    }
+    install_agent_run_handle(&app, cancel_token, &run_id);
 
     // Emit agent://started so the frontend knows the run_id before any other events.
     let _ = app.emit("agent://started", serde_json::json!({ "run_id": &run_id }));
 
-    let task_handle = tauri::async_runtime::spawn(async move {
-        // Spawn MCP server — cancellation-aware so stop_agent() works
-        // even during slow MCP startup / handshake.
-        let mcp = tokio::select! {
-            res = clickweave_mcp::McpClient::spawn(&mcp_binary_path, &[]) => {
-                match res {
-                    Ok(m) => m,
-                    Err(e) => {
-                        emit_after_agent_event_drain(
-                            &terminal_event_tx,
-                            &emit_handle,
-                            "agent://error",
-                            serde_json::json!({ "run_id": task_run_id, "message": format!("MCP spawn failed: {e}") }),
-                        )
-                        .await;
-                        let _ = done_tx.send(());
-                        return;
-                    }
-                }
-            }
-            _ = agent_token.cancelled() => {
-                emit_after_agent_event_drain(
-                    &terminal_event_tx,
-                    &emit_handle,
-                    "agent://stopped",
-                    serde_json::json!({ "run_id": task_run_id, "reason": "cancelled" }),
-                )
-                .await;
-                let _ = done_tx.send(());
-                return;
-            }
-        };
-
-        // Thinking is explicitly enabled: small agent models need a
-        // reasoning pass to avoid pattern-matching salient literals from the
-        // goal text into tool arguments.
-        let llm = clickweave_llm::LlmClient::new(agent_config.clone().with_thinking(false));
-        // Vision backend: reuse the agent endpoint (the user already has this
-        // configured) with thinking disabled and a low token budget — the
-        // post-done check only needs to emit YES/NO + a sentence. If the
-        // endpoint cannot process images, the VLM call errors and the loop
-        // falls through to normal completion instead of tanking the run.
-        // D-PR1: StateRunner stores vision as `Arc<dyn DynChatBackend>` so
-        // the primary backend and VLM can be different concrete types.
-        // Wrap at the Tauri seam; the blanket `impl<B: ChatBackend + Send
-        // + Sync> DynChatBackend for B` lets any concrete ChatBackend flow
-        // through `Arc::new(...)` without further plumbing.
-        let vision: std::sync::Arc<dyn clickweave_llm::DynChatBackend> = std::sync::Arc::new(
-            clickweave_llm::LlmClient::new(agent_config.with_thinking(false).with_max_tokens(512)),
-        );
-        let mut config = AgentConfig::default();
-        if let Some(cap) = consecutive_destructive_cap {
-            config.consecutive_destructive_cap = cap;
-        }
-        if let Some(allow) = allow_focus_window {
-            config.allow_focus_window = allow;
-        }
-        // Spec 2 per-run overrides: master kill switch + retrieval depth.
-        // The global-participation flag is encoded in `task_episodic_ctx`
-        // (it gates `EpisodicContext::global_path`), not on `AgentConfig`.
-        config.episodic_enabled = episodic_settings_enabled;
-        if let Some(k) = retrieved_episodes_k_override {
-            config.retrieved_episodes_k = k.clamp(1, 10);
-        }
-        config.skills_enabled = skills_settings_enabled;
-        if let Some(k) = applicable_skills_k_override {
-            config.applicable_skills_k = k.clamp(1, 10);
-        }
-        config.skills_global_participation = skills_global_participation;
-
-        // Begin storage execution and load cross-run state under a single lock.
-        // Storage init failure prevents the run from starting — durable tracing
-        // must be available before executing any agent actions.
-        let storage = task_storage;
-        let storage_init = {
-            let mut guard = storage.lock().unwrap();
-            if let Err(e) = guard.begin_execution() {
-                Err(format!("Run storage init failed: {e}"))
-            } else {
-                // Load via `load_existing` so entries whose execution dir
-                // is gone (retention sweep, crash, manual cleanup) never
-                // leak back into agent context — even if the on-disk
-                // JSONL still carries them. This enforces the privacy
-                // contract at read time so it is robust to races, partial
-                // failures, and hand-cleanup.
-                let variant_index =
-                    VariantIndex::load_existing(&guard.variant_index_path(), guard.base_path());
-                let verification_artifacts_dir = guard.execution_artifacts_dir();
-                Ok((variant_index.as_context_text(), verification_artifacts_dir))
-            }
-        };
-        let (variant_context, verification_artifacts_dir) = match storage_init {
-            Ok(v) => v,
-            Err(message) => {
-                emit_after_agent_event_drain(
-                    &terminal_event_tx,
-                    &emit_handle,
-                    "agent://error",
-                    serde_json::json!({
-                        "run_id": task_run_id,
-                        "message": message,
-                    }),
-                )
-                .await;
-                let _ = done_tx.send(());
-                return;
-            }
-        };
-
-        let channels = AgentChannels {
-            event_tx: event_tx.clone(),
-            approval_tx,
-        };
-
-        // D18 (Task 3.5): compose prior-turn log + variant context +
-        // the user's goal into a single goal_block string. The engine
-        // feeds this into `messages[1]`, leaving `messages[0]` (the
-        // system prompt) stable across runs for prompt-cache hits.
-        let goal_block = clickweave_engine::agent::build_goal_block(
-            &goal,
-            &prior_turns,
-            if variant_context.is_empty() {
-                None
-            } else {
-                Some(variant_context.as_str())
-            },
-            1000,
-        );
-
-        // Run the agent loop
-        let result = tokio::select! {
-            res = clickweave_engine::agent::run_agent_workflow(
-                &llm,
-                config,
-                goal_block,
-                &mcp,
-                Some(channels),
-                Some(vision.clone()),
-                // Permission policy is threaded from the UI via the
-                // `run_agent` request; None means "use the default
-                // (empty-rules, allow_all=false, guardrail off)" which
-                // reproduces the Phase-1 behaviour.
-                permission_policy.clone(),
-                run_uuid,
-                anchor_uuid,
-                verification_artifacts_dir,
-                Some(storage.clone()),
-                // Spec 2 P4: thread the per-run EpisodicContext into the
-                // engine. Disabled context = no episodic stores opened.
-                Some(task_episodic_ctx.clone()),
-                Some(task_skill_ctx.clone()),
-            ) => res,
-            _ = agent_token.cancelled() => {
-                emit_after_agent_event_drain(
-                    &terminal_event_tx,
-                    &emit_handle,
-                    "agent://stopped",
-                    serde_json::json!({ "run_id": task_run_id, "reason": "cancelled" }),
-                )
-                .await;
-                let _ = done_tx.send(());
-                return;
-            }
-        };
-
-        match result {
-            Ok((state, writer_tx)) => {
-                // If the engine halted on a pending VLM disagreement, block
-                // here until the operator resolves it (confirm / cancel) via
-                // `resolve_completion_disagreement`, or until `stop_agent`
-                // fires `force_stop` which resolves the oneshot as Cancel.
-                // This keeps the Tauri task alive during adjudication so
-                // the variant-index + events.jsonl writes happen exactly
-                // once per run, against the final operator decision.
-                let resolved_terminal = match state.terminal_reason {
-                    Some(TerminalReason::CompletionDisagreement {
-                        agent_summary,
-                        vlm_reasoning,
-                    }) => {
-                        await_disagreement_resolution(
-                            &emit_handle,
-                            &agent_token,
-                            &storage,
-                            &task_run_id,
-                            agent_summary,
-                            vlm_reasoning,
-                        )
-                        .await
-                    }
-                    other => other,
-                };
-
-                // Derive variant metadata from the resolved terminal reason.
-                let (divergence_summary, success) = match &resolved_terminal {
-                    Some(reason) => (reason.divergence_summary(), reason.is_completed()),
-                    None => ("Stopped: unknown reason".to_string(), false),
-                };
-
-                // Write the variant-index entry for every resolved run —
-                // including the post-resolution disagreement paths. The
-                // only case we must not write is when the operator's
-                // decision is still pending, but by this point the
-                // `await_disagreement_resolution` call has already
-                // collapsed that state into a concrete terminal reason
-                // (or a cancellation below).
-                //
-                // Skip the write when the privacy kill switch is off so
-                // no per-run metadata is appended to the workflow-level
-                // variant index file.
-                if persist_traces {
-                    let variant_entry = VariantEntry {
-                        execution_dir: storage
-                            .lock()
-                            .unwrap()
-                            .execution_dir_name()
-                            .unwrap_or("unknown")
-                            .to_string(),
-                        diverged_at_step: None,
-                        divergence_summary,
-                        success,
-                    };
-                    let _ = VariantIndex::append(
-                        &storage.lock().unwrap().variant_index_path(),
-                        &variant_entry,
-                    );
-                }
-
-                // Emit the truthful terminal event. If no resolved
-                // terminal is available (force_stop fired during the
-                // adjudication window *before* the oneshot was installed
-                // — a race that `await_disagreement_resolution` already
-                // handles) we fall back to `agent://stopped { reason:
-                // cancelled }`.
-                match &resolved_terminal {
-                    Some(TerminalReason::Completed { summary })
-                    | Some(TerminalReason::DisagreementConfirmed {
-                        agent_summary: summary,
-                    }) => {
-                        emit_after_agent_event_drain(
-                            &terminal_event_tx,
-                            &emit_handle,
-                            "agent://complete",
-                            serde_json::json!({ "run_id": task_run_id, "summary": summary }),
-                        )
-                        .await;
-                    }
-                    Some(TerminalReason::DisagreementCancelled { .. }) => {
-                        emit_after_agent_event_drain(
-                            &terminal_event_tx,
-                            &emit_handle,
-                            "agent://stopped",
-                            serde_json::json!({
-                                "run_id": task_run_id,
-                                "reason": "user_cancelled_disagreement",
-                            }),
-                        )
-                        .await;
-                    }
-                    Some(reason) => {
-                        let mut payload = serde_json::to_value(reason).unwrap_or_default();
-                        if let Some(obj) = payload.as_object_mut() {
-                            obj.insert("run_id".to_string(), serde_json::json!(task_run_id));
-                        }
-                        emit_after_agent_event_drain(
-                            &terminal_event_tx,
-                            &emit_handle,
-                            "agent://stopped",
-                            payload,
-                        )
-                        .await;
-                    }
-                    None => {
-                        emit_after_agent_event_drain(
-                            &terminal_event_tx,
-                            &emit_handle,
-                            "agent://stopped",
-                            serde_json::json!({ "run_id": task_run_id, "reason": "cancelled" }),
-                        )
-                        .await;
-                    }
-                }
-
-                // Spec 2 D31 / Task 4.2: run-terminal promotion pass.
-                // Only fires when episodic is active for this run AND
-                // the operator opted into global-tier sharing. The
-                // terminal kind classifies whether promotion is even
-                // attempted: clean completion → eligible; disagreement,
-                // loop, error, cancellation → SkipPromotion.
-                //
-                // `writer_tx` is a cloned sender for the *same* worker task
-                // the runner used for `DeriveAndInsert` requests. Queuing
-                // `PromotePass` on it reuses the existing SQLite connections
-                // (one workflow-local + one global), eliminating the second
-                // SQLite connection that the previous implementation opened
-                // by spawning a fresh `EpisodicWriter` here.
-                //
-                // The flush barrier (`WriteRequest::Flush` sentinel sent
-                // by `EpisodicWriter::flush`) is carried through the same
-                // channel, so the `agent://episode_promoted` event lands
-                // before the `done_tx` cleanup signal closes the event
-                // forwarder — same guarantee as before, single connection.
-                if promotion_episodic_ctx.enabled
-                    && promotion_episodic_ctx.global_path.is_some()
-                    && let Some(tx) = writer_tx
-                {
-                    use clickweave_engine::agent::episodic::{
-                        PromotionTerminalKind, types::WriteRequest as EpisodicWriteRequest,
-                    };
-                    // Only a clean engine-side completion promotes to the
-                    // global tier. `DisagreementConfirmed` is a Tauri-
-                    // synthesized terminal that resolves a prior VLM
-                    // disagreement after operator review — by that point
-                    // the run already crossed a "is this complete?"
-                    // disagreement and any second-occurrence promotion
-                    // path is the right gate, not first-occurrence.
-                    // Workflow-local rows still land for both kinds; only
-                    // global promotion is gated here.
-                    let terminal_kind = match &resolved_terminal {
-                        Some(TerminalReason::Completed { .. }) => PromotionTerminalKind::Clean,
-                        _ => PromotionTerminalKind::SkipPromotion,
-                    };
-                    // Use `try_send` instead of awaited `send` so a
-                    // saturated writer channel cannot wedge the
-                    // run-terminal path before the timeout-protected
-                    // flush below. Matches the runner's nonblocking
-                    // queue path (`EpisodicWriter::queue` →
-                    // `try_send`). On backpressure drop, surface a
-                    // Warning via the event forwarder so the UI sees
-                    // "promotion was dropped" instead of a silent
-                    // miss; D32 keeps the rest of terminal cleanup
-                    // running.
-                    if let Err(e) = tx.try_send(EpisodicWriteRequest::PromotePass {
-                        workflow_hash: promotion_workflow_hash.clone(),
-                        terminal_kind,
-                        run_started_at: run_start_utc,
-                    }) {
-                        tracing::warn!(error = %e, "episodic: PromotePass dropped at terminal");
-                        let _ = emit_handle.emit(
-                            "agent://warning",
-                            serde_json::json!({
-                                "run_id": task_run_id,
-                                "message": format!(
-                                    "episodic: promotion dropped: backpressure ({e})"
-                                ),
-                            }),
-                        );
-                    }
-                    // Flush sentinel: wait for the worker to ack so the
-                    // `EpisodePromoted` event is emitted before we signal
-                    // the event forwarder to close.
-                    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel::<()>();
-                    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-                        if tx
-                            .send(EpisodicWriteRequest::Flush { ack: ack_tx })
-                            .await
-                            .is_err()
-                        {
-                            return;
-                        }
-                        let _ = ack_rx.await;
-                    })
-                    .await;
-                    // Drop `tx`: the runner's copy was dropped when `run`
-                    // returned; this is now the last sender. Dropping it
-                    // closes the channel and lets the worker task exit.
-                    drop(tx);
-                }
-            }
-            Err(e) => {
-                emit_after_agent_event_drain(
-                    &terminal_event_tx,
-                    &emit_handle,
-                    "agent://error",
-                    serde_json::json!({ "run_id": task_run_id, "message": format!("{e}") }),
-                )
-                .await;
-            }
-        }
-
-        let _ = done_tx.send(());
+    let task_handle = spawn_agent_run_task(AgentRunTaskInput {
+        mcp_binary_path,
+        agent_token,
+        terminal_event_tx,
+        emit_handle,
+        task_run_id,
+        done_tx,
+        agent_config: agent_config.clone(),
+        consecutive_destructive_cap,
+        allow_focus_window,
+        episodic_settings_enabled,
+        retrieved_episodes_k_override,
+        skills_settings_enabled,
+        applicable_skills_k_override,
+        skills_global_participation,
+        storage: task_storage,
+        event_tx: event_tx.clone(),
+        approval_tx,
+        goal,
+        prior_turns,
+        permission_policy,
+        run_uuid,
+        anchor_uuid,
+        episodic_ctx: task_episodic_ctx,
+        skill_ctx: task_skill_ctx,
+        persist_traces,
+        promotion_episodic_ctx,
+        promotion_workflow_hash,
+        run_start_utc,
     });
 
-    // Spawn a task to forward live agent events to the Tauri frontend.
-    // Cancellation-aware: stops accepting new events once the run is cancelled,
-    // then drains any remaining buffered events and signals completion.
-    // Persistence is synchronous within the forwarder to guarantee ordering
-    // and completeness in events.jsonl. The agent loop emits events at LLM
-    // pace (~seconds per step), so the I/O cost is negligible.
-    tauri::async_runtime::spawn(async move {
-        loop {
-            tokio::select! {
-                biased;
-                _ = event_forwarder_token.cancelled() => {
-                    // Drain remaining buffered outputs before exiting.
-                    while let Ok(output) = event_rx.try_recv() {
-                        match output {
-                            RunnerOutput::Event(event) => {
-                                let _ = event_storage.lock().unwrap().append_agent_event(&event);
-                            }
-                            RunnerOutput::DrainBarrier { ack } => {
-                                let _ = ack.send(());
-                            }
-                            RunnerOutput::SkillProposalNeeded { skill_id, version, .. } => {
-                                spawn_skill_proposal_task(
-                                    &proposal_skill_ctx,
-                                    proposal_agent_config.clone(),
-                                    skill_id,
-                                    version,
-                                );
-                            }
-                        }
-                    }
-                    break;
-                }
-                maybe_output = event_rx.recv() => {
-                    match maybe_output {
-                        Some(RunnerOutput::Event(event)) => {
-                            // Durable trace: persist every event to events.jsonl
-                            let _ = event_storage.lock().unwrap().append_agent_event(&event);
-                            // Fan out to the matching `agent://*` Tauri topic.
-                            // See `forward_agent_event` for the full variant
-                            // mapping — extracted so the run-agent smoke test
-                            // can drive it against a mock `AppHandle`.
-                            forward_agent_event(&event_emit_handle, &event_run_id, &event);
-                            maybe_spawn_skill_proposal_task(
-                                &event,
-                                &proposal_skill_ctx,
-                                proposal_agent_config.clone(),
-                            );
-                        }
-                        Some(RunnerOutput::DrainBarrier { ack }) => {
-                            let _ = ack.send(());
-                        }
-                        Some(RunnerOutput::SkillProposalNeeded { skill_id, version, .. }) => {
-                            spawn_skill_proposal_task(
-                                &proposal_skill_ctx,
-                                proposal_agent_config.clone(),
-                                skill_id,
-                                version,
-                            );
-                        }
-                        None => break,
-                    }
-                }
-            }
-        }
-        let _ = events_done_tx.send(());
-    });
-
-    // Spawn a task to forward approval requests to the Tauri frontend
-    // and store the oneshot response sender in the handle.
-    // Cancellation-aware so it stops when force_stop() fires, preventing
-    // stale approvals from leaking into a subsequent run.
-    tauri::async_runtime::spawn(async move {
-        loop {
-            tokio::select! {
-                req = approval_rx.recv() => {
-                    match req {
-                        Some((request, resp_tx)) => {
-                            // After winning the select race, re-check cancellation
-                            // to avoid leaking a stale approval into the next run.
-                            // Send explicit rejection so the engine sees Ok(false)
-                            // instead of Err (channel closed → ApprovalUnavailable).
-                            if forwarder_token.is_cancelled() {
-                                let _ = resp_tx.send(false);
-                                break;
-                            }
-                            {
-                                let handle = approval_emit_handle.state::<Mutex<AgentHandle>>();
-                                let mut guard = handle.lock().unwrap();
-                                guard.pending_approval_tx = Some(resp_tx);
-                            }
-                            let _ = approval_emit_handle.emit(
-                                "agent://approval_required",
-                                serde_json::json!({
-                                    "run_id": approval_run_id,
-                                    "step_index": request.step_index,
-                                    "tool_name": request.tool_name,
-                                    "arguments": request.arguments,
-                                    "description": request.description,
-                                }),
-                            );
-                        }
-                        None => break,
-                    }
-                }
-                _ = forwarder_token.cancelled() => {
-                    // Drain any queued approval requests, sending rejection
-                    // so the engine sees Ok(false) instead of a channel drop.
-                    while let Ok((_req, resp_tx)) = approval_rx.try_recv() {
-                        let _ = resp_tx.send(false);
-                    }
-                    break;
-                }
-            }
-        }
-        let _ = approval_done_tx.send(());
-    });
-
-    // Store task_handle now that it's available (cancel_token + run_id
-    // were already installed before spawn).
-    {
-        let handle = app.state::<Mutex<AgentHandle>>();
-        let mut guard = handle.lock().unwrap();
-        guard.task_handle = Some(task_handle);
-    }
-
-    // Spawn cleanup task: wait for the agent task, event forwarder, and
-    // approval forwarder to all complete before clearing the handle. This
-    // prevents stale buffered events or approvals from leaking into a
-    // subsequent run.
-    tauri::async_runtime::spawn(async move {
-        let _ = done_rx.await;
-        let _ = events_done_rx.await;
-        let _ = approval_done_rx.await;
-
-        let handle = cleanup_handle.state::<Mutex<AgentHandle>>();
-        let mut guard = handle.lock().unwrap();
-        guard.cancel_token = None;
-        guard.task_handle = None;
-        guard.pending_approval_tx = None;
-        guard.pending_disagreement_tx = None;
-        guard.run_id = None;
-    });
+    spawn_agent_event_forwarder(
+        event_forwarder_token,
+        event_rx,
+        event_storage,
+        event_emit_handle,
+        event_run_id,
+        proposal_skill_ctx,
+        proposal_agent_config,
+        events_done_tx,
+    );
+    spawn_approval_forwarder(
+        approval_rx,
+        forwarder_token,
+        approval_emit_handle,
+        approval_run_id,
+        approval_done_tx,
+    );
+    store_agent_task_handle(&app, task_handle);
+    spawn_agent_cleanup(cleanup_handle, done_rx, events_done_rx, approval_done_rx);
 
     Ok(())
 }

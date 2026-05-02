@@ -65,6 +65,22 @@ struct CdpAppState {
     selected_page_url: Option<String>,
 }
 
+struct CaptureServices {
+    mcp: Option<Arc<McpClient>>,
+    cdp_state: HashMap<String, CdpAppState>,
+    vlm_backend: Option<Arc<clickweave_llm::LlmClient>>,
+}
+
+struct CdpClickRequest {
+    port: u16,
+    /// URL of the tab the click/hover listeners were injected into —
+    /// restored after reconnect so retrieval hits the same page even if
+    /// the browser has multiple tabs open.
+    selected_page_url: Option<String>,
+    click_event_id: Uuid,
+    click_timestamp: u64,
+}
+
 // CachedApp is imported from clickweave_core::walkthrough::session.
 
 /// Manages the walkthrough recording lifecycle.
@@ -147,6 +163,109 @@ impl WalkthroughHandle {
 // Async event processing loop
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
+async fn initialize_capture_services(
+    app: &tauri::AppHandle,
+    event_rx: &mut tokio::sync::mpsc::UnboundedReceiver<CaptureEvent>,
+    mcp_binary_path: &str,
+    supervisor: Option<super::types::EndpointConfig>,
+    session_dir: &std::path::Path,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+    cdp_apps: &[CdpAppConfig],
+    hover_dwell_ms: u64,
+) -> CaptureServices {
+    let mcp_raw = spawn_mcp(mcp_binary_path).await;
+    let cdp_state =
+        initialize_cdp_capture(app, event_rx, cancel, cdp_apps, &mcp_raw, hover_dwell_ms).await;
+    let mcp = mcp_raw.map(Arc::new);
+    let vlm_backend = supervisor
+        .filter(|s| !s.is_empty())
+        .map(|s| Arc::new(clickweave_llm::LlmClient::new(vlm_capture_config(s))));
+
+    if let Some(ref mcp) = mcp {
+        start_native_hover_tracking(mcp).await;
+        start_continuous_recording(mcp, session_dir).await;
+    }
+
+    CaptureServices {
+        mcp,
+        cdp_state,
+        vlm_backend,
+    }
+}
+
+async fn initialize_cdp_capture(
+    app: &tauri::AppHandle,
+    event_rx: &mut tokio::sync::mpsc::UnboundedReceiver<CaptureEvent>,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+    cdp_apps: &[CdpAppConfig],
+    mcp_raw: &Option<McpClient>,
+    hover_dwell_ms: u64,
+) -> HashMap<String, CdpAppState> {
+    let cdp_state = if cdp_apps.is_empty() {
+        HashMap::new()
+    } else if let Some(mcp) = mcp_raw {
+        setup_cdp_apps(cdp_apps, mcp, app, cancel, hover_dwell_ms).await
+    } else {
+        tracing::warn!("No MCP server available for CDP setup");
+        for cdp_app in cdp_apps {
+            emit_cdp_progress(
+                app,
+                &cdp_app.name,
+                CdpSetupStatus::Failed {
+                    reason: "MCP server unavailable".to_string(),
+                },
+            );
+        }
+        HashMap::new()
+    };
+
+    if !cdp_apps.is_empty() {
+        emit_cdp_progress(app, "", CdpSetupStatus::Done);
+        while event_rx.try_recv().is_ok() {}
+    }
+    cdp_state
+}
+
+fn vlm_capture_config(supervisor: super::types::EndpointConfig) -> clickweave_llm::LlmConfig {
+    supervisor
+        .into_llm_config(Some(0.0))
+        .with_max_tokens(2048)
+        .with_thinking(false)
+}
+
+async fn start_native_hover_tracking(mcp: &McpClient) {
+    let hover_args = serde_json::json!({
+        "min_dwell_ms": 100,
+        "poll_interval_ms": 100,
+        "max_duration_ms": 600_000,
+    });
+    if let Err(e) = mcp
+        .call_tool("start_hover_tracking", Some(hover_args))
+        .await
+    {
+        tracing::warn!("Failed to start hover tracking: {e}");
+    }
+}
+
+async fn start_continuous_recording(mcp: &McpClient, session_dir: &std::path::Path) {
+    let artifacts_dir = session_dir.join("artifacts");
+    let recording_args = serde_json::json!({
+        "output_dir": artifacts_dir.to_string_lossy(),
+        "max_duration_ms": 600_000,
+    });
+    match mcp.call_tool("start_recording", Some(recording_args)).await {
+        Ok(r) if r.is_error != Some(true) => {
+            tracing::info!("Continuous recording started")
+        }
+        Ok(r) => {
+            let msg: String = r.content.iter().filter_map(|c| c.as_text()).collect();
+            tracing::warn!("start_recording returned error (non-fatal): {msg}");
+        }
+        Err(e) => tracing::warn!("Failed to start recording (non-fatal): {e}"),
+    }
+}
+
 /// Process captured events: enrich with MCP data, persist, and emit to frontend.
 ///
 /// Click enrichment (screenshot + accessibility + VLM) runs in background tasks
@@ -163,107 +282,30 @@ pub(super) async fn process_capture_events(
     cdp_apps: Vec<CdpAppConfig>,
     hover_dwell_ms: u64,
 ) {
-    // Spawn the MCP client for enrichment (screenshots + OCR).
-    let mcp_raw = spawn_mcp(&mcp_binary_path).await;
-
-    // Set up CDP connections for selected apps before wrapping in Arc.
-    let cdp_state: HashMap<String, CdpAppState> = if !cdp_apps.is_empty() {
-        if let Some(ref mcp) = mcp_raw {
-            setup_cdp_apps(&cdp_apps, mcp, &app, &mut cancel, hover_dwell_ms).await
-        } else {
-            tracing::warn!("No MCP server available for CDP setup");
-            for cdp_app in &cdp_apps {
-                emit_cdp_progress(
-                    &app,
-                    &cdp_app.name,
-                    CdpSetupStatus::Failed {
-                        reason: "MCP server unavailable".to_string(),
-                    },
-                );
-            }
-            HashMap::new()
-        }
-    } else {
-        HashMap::new()
-    };
-
-    // Signal frontend that CDP setup is complete so the modal can close.
-    if !cdp_apps.is_empty() {
-        emit_cdp_progress(&app, "", CdpSetupStatus::Done);
-    }
-
-    // Drain any events captured during CDP setup (app restarts generate
-    // focus/input events that are not user-initiated). Drain even if all
-    // setups failed — the quit/relaunch attempt still produces events.
-    if !cdp_apps.is_empty() {
-        while event_rx.try_recv().is_ok() {}
-    }
-
-    // Wrap in Arc so background enrichment tasks can share it.
-    let mcp: Option<std::sync::Arc<McpClient>> = mcp_raw.map(std::sync::Arc::new);
-
-    // Initialize VLM backend if supervisor config is available.
-    let vlm_backend: Option<std::sync::Arc<clickweave_llm::LlmClient>> =
-        supervisor.filter(|s| !s.is_empty()).map(|s| {
-            let config = s
-                .into_llm_config(Some(0.0))
-                .with_max_tokens(2048)
-                .with_thinking(false);
-            std::sync::Arc::new(clickweave_llm::LlmClient::new(config))
-        });
-
-    // Start hover tracking for the recording session (non-fatal if unavailable).
-    if let Some(ref mcp) = mcp {
-        let hover_args = serde_json::json!({
-            "min_dwell_ms": 100,
-            "poll_interval_ms": 100,
-            "max_duration_ms": 600_000,
-        });
-        if let Err(e) = mcp
-            .call_tool("start_hover_tracking", Some(hover_args))
-            .await
-        {
-            tracing::warn!("Failed to start hover tracking: {e}");
-        }
-    }
-
-    // Start continuous screen recording for hover screenshots (non-fatal).
-    if let Some(ref mcp) = mcp {
-        let artifacts_dir = session_dir.join("artifacts");
-        let recording_args = serde_json::json!({
-            "output_dir": artifacts_dir.to_string_lossy(),
-            "max_duration_ms": 600_000,
-        });
-        match mcp.call_tool("start_recording", Some(recording_args)).await {
-            Ok(r) if r.is_error != Some(true) => {
-                tracing::info!("Continuous recording started")
-            }
-            Ok(r) => {
-                let msg: String = r.content.iter().filter_map(|c| c.as_text()).collect();
-                tracing::warn!("start_recording returned error (non-fatal): {msg}");
-            }
-            Err(e) => tracing::warn!("Failed to start recording (non-fatal): {e}"),
-        }
-    }
+    let CaptureServices {
+        mcp,
+        cdp_state,
+        vlm_backend,
+    } = initialize_capture_services(
+        &app,
+        &mut event_rx,
+        &mcp_binary_path,
+        supervisor,
+        &session_dir,
+        &mut cancel,
+        &cdp_apps,
+        hover_dwell_ms,
+    )
+    .await;
 
     // Background tasks for click enrichment and VLM resolution.
     // Each task persists and emits its own events; the event loop
     // only needs to drain completions to detect errors.
     let mut bg_tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
-    // Sequential CDP click retrieval channel.  System clicks arrive in order
-    // and the JS listener pushes in order, so we must consume shift() entries
-    // sequentially — otherwise independent tasks race and steal each other's
-    // entries.  A single consumer task drains this channel in FIFO order.
-    struct CdpClickRequest {
-        port: u16,
-        /// URL of the tab the click/hover listeners were injected into —
-        /// restored after reconnect so retrieval hits the same page even if
-        /// the browser has multiple tabs open.
-        selected_page_url: Option<String>,
-        click_event_id: Uuid,
-        click_timestamp: u64,
-    }
+    // Sequential CDP click retrieval channel. System clicks arrive in order
+    // and the JS listener pushes in order, so a single consumer drains the
+    // entries in FIFO order.
     let (cdp_tx, cdp_rx) = tokio::sync::mpsc::unbounded_channel::<CdpClickRequest>();
 
     // Screenshot buffer: a small (64pt / 128px on Retina) region around the
@@ -530,16 +572,27 @@ pub(super) async fn process_capture_events(
         persist_and_emit(&app, &storage, &session_dir, &wt_event);
     }
 
-    // Drop the CDP sender so the sequential consumer finishes after
-    // processing any remaining queued requests.
     drop(cdp_tx);
+    drain_capture_tasks(cdp_consumer_handle, bg_tasks).await;
 
-    // Await in-flight enrichment tasks and the CDP consumer so their events
-    // are on disk before stop_walkthrough reads them.  Bounded by a total
-    // drain timeout so a wedged MCP server can't block shutdown indefinitely.
+    // Stop the cursor region polling task.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    cursor_poll_handle.abort();
+
+    if let Some(ref mcp) = mcp {
+        stop_recording_and_persist_frames(mcp, &session_dir).await;
+        persist_native_hover_events(mcp, &app, &storage, &session_dir).await;
+        persist_cdp_hover_events(mcp, &app, &storage, &session_dir, &cdp_state).await;
+    }
+
+    tracing::info!("Walkthrough capture event loop ended");
+}
+
+async fn drain_capture_tasks(
+    cdp_consumer_handle: tokio::task::JoinHandle<()>,
+    mut bg_tasks: tokio::task::JoinSet<()>,
+) {
     let drain_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
-
-    // Wait for the CDP consumer first (it has its own sequential pipeline).
     if tokio::time::timeout_at(drain_deadline, cdp_consumer_handle)
         .await
         .is_err()
@@ -549,9 +602,9 @@ pub(super) async fn process_capture_events(
 
     loop {
         match tokio::time::timeout_at(drain_deadline, bg_tasks.join_next()).await {
-            Ok(Some(Ok(()))) => {} // task completed successfully
+            Ok(Some(Ok(()))) => {}
             Ok(Some(Err(e))) => tracing::warn!("Enrichment task panicked: {e}"),
-            Ok(None) => break, // all tasks finished
+            Ok(None) => break,
             Err(_) => {
                 let remaining = bg_tasks.len();
                 tracing::warn!("Drain timeout reached, aborting {remaining} enrichment task(s)");
@@ -560,231 +613,235 @@ pub(super) async fn process_capture_events(
             }
         }
     }
+}
 
-    // Stop the cursor region polling task.
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    cursor_poll_handle.abort();
-
-    // Stop continuous recording and persist the frame list so
-    // stop_walkthrough can attach recording frames to hover actions.
-    if let Some(ref mcp) = mcp {
-        let recording_timeout = tokio::time::Duration::from_secs(10);
-        match tokio::time::timeout(recording_timeout, mcp.call_tool("stop_recording", None)).await {
-            Ok(Ok(result)) if result.is_error != Some(true) => {
-                let frames = super::walkthrough_enrichment::parse_recording_frames(&result.content);
-                tracing::info!("Recording stopped, got {} frames", frames.len());
-                let frames_path = session_dir.join("recording_frames.json");
-                match serde_json::to_string_pretty(&frames) {
-                    Ok(json) => {
-                        if let Err(e) = std::fs::write(&frames_path, json) {
-                            tracing::warn!("Failed to write recording frames: {e}");
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to serialize recording frames: {e}");
+async fn stop_recording_and_persist_frames(mcp: &McpClient, session_dir: &std::path::Path) {
+    let recording_timeout = tokio::time::Duration::from_secs(10);
+    match tokio::time::timeout(recording_timeout, mcp.call_tool("stop_recording", None)).await {
+        Ok(Ok(result)) if result.is_error != Some(true) => {
+            let frames = super::walkthrough_enrichment::parse_recording_frames(&result.content);
+            tracing::info!("Recording stopped, got {} frames", frames.len());
+            let frames_path = session_dir.join("recording_frames.json");
+            match serde_json::to_string_pretty(&frames) {
+                Ok(json) => {
+                    if let Err(e) = std::fs::write(&frames_path, json) {
+                        tracing::warn!("Failed to write recording frames: {e}");
                     }
                 }
-            }
-            Ok(Ok(_)) => {
-                tracing::debug!("stop_recording returned error (may not have been active)");
-            }
-            Ok(Err(e)) => {
-                tracing::debug!("stop_recording call failed: {e}");
-            }
-            Err(_) => {
-                tracing::warn!("stop_recording timed out after {recording_timeout:?}");
+                Err(e) => tracing::warn!("Failed to serialize recording frames: {e}"),
             }
         }
-    }
-
-    // Retrieve hover events from MCP and persist them as HoverDetected
-    // walkthrough events so that stop_walkthrough's retrieve_hover_candidates
-    // can find them when scanning the event log.
-    if let Some(ref mcp) = mcp {
-        let hover_timeout = tokio::time::Duration::from_secs(5);
-        match tokio::time::timeout(hover_timeout, mcp.call_tool("stop_hover_tracking", None)).await
-        {
-            Ok(Ok(result)) if result.is_error != Some(true) => {
-                let raw_text: String = result.content.iter().filter_map(|c| c.as_text()).collect();
-                match serde_json::from_str::<Vec<serde_json::Value>>(&raw_text) {
-                    Ok(events) => {
-                        let mut count = 0u32;
-
-                        for ev in events {
-                            // Skip timeout sentinel events.
-                            if ev.get("timeout").and_then(|v| v.as_bool()) == Some(true) {
-                                continue;
-                            }
-                            let x = ev
-                                .pointer("/cursor/x")
-                                .and_then(|v| v.as_f64())
-                                .unwrap_or(0.0);
-                            let y = ev
-                                .pointer("/cursor/y")
-                                .and_then(|v| v.as_f64())
-                                .unwrap_or(0.0);
-                            let element_name = ev
-                                .pointer("/element/name")
-                                .and_then(|v| v.as_str())
-                                .or_else(|| ev.pointer("/element/label").and_then(|v| v.as_str()))
-                                .unwrap_or("")
-                                .to_string();
-                            let element_role = ev
-                                .pointer("/element/role")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string());
-                            let dwell_ms = ev.get("dwell_ms").and_then(|v| v.as_u64()).unwrap_or(0);
-                            let timestamp_ms =
-                                ev.get("timestamp_ms").and_then(|v| v.as_u64()).unwrap_or(0);
-                            let app_name = ev
-                                .pointer("/element/app_name")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string());
-
-                            let hover_event = WalkthroughEvent {
-                                id: Uuid::new_v4(),
-                                timestamp: timestamp_ms,
-                                kind: WalkthroughEventKind::HoverDetected {
-                                    x,
-                                    y,
-                                    element_name,
-                                    element_role,
-                                    dwell_ms,
-                                    app_name,
-                                },
-                            };
-                            persist_and_emit(&app, &storage, &session_dir, &hover_event);
-                            count += 1;
-                        }
-                        if count > 0 {
-                            tracing::info!("Persisted {count} hover events from native tracking");
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to parse hover tracking response: {e}");
-                    }
-                }
-            }
-            Ok(Ok(_)) => {
-                tracing::debug!("stop_hover_tracking returned error (may not have been active)");
-            }
-            Ok(Err(e)) => {
-                tracing::debug!("stop_hover_tracking call failed: {e}");
-            }
-            Err(_) => {
-                tracing::warn!("stop_hover_tracking timed out after {hover_timeout:?}");
-            }
+        Ok(Ok(_)) => {
+            tracing::debug!("stop_recording returned error (may not have been active)");
+        }
+        Ok(Err(e)) => {
+            tracing::debug!("stop_recording call failed: {e}");
+        }
+        Err(_) => {
+            tracing::warn!("stop_recording timed out after {recording_timeout:?}");
         }
     }
+}
 
-    // Retrieve CDP hover data from each CDP-enabled app. The JS hover
-    // listener has been tracking element transitions in real-time; we now
-    // stop it, flush any pending dwell, and retrieve the collected entries.
-    if let Some(ref mcp) = mcp {
-        for (app_name, app_state) in &cdp_state {
-            let port = app_state.port;
-            // Reconnect to this app's CDP port.
-            match mcp
-                .call_tool("cdp_connect", Some(serde_json::json!({"port": port})))
-                .await
-            {
-                Err(e) => {
-                    tracing::debug!(
-                        "CDP reconnect for hover retrieval failed for '{app_name}': {e}"
-                    );
-                    continue;
-                }
-                Ok(r) if r.is_error == Some(true) => {
-                    tracing::debug!("CDP reconnect for hover retrieval rejected for '{app_name}'");
-                    continue;
-                }
-                Ok(_) => {}
+async fn persist_native_hover_events(
+    mcp: &McpClient,
+    app: &tauri::AppHandle,
+    storage: &WalkthroughStorage,
+    session_dir: &std::path::Path,
+) {
+    let hover_timeout = tokio::time::Duration::from_secs(5);
+    match tokio::time::timeout(hover_timeout, mcp.call_tool("stop_hover_tracking", None)).await {
+        Ok(Ok(result)) if result.is_error != Some(true) => {
+            let raw_text: String = result.content.iter().filter_map(|c| c.as_text()).collect();
+            match serde_json::from_str::<Vec<serde_json::Value>>(&raw_text) {
+                Ok(events) => persist_native_hover_json(app, storage, session_dir, events),
+                Err(e) => tracing::warn!("Failed to parse hover tracking response: {e}"),
             }
+        }
+        Ok(Ok(_)) => {
+            tracing::debug!("stop_hover_tracking returned error (may not have been active)");
+        }
+        Ok(Err(e)) => {
+            tracing::debug!("stop_hover_tracking call failed: {e}");
+        }
+        Err(_) => {
+            tracing::warn!("stop_hover_tracking timed out after {hover_timeout:?}");
+        }
+    }
+}
 
-            // Restore the tab the hover listener was injected into.
+fn persist_native_hover_json(
+    app: &tauri::AppHandle,
+    storage: &WalkthroughStorage,
+    session_dir: &std::path::Path,
+    events: Vec<serde_json::Value>,
+) {
+    let mut count = 0u32;
+    for ev in events {
+        if ev.get("timeout").and_then(|v| v.as_bool()) == Some(true) {
+            continue;
+        }
+        let hover_event = WalkthroughEvent {
+            id: Uuid::new_v4(),
+            timestamp: ev.get("timestamp_ms").and_then(|v| v.as_u64()).unwrap_or(0),
+            kind: WalkthroughEventKind::HoverDetected {
+                x: ev
+                    .pointer("/cursor/x")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                y: ev
+                    .pointer("/cursor/y")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                element_name: ev
+                    .pointer("/element/name")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| ev.pointer("/element/label").and_then(|v| v.as_str()))
+                    .unwrap_or("")
+                    .to_string(),
+                element_role: ev
+                    .pointer("/element/role")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                dwell_ms: ev.get("dwell_ms").and_then(|v| v.as_u64()).unwrap_or(0),
+                app_name: ev
+                    .pointer("/element/app_name")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+            },
+        };
+        persist_and_emit(app, storage, session_dir, &hover_event);
+        count += 1;
+    }
+    if count > 0 {
+        tracing::info!("Persisted {count} hover events from native tracking");
+    }
+}
+
+async fn persist_cdp_hover_events(
+    mcp: &McpClient,
+    app: &tauri::AppHandle,
+    storage: &WalkthroughStorage,
+    session_dir: &std::path::Path,
+    cdp_state: &HashMap<String, CdpAppState>,
+) {
+    for (app_name, app_state) in cdp_state {
+        if !reconnect_cdp_for_hover_retrieval(mcp, app_name, app_state).await {
+            continue;
+        }
+        let entries = match retrieve_cdp_hover_entries(mcp, app_name).await {
+            Some(entries) => entries,
+            None => continue,
+        };
+        persist_cdp_hover_entries(app, storage, session_dir, app_name, entries);
+        let _ = mcp.call_tool("cdp_disconnect", None).await;
+    }
+}
+
+async fn reconnect_cdp_for_hover_retrieval(
+    mcp: &McpClient,
+    app_name: &str,
+    app_state: &CdpAppState,
+) -> bool {
+    match mcp
+        .call_tool(
+            "cdp_connect",
+            Some(serde_json::json!({"port": app_state.port})),
+        )
+        .await
+    {
+        Err(e) => {
+            tracing::debug!("CDP reconnect for hover retrieval failed for '{app_name}': {e}");
+            false
+        }
+        Ok(r) if r.is_error == Some(true) => {
+            tracing::debug!("CDP reconnect for hover retrieval rejected for '{app_name}'");
+            false
+        }
+        Ok(_) => {
             if let Some(url) = app_state.selected_page_url.as_deref() {
                 restore_selected_page(mcp, url).await;
             }
-
-            // Stop the hover interval + flush pending dwell.
-            let stop_args = serde_json::json!({ "function": CDP_STOP_HOVER_JS });
-            let _ = mcp.call_tool("cdp_evaluate_script", Some(stop_args)).await;
-
-            // Retrieve all collected hover entries.
-            let retrieve_args = serde_json::json!({ "function": CDP_RETRIEVE_HOVERS_JS });
-            let result = match tokio::time::timeout(
-                CDP_SNAPSHOT_TIMEOUT,
-                mcp.call_tool("cdp_evaluate_script", Some(retrieve_args)),
-            )
-            .await
-            {
-                Ok(Ok(r)) if r.is_error != Some(true) => r,
-                Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
-                    tracing::debug!("CDP hover retrieve failed for '{app_name}'");
-                    continue;
-                }
-            };
-
-            let raw: String = result.content.iter().filter_map(|c| c.as_text()).collect();
-            let text = raw.trim();
-            let entries: Vec<serde_json::Value> = match serde_json::from_str(text) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-
-            let mut count = 0u32;
-            for entry in entries {
-                let label = entry["textContent"]
-                    .as_str()
-                    .or_else(|| entry["ariaLabel"].as_str())
-                    .filter(|s| !s.is_empty());
-                let Some(label) = label else { continue };
-
-                let ts = entry["ts"].as_u64().unwrap_or(0);
-                let dwell_ms = entry["dwellMs"].as_u64().unwrap_or(0);
-
-                // Emit a HoverDetected event (so retrieve_hover_candidates finds it).
-                let hover_id = Uuid::new_v4();
-                let hover_event = WalkthroughEvent {
-                    id: hover_id,
-                    timestamp: ts,
-                    kind: WalkthroughEventKind::HoverDetected {
-                        x: entry["x"].as_f64().unwrap_or(0.0),
-                        y: entry["y"].as_f64().unwrap_or(0.0),
-                        element_name: label.to_string(),
-                        element_role: entry["role"].as_str().map(|s| s.to_string()),
-                        dwell_ms,
-                        app_name: Some(app_name.clone()),
-                    },
-                };
-                persist_and_emit(&app, &storage, &session_dir, &hover_event);
-
-                // Emit a paired CdpHoverResolved event with the full DOM info.
-                let cdp_event = WalkthroughEvent {
-                    id: Uuid::new_v4(),
-                    timestamp: ts,
-                    kind: WalkthroughEventKind::CdpHoverResolved {
-                        hover_event_id: hover_id,
-                        name: label.to_string(),
-                        role: entry["role"].as_str().map(|s| s.to_string()),
-                        href: entry["href"].as_str().map(|s| s.to_string()),
-                        parent_role: entry["parentRole"].as_str().map(|s| s.to_string()),
-                        parent_name: entry["parentName"].as_str().map(|s| s.to_string()),
-                    },
-                };
-                persist_and_emit(&app, &storage, &session_dir, &cdp_event);
-                count += 1;
-            }
-            if count > 0 {
-                tracing::info!("Persisted {count} CDP hover events from '{app_name}'");
-            }
-
-            // Disconnect so the next app can connect.
-            let _ = mcp.call_tool("cdp_disconnect", None).await;
+            true
         }
     }
+}
 
-    tracing::info!("Walkthrough capture event loop ended");
+async fn retrieve_cdp_hover_entries(
+    mcp: &McpClient,
+    app_name: &str,
+) -> Option<Vec<serde_json::Value>> {
+    let stop_args = serde_json::json!({ "function": CDP_STOP_HOVER_JS });
+    let _ = mcp.call_tool("cdp_evaluate_script", Some(stop_args)).await;
+
+    let retrieve_args = serde_json::json!({ "function": CDP_RETRIEVE_HOVERS_JS });
+    let result = match tokio::time::timeout(
+        CDP_SNAPSHOT_TIMEOUT,
+        mcp.call_tool("cdp_evaluate_script", Some(retrieve_args)),
+    )
+    .await
+    {
+        Ok(Ok(r)) if r.is_error != Some(true) => r,
+        Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
+            tracing::debug!("CDP hover retrieve failed for '{app_name}'");
+            return None;
+        }
+    };
+
+    let raw: String = result.content.iter().filter_map(|c| c.as_text()).collect();
+    serde_json::from_str(raw.trim()).ok()
+}
+
+fn persist_cdp_hover_entries(
+    app: &tauri::AppHandle,
+    storage: &WalkthroughStorage,
+    session_dir: &std::path::Path,
+    app_name: &str,
+    entries: Vec<serde_json::Value>,
+) {
+    let mut count = 0u32;
+    for entry in entries {
+        let label = entry["textContent"]
+            .as_str()
+            .or_else(|| entry["ariaLabel"].as_str())
+            .filter(|s| !s.is_empty());
+        let Some(label) = label else { continue };
+
+        let ts = entry["ts"].as_u64().unwrap_or(0);
+        let dwell_ms = entry["dwellMs"].as_u64().unwrap_or(0);
+        let hover_id = Uuid::new_v4();
+        let hover_event = WalkthroughEvent {
+            id: hover_id,
+            timestamp: ts,
+            kind: WalkthroughEventKind::HoverDetected {
+                x: entry["x"].as_f64().unwrap_or(0.0),
+                y: entry["y"].as_f64().unwrap_or(0.0),
+                element_name: label.to_string(),
+                element_role: entry["role"].as_str().map(|s| s.to_string()),
+                dwell_ms,
+                app_name: Some(app_name.to_string()),
+            },
+        };
+        persist_and_emit(app, storage, session_dir, &hover_event);
+
+        let cdp_event = WalkthroughEvent {
+            id: Uuid::new_v4(),
+            timestamp: ts,
+            kind: WalkthroughEventKind::CdpHoverResolved {
+                hover_event_id: hover_id,
+                name: label.to_string(),
+                role: entry["role"].as_str().map(|s| s.to_string()),
+                href: entry["href"].as_str().map(|s| s.to_string()),
+                parent_role: entry["parentRole"].as_str().map(|s| s.to_string()),
+                parent_name: entry["parentName"].as_str().map(|s| s.to_string()),
+            },
+        };
+        persist_and_emit(app, storage, session_dir, &cdp_event);
+        count += 1;
+    }
+    if count > 0 {
+        tracing::info!("Persisted {count} CDP hover events from '{app_name}'");
+    }
 }
 
 /// Get the recording bar window's bounds in logical screen coordinates.
