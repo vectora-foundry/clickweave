@@ -4,7 +4,7 @@ import { useStore } from "../../store/useAppStore";
 import { AmbiguityResolutionModal } from "../AmbiguityResolutionModal";
 import { CdpAppSelectModal } from "../CdpAppSelectModal";
 import { ConfirmClearConversationModal } from "../ConfirmClearConversationModal";
-import { LogsDrawer } from "../LogsDrawer";
+import { LogsBar } from "./LogsBar";
 import { SettingsModal } from "../SettingsModal";
 import { SupervisionModal } from "../SupervisionModal";
 import { VerdictBar } from "../VerdictBar";
@@ -27,8 +27,6 @@ export function AppShell() {
   const {
     cdpModalOpen,
     cdpProgress,
-    logs,
-    logsDrawerOpen,
     activeAmbiguityId,
     ambiguityResolutions,
     confirmClearOpen,
@@ -36,16 +34,11 @@ export function AppShell() {
     useShallow((s) => ({
       cdpModalOpen: s.walkthroughCdpModalOpen,
       cdpProgress: s.walkthroughCdpProgress,
-      logs: s.logs,
-      logsDrawerOpen: s.logsDrawerOpen,
       activeAmbiguityId: s.activeAmbiguityId,
       ambiguityResolutions: s.ambiguityResolutions,
       confirmClearOpen: s.confirmClearOpen,
     })),
   );
-
-  const toggleLogsDrawer = useStore((s) => s.toggleLogsDrawer);
-  const clearLogs = useStore((s) => s.clearLogs);
   const closeAmbiguityModal = useStore((s) => s.closeAmbiguityModal);
   const setConfirmClearOpen = useStore((s) => s.setConfirmClearOpen);
   const clearConversationFlow = useStore((s) => s.clearConversationFlow);
@@ -122,15 +115,7 @@ export function AppShell() {
           {currentView === "overview" ? <OverviewView /> : <CanvasView />}
         </main>
       </div>
-      {/* Phase 1–4: legacy LogsDrawer; Phase 5 swaps for <LogsBar /> (P1.H3 — keep
-          the logs surface mounted continuously so menu://toggle-logs and the
-          FloatingToolbar logs button never point at a missing element). */}
-      <LogsDrawer
-        open={logsDrawerOpen}
-        logs={logs}
-        onToggle={toggleLogsDrawer}
-        onClear={clearLogs}
-      />
+      <LogsBar />
 
       <SettingsModal
         open={showSettings}
