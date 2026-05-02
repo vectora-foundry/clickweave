@@ -1,6 +1,10 @@
 use uuid::Uuid;
 
-use crate::MouseButton;
+use crate::{
+    AxClickParams, AxSelectParams, AxTarget, CdpClickParams, CdpHoverParams, CdpTarget,
+    ClickParams, ClickTarget, Edge, FocusTarget, FocusWindowParams, HoverParams, MouseButton, Node,
+    NodeType, Position, PressKeyParams, ScrollParams, TypeTextParams, Workflow,
+};
 
 use super::event_coalescing::{
     KEY_COALESCE_GAP_MS, SCROLL_COALESCE_GAP_MS, TEXT_IDLE_GAP_MS, flush_text,
@@ -23,12 +27,7 @@ pub use super::target_resolution::OCR_PROXIMITY_PX;
 ///
 /// Returns `(actions, warnings)`. Pure function — no I/O.
 pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>, Vec<String>) {
-    // Sort by timestamp so each click is followed by its enrichment events.
-    // Background enrichment tasks append events out-of-order (after later
-    // clicks), but reuse the original click's timestamp. Stable sort keeps
-    // the click before its enrichment within the same timestamp.
-    let mut sorted = events.to_vec();
-    sorted.sort_by_key(|e| e.timestamp);
+    let sorted = sorted_events(events);
     let events = &sorted;
 
     let mut actions: Vec<WalkthroughAction> = Vec::new();
@@ -55,48 +54,18 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
                 // Collapse repeated focus on same app, but update app_kind
                 // if it changed (e.g. reactive Electron reclassification).
                 if last_app.as_ref() == Some(app_name) {
-                    // Search backward for the most recent focus/launch action
-                    // for this app — it may not be the very last action (clicks
-                    // can appear between the original focus and the correction).
-                    for prev in actions.iter_mut().rev() {
-                        let (prev_name, prev_kind) = match &mut prev.kind {
-                            WalkthroughActionKind::LaunchApp {
-                                app_name: name,
-                                app_kind: kind,
-                            } => (name as &str, kind),
-                            WalkthroughActionKind::FocusWindow {
-                                app_name: name,
-                                app_kind: kind,
-                                ..
-                            } => (name as &str, kind),
-                            _ => continue,
-                        };
-                        if prev_name == app_name && *prev_kind != *app_kind {
-                            *prev_kind = *app_kind;
-                            break;
-                        }
-                    }
+                    update_existing_focus_kind(&mut actions, app_name, *app_kind);
                     continue;
                 }
 
                 let is_new = seen_apps.insert(app_name.clone());
-                let kind = if is_new {
-                    WalkthroughActionKind::LaunchApp {
-                        app_name: app_name.clone(),
-                        app_kind: *app_kind,
-                    }
-                } else {
-                    WalkthroughActionKind::FocusWindow {
-                        app_name: app_name.clone(),
-                        window_title: window_title.clone(),
-                        app_kind: *app_kind,
-                    }
-                };
-
-                let mut action =
-                    WalkthroughAction::new(kind, Some(app_name.clone()), vec![event.id]);
-                action.window_title = window_title.clone();
-                actions.push(action);
+                actions.push(focus_action(
+                    event.id,
+                    app_name,
+                    window_title,
+                    *app_kind,
+                    is_new,
+                ));
                 last_app = Some(app_name.clone());
             }
 
@@ -119,169 +88,29 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
             } => {
                 flush_text(&mut text_buffer, &mut actions, &last_app);
 
-                // Lookahead: collect enrichment events (screenshot, OCR, accessibility)
-                // that follow this click before the next action event.
-                let mut screenshot_path: Option<String> = None;
-                let mut screenshot_meta: Option<ScreenshotMeta> = None;
-                let mut ocr_annotations = None;
-                let mut ax_label: Option<(String, Option<String>, Option<String>)> = None;
-                let mut vlm_label: Option<String> = None;
-                let mut crop_candidate: Option<(String, String)> = None;
-                let mut cdp_resolved: Option<CdpElementData> = None;
-                let mut peek = i;
-                while peek < events.len() {
-                    match &events[peek].kind {
-                        WalkthroughEventKind::ScreenshotCaptured {
-                            path,
-                            kind: ScreenshotKind::ClickCrop,
-                            image_b64: Some(b64),
-                            ..
-                        } => {
-                            crop_candidate = Some((path.clone(), b64.clone()));
-                        }
-                        WalkthroughEventKind::ScreenshotCaptured { path, meta, .. } => {
-                            screenshot_path = Some(path.clone());
-                            screenshot_meta = *meta;
-                        }
-                        WalkthroughEventKind::OcrCaptured { annotations, .. } => {
-                            ocr_annotations = Some(annotations);
-                        }
-                        WalkthroughEventKind::AccessibilityElementCaptured {
-                            label,
-                            role,
-                            subrole,
-                        } => {
-                            ax_label = Some((label.clone(), role.clone(), subrole.clone()));
-                        }
-                        WalkthroughEventKind::VlmLabelResolved { label } => {
-                            vlm_label = Some(label.clone());
-                        }
-                        WalkthroughEventKind::CdpClickResolved {
-                            name,
-                            role,
-                            href,
-                            parent_role,
-                            parent_name,
-                            ..
-                        } => {
-                            cdp_resolved = Some(CdpElementData {
-                                name: name.clone(),
-                                role: role.clone(),
-                                href: href.clone(),
-                                parent_role: parent_role.clone(),
-                                parent_name: parent_name.clone(),
-                            });
-                        }
-                        // Stop at the next action event.
-                        _ => break,
-                    }
-                    peek += 1;
-                }
+                let (lookahead, peek) = collect_click_lookahead(events, i);
                 // Advance past consumed enrichment events.
                 i = peek;
 
                 // Window control buttons (close, minimize, maximize/zoom):
                 // - Close/Zoom → window-relative click (no reliable shortcut)
                 // - Minimize → Cmd+M, Maximize (full screen) → Ctrl+Cmd+F
-                if let Some((ref label, ref role, ref subrole)) = ax_label
-                    && let Some(wc) = WindowControl::from_accessibility(
-                        label,
-                        role.as_deref(),
-                        subrole.as_deref(),
-                    )
+                if let Some(action) =
+                    window_control_action(event.id, *x, *y, lookahead.ax_label.as_ref(), &last_app)
                 {
-                    if wc.shortcut().is_none() {
-                        // Emit a Click action with a WindowControl target candidate.
-                        // The executor resolves this to window-relative coordinates.
-                        let mut action = WalkthroughAction::new(
-                            WalkthroughActionKind::Click {
-                                x: *x,
-                                y: *y,
-                                button: MouseButton::Left,
-                                click_count: 1,
-                            },
-                            last_app.clone(),
-                            vec![event.id],
-                        );
-                        action.target_candidates = vec![TargetCandidate::WindowControl {
-                            action: wc.to_action(),
-                        }];
-                        action.confidence = ActionConfidence::High;
-                        actions.push(action);
-                    } else if let Some((key, modifiers)) = wc.shortcut() {
-                        actions.push(WalkthroughAction::new(
-                            WalkthroughActionKind::PressKey {
-                                key: key.to_string(),
-                                modifiers,
-                            },
-                            last_app.clone(),
-                            vec![event.id],
-                        ));
-                    }
+                    actions.push(action);
                     continue;
                 }
 
-                // Build target candidates and score confidence via extracted functions.
-                // Promote the ax_label to an AX dispatch descriptor when the
-                // role is actionable AND CDP is not in play (an element
-                // resolved by the in-page JS listener is a strong signal
-                // the target belongs to a web view, not a native AX tree).
-                let ax_for_candidates = ax_label
-                    .as_ref()
-                    .map(|(label, role, _)| (label.clone(), role.clone()));
-                let ax_dispatch_resolved = match (&ax_label, &cdp_resolved) {
-                    (Some((label, Some(role), _)), None)
-                        if !label.is_empty()
-                            && super::types::is_actionable_ax_role(Some(role.as_str())) =>
-                    {
-                        Some(AxElementData {
-                            role: role.clone(),
-                            name: label.clone(),
-                            parent_name: None,
-                        })
-                    }
-                    _ => None,
-                };
-
-                let enrichment = ClickEnrichment {
-                    ax_label: ax_for_candidates,
-                    vlm_label,
-                    ocr_annotations: ocr_annotations.as_ref().map(|a| *a),
-                    crop_candidate,
-                    cdp_resolved,
-                    ax_resolved: ax_dispatch_resolved,
-                    click_x: *x,
-                    click_y: *y,
-                };
-
-                let candidates = build_target_candidates(&enrichment);
-                let confidence = score_confidence(&candidates);
-
-                let mut click_warnings = Vec::new();
-                if confidence == ActionConfidence::Low {
-                    click_warnings.push(format!(
-                        "No text target found for click at ({x:.0}, {y:.0}) — using coordinates"
-                    ));
-                }
-
-                let mut action = WalkthroughAction::new(
-                    WalkthroughActionKind::Click {
-                        x: *x,
-                        y: *y,
-                        button: *button,
-                        click_count: *click_count,
-                    },
+                actions.push(click_action_from_lookahead(
+                    event.id,
+                    *x,
+                    *y,
+                    *button,
+                    *click_count,
                     last_app.clone(),
-                    vec![event.id],
-                );
-                action.target_candidates = candidates;
-                action.confidence = confidence;
-                action.warnings = click_warnings;
-                action.screenshot_meta = screenshot_meta;
-                if let Some(path) = screenshot_path {
-                    action.artifact_paths.push(path);
-                }
-                actions.push(action);
+                    lookahead,
+                ));
             }
 
             WalkthroughEventKind::KeyPressed { key, modifiers } => {
@@ -387,6 +216,260 @@ pub fn normalize_events(events: &[WalkthroughEvent]) -> (Vec<WalkthroughAction>,
     (actions, warnings)
 }
 
+fn sorted_events(events: &[WalkthroughEvent]) -> Vec<WalkthroughEvent> {
+    // Sort by timestamp so each click is followed by its enrichment events.
+    // Background enrichment tasks append events out-of-order (after later
+    // clicks), but reuse the original click's timestamp. Stable sort keeps
+    // the click before its enrichment within the same timestamp.
+    let mut sorted = events.to_vec();
+    sorted.sort_by_key(|e| e.timestamp);
+    sorted
+}
+
+fn update_existing_focus_kind(
+    actions: &mut [WalkthroughAction],
+    app_name: &str,
+    app_kind: crate::AppKind,
+) {
+    // Search backward for the most recent focus/launch action for this app.
+    // It may not be the very last action because clicks can sit between the
+    // original focus and a later reactive app-kind correction.
+    for prev in actions.iter_mut().rev() {
+        let (prev_name, prev_kind) = match &mut prev.kind {
+            WalkthroughActionKind::LaunchApp {
+                app_name: name,
+                app_kind: kind,
+            } => (name as &str, kind),
+            WalkthroughActionKind::FocusWindow {
+                app_name: name,
+                app_kind: kind,
+                ..
+            } => (name as &str, kind),
+            _ => continue,
+        };
+        if prev_name == app_name && *prev_kind != app_kind {
+            *prev_kind = app_kind;
+            break;
+        }
+    }
+}
+
+fn focus_action(
+    event_id: Uuid,
+    app_name: &str,
+    window_title: &Option<String>,
+    app_kind: crate::AppKind,
+    is_new: bool,
+) -> WalkthroughAction {
+    let kind = if is_new {
+        WalkthroughActionKind::LaunchApp {
+            app_name: app_name.to_string(),
+            app_kind,
+        }
+    } else {
+        WalkthroughActionKind::FocusWindow {
+            app_name: app_name.to_string(),
+            window_title: window_title.clone(),
+            app_kind,
+        }
+    };
+
+    let mut action = WalkthroughAction::new(kind, Some(app_name.to_string()), vec![event_id]);
+    action.window_title = window_title.clone();
+    action
+}
+
+#[derive(Default)]
+struct ClickLookahead<'a> {
+    screenshot_path: Option<String>,
+    screenshot_meta: Option<ScreenshotMeta>,
+    ocr_annotations: Option<&'a Vec<super::types::OcrAnnotation>>,
+    ax_label: Option<(String, Option<String>, Option<String>)>,
+    vlm_label: Option<String>,
+    crop_candidate: Option<(String, String)>,
+    cdp_resolved: Option<CdpElementData>,
+}
+
+fn collect_click_lookahead<'a>(
+    events: &'a [WalkthroughEvent],
+    start: usize,
+) -> (ClickLookahead<'a>, usize) {
+    let mut lookahead = ClickLookahead::default();
+    let mut peek = start;
+    while peek < events.len() {
+        match &events[peek].kind {
+            WalkthroughEventKind::ScreenshotCaptured {
+                path,
+                kind: ScreenshotKind::ClickCrop,
+                image_b64: Some(b64),
+                ..
+            } => {
+                lookahead.crop_candidate = Some((path.clone(), b64.clone()));
+            }
+            WalkthroughEventKind::ScreenshotCaptured { path, meta, .. } => {
+                lookahead.screenshot_path = Some(path.clone());
+                lookahead.screenshot_meta = *meta;
+            }
+            WalkthroughEventKind::OcrCaptured { annotations, .. } => {
+                lookahead.ocr_annotations = Some(annotations);
+            }
+            WalkthroughEventKind::AccessibilityElementCaptured {
+                label,
+                role,
+                subrole,
+            } => {
+                lookahead.ax_label = Some((label.clone(), role.clone(), subrole.clone()));
+            }
+            WalkthroughEventKind::VlmLabelResolved { label } => {
+                lookahead.vlm_label = Some(label.clone());
+            }
+            WalkthroughEventKind::CdpClickResolved {
+                name,
+                role,
+                href,
+                parent_role,
+                parent_name,
+                ..
+            } => {
+                lookahead.cdp_resolved = Some(CdpElementData {
+                    name: name.clone(),
+                    role: role.clone(),
+                    href: href.clone(),
+                    parent_role: parent_role.clone(),
+                    parent_name: parent_name.clone(),
+                });
+            }
+            _ => break,
+        }
+        peek += 1;
+    }
+    (lookahead, peek)
+}
+
+fn window_control_action(
+    event_id: Uuid,
+    x: f64,
+    y: f64,
+    ax_label: Option<&(String, Option<String>, Option<String>)>,
+    last_app: &Option<String>,
+) -> Option<WalkthroughAction> {
+    let (label, role, subrole) = ax_label?;
+    let wc = WindowControl::from_accessibility(label, role.as_deref(), subrole.as_deref())?;
+
+    if let Some((key, modifiers)) = wc.shortcut() {
+        return Some(WalkthroughAction::new(
+            WalkthroughActionKind::PressKey {
+                key: key.to_string(),
+                modifiers,
+            },
+            last_app.clone(),
+            vec![event_id],
+        ));
+    }
+
+    // Emit a Click action with a WindowControl target candidate. The executor
+    // resolves this to window-relative coordinates.
+    let mut action = WalkthroughAction::new(
+        WalkthroughActionKind::Click {
+            x,
+            y,
+            button: MouseButton::Left,
+            click_count: 1,
+        },
+        last_app.clone(),
+        vec![event_id],
+    );
+    action.target_candidates = vec![TargetCandidate::WindowControl {
+        action: wc.to_action(),
+    }];
+    action.confidence = ActionConfidence::High;
+    Some(action)
+}
+
+fn click_action_from_lookahead(
+    event_id: Uuid,
+    x: f64,
+    y: f64,
+    button: MouseButton,
+    click_count: u32,
+    last_app: Option<String>,
+    lookahead: ClickLookahead<'_>,
+) -> WalkthroughAction {
+    let ClickLookahead {
+        screenshot_path,
+        screenshot_meta,
+        ocr_annotations,
+        ax_label,
+        vlm_label,
+        crop_candidate,
+        cdp_resolved,
+    } = lookahead;
+
+    let ax_for_candidates = ax_label
+        .as_ref()
+        .map(|(label, role, _)| (label.clone(), role.clone()));
+    let ax_dispatch_resolved = ax_dispatch_candidate(&ax_label, cdp_resolved.is_some());
+    let enrichment = ClickEnrichment {
+        ax_label: ax_for_candidates,
+        vlm_label,
+        ocr_annotations,
+        crop_candidate,
+        cdp_resolved,
+        ax_resolved: ax_dispatch_resolved,
+        click_x: x,
+        click_y: y,
+    };
+
+    let candidates = build_target_candidates(&enrichment);
+    let confidence = score_confidence(&candidates);
+
+    let mut action = WalkthroughAction::new(
+        WalkthroughActionKind::Click {
+            x,
+            y,
+            button,
+            click_count,
+        },
+        last_app,
+        vec![event_id],
+    );
+    action.target_candidates = candidates;
+    action.confidence = confidence;
+    if confidence == ActionConfidence::Low {
+        action.warnings.push(format!(
+            "No text target found for click at ({x:.0}, {y:.0}) — using coordinates"
+        ));
+    }
+    action.screenshot_meta = screenshot_meta;
+    if let Some(path) = screenshot_path {
+        action.artifact_paths.push(path);
+    }
+    action
+}
+
+fn ax_dispatch_candidate(
+    ax_label: &Option<(String, Option<String>, Option<String>)>,
+    has_cdp_resolution: bool,
+) -> Option<AxElementData> {
+    // Promote the ax_label to an AX dispatch descriptor when the role is
+    // actionable AND CDP is not in play. A JS-resolved element is a strong
+    // signal that the target belongs to a web view, not a native AX tree.
+    if has_cdp_resolution {
+        return None;
+    }
+    let Some((label, Some(role), _)) = ax_label else {
+        return None;
+    };
+    if label.is_empty() || !super::types::is_actionable_ax_role(Some(role.as_str())) {
+        return None;
+    }
+    Some(AxElementData {
+        role: role.clone(),
+        name: label.clone(),
+        parent_name: None,
+    })
+}
+
 // --- Draft synthesis ---
 
 /// Vertical spacing between auto-positioned nodes (pixels in canvas coords).
@@ -401,12 +484,6 @@ pub fn synthesize_draft(
     workflow_id: Uuid,
     workflow_name: &str,
 ) -> crate::Workflow {
-    use crate::{
-        AxClickParams, AxSelectParams, AxTarget, CdpClickParams, CdpHoverParams, CdpTarget,
-        ClickParams, ClickTarget, Edge, FocusTarget, FocusWindowParams, HoverParams, Node,
-        NodeType, Position, PressKeyParams, ScrollParams, TypeTextParams, Workflow,
-    };
-
     let mut workflow = Workflow {
         id: workflow_id,
         name: workflow_name.to_string(),
@@ -429,236 +506,7 @@ pub fn synthesize_draft(
         };
         node_index += 1;
 
-        let (node_type, name) = match &action.kind {
-            WalkthroughActionKind::LaunchApp { app_name, app_kind } => (
-                NodeType::FocusWindow(FocusWindowParams {
-                    target: FocusTarget::AppName(app_name.clone()),
-                    bring_to_front: true,
-                    app_kind: *app_kind,
-                    chrome_profile_id: None,
-                    ..Default::default()
-                }),
-                format!("Launch {app_name}"),
-            ),
-
-            WalkthroughActionKind::FocusWindow {
-                app_name,
-                window_title,
-                app_kind,
-            } => (
-                NodeType::FocusWindow(FocusWindowParams {
-                    target: FocusTarget::AppName(app_name.clone()),
-                    bring_to_front: true,
-                    app_kind: *app_kind,
-                    chrome_profile_id: None,
-                    ..Default::default()
-                }),
-                match window_title {
-                    Some(t) => format!("Focus '{t}'"),
-                    None => format!("Focus {app_name}"),
-                },
-            ),
-
-            WalkthroughActionKind::Click {
-                x,
-                y,
-                button,
-                click_count,
-            } => {
-                // Window control target — highest priority, resolved at execution time.
-                if let Some(wc_action) = action.target_candidates.iter().find_map(|c| match c {
-                    TargetCandidate::WindowControl { action } => Some(*action),
-                    _ => None,
-                }) {
-                    let name = wc_action.display_name().to_string();
-                    let params = ClickParams {
-                        target: Some(ClickTarget::WindowControl { action: wc_action }),
-                        button: *button,
-                        click_count: *click_count,
-                        ..Default::default()
-                    };
-                    (NodeType::Click(params), name)
-                } else {
-                    // Structured targets take precedence over free-form
-                    // text. AxElement (macOS native dispatch) first, then
-                    // CdpElement (browser DOM), then text labels, then
-                    // coordinates.
-                    let ax_candidate = action.target_candidates.iter().find_map(|c| match c {
-                        TargetCandidate::AxElement {
-                            role,
-                            name,
-                            parent_name,
-                        } => Some((role.clone(), name.clone(), parent_name.clone())),
-                        _ => None,
-                    });
-                    let cdp_candidate = action.target_candidates.iter().find_map(|c| match c {
-                        TargetCandidate::CdpElement { name, .. } => Some(name),
-                        _ => None,
-                    });
-
-                    // Use the best text target candidate.
-                    let best_target = action
-                        .target_candidates
-                        .iter()
-                        .find_map(|c| c.preferred_label().map(|s| s.to_string()));
-
-                    if let Some((role, name, parent_name)) = ax_candidate {
-                        // AXRow / AXOutlineRow targets fire AXSelectedRows
-                        // on the enclosing outline/table, not AXPress —
-                        // ax_select is the right MCP entry point.
-                        let label = if name.is_empty() {
-                            role.clone()
-                        } else {
-                            name.clone()
-                        };
-                        let is_row = role == "AXRow" || role == "AXOutlineRow";
-                        let ax_target = AxTarget::Descriptor {
-                            role,
-                            name,
-                            parent_name,
-                        };
-                        if is_row {
-                            (
-                                NodeType::AxSelect(AxSelectParams {
-                                    target: ax_target,
-                                    ..Default::default()
-                                }),
-                                format!("Select '{label}'"),
-                            )
-                        } else {
-                            (
-                                NodeType::AxClick(AxClickParams {
-                                    target: ax_target,
-                                    ..Default::default()
-                                }),
-                                format!("Click '{label}'"),
-                            )
-                        }
-                    } else if let Some(cdp_name) = cdp_candidate {
-                        (
-                            NodeType::CdpClick(CdpClickParams {
-                                target: CdpTarget::ExactLabel(cdp_name.clone()),
-                                ..Default::default()
-                            }),
-                            format!("Click '{cdp_name}'"),
-                        )
-                    } else if let Some(ref target) = best_target {
-                        (
-                            NodeType::Click(ClickParams {
-                                target: Some(ClickTarget::Text {
-                                    text: target.clone(),
-                                }),
-                                button: *button,
-                                click_count: *click_count,
-                                ..Default::default()
-                            }),
-                            format!("Click '{target}'"),
-                        )
-                    } else {
-                        (
-                            NodeType::Click(ClickParams {
-                                target: Some(ClickTarget::Coordinates { x: *x, y: *y }),
-                                button: *button,
-                                click_count: *click_count,
-                                ..Default::default()
-                            }),
-                            format!("Click ({x:.0}, {y:.0})"),
-                        )
-                    }
-                }
-            }
-
-            WalkthroughActionKind::TypeText { text } => {
-                let display = if text.chars().count() > 20 {
-                    let truncated: String = text.chars().take(20).collect();
-                    format!("Type '{truncated}'...")
-                } else {
-                    format!("Type '{text}'")
-                };
-                (
-                    NodeType::TypeText(TypeTextParams {
-                        text: text.clone(),
-                        ..Default::default()
-                    }),
-                    display,
-                )
-            }
-
-            WalkthroughActionKind::PressKey { key, modifiers } => {
-                let name = WindowControl::from_shortcut(key, modifiers)
-                    .map(|wc| wc.display_name().to_string())
-                    .or_else(|| shortcut_display_name(key, modifiers))
-                    .unwrap_or_else(|| {
-                        if modifiers.is_empty() {
-                            format!("Press {key}")
-                        } else {
-                            format!("Press {}+{key}", modifiers.join("+"))
-                        }
-                    });
-                (
-                    NodeType::PressKey(PressKeyParams {
-                        key: key.clone(),
-                        modifiers: modifiers.clone(),
-                        ..Default::default()
-                    }),
-                    name,
-                )
-            }
-
-            WalkthroughActionKind::Scroll { delta_y } => (
-                NodeType::Scroll(ScrollParams {
-                    delta_y: *delta_y as i32,
-                    x: None,
-                    y: None,
-                    ..Default::default()
-                }),
-                format!("Scroll {}", if *delta_y < 0.0 { "up" } else { "down" }),
-            ),
-
-            WalkthroughActionKind::Hover { x, y, dwell_ms } => {
-                // Same target resolution logic as Click: CDP > text > coordinates
-                let cdp_candidate = action.target_candidates.iter().find_map(|c| match c {
-                    TargetCandidate::CdpElement { name, .. } => Some(name),
-                    _ => None,
-                });
-
-                let best_target = action
-                    .target_candidates
-                    .iter()
-                    .find_map(|c| c.preferred_label().map(|s| s.to_string()));
-
-                let (node_type_out, name) = if let Some(cdp_name) = cdp_candidate {
-                    (
-                        NodeType::CdpHover(CdpHoverParams {
-                            target: CdpTarget::ExactLabel(cdp_name.clone()),
-                            ..Default::default()
-                        }),
-                        format!("Hover '{cdp_name}'"),
-                    )
-                } else if let Some(ref target) = best_target {
-                    (
-                        NodeType::Hover(HoverParams {
-                            target: Some(ClickTarget::Text {
-                                text: target.clone(),
-                            }),
-                            dwell_ms: *dwell_ms,
-                            ..Default::default()
-                        }),
-                        format!("Hover '{target}'"),
-                    )
-                } else {
-                    (
-                        NodeType::Hover(HoverParams {
-                            target: Some(ClickTarget::Coordinates { x: *x, y: *y }),
-                            dwell_ms: *dwell_ms,
-                            ..Default::default()
-                        }),
-                        format!("Hover ({x:.0}, {y:.0})"),
-                    )
-                };
-                (node_type_out, name)
-            }
-        };
+        let (node_type, name) = node_for_action(action);
 
         let auto_id = crate::auto_id::assign_auto_id(&node_type, &mut workflow.next_id_counters);
         let node = Node::new(node_type, position, name, auto_id);
@@ -673,6 +521,255 @@ pub fn synthesize_draft(
     }
 
     workflow
+}
+
+fn node_for_action(action: &WalkthroughAction) -> (NodeType, String) {
+    match &action.kind {
+        WalkthroughActionKind::LaunchApp { app_name, app_kind } => (
+            focus_window_node(app_name, *app_kind),
+            format!("Launch {app_name}"),
+        ),
+        WalkthroughActionKind::FocusWindow {
+            app_name,
+            window_title,
+            app_kind,
+        } => (
+            focus_window_node(app_name, *app_kind),
+            focus_window_name(app_name, window_title),
+        ),
+        WalkthroughActionKind::Click {
+            x,
+            y,
+            button,
+            click_count,
+        } => click_node(action, *x, *y, *button, *click_count),
+        WalkthroughActionKind::TypeText { text } => (
+            NodeType::TypeText(TypeTextParams {
+                text: text.clone(),
+                ..Default::default()
+            }),
+            type_text_name(text),
+        ),
+        WalkthroughActionKind::PressKey { key, modifiers } => (
+            NodeType::PressKey(PressKeyParams {
+                key: key.clone(),
+                modifiers: modifiers.clone(),
+                ..Default::default()
+            }),
+            press_key_name(key, modifiers),
+        ),
+        WalkthroughActionKind::Scroll { delta_y } => (
+            NodeType::Scroll(ScrollParams {
+                delta_y: *delta_y as i32,
+                x: None,
+                y: None,
+                ..Default::default()
+            }),
+            format!("Scroll {}", if *delta_y < 0.0 { "up" } else { "down" }),
+        ),
+        WalkthroughActionKind::Hover { x, y, dwell_ms } => hover_node(action, *x, *y, *dwell_ms),
+    }
+}
+
+fn focus_window_node(app_name: &str, app_kind: crate::AppKind) -> NodeType {
+    NodeType::FocusWindow(FocusWindowParams {
+        target: FocusTarget::AppName(app_name.to_string()),
+        bring_to_front: true,
+        app_kind,
+        chrome_profile_id: None,
+        ..Default::default()
+    })
+}
+
+fn focus_window_name(app_name: &str, window_title: &Option<String>) -> String {
+    match window_title {
+        Some(t) => format!("Focus '{t}'"),
+        None => format!("Focus {app_name}"),
+    }
+}
+
+fn click_node(
+    action: &WalkthroughAction,
+    x: f64,
+    y: f64,
+    button: MouseButton,
+    click_count: u32,
+) -> (NodeType, String) {
+    if let Some(wc_action) = window_control_candidate(action) {
+        let name = wc_action.display_name().to_string();
+        let params = ClickParams {
+            target: Some(ClickTarget::WindowControl { action: wc_action }),
+            button,
+            click_count,
+            ..Default::default()
+        };
+        return (NodeType::Click(params), name);
+    }
+
+    if let Some((role, name, parent_name)) = ax_candidate(action) {
+        return ax_click_or_select_node(role, name, parent_name);
+    }
+
+    if let Some(cdp_name) = cdp_candidate(action) {
+        return (
+            NodeType::CdpClick(CdpClickParams {
+                target: CdpTarget::ExactLabel(cdp_name.clone()),
+                ..Default::default()
+            }),
+            format!("Click '{cdp_name}'"),
+        );
+    }
+
+    if let Some(target) = preferred_text_candidate(action) {
+        return (
+            NodeType::Click(ClickParams {
+                target: Some(ClickTarget::Text {
+                    text: target.clone(),
+                }),
+                button,
+                click_count,
+                ..Default::default()
+            }),
+            format!("Click '{target}'"),
+        );
+    }
+
+    (
+        NodeType::Click(ClickParams {
+            target: Some(ClickTarget::Coordinates { x, y }),
+            button,
+            click_count,
+            ..Default::default()
+        }),
+        format!("Click ({x:.0}, {y:.0})"),
+    )
+}
+
+fn window_control_candidate(
+    action: &WalkthroughAction,
+) -> Option<crate::node_params::WindowControlAction> {
+    action.target_candidates.iter().find_map(|c| match c {
+        TargetCandidate::WindowControl { action } => Some(*action),
+        _ => None,
+    })
+}
+
+fn ax_candidate(action: &WalkthroughAction) -> Option<(String, String, Option<String>)> {
+    action.target_candidates.iter().find_map(|c| match c {
+        TargetCandidate::AxElement {
+            role,
+            name,
+            parent_name,
+        } => Some((role.clone(), name.clone(), parent_name.clone())),
+        _ => None,
+    })
+}
+
+fn ax_click_or_select_node(
+    role: String,
+    name: String,
+    parent_name: Option<String>,
+) -> (NodeType, String) {
+    // AXRow / AXOutlineRow targets fire AXSelectedRows on the enclosing
+    // outline/table, not AXPress, so ax_select is the right MCP entry point.
+    let label = if name.is_empty() {
+        role.clone()
+    } else {
+        name.clone()
+    };
+    let is_row = role == "AXRow" || role == "AXOutlineRow";
+    let ax_target = AxTarget::Descriptor {
+        role,
+        name,
+        parent_name,
+    };
+    if is_row {
+        (
+            NodeType::AxSelect(AxSelectParams {
+                target: ax_target,
+                ..Default::default()
+            }),
+            format!("Select '{label}'"),
+        )
+    } else {
+        (
+            NodeType::AxClick(AxClickParams {
+                target: ax_target,
+                ..Default::default()
+            }),
+            format!("Click '{label}'"),
+        )
+    }
+}
+
+fn cdp_candidate(action: &WalkthroughAction) -> Option<&String> {
+    action.target_candidates.iter().find_map(|c| match c {
+        TargetCandidate::CdpElement { name, .. } => Some(name),
+        _ => None,
+    })
+}
+
+fn preferred_text_candidate(action: &WalkthroughAction) -> Option<String> {
+    action
+        .target_candidates
+        .iter()
+        .find_map(|c| c.preferred_label().map(|s| s.to_string()))
+}
+
+fn type_text_name(text: &str) -> String {
+    if text.chars().count() > 20 {
+        let truncated: String = text.chars().take(20).collect();
+        format!("Type '{truncated}'...")
+    } else {
+        format!("Type '{text}'")
+    }
+}
+
+fn press_key_name(key: &str, modifiers: &[String]) -> String {
+    WindowControl::from_shortcut(key, modifiers)
+        .map(|wc| wc.display_name().to_string())
+        .or_else(|| shortcut_display_name(key, modifiers))
+        .unwrap_or_else(|| {
+            if modifiers.is_empty() {
+                format!("Press {key}")
+            } else {
+                format!("Press {}+{key}", modifiers.join("+"))
+            }
+        })
+}
+
+fn hover_node(action: &WalkthroughAction, x: f64, y: f64, dwell_ms: u64) -> (NodeType, String) {
+    if let Some(cdp_name) = cdp_candidate(action) {
+        return (
+            NodeType::CdpHover(CdpHoverParams {
+                target: CdpTarget::ExactLabel(cdp_name.clone()),
+                ..Default::default()
+            }),
+            format!("Hover '{cdp_name}'"),
+        );
+    }
+
+    if let Some(target) = preferred_text_candidate(action) {
+        return (
+            NodeType::Hover(HoverParams {
+                target: Some(ClickTarget::Text {
+                    text: target.clone(),
+                }),
+                dwell_ms,
+                ..Default::default()
+            }),
+            format!("Hover '{target}'"),
+        );
+    }
+
+    (
+        NodeType::Hover(HoverParams {
+            target: Some(ClickTarget::Coordinates { x, y }),
+            dwell_ms,
+            ..Default::default()
+        }),
+        format!("Hover ({x:.0}, {y:.0})"),
+    )
 }
 
 #[cfg(test)]

@@ -273,6 +273,31 @@ pub fn tool_invocation_to_node_type(
     args: &Value,
     known_tools: &[Value],
 ) -> Result<NodeType, ToolMappingError> {
+    if let Some(node) = desktop_tool_invocation_to_node_type(name, args)? {
+        return Ok(node);
+    }
+    if let Some(node) = cdp_tool_invocation_to_node_type(name, args) {
+        return Ok(node);
+    }
+    if let Some(node) = ax_tool_invocation_to_node_type(name, args) {
+        return Ok(node);
+    }
+    if known_tools
+        .iter()
+        .any(|t| t["function"]["name"].as_str() == Some(name))
+    {
+        return Ok(NodeType::McpToolCall(McpToolCallParams {
+            tool_name: name.to_string(),
+            arguments: args.clone(),
+        }));
+    }
+    Err(ToolMappingError::UnknownTool(name.to_string()))
+}
+
+fn desktop_tool_invocation_to_node_type(
+    name: &str,
+    args: &Value,
+) -> Result<Option<NodeType>, ToolMappingError> {
     match name {
         "take_screenshot" => {
             let mode = match args.get("mode").and_then(|v| v.as_str()) {
@@ -280,7 +305,7 @@ pub fn tool_invocation_to_node_type(
                 Some("region") => ScreenshotMode::Region,
                 _ => ScreenshotMode::Window,
             };
-            Ok(NodeType::TakeScreenshot(TakeScreenshotParams {
+            Ok(Some(NodeType::TakeScreenshot(TakeScreenshotParams {
                 mode,
                 target: args
                     .get("app_name")
@@ -290,19 +315,19 @@ pub fn tool_invocation_to_node_type(
                     .get("include_ocr")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true),
-            }))
+            })))
         }
         "find_text" => {
             let text = required_str(args, "find_text", "text")?;
-            Ok(NodeType::FindText(FindTextParams {
+            Ok(Some(NodeType::FindText(FindTextParams {
                 search_text: text.to_string(),
                 scope: args
                     .get("app_name")
                     .and_then(|v| v.as_str())
                     .map(String::from),
-            }))
+            })))
         }
-        "find_image" => Ok(NodeType::FindImage(FindImageParams {
+        "find_image" => Ok(Some(NodeType::FindImage(FindImageParams {
             template_image: args
                 .get("template_image_base64")
                 .or_else(|| args.get("template_id"))
@@ -316,10 +341,10 @@ pub fn tool_invocation_to_node_type(
                 .get("max_results")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(3) as u32,
-        })),
-        "list_apps" => Ok(NodeType::FindApp(FindAppParams {
+        }))),
+        "list_apps" => Ok(Some(NodeType::FindApp(FindAppParams {
             search: optional_str(args, "search"),
-        })),
+        }))),
         "click" => {
             let target = if let Some(text) = args
                 .get("target")
@@ -337,7 +362,7 @@ pub fn tool_invocation_to_node_type(
             } else {
                 None
             };
-            Ok(NodeType::Click(ClickParams {
+            Ok(Some(NodeType::Click(ClickParams {
                 target,
                 button: match args.get("button").and_then(|v| v.as_str()) {
                     Some("right") => MouseButton::Right,
@@ -349,18 +374,18 @@ pub fn tool_invocation_to_node_type(
                     .and_then(|v| v.as_u64())
                     .unwrap_or(1) as u32,
                 ..Default::default()
-            }))
+            })))
         }
         "type_text" => {
             let text = required_str(args, "type_text", "text")?;
-            Ok(NodeType::TypeText(TypeTextParams {
+            Ok(Some(NodeType::TypeText(TypeTextParams {
                 text: text.to_string(),
                 ..Default::default()
-            }))
+            })))
         }
         "press_key" => {
             let key = required_str(args, "press_key", "key")?;
-            Ok(NodeType::PressKey(PressKeyParams {
+            Ok(Some(NodeType::PressKey(PressKeyParams {
                 key: key.to_string(),
                 modifiers: args
                     .get("modifiers")
@@ -372,14 +397,14 @@ pub fn tool_invocation_to_node_type(
                     })
                     .unwrap_or_default(),
                 ..Default::default()
-            }))
+            })))
         }
-        "scroll" => Ok(NodeType::Scroll(ScrollParams {
+        "scroll" => Ok(Some(NodeType::Scroll(ScrollParams {
             delta_y: args.get("delta_y").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
             x: args.get("x").and_then(|v| v.as_f64()),
             y: args.get("y").and_then(|v| v.as_f64()),
             ..Default::default()
-        })),
+        }))),
         "move_mouse" => {
             let target = if let (Some(x), Some(y)) = (
                 args.get("x").and_then(|v| v.as_f64()),
@@ -389,11 +414,11 @@ pub fn tool_invocation_to_node_type(
             } else {
                 None
             };
-            Ok(NodeType::Hover(HoverParams {
+            Ok(Some(NodeType::Hover(HoverParams {
                 target,
                 dwell_ms: args.get("dwell_ms").and_then(|v| v.as_u64()).unwrap_or(500),
                 ..Default::default()
-            }))
+            })))
         }
         "focus_window" => {
             // Require exactly one of `app_name` / `window_id` / `pid`. Reject
@@ -435,29 +460,35 @@ pub fn tool_invocation_to_node_type(
                 .and_then(|v| v.as_str())
                 .and_then(AppKind::parse)
                 .unwrap_or(AppKind::Native);
-            Ok(NodeType::FocusWindow(FocusWindowParams {
+            Ok(Some(NodeType::FocusWindow(FocusWindowParams {
                 target,
                 bring_to_front: true,
                 app_kind,
                 chrome_profile_id: None,
                 ..Default::default()
-            }))
+            })))
         }
-        "drag" => Ok(NodeType::Drag(DragParams {
+        "drag" => Ok(Some(NodeType::Drag(DragParams {
             from_x: args.get("from_x").and_then(|v| v.as_f64()),
             from_y: args.get("from_y").and_then(|v| v.as_f64()),
             to_x: args.get("to_x").and_then(|v| v.as_f64()),
             to_y: args.get("to_y").and_then(|v| v.as_f64()),
             ..Default::default()
-        })),
-        "launch_app" => Ok(NodeType::LaunchApp(LaunchAppParams {
+        }))),
+        "launch_app" => Ok(Some(NodeType::LaunchApp(LaunchAppParams {
             app_name: optional_str(args, "app_name"),
             ..Default::default()
-        })),
-        "quit_app" => Ok(NodeType::QuitApp(QuitAppParams {
+        }))),
+        "quit_app" => Ok(Some(NodeType::QuitApp(QuitAppParams {
             app_name: optional_str(args, "app_name"),
             ..Default::default()
-        })),
+        }))),
+        _ => Ok(None),
+    }
+}
+
+fn cdp_tool_invocation_to_node_type(name: &str, args: &Value) -> Option<NodeType> {
+    match name {
         // CDP tool mappings — prefixed names for agent disambiguation
         "cdp_click" => {
             let uid = optional_str(args, "uid");
@@ -477,7 +508,7 @@ pub fn tool_invocation_to_node_type(
             } else {
                 CdpTarget::ExactLabel(label)
             };
-            Ok(NodeType::CdpClick(CdpClickParams {
+            Some(NodeType::CdpClick(CdpClickParams {
                 target,
                 ..Default::default()
             }))
@@ -496,16 +527,16 @@ pub fn tool_invocation_to_node_type(
             } else {
                 CdpTarget::ExactLabel(label)
             };
-            Ok(NodeType::CdpHover(CdpHoverParams {
+            Some(NodeType::CdpHover(CdpHoverParams {
                 target,
                 ..Default::default()
             }))
         }
-        "cdp_type_text" => Ok(NodeType::CdpType(CdpTypeParams {
+        "cdp_type_text" => Some(NodeType::CdpType(CdpTypeParams {
             text: optional_str(args, "text"),
             ..Default::default()
         })),
-        "cdp_press_key" => Ok(NodeType::CdpPressKey(CdpPressKeyParams {
+        "cdp_press_key" => Some(NodeType::CdpPressKey(CdpPressKeyParams {
             key: optional_str(args, "key"),
             modifiers: args
                 .get("modifiers")
@@ -519,31 +550,31 @@ pub fn tool_invocation_to_node_type(
             ..Default::default()
         })),
         // CDP tool mappings — accept both old (fill, navigate_page) and new (cdp_fill, cdp_navigate) names
-        "fill" | "cdp_fill" => Ok(NodeType::CdpFill(CdpFillParams {
+        "fill" | "cdp_fill" => Some(NodeType::CdpFill(CdpFillParams {
             target: CdpTarget::ExactLabel(optional_str(args, "uid")),
             value: optional_str(args, "value"),
             ..Default::default()
         })),
-        "navigate_page" | "cdp_navigate" => Ok(NodeType::CdpNavigate(CdpNavigateParams {
+        "navigate_page" | "cdp_navigate" => Some(NodeType::CdpNavigate(CdpNavigateParams {
             url: optional_str(args, "url"),
             ..Default::default()
         })),
-        "new_page" | "cdp_new_page" => Ok(NodeType::CdpNewPage(CdpNewPageParams {
+        "new_page" | "cdp_new_page" => Some(NodeType::CdpNewPage(CdpNewPageParams {
             url: optional_str(args, "url"),
             ..Default::default()
         })),
-        "close_page" | "cdp_close_page" => Ok(NodeType::CdpClosePage(CdpClosePageParams {
+        "close_page" | "cdp_close_page" => Some(NodeType::CdpClosePage(CdpClosePageParams {
             page_index: args
                 .get("page_index")
                 .and_then(|v| v.as_u64())
                 .map(|v| v as u32),
             ..Default::default()
         })),
-        "select_page" | "cdp_select_page" => Ok(NodeType::CdpSelectPage(CdpSelectPageParams {
+        "select_page" | "cdp_select_page" => Some(NodeType::CdpSelectPage(CdpSelectPageParams {
             page_index: args.get("page_index").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
             ..Default::default()
         })),
-        "wait_for" | "cdp_wait_for" => Ok(NodeType::CdpWait(CdpWaitParams {
+        "wait_for" | "cdp_wait_for" => Some(NodeType::CdpWait(CdpWaitParams {
             text: optional_str(args, "text"),
             timeout_ms: args
                 .get("timeout_ms")
@@ -551,7 +582,7 @@ pub fn tool_invocation_to_node_type(
                 .unwrap_or(10_000),
         })),
         "handle_dialog" | "cdp_handle_dialog" => {
-            Ok(NodeType::CdpHandleDialog(CdpHandleDialogParams {
+            Some(NodeType::CdpHandleDialog(CdpHandleDialogParams {
                 accept: args.get("accept").and_then(|v| v.as_bool()).unwrap_or(true),
                 prompt_text: args
                     .get("prompt_text")
@@ -561,38 +592,35 @@ pub fn tool_invocation_to_node_type(
             }))
         }
         // CDP inspection tools — available after cdp_connect, not always in known_tools
-        "cdp_take_snapshot" | "cdp_list_pages" => Ok(NodeType::McpToolCall(McpToolCallParams {
+        "cdp_take_snapshot" | "cdp_list_pages" => Some(NodeType::McpToolCall(McpToolCallParams {
             tool_name: name.to_string(),
             arguments: args.clone(),
         })),
+        _ => None,
+    }
+}
+
+fn ax_tool_invocation_to_node_type(name: &str, args: &Value) -> Option<NodeType> {
+    match name {
         // AX dispatch — macOS accessibility-tree actions. The agent passes a
         // uid captured from the most recent `take_ax_snapshot`; we store it as
         // `AxTarget::ResolvedUid`. An agent-loop post-hook upgrades this to
         // `AxTarget::Descriptor { role, name }` using the snapshot so the node
         // is replay-stable across snapshot generations.
-        "ax_click" => Ok(NodeType::AxClick(AxClickParams {
+        "ax_click" => Some(NodeType::AxClick(AxClickParams {
             target: AxTarget::ResolvedUid(optional_str(args, "uid")),
             ..Default::default()
         })),
-        "ax_set_value" => Ok(NodeType::AxSetValue(AxSetValueParams {
+        "ax_set_value" => Some(NodeType::AxSetValue(AxSetValueParams {
             target: AxTarget::ResolvedUid(optional_str(args, "uid")),
             value: optional_str(args, "value"),
             ..Default::default()
         })),
-        "ax_select" => Ok(NodeType::AxSelect(AxSelectParams {
+        "ax_select" => Some(NodeType::AxSelect(AxSelectParams {
             target: AxTarget::ResolvedUid(optional_str(args, "uid")),
             ..Default::default()
         })),
-        _ if known_tools
-            .iter()
-            .any(|t| t["function"]["name"].as_str() == Some(name)) =>
-        {
-            Ok(NodeType::McpToolCall(McpToolCallParams {
-                tool_name: name.to_string(),
-                arguments: args.clone(),
-            }))
-        }
-        _ => Err(ToolMappingError::UnknownTool(name.to_string())),
+        _ => None,
     }
 }
 
