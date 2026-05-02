@@ -157,14 +157,22 @@ export function CanvasView() {
       {isWalkthroughBusy(walkthroughStatus) && (
         <div className="absolute inset-0 z-10" />
       )}
-      <NodePalette
-        nodeTypes={nodeTypes}
-        search={nodeSearch}
-        collapsed={sidebarCollapsed}
-        onSearchChange={setNodeSearch}
-        onAdd={addNode}
-        onToggle={toggleSidebar}
-      />
+      <div
+        className={
+          drawerOpen
+            ? "hidden h-full shrink-0 min-[1100px]:block"
+            : "h-full shrink-0"
+        }
+      >
+        <NodePalette
+          nodeTypes={nodeTypes}
+          search={nodeSearch}
+          collapsed={sidebarCollapsed}
+          onSearchChange={setNodeSearch}
+          onAdd={addNode}
+          onToggle={toggleSidebar}
+        />
+      </div>
       {skillsAvailable && (
         <div className="hidden h-full shrink-0 min-[980px]:flex">
           <SkillsPanel />
