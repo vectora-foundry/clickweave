@@ -449,6 +449,11 @@ export const createAssistantSlice: StateCreator<
     if (activeRunId) {
       state.dropRunBuffer(activeRunId);
       state.clearTrace(activeRunId);
+      // Null the run ID so LiveRuntimeCard shows "No active run."
+      // rather than the "Agent running..." fallback from RunTraceView
+      // (which triggers when agentRunId is non-null but the trace was
+      // just dropped).
+      set({ agentRunId: null });
     }
   },
   };

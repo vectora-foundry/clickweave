@@ -59,6 +59,11 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       isNewWorkflow: false,
       assistantError: null,
       messages: [],
+      // Clear the previous project's run context so the Overview
+      // cards don't display stale trace/elapsed data for the old project.
+      agentRunId: null,
+      agentRunStartedAt: null,
+      agentRunFinishedAt: null,
     });
     get().clearHistory();
     // Ambiguity resolutions are specific to the prior workflow's nodes.
@@ -115,6 +120,11 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       isNewWorkflow: true,
       messages: [],
       assistantError: null,
+      // Clear the previous project's run context so the Overview
+      // cards don't display stale trace/elapsed data for the old project.
+      agentRunId: null,
+      agentRunStartedAt: null,
+      agentRunFinishedAt: null,
     });
     get().clearHistory();
     get().clearAmbiguityResolutions();

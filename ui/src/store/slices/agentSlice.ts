@@ -298,6 +298,11 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       completionDisagreement: priorState.completionDisagreement,
       consecutiveDestructiveCapHit: priorState.consecutiveDestructiveCapHit,
       agentRunId: priorState.agentRunId,
+      // Include elapsed timestamps so AlreadyRunning rollback restores
+      // the prior terminal run's frozen duration rather than keeping
+      // the rejected attempt's start time and a null finish time.
+      agentRunStartedAt: priorState.agentRunStartedAt,
+      agentRunFinishedAt: priorState.agentRunFinishedAt,
     };
 
     // Client-side run ID (D1.M1) so the user bubble can be tagged
