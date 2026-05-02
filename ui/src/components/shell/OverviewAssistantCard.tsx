@@ -54,11 +54,16 @@ export function OverviewAssistantCard() {
         </div>
       </header>
       {goal && (
-        <div className="border-b border-[var(--hairline)] bg-[var(--bloom-coral)] px-4 py-2 text-[11px] text-[var(--text-secondary)]">
-          <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
+        <div className="flex min-w-0 items-center border-b border-[var(--hairline)] bg-[var(--bloom-coral)] px-4 py-2 text-[11px] text-[var(--text-secondary)]">
+          <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--text-muted)]">
             Current Goal&nbsp;
           </span>
-          <span className="text-[var(--text-primary)]">{goal}</span>
+          <span
+            className="min-w-0 truncate text-[var(--text-primary)]"
+            title={goal}
+          >
+            {goal}
+          </span>
         </div>
       )}
       <div className="min-h-0 min-w-0 flex-1">
