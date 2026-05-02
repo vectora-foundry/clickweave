@@ -22,6 +22,20 @@ export interface UiSlice {
    *  the modal at root per D15. */
   confirmClearOpen: boolean;
   /**
+   * D21 — source of truth for "is the assistant thread visible right now,
+   * and on which surface".
+   * - `"overview-card"`: rendered as the embedded Overview card (always
+   *   live on Overview; setting this from elsewhere has no visual effect).
+   * - `"drawer"`: rendered as the legacy Canvas-side slide-in drawer.
+   * - `null`: no drawer surface; on Canvas no thread chrome is mounted,
+   *   on Overview the embedded card is unaffected.
+   *
+   * Replaces the legacy boolean `assistantOpen` flag. Switching to
+   * Overview does NOT cancel a Recording/Paused walkthrough because
+   * `setAssistantOpen` / `toggleAssistant` are no-ops on Overview.
+   */
+  assistantSurface: "overview-card" | "drawer" | null;
+  /**
    * True when the canvas has a selection (one or more nodes, including group
    * containers) that is NOT represented by `selectedNode`. `selectedNode`
    * only tracks a single-workflow-node selection — everything else (groups,
@@ -49,6 +63,7 @@ export interface UiSlice {
   setHasCanvasSelection: (has: boolean) => void;
   clearCanvasSelection: () => void;
   setConfirmClearOpen: (open: boolean) => void;
+  setAssistantSurface: (surface: "overview-card" | "drawer" | null) => void;
 }
 
 export const createUiSlice: StateCreator<StoreState, [], [], UiSlice> = (set, get) => ({
@@ -67,6 +82,7 @@ export const createUiSlice: StateCreator<StoreState, [], [], UiSlice> = (set, ge
   hasCanvasSelection: false,
   canvasSelectionResetTick: 0,
   confirmClearOpen: false,
+  assistantSurface: null,
 
   selectNode: (id) => set({ selectedNode: id }),
   setActiveNode: (id) => set({ activeNode: id }),
@@ -99,4 +115,5 @@ export const createUiSlice: StateCreator<StoreState, [], [], UiSlice> = (set, ge
       canvasSelectionResetTick: s.canvasSelectionResetTick + 1,
     })),
   setConfirmClearOpen: (open) => set({ confirmClearOpen: open }),
+  setAssistantSurface: (surface) => set({ assistantSurface: surface }),
 });
