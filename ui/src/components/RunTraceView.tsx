@@ -136,7 +136,9 @@ function TerminalFrameBlock({ frame }: { frame: TerminalFrame }) {
   return (
     <div className={`border-t px-3 py-2 text-xs ${terminalTone[frame.kind]}`}>
       <span className="font-medium">{terminalLabel[frame.kind]}</span>
-      <span className="ml-2 text-[var(--text-secondary)]">{frame.detail}</span>
+      <span className="ml-2 break-words text-[var(--text-secondary)]">
+        {frame.detail}
+      </span>
     </div>
   );
 }

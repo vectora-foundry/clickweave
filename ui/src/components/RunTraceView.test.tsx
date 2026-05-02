@@ -109,4 +109,15 @@ describe("RunTraceView", () => {
     expect(screen.getByText(label)).toBeInTheDocument();
     expect(screen.getByText("terminal detail")).toBeInTheDocument();
   });
+
+  it("contains long terminal details inside the trace card", () => {
+    const detail = `Terminal-${"UnbrokenDetail".repeat(20)}`;
+    storeMock.state.runTraces["run-1"] = trace({
+      terminalFrame: { kind: "error", detail },
+    });
+
+    render(<RunTraceView runId="run-1" />);
+
+    expect(screen.getByText(detail)).toHaveClass("break-words");
+  });
 });
