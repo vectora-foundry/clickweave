@@ -429,7 +429,13 @@ export const createAssistantSlice: StateCreator<
     // reset the Live Runtime card would keep showing the prior run's
     // frozen Elapsed value after a Clear, which contradicts the
     // freshly-empty conversation surface.
-    set({ agentRunStartedAt: null, agentRunFinishedAt: null });
+    // Also clear the destructive-cap notice so the AssistantThread
+    // run-halted card does not persist after the conversation is wiped.
+    set({
+      agentRunStartedAt: null,
+      agentRunFinishedAt: null,
+      consecutiveDestructiveCapHit: null,
+    });
 
     // (3) Wipe files on disk. Respects `store_traces` privacy flag
     //     inside the command body (D1.M4).

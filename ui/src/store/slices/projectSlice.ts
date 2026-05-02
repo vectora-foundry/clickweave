@@ -64,6 +64,10 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       agentRunId: null,
       agentRunStartedAt: null,
       agentRunFinishedAt: null,
+      // Also clear the terminal run notice — the destructive-cap card
+      // in AssistantThread reads this directly and would otherwise keep
+      // showing the previous project's run-halted message.
+      consecutiveDestructiveCapHit: null,
     });
     get().clearHistory();
     // Ambiguity resolutions are specific to the prior workflow's nodes.
@@ -125,6 +129,10 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       agentRunId: null,
       agentRunStartedAt: null,
       agentRunFinishedAt: null,
+      // Also clear the terminal run notice — the destructive-cap card
+      // in AssistantThread reads this directly and would otherwise keep
+      // showing the previous project's run-halted message.
+      consecutiveDestructiveCapHit: null,
     });
     get().clearHistory();
     get().clearAmbiguityResolutions();
