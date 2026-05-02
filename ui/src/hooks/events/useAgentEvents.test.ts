@@ -264,6 +264,59 @@ describe("useAgentEvents trace subscriptions", () => {
   });
 });
 
+describe("terminal events stamp agentRunFinishedAt (D24)", () => {
+  beforeEach(() => {
+    eventMock.listeners.clear();
+    eventMock.listen.mockClear();
+    useStore.setState({
+      agentRunId: "run-1",
+      agentStatus: "running",
+      agentSteps: [],
+      runTraces: {},
+      messages: [],
+      completionDisagreement: null,
+      agentError: null,
+      pendingRunNodes: {},
+      pendingRunEdges: {},
+      agentRunStartedAt: 1_000,
+      agentRunFinishedAt: null,
+      workflow: {
+        id: "00000000-0000-0000-0000-000000000001",
+        name: "wf",
+        nodes: [],
+        edges: [],
+        groups: [],
+      },
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    eventMock.listeners.clear();
+  });
+
+  it("agent://complete stamps agentRunFinishedAt", async () => {
+    await mountSubscriptions();
+    emit("agent://complete", { run_id: "run-1", summary: "Done" });
+    expect(useStore.getState().agentRunFinishedAt).not.toBeNull();
+  });
+
+  it("agent://stopped stamps agentRunFinishedAt", async () => {
+    await mountSubscriptions();
+    emit("agent://stopped", { run_id: "run-1", reason: "user_stopped" });
+    expect(useStore.getState().agentRunFinishedAt).not.toBeNull();
+  });
+
+  it("agent://error stamps agentRunFinishedAt even when status is not running", async () => {
+    // Racing-error-after-stop: status was already flipped, but the
+    // freeze should still reflect the last terminal moment.
+    useStore.setState({ agentStatus: "stopped" });
+    await mountSubscriptions();
+    emit("agent://error", { run_id: "run-1", message: "boom" });
+    expect(useStore.getState().agentRunFinishedAt).not.toBeNull();
+  });
+});
+
 describe("isStaleRunId", () => {
   it("treats a null active run as stale so events during stop/restart are dropped", () => {
     expect(isStaleRunId(null, "run-a")).toBe(true);

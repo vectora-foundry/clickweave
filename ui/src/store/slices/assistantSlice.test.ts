@@ -375,6 +375,19 @@ describe("clearConversationFlow", () => {
     expect(groups[0].node_ids).toEqual(["n2", "n3"]);
   });
 
+  it("zeroes agentRunStartedAt and agentRunFinishedAt (D24)", async () => {
+    useStore.setState({
+      agentRunStartedAt: 100,
+      agentRunFinishedAt: 200,
+    });
+
+    await useStore.getState().clearConversationFlow();
+
+    const s = useStore.getState();
+    expect(s.agentRunStartedAt).toBeNull();
+    expect(s.agentRunFinishedAt).toBeNull();
+  });
+
   it("drops the active run buffer and trace when clearing conversation", async () => {
     useStore.setState({
       agentRunId: "r1",

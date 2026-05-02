@@ -294,6 +294,8 @@ export function useAgentEvents() {
         // optimistically and reopened the guards before the backend
         // was actually done.
         useStore.getState().setCompletionDisagreement(null);
+        // D24 — freeze elapsed at the terminal moment.
+        useStore.setState({ agentRunFinishedAt: Date.now() });
         useStore.getState().pushLog("Agent completed");
         useStore.getState().setTerminalFrame(e.payload.run_id, {
           kind: "complete",
@@ -370,6 +372,8 @@ export function useAgentEvents() {
         // the `isAgentActive` gates reopen only after the backend
         // has actually completed its final cache/variant-index writes.
         useStore.getState().setCompletionDisagreement(null);
+        // D24 — freeze elapsed at the terminal moment.
+        useStore.setState({ agentRunFinishedAt: Date.now() });
         const detail =
           e.payload.reason === "max_steps_reached"
             ? `after ${e.payload.steps_executed} steps`
@@ -443,6 +447,11 @@ export function useAgentEvents() {
         // `isAgentActive` drops to false now that the backend task
         // has signalled it is done.
         useStore.getState().setCompletionDisagreement(null);
+        // D24 — freeze elapsed at the terminal moment. Stamped
+        // outside the `if (current === "running")` branch above so
+        // a racing-error-after-stop still reflects the last terminal
+        // moment in the Live Runtime card.
+        useStore.setState({ agentRunFinishedAt: Date.now() });
         useStore.getState().setTerminalFrame(e.payload.run_id, {
           kind: "error",
           detail: e.payload.message,

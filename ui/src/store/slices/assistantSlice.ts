@@ -407,6 +407,12 @@ export const createAssistantSlice: StateCreator<
     //     short-circuits any in-flight save that races this call.
     conversationWipeInProgress = true;
     set({ messages: [] });
+    // D24 — Clear is one of the two zeroing points for the elapsed
+    // timestamps (the other is the next `startAgent`). Without this
+    // reset the Live Runtime card would keep showing the prior run's
+    // frozen Elapsed value after a Clear, which contradicts the
+    // freshly-empty conversation surface.
+    set({ agentRunStartedAt: null, agentRunFinishedAt: null });
 
     // (3) Wipe files on disk. Respects `store_traces` privacy flag
     //     inside the command body (D1.M4).
