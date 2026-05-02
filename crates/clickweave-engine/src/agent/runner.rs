@@ -15,16 +15,22 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context as _;
+use clickweave_core::cdp::CdpFindElementMatch;
 use clickweave_llm::{ChatBackend, DynChatBackend, Message};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 
+use crate::agent::context::{CompactBudget, compact};
 use crate::agent::permissions::{
     PermissionAction, PermissionPolicy, ToolAnnotations, evaluate as evaluate_permission,
 };
 use crate::agent::phase::{self, PhaseSignals};
+use crate::agent::prompt::{
+    UserTurnMessageInput, build_system_prompt, build_system_prompt_with_header,
+    build_user_turn_message_from_input,
+};
 use crate::agent::recovery::{RecoveryAction, recovery_strategy};
 use crate::agent::skills::{
     RecordedStep, RetrievedSkill, SkillContext, SkillFrame, SkillIndex, SkillStore,
@@ -45,6 +51,29 @@ pub(crate) struct CdpPageObservation {
     pub page_url: String,
     pub page_fingerprint: String,
     pub inventory: Vec<CdpElementInventorySummary>,
+}
+
+struct RunLoopContext {
+    messages: Vec<Message>,
+    tools: Vec<Value>,
+    advertised_tool_names: Vec<String>,
+    annotations_by_tool: HashMap<String, ToolAnnotations>,
+    budget: CompactBudget,
+}
+
+#[derive(Default)]
+struct RunLoopTrackers {
+    previous_result: Option<String>,
+    last_failure: Option<(String, Value, String)>,
+    last_action: Option<LastActionProgress>,
+    recent_actions: VecDeque<ActionProgressSignature>,
+    pending_text_submit_search: Option<TextSubmitSearchProgress>,
+}
+
+enum LoopStepFlow {
+    Continue,
+    Break,
+    Dispatch,
 }
 
 /// The one action an `AgentTurn` must carry (D10).
@@ -2138,6 +2167,13 @@ fn reset_no_progress_tracking(
     recent_actions.clear();
 }
 
+fn combine_with_side_effect_nudge(side_effect_nudge: Option<&str>, nudge: String) -> String {
+    match side_effect_nudge {
+        Some(side_effect_nudge) => format!("{side_effect_nudge}\n\n{nudge}"),
+        None => nudge,
+    }
+}
+
 fn stable_no_progress_context_signature(world_model: &WorldModel) -> String {
     let focused_app = world_model.focused_app.as_ref().map(|fresh| {
         serde_json::json!({
@@ -3129,85 +3165,12 @@ impl StateRunner {
         kind_hint: Option<&str>,
         mcp: &M,
     ) -> Option<u16> {
-        use crate::cdp_lifecycle;
-
         if !mcp.has_tool("cdp_connect") {
             return None;
         }
 
-        // If the caller already classified the app, trust it and skip
-        // the `probe_app` round-trip.
-        let cdp_capable_from_hint = matches!(kind_hint, Some("ElectronApp" | "ChromeBrowser"));
-        if !cdp_capable_from_hint {
-            if matches!(kind_hint, Some("Native")) {
-                debug!(
-                    app = app_name,
-                    "state-spine: kind hint says Native, skipping CDP"
-                );
-                return None;
-            }
-            if !mcp.has_tool("probe_app") {
-                return None;
-            }
-
-            let probe_args = serde_json::json!({"app_name": app_name});
-            self.emit_event(AgentEvent::SubAction {
-                tool_name: "probe_app".to_string(),
-                summary: format!("Auto: probing {} for CDP support", app_name),
-            })
-            .await;
-            let probe_text = match mcp.call_tool("probe_app", Some(probe_args)).await {
-                Ok(r) => {
-                    self.emit_event(AgentEvent::SubAction {
-                        tool_name: "probe_app".to_string(),
-                        summary: format!("Auto: probed {} (ok)", app_name),
-                    })
-                    .await;
-                    extract_result_text(&r)
-                }
-                Err(e) => {
-                    self.emit_event(AgentEvent::SubAction {
-                        tool_name: "probe_app".to_string(),
-                        summary: format!("Auto: probe_app failed for {}: {}", app_name, e),
-                    })
-                    .await;
-                    debug!(app = app_name, error = %e, "state-spine: probe_app failed, skipping CDP");
-                    self.record_cdp_connect_failure(format!(
-                        "probe_app failed for {app_name}: {e}",
-                    ));
-                    return None;
-                }
-            };
-
-            // Identify the discovered kind so we can update
-            // `known_app_kinds` + `world_model.focused_app.kind` from the
-            // probe result. Without this, the unstructured launch_app /
-            // focus_window path leaves focused_app.kind = Native (the
-            // maybe_cdp_connect default for kind_hint = None) even after
-            // CDP attaches, which would route the per-turn filter to the
-            // AX arm despite a live `cdp_page`.
-            let discovered_kind = if probe_text.contains("ChromeBrowser") {
-                "ChromeBrowser"
-            } else if probe_text.contains("ElectronApp") {
-                "ElectronApp"
-            } else {
-                debug!(
-                    app = app_name,
-                    "state-spine: not an Electron/Chrome app, skipping CDP"
-                );
-                return None;
-            };
-            self.record_app_kind(app_name, discovered_kind);
-            if let Some(f) = self.world_model.focused_app.as_mut()
-                && f.value.name == app_name
-            {
-                use crate::agent::world_model::AppKind;
-                f.value.kind = match discovered_kind {
-                    "ChromeBrowser" => AppKind::ChromeBrowser,
-                    "ElectronApp" => AppKind::ElectronApp,
-                    _ => unreachable!("discovered_kind is constrained above"),
-                };
-            }
+        if !self.cdp_capable_app(app_name, kind_hint, mcp).await {
+            return None;
         }
 
         tracing::info!(
@@ -3215,22 +3178,136 @@ impl StateRunner {
             "state-spine: detected Electron/Chrome app, connecting CDP"
         );
 
-        // Reuse an already-running debug port if we can find one.
-        if let Some(port) = crate::executor::deterministic::cdp::existing_debug_port(app_name).await
-        {
-            tracing::info!(
-                app = app_name,
-                port,
-                "state-spine: reusing existing debug port"
-            );
-            if cdp_lifecycle::connect_with_retries(mcp, port).await.is_ok() {
-                self.on_cdp_connected(app_name, port, mcp).await;
-                return Some(port);
-            }
+        if let Some(port) = self.try_existing_cdp_port(app_name, mcp).await {
+            return Some(port);
         }
 
-        // Quit, relaunch with a debug port, then connect CDP.
         let port = clickweave_core::cdp::rand_ephemeral_port();
+        if !self.relaunch_for_cdp(app_name, port, mcp).await {
+            return None;
+        }
+
+        self.connect_relaunched_cdp(app_name, port, mcp).await
+    }
+
+    async fn cdp_capable_app<M: Mcp + ?Sized>(
+        &mut self,
+        app_name: &str,
+        kind_hint: Option<&str>,
+        mcp: &M,
+    ) -> bool {
+        if matches!(kind_hint, Some("ElectronApp" | "ChromeBrowser")) {
+            return true;
+        }
+        if matches!(kind_hint, Some("Native")) {
+            debug!(
+                app = app_name,
+                "state-spine: kind hint says Native, skipping CDP"
+            );
+            return false;
+        }
+        if !mcp.has_tool("probe_app") {
+            return false;
+        }
+
+        let Some(discovered_kind) = self.probe_app_kind_for_cdp(app_name, mcp).await else {
+            return false;
+        };
+        self.record_probe_discovered_kind(app_name, discovered_kind);
+        true
+    }
+
+    async fn probe_app_kind_for_cdp<M: Mcp + ?Sized>(
+        &mut self,
+        app_name: &str,
+        mcp: &M,
+    ) -> Option<&'static str> {
+        let probe_args = serde_json::json!({"app_name": app_name});
+        self.emit_event(AgentEvent::SubAction {
+            tool_name: "probe_app".to_string(),
+            summary: format!("Auto: probing {} for CDP support", app_name),
+        })
+        .await;
+        let probe_text = match mcp.call_tool("probe_app", Some(probe_args)).await {
+            Ok(r) => {
+                self.emit_event(AgentEvent::SubAction {
+                    tool_name: "probe_app".to_string(),
+                    summary: format!("Auto: probed {} (ok)", app_name),
+                })
+                .await;
+                extract_result_text(&r)
+            }
+            Err(e) => {
+                self.emit_event(AgentEvent::SubAction {
+                    tool_name: "probe_app".to_string(),
+                    summary: format!("Auto: probe_app failed for {}: {}", app_name, e),
+                })
+                .await;
+                debug!(app = app_name, error = %e, "state-spine: probe_app failed, skipping CDP");
+                self.record_cdp_connect_failure(format!("probe_app failed for {app_name}: {e}",));
+                return None;
+            }
+        };
+
+        if probe_text.contains("ChromeBrowser") {
+            Some("ChromeBrowser")
+        } else if probe_text.contains("ElectronApp") {
+            Some("ElectronApp")
+        } else {
+            debug!(
+                app = app_name,
+                "state-spine: not an Electron/Chrome app, skipping CDP"
+            );
+            None
+        }
+    }
+
+    fn record_probe_discovered_kind(&mut self, app_name: &str, discovered_kind: &'static str) {
+        // Keep `known_app_kinds` + `world_model.focused_app.kind` aligned with
+        // the probe result. Otherwise unstructured launch/focus paths can leave
+        // focused_app.kind = Native even after CDP attaches.
+        self.record_app_kind(app_name, discovered_kind);
+        if let Some(f) = self.world_model.focused_app.as_mut()
+            && f.value.name == app_name
+        {
+            use crate::agent::world_model::AppKind;
+            f.value.kind = match discovered_kind {
+                "ChromeBrowser" => AppKind::ChromeBrowser,
+                "ElectronApp" => AppKind::ElectronApp,
+                _ => unreachable!("discovered_kind is constrained by probe_app_kind_for_cdp"),
+            };
+        }
+    }
+
+    async fn try_existing_cdp_port<M: Mcp + ?Sized>(
+        &mut self,
+        app_name: &str,
+        mcp: &M,
+    ) -> Option<u16> {
+        let port = crate::executor::deterministic::cdp::existing_debug_port(app_name).await?;
+        tracing::info!(
+            app = app_name,
+            port,
+            "state-spine: reusing existing debug port"
+        );
+        if crate::cdp_lifecycle::connect_with_retries(mcp, port)
+            .await
+            .is_ok()
+        {
+            self.on_cdp_connected(app_name, port, mcp).await;
+            Some(port)
+        } else {
+            None
+        }
+    }
+
+    async fn relaunch_for_cdp<M: Mcp + ?Sized>(
+        &mut self,
+        app_name: &str,
+        port: u16,
+        mcp: &M,
+    ) -> bool {
+        use crate::cdp_lifecycle;
 
         self.emit_event(AgentEvent::SubAction {
             tool_name: "quit_app".to_string(),
@@ -3293,18 +3370,26 @@ impl StateRunner {
                 self.record_cdp_connect_failure(format!(
                     "relaunch with debug port {port} failed for {app_name}: {err}",
                 ));
-                return None;
+                return false;
             }
         }
 
         cdp_lifecycle::warmup_after_relaunch().await;
+        true
+    }
 
+    async fn connect_relaunched_cdp<M: Mcp + ?Sized>(
+        &mut self,
+        app_name: &str,
+        port: u16,
+        mcp: &M,
+    ) -> Option<u16> {
         self.emit_event(AgentEvent::SubAction {
             tool_name: "cdp_connect".to_string(),
             summary: format!("Auto: connecting CDP on port {}", port),
         })
         .await;
-        match cdp_lifecycle::connect_with_retries(mcp, port).await {
+        match crate::cdp_lifecycle::connect_with_retries(mcp, port).await {
             Ok(()) => {
                 tracing::info!(app = app_name, port, "state-spine: CDP connected");
                 self.emit_event(AgentEvent::SubAction {
@@ -3955,6 +4040,1094 @@ impl StateRunner {
         }
     }
 
+    fn initialize_run_loop(
+        &mut self,
+        goal: &str,
+        workflow: clickweave_core::Workflow,
+        mcp_tools: &[Value],
+        anchor_node_id: Option<uuid::Uuid>,
+    ) -> RunLoopContext {
+        // Reset the visible state tuple to match the freshly-provided
+        // workflow. `AgentState::new(workflow)` wipes steps/terminal_reason
+        // so the same `StateRunner` could in theory be reused across runs,
+        // though `self` is consumed by the public run wrapper.
+        self.state = AgentState::new(workflow);
+        self.state.last_node_id = anchor_node_id;
+
+        // Build the system prompt from the raw openai-shaped tool list.
+        // `build_system_prompt` expects `clickweave_mcp::Tool`; the raw
+        // `Vec<Value>` is already openai-shape, so extract the minimum
+        // fields each tool entry carries.
+        //
+        // D18: the system prompt is stable across runs. Variant context +
+        // prior-turn log are pre-composed into `goal` at the caller seam, so
+        // they land in `messages[1]`, preserving the `messages[0]` cache prefix.
+        let tool_list_for_prompt = openai_tools_to_mcp_tool_list(mcp_tools);
+        let system_text = if let Some(prompt) = self.agent_system_prompt_override.as_deref() {
+            build_system_prompt_with_header(prompt, &tool_list_for_prompt)
+        } else {
+            build_system_prompt(&tool_list_for_prompt)
+        };
+
+        let advertised_tool_names: Vec<String> = tool_list_for_prompt
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+
+        let initial_scope = self.compute_tools_in_scope(&advertised_tool_names);
+        let initial_user = build_user_turn_message_from_input(UserTurnMessageInput {
+            wm: &self.world_model,
+            ts: &self.task_state,
+            current_step: 0,
+            observation_text: goal,
+            retrieved: &[],
+            applicable_skills: &[],
+            tools_in_scope_names: &initial_scope,
+            max_elements: self.config.state_block_max_elements,
+        });
+
+        RunLoopContext {
+            messages: vec![Message::system(system_text), Message::user(initial_user)],
+            tools: mcp_tools
+                .iter()
+                .cloned()
+                .chain(crate::agent::prompt::pseudo_tools())
+                .collect(),
+            advertised_tool_names,
+            annotations_by_tool: build_annotations_index(mcp_tools),
+            budget: CompactBudget {
+                recent_n: self.config.recent_n,
+                ..CompactBudget::default()
+            },
+        }
+    }
+
+    async fn observe_for_next_turn<M>(
+        &mut self,
+        mcp: &M,
+    ) -> (
+        Vec<clickweave_core::cdp::CdpFindElementMatch>,
+        Vec<crate::agent::episodic::RetrievedEpisode>,
+    )
+    where
+        M: Mcp + ?Sized,
+    {
+        // Capture the pre-mirror world-model signatures so the
+        // `WorldModelChanged` diff emitted by `run_turn` sees the
+        // direct-observation writes below. Only seed the baseline when it is
+        // empty: early-exit branches skip `run_turn`, so the baseline must
+        // persist across iterations until `run_turn.take()` consumes it.
+        if self.turn_pre_signatures.is_none() {
+            self.turn_pre_signatures = Some(self.world_model.field_signatures());
+        }
+        // Spec 3: snapshot the world model before this iteration's dispatch
+        // so successful tool calls record the state the LLM actually saw.
+        self.pre_dispatch_snapshot = Some(
+            crate::agent::step_record::WorldModelSnapshot::from_world_model(&self.world_model),
+        );
+
+        let CdpPageObservation {
+            page_url,
+            page_fingerprint,
+            inventory,
+        } = self.fetch_cdp_page_summary(mcp).await;
+        self.mirror_cdp_page_summary(page_url, page_fingerprint, inventory);
+
+        let elements = self.current_cdp_elements();
+        let prev_phase_at_top = self.task_state.phase;
+        self.queue_snapshot_stale_if_aged();
+        self.observe();
+        if prev_phase_at_top != self.task_state.phase {
+            self.emit_event(AgentEvent::TaskStateChanged {
+                run_id: self.run_id,
+                task_state: self.task_state.clone(),
+            })
+            .await;
+        }
+
+        let retrieved = self.try_retrieve_episodic(prev_phase_at_top).await;
+        (elements, retrieved)
+    }
+
+    fn mirror_cdp_page_summary(
+        &mut self,
+        page_url: String,
+        page_fingerprint: String,
+        inventory: Vec<CdpElementInventorySummary>,
+    ) {
+        use crate::agent::world_model::{CdpPageState, Fresh, FreshnessSource, ObservedElement};
+
+        if matches!(
+            self.world_model
+                .elements
+                .as_ref()
+                .and_then(|f| f.value.first()),
+            Some(ObservedElement::Cdp(_))
+        ) {
+            self.world_model.elements = None;
+        }
+
+        let url = if page_url.is_empty() {
+            self.state.current_url.clone()
+        } else {
+            page_url
+        };
+        if !url.is_empty() {
+            self.world_model.cdp_page = Some(Fresh {
+                value: CdpPageState {
+                    url,
+                    page_fingerprint,
+                    element_inventory: inventory,
+                },
+                written_at: self.step_index,
+                source: FreshnessSource::DirectObservation,
+                ttl_steps: Some(2),
+            });
+        } else {
+            self.world_model.cdp_page = None;
+        }
+    }
+
+    fn current_cdp_elements(&self) -> Vec<clickweave_core::cdp::CdpFindElementMatch> {
+        self.world_model
+            .elements
+            .as_ref()
+            .map(|fresh| {
+                fresh
+                    .value
+                    .iter()
+                    .filter_map(|element| match element {
+                        crate::agent::world_model::ObservedElement::Cdp(match_) => {
+                            Some(match_.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    async fn prepare_turn_for_dispatch(
+        &mut self,
+        turn: &mut AgentTurn,
+        last_action: &mut Option<LastActionProgress>,
+        recent_actions: &mut VecDeque<ActionProgressSignature>,
+    ) {
+        let outer_milestones_before = self.task_state.milestones.len();
+        if !turn.mutations.is_empty() {
+            let warnings = self.apply_mutations(&turn.mutations);
+            for w in warnings {
+                tracing::warn!(warning = %w, "state-spine: mutation warning");
+            }
+            self.emit_event(AgentEvent::TaskStateChanged {
+                run_id: self.run_id,
+                task_state: self.task_state.clone(),
+            })
+            .await;
+        }
+        let outer_milestones_appended = self
+            .task_state
+            .milestones
+            .len()
+            .saturating_sub(outer_milestones_before);
+
+        if outer_milestones_appended > 0 {
+            self.write_subgoal_completed_records(outer_milestones_appended, turn)
+                .await;
+            reset_no_progress_tracking(last_action, recent_actions);
+        }
+
+        self.retrieve_skills_for_pushed_subgoals();
+
+        if let AgentAction::InvokeSkill {
+            skill_id,
+            version,
+            parameters,
+        } = turn.action.clone()
+        {
+            turn.action = match self.dispatch_skill(&skill_id, version, parameters).await {
+                Ok(frame) => Self::skill_frame_to_single_step_action(&frame),
+                Err(reason) => AgentAction::AgentReplan { reason },
+            };
+        }
+    }
+
+    fn retrieve_skills_for_pushed_subgoals(&mut self) {
+        if !self.skill_ctx.enabled
+            || !self.config.skills_enabled
+            || self.last_pushed_subgoal_ids.is_empty()
+        {
+            return;
+        }
+
+        let pushed = std::mem::take(&mut self.last_pushed_subgoal_ids);
+        let k = self.config.applicable_skills_k;
+        for id in &pushed {
+            let Some(subgoal) = self
+                .task_state
+                .subgoal_stack
+                .iter()
+                .find(|s| s.id == *id)
+                .cloned()
+            else {
+                continue;
+            };
+            let subgoal_sig = crate::agent::skills::signature::compute_subgoal_signature(
+                &subgoal.text,
+                &self.world_model,
+            );
+            let app_sig =
+                crate::agent::skills::signature::compute_applicability_signature(&self.world_model);
+            let candidates = self.skill_index.read().lookup_at(
+                &subgoal_sig,
+                &app_sig,
+                &subgoal.text,
+                k,
+                chrono::Utc::now(),
+            );
+            self.pending_applicable_skills.extend(candidates);
+        }
+    }
+
+    fn push_tool_step(
+        &mut self,
+        elements: &[CdpFindElementMatch],
+        tool_name: &str,
+        arguments: &Value,
+        tool_call_id: &str,
+        outcome: StepOutcome,
+    ) -> usize {
+        let step_idx = self.state.steps.len();
+        self.state.steps.push(AgentStep {
+            index: step_idx,
+            elements: elements.to_vec(),
+            command: AgentCommand::ToolCall {
+                tool_name: tool_name.to_string(),
+                arguments: arguments.clone(),
+                tool_call_id: tool_call_id.to_string(),
+            },
+            outcome,
+            page_url: self.state.current_url.clone(),
+        });
+        self.advance_recorded_step_index();
+        step_idx
+    }
+
+    fn clear_success_dispatch_state(&mut self, trackers: &mut RunLoopTrackers) {
+        self.state.consecutive_errors = 0;
+        self.consecutive_errors = 0;
+        trackers.last_failure = None;
+        self.clear_last_failure_tracking();
+    }
+
+    async fn finish_synthetic_success(
+        &mut self,
+        loop_ctx: &mut RunLoopContext,
+        trackers: &mut RunLoopTrackers,
+        step_idx: usize,
+        tool_name: &str,
+        arguments: &Value,
+        tool_call_id: &str,
+        body: &str,
+    ) {
+        trackers.previous_result = Some(body.to_string());
+        if let Some(nudge) = self
+            .track_repeat_action(
+                tool_name,
+                arguments,
+                body,
+                &loop_ctx.annotations_by_tool,
+                &mut trackers.last_action,
+                &mut trackers.recent_actions,
+            )
+            .await
+        {
+            trackers.previous_result = Some(nudge);
+        }
+        self.emit_event(AgentEvent::StepCompleted {
+            step_index: step_idx,
+            tool_name: tool_name.to_string(),
+            summary: crate::agent::prompt::truncate_summary(body, 120),
+        })
+        .await;
+        append_assistant_and_tool_result(
+            &mut loop_ctx.messages,
+            tool_name,
+            arguments,
+            tool_call_id,
+            trackers.previous_result.as_deref(),
+        );
+    }
+
+    async fn handle_no_focus_launch_skip<M>(
+        &mut self,
+        turn: &AgentTurn,
+        elements: &[CdpFindElementMatch],
+        loop_ctx: &mut RunLoopContext,
+        trackers: &mut RunLoopTrackers,
+        mcp: &M,
+    ) -> bool
+    where
+        M: Mcp + ?Sized,
+    {
+        let AgentAction::ToolCall {
+            tool_name,
+            arguments,
+            tool_call_id,
+        } = &turn.action
+        else {
+            return false;
+        };
+        if tool_name != "launch_app" {
+            return false;
+        }
+        let Some(running) = self.running_app_for_no_focus_launch(arguments, mcp).await else {
+            return false;
+        };
+
+        self.emit_event(AgentEvent::SubAction {
+            tool_name: "launch_app".to_string(),
+            summary: "skipped: app already running; focus changes disabled".to_string(),
+        })
+        .await;
+        let skip_body = Self::skipped_launch_result_text(&running);
+        debug!(
+            tool = "launch_app",
+            app = running.name,
+            "state-spine: suppressing launch_app for already-running app",
+        );
+        let step_idx = self.push_tool_step(
+            elements,
+            tool_name,
+            arguments,
+            tool_call_id,
+            StepOutcome::Success(skip_body.clone()),
+        );
+        self.emit_world_model_changed_for_recorded_step().await;
+        self.clear_success_dispatch_state(trackers);
+        self.maybe_cdp_connect(tool_name, arguments, &skip_body, mcp)
+            .await;
+        self.finish_synthetic_success(
+            loop_ctx,
+            trackers,
+            step_idx,
+            tool_name,
+            arguments,
+            tool_call_id,
+            &skip_body,
+        )
+        .await;
+        true
+    }
+
+    async fn handle_synthetic_focus_skip<M>(
+        &mut self,
+        turn: &AgentTurn,
+        elements: &[CdpFindElementMatch],
+        loop_ctx: &mut RunLoopContext,
+        trackers: &mut RunLoopTrackers,
+        mcp: &M,
+    ) -> bool
+    where
+        M: Mcp + ?Sized,
+    {
+        let AgentAction::ToolCall {
+            tool_name,
+            arguments,
+            tool_call_id,
+        } = &turn.action
+        else {
+            return false;
+        };
+        if tool_name != "focus_window" {
+            return false;
+        }
+        let Some(reason) = self.should_skip_focus_window(arguments, mcp) else {
+            return false;
+        };
+
+        self.emit_event(AgentEvent::SubAction {
+            tool_name: "focus_window".to_string(),
+            summary: reason.sub_action_summary().to_string(),
+        })
+        .await;
+        let skip_body = reason.llm_message().to_string();
+        debug!(
+            tool = "focus_window",
+            app = arguments
+                .get("app_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(""),
+            reason = skip_body,
+            "state-spine: suppressing focus_window",
+        );
+        let step_idx = self.push_tool_step(
+            elements,
+            tool_name,
+            arguments,
+            tool_call_id,
+            StepOutcome::Success(skip_body.clone()),
+        );
+        self.emit_world_model_changed_for_recorded_step().await;
+        self.clear_success_dispatch_state(trackers);
+
+        if let Some((app_name, kind_hint)) =
+            self.cdp_target_for_skipped_focus_window(reason, arguments, mcp)
+            && let Some(cdp_port) = self
+                .auto_connect_cdp(&app_name, kind_hint.as_deref(), mcp)
+                .await
+        {
+            self.finalize_cdp_connected(&app_name, cdp_port, mcp).await;
+        }
+
+        self.finish_synthetic_success(
+            loop_ctx,
+            trackers,
+            step_idx,
+            tool_name,
+            arguments,
+            tool_call_id,
+            &skip_body,
+        )
+        .await;
+        true
+    }
+
+    async fn record_blocked_tool_error(
+        &mut self,
+        loop_ctx: &mut RunLoopContext,
+        trackers: &mut RunLoopTrackers,
+        elements: &[CdpFindElementMatch],
+        tool_name: &str,
+        arguments: &Value,
+        tool_call_id: &str,
+        err_msg: String,
+        sub_action_summary: &str,
+        record_policy_deny: bool,
+    ) -> LoopStepFlow {
+        self.emit_event(AgentEvent::SubAction {
+            tool_name: tool_name.to_string(),
+            summary: sub_action_summary.to_string(),
+        })
+        .await;
+        let step_idx = self.push_tool_step(
+            elements,
+            tool_name,
+            arguments,
+            tool_call_id,
+            StepOutcome::Error(err_msg.clone()),
+        );
+        self.emit_world_model_changed_for_recorded_step().await;
+        if record_policy_deny {
+            self.record_policy_deny_failure(tool_name);
+        }
+        self.state.consecutive_errors += 1;
+        self.consecutive_errors = self.state.consecutive_errors;
+        trackers.previous_result = Some(err_msg.clone());
+        append_assistant_and_tool_result(
+            &mut loop_ctx.messages,
+            tool_name,
+            arguments,
+            tool_call_id,
+            trackers.previous_result.as_deref(),
+        );
+        self.emit_event(AgentEvent::StepFailed {
+            step_index: step_idx,
+            tool_name: tool_name.to_string(),
+            error: err_msg.clone(),
+        })
+        .await;
+
+        let looped = matches!(
+            trackers.last_failure.as_ref(),
+            Some((prev_tool, prev_args, prev_err))
+                if prev_tool == tool_name && prev_args == arguments && prev_err == &err_msg
+        );
+        if looped {
+            warn!(
+                tool = %tool_name,
+                "state-spine: identical blocked tool call repeated — aborting"
+            );
+            self.state.terminal_reason = Some(TerminalReason::LoopDetected {
+                tool_name: tool_name.to_string(),
+                error: err_msg,
+            });
+            return LoopStepFlow::Break;
+        }
+        trackers.last_failure = Some((tool_name.to_string(), arguments.clone(), err_msg));
+
+        let action = recovery_strategy(
+            self.state.consecutive_errors,
+            self.config.max_consecutive_errors,
+        );
+        if matches!(action, RecoveryAction::Abort) {
+            warn!(
+                errors = self.state.consecutive_errors,
+                "state-spine: too many consecutive blocked tool calls — aborting"
+            );
+            self.state.terminal_reason = Some(TerminalReason::MaxErrorsReached {
+                consecutive_errors: self.state.consecutive_errors,
+            });
+            return LoopStepFlow::Break;
+        }
+        reset_no_progress_tracking(&mut trackers.last_action, &mut trackers.recent_actions);
+        LoopStepFlow::Continue
+    }
+
+    async fn guard_runtime_managed_cdp(
+        &mut self,
+        turn: &AgentTurn,
+        elements: &[CdpFindElementMatch],
+        loop_ctx: &mut RunLoopContext,
+        trackers: &mut RunLoopTrackers,
+    ) -> LoopStepFlow {
+        let AgentAction::ToolCall {
+            tool_name,
+            arguments,
+            tool_call_id,
+        } = &turn.action
+        else {
+            return LoopStepFlow::Dispatch;
+        };
+        let Some(err_msg) = Self::raw_cdp_lifecycle_blocked(tool_name, arguments) else {
+            return LoopStepFlow::Dispatch;
+        };
+        warn!(
+            tool = %tool_name,
+            "state-spine: raw CDP lifecycle tool blocked"
+        );
+        self.record_blocked_tool_error(
+            loop_ctx,
+            trackers,
+            elements,
+            tool_name,
+            arguments,
+            tool_call_id,
+            err_msg,
+            "blocked: CDP lifecycle is runtime-managed",
+            false,
+        )
+        .await
+    }
+
+    async fn guard_coordinate_primitive<M>(
+        &mut self,
+        turn: &AgentTurn,
+        elements: &[CdpFindElementMatch],
+        loop_ctx: &mut RunLoopContext,
+        trackers: &mut RunLoopTrackers,
+        mcp: &M,
+    ) -> LoopStepFlow
+    where
+        M: Mcp + ?Sized,
+    {
+        let AgentAction::ToolCall {
+            tool_name,
+            arguments,
+            tool_call_id,
+        } = &turn.action
+        else {
+            return LoopStepFlow::Dispatch;
+        };
+        let Some(err_msg) = self.coordinate_primitive_blocked(tool_name, mcp) else {
+            return LoopStepFlow::Dispatch;
+        };
+        warn!(
+            tool = %tool_name,
+            "state-spine: coordinate primitive blocked by structured-surface guard"
+        );
+        self.record_blocked_tool_error(
+            loop_ctx,
+            trackers,
+            elements,
+            tool_name,
+            arguments,
+            tool_call_id,
+            err_msg,
+            "blocked: structured surface wired (CDP/AX)",
+            false,
+        )
+        .await
+    }
+
+    async fn handle_permission_gate(
+        &mut self,
+        turn: &AgentTurn,
+        elements: &[CdpFindElementMatch],
+        loop_ctx: &mut RunLoopContext,
+        trackers: &mut RunLoopTrackers,
+    ) -> LoopStepFlow {
+        let AgentAction::ToolCall {
+            tool_name,
+            arguments,
+            tool_call_id,
+        } = &turn.action
+        else {
+            return LoopStepFlow::Dispatch;
+        };
+        if is_observation_tool(tool_name, &loop_ctx.annotations_by_tool) {
+            return LoopStepFlow::Dispatch;
+        }
+
+        match self.policy_for(tool_name, arguments, &loop_ctx.annotations_by_tool) {
+            PermissionAction::Deny => {
+                warn!(tool = %tool_name, "state-spine: tool denied by permission policy");
+                self.record_blocked_tool_error(
+                    loop_ctx,
+                    trackers,
+                    elements,
+                    tool_name,
+                    arguments,
+                    tool_call_id,
+                    format!("Tool `{}` denied by permission policy", tool_name),
+                    "blocked: permission policy denied tool",
+                    true,
+                )
+                .await
+            }
+            PermissionAction::Allow => {
+                debug!(
+                    tool = %tool_name,
+                    "state-spine: permission policy allowed tool — skipping approval"
+                );
+                LoopStepFlow::Dispatch
+            }
+            PermissionAction::Ask => {
+                match self
+                    .request_approval(tool_name, arguments, self.state.steps.len(), "")
+                    .await
+                {
+                    Some(ApprovalResult::Rejected) => {
+                        self.record_approval_rejection(
+                            loop_ctx,
+                            trackers,
+                            elements,
+                            tool_name,
+                            arguments,
+                            tool_call_id,
+                        )
+                        .await;
+                        LoopStepFlow::Continue
+                    }
+                    Some(ApprovalResult::Unavailable) => {
+                        warn!("state-spine: approval system unavailable — terminating");
+                        self.state.terminal_reason = Some(TerminalReason::ApprovalUnavailable);
+                        LoopStepFlow::Break
+                    }
+                    Some(ApprovalResult::Approved) | None => LoopStepFlow::Dispatch,
+                }
+            }
+        }
+    }
+
+    async fn record_approval_rejection(
+        &mut self,
+        loop_ctx: &mut RunLoopContext,
+        trackers: &mut RunLoopTrackers,
+        elements: &[CdpFindElementMatch],
+        tool_name: &str,
+        arguments: &Value,
+        tool_call_id: &str,
+    ) {
+        let step_idx = self.push_tool_step(
+            elements,
+            tool_name,
+            arguments,
+            tool_call_id,
+            StepOutcome::Replan("User rejected action".to_string()),
+        );
+        self.emit_world_model_changed_for_recorded_step().await;
+        trackers.previous_result = Some("Replan: user rejected action".to_string());
+        append_assistant_and_tool_result(
+            &mut loop_ctx.messages,
+            tool_name,
+            arguments,
+            tool_call_id,
+            trackers.previous_result.as_deref(),
+        );
+        let _ = step_idx;
+        reset_no_progress_tracking(&mut trackers.last_action, &mut trackers.recent_actions);
+    }
+
+    async fn handle_run_turn_result<M>(
+        &mut self,
+        goal: &str,
+        mcp: &M,
+        mcp_tools: &[Value],
+        loop_ctx: &mut RunLoopContext,
+        trackers: &mut RunLoopTrackers,
+        turn: &AgentTurn,
+        elements: &[CdpFindElementMatch],
+        previous_errors: usize,
+        outcome: TurnOutcome,
+    ) -> LoopStepFlow
+    where
+        M: Mcp + ?Sized,
+    {
+        self.record_episodic_progress(turn, &outcome);
+        self.queue_recovery_success_write(turn, &outcome, previous_errors)
+            .await;
+
+        let flow = match outcome {
+            TurnOutcome::ToolSuccess {
+                tool_name,
+                tool_body,
+            } => {
+                self.handle_tool_success_outcome(
+                    mcp, mcp_tools, loop_ctx, trackers, turn, elements, tool_name, tool_body,
+                )
+                .await
+            }
+            TurnOutcome::ToolError { tool_name, error } => {
+                self.handle_tool_error_outcome(trackers, turn, elements, tool_name, error)
+                    .await
+            }
+            TurnOutcome::Done { summary } => self.handle_done_outcome(goal, mcp, summary).await,
+            TurnOutcome::Replan { reason } => {
+                trackers.previous_result = Some(format!("replan: {}", reason));
+                reset_no_progress_tracking(&mut trackers.last_action, &mut trackers.recent_actions);
+                LoopStepFlow::Continue
+            }
+        };
+
+        if matches!(flow, LoopStepFlow::Continue) {
+            self.append_action_result_to_history(loop_ctx, trackers, &turn.action);
+        }
+        flow
+    }
+
+    fn record_episodic_progress(&mut self, turn: &AgentTurn, outcome: &TurnOutcome) {
+        if !self.episodic_active() {
+            return;
+        }
+        match outcome {
+            TurnOutcome::ToolError { tool_name, error } => {
+                self.last_failed_tool_name = Some(tool_name.clone());
+                self.last_failed_error_kind = Some(error.clone());
+            }
+            TurnOutcome::ToolSuccess { .. } => {
+                self.clear_last_failure_tracking();
+            }
+            _ => {}
+        }
+        if self.task_state.phase == crate::agent::phase::Phase::Recovering
+            && let AgentAction::ToolCall {
+                tool_name,
+                arguments,
+                ..
+            } = &turn.action
+        {
+            let outcome_kind = match outcome {
+                TurnOutcome::ToolSuccess { .. } => "ok",
+                TurnOutcome::ToolError { .. } => "error",
+                TurnOutcome::Done { .. } => "done",
+                TurnOutcome::Replan { .. } => "replan",
+            };
+            self.recovery_actions_accumulator
+                .push(crate::agent::episodic::types::CompactAction {
+                    tool_name: tool_name.clone(),
+                    brief_args: brief_summarize_args(arguments),
+                    outcome_kind: outcome_kind.to_string(),
+                });
+        }
+    }
+
+    async fn queue_recovery_success_write(
+        &mut self,
+        turn: &AgentTurn,
+        outcome: &TurnOutcome,
+        previous_errors: usize,
+    ) {
+        if previous_errors == 0
+            || self.consecutive_errors != 0
+            || !matches!(outcome, TurnOutcome::ToolSuccess { .. })
+        {
+            return;
+        }
+
+        self.write_recovery_succeeded_record(turn, outcome).await;
+        if !self.episodic_active() {
+            return;
+        }
+        let Some(entry) = self.recovering_snapshot.take() else {
+            return;
+        };
+        let Some(writer) = &self.episodic_writer else {
+            return;
+        };
+        let actions = std::mem::take(&mut self.recovery_actions_accumulator);
+        let record = self.build_step_record(
+            crate::agent::step_record::BoundaryKind::RecoverySucceeded,
+            serde_json::to_value(&turn.action).unwrap_or_else(|_| serde_json::json!({})),
+            serde_json::json!({"kind": "tool_success"}),
+        );
+        let queue_result = writer
+            .queue(
+                crate::agent::episodic::types::WriteRequest::DeriveAndInsert {
+                    entry: Box::new(entry),
+                    recovery_success: Box::new(record),
+                    recovery_actions: actions,
+                },
+            )
+            .await;
+        if let Err(e) = queue_result {
+            self.emit_event(AgentEvent::Warning {
+                message: format!("episodic: write dropped: backpressure ({e})"),
+            })
+            .await;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_tool_success_outcome<M>(
+        &mut self,
+        mcp: &M,
+        mcp_tools: &[Value],
+        loop_ctx: &RunLoopContext,
+        trackers: &mut RunLoopTrackers,
+        turn: &AgentTurn,
+        elements: &[CdpFindElementMatch],
+        tool_name: String,
+        tool_body: String,
+    ) -> LoopStepFlow
+    where
+        M: Mcp + ?Sized,
+    {
+        let AgentAction::ToolCall {
+            arguments,
+            tool_call_id,
+            ..
+        } = &turn.action
+        else {
+            unreachable!("ToolSuccess outcome implies ToolCall action");
+        };
+
+        let step_idx = self.push_tool_step(
+            elements,
+            &tool_name,
+            arguments,
+            tool_call_id,
+            StepOutcome::Success(tool_body.clone()),
+        );
+        let unverified_side_effect =
+            is_unverified_side_effect_action(&tool_name, arguments, &loop_ctx.annotations_by_tool);
+        self.recorded_steps.push(RecordedStep {
+            tool_name: tool_name.clone(),
+            arguments: arguments.clone(),
+            result_text: tool_body.clone(),
+            world_model_pre: self.pre_dispatch_snapshot.take().unwrap_or_else(|| {
+                crate::agent::step_record::WorldModelSnapshot::from_world_model(&self.world_model)
+            }),
+            world_model_post: crate::agent::step_record::WorldModelSnapshot::from_world_model(
+                &self.world_model,
+            ),
+        });
+        let unverified_side_effect_nudge = if unverified_side_effect {
+            Some(build_unverified_side_effect_nudge(&tool_body))
+        } else {
+            None
+        };
+        trackers.previous_result = Some(
+            unverified_side_effect_nudge
+                .clone()
+                .unwrap_or(tool_body.clone()),
+        );
+        trackers.last_failure = None;
+
+        self.emit_event(AgentEvent::StepCompleted {
+            step_index: step_idx,
+            tool_name: tool_name.clone(),
+            summary: crate::agent::prompt::truncate_summary(&tool_body, 120),
+        })
+        .await;
+        if unverified_side_effect {
+            self.emit_event(AgentEvent::Warning {
+                message: format!(
+                    "{}: `{}` result requires verification before completion",
+                    UNVERIFIED_SIDE_EFFECT_PREFIX, tool_name
+                ),
+            })
+            .await;
+        }
+        if matches!(
+            self.maybe_halt_on_destructive_cap(&tool_name, &loop_ctx.annotations_by_tool),
+            CapStatus::CapReached
+        ) {
+            self.emit_destructive_cap_hit().await;
+            return LoopStepFlow::Break;
+        }
+
+        if let Some(node_id) = self
+            .add_workflow_node(
+                &tool_name,
+                arguments,
+                mcp_tools,
+                &loop_ctx.annotations_by_tool,
+            )
+            .await
+        {
+            self.record_produced_node_id(node_id);
+        }
+        self.maybe_cdp_connect(&tool_name, arguments, &tool_body, mcp)
+            .await;
+
+        if let Some(nudge) = self
+            .track_post_text_submit_search(
+                &tool_name,
+                arguments,
+                &tool_body,
+                &mut trackers.pending_text_submit_search,
+            )
+            .await
+        {
+            trackers.previous_result = Some(combine_with_side_effect_nudge(
+                unverified_side_effect_nudge.as_deref(),
+                nudge,
+            ));
+        }
+        if let Some(nudge) = self
+            .track_repeat_action(
+                &tool_name,
+                arguments,
+                &tool_body,
+                &loop_ctx.annotations_by_tool,
+                &mut trackers.last_action,
+                &mut trackers.recent_actions,
+            )
+            .await
+        {
+            trackers.previous_result = Some(combine_with_side_effect_nudge(
+                unverified_side_effect_nudge.as_deref(),
+                nudge,
+            ));
+        }
+        LoopStepFlow::Continue
+    }
+
+    async fn handle_tool_error_outcome(
+        &mut self,
+        trackers: &mut RunLoopTrackers,
+        turn: &AgentTurn,
+        elements: &[CdpFindElementMatch],
+        tool_name: String,
+        error: String,
+    ) -> LoopStepFlow {
+        let AgentAction::ToolCall {
+            arguments,
+            tool_call_id,
+            ..
+        } = &turn.action
+        else {
+            unreachable!("ToolError outcome implies ToolCall action");
+        };
+        let step_idx = self.push_tool_step(
+            elements,
+            &tool_name,
+            arguments,
+            tool_call_id,
+            StepOutcome::Error(error.clone()),
+        );
+        self.state.consecutive_errors = self.consecutive_errors;
+        trackers.previous_result = Some(error.clone());
+        self.emit_event(AgentEvent::StepFailed {
+            step_index: step_idx,
+            tool_name: tool_name.clone(),
+            error: error.clone(),
+        })
+        .await;
+
+        let looped = matches!(
+            trackers.last_failure.as_ref(),
+            Some((prev_tool, prev_args, prev_err))
+                if prev_tool == &tool_name && prev_args == arguments && prev_err == &error
+        );
+        if looped {
+            warn!(
+                tool = %tool_name,
+                error = %error,
+                "state-spine: identical failing tool call repeated — aborting"
+            );
+            self.state.terminal_reason = Some(TerminalReason::LoopDetected { tool_name, error });
+            return LoopStepFlow::Break;
+        }
+        trackers.last_failure = Some((tool_name, arguments.clone(), error));
+        reset_no_progress_tracking(&mut trackers.last_action, &mut trackers.recent_actions);
+
+        let action = recovery_strategy(
+            self.state.consecutive_errors,
+            self.config.max_consecutive_errors,
+        );
+        if matches!(action, RecoveryAction::Abort) {
+            warn!(
+                errors = self.state.consecutive_errors,
+                "state-spine: too many consecutive errors — aborting"
+            );
+            self.state.terminal_reason = Some(TerminalReason::MaxErrorsReached {
+                consecutive_errors: self.state.consecutive_errors,
+            });
+            return LoopStepFlow::Break;
+        }
+        LoopStepFlow::Continue
+    }
+
+    async fn handle_done_outcome<M>(&mut self, goal: &str, mcp: &M, summary: String) -> LoopStepFlow
+    where
+        M: Mcp + ?Sized,
+    {
+        let disagreement = self.verify_completion(goal, &summary, mcp).await;
+        if let Some((screenshot_b64, vlm_reasoning)) = disagreement {
+            warn!("state-spine: VLM disagreed with agent_done — halting for user review");
+            self.emit_event(AgentEvent::CompletionDisagreement {
+                screenshot_b64,
+                vlm_reasoning: vlm_reasoning.clone(),
+                agent_summary: summary.clone(),
+            })
+            .await;
+            self.state.terminal_reason = Some(TerminalReason::CompletionDisagreement {
+                agent_summary: summary,
+                vlm_reasoning,
+            });
+            return LoopStepFlow::Break;
+        }
+
+        self.state.completed = true;
+        self.state.summary = Some(summary.clone());
+        self.state.terminal_reason = Some(TerminalReason::Completed {
+            summary: summary.clone(),
+        });
+        self.emit_event(AgentEvent::GoalComplete { summary }).await;
+        LoopStepFlow::Break
+    }
+
+    fn append_action_result_to_history(
+        &mut self,
+        loop_ctx: &mut RunLoopContext,
+        trackers: &RunLoopTrackers,
+        action: &AgentAction,
+    ) {
+        match action {
+            AgentAction::ToolCall {
+                tool_name,
+                arguments,
+                tool_call_id,
+            } => {
+                append_assistant_and_tool_result(
+                    &mut loop_ctx.messages,
+                    tool_name,
+                    arguments,
+                    tool_call_id,
+                    trackers.previous_result.as_deref(),
+                );
+            }
+            AgentAction::AgentReplan { reason } => {
+                loop_ctx
+                    .messages
+                    .push(Message::assistant(format!("replan: {}", reason)));
+            }
+            AgentAction::AgentDone { .. } | AgentAction::InvokeSkill { .. } => {}
+        }
+    }
+
     /// Top-level observe → compose → LLM → parse → apply → dispatch →
     /// compact control loop. Task 3a.1 ships the minimum skeleton; later
     /// tasks (flagged by `TODO(task-3a.N)` markers inline) wire VLM
@@ -4032,235 +5205,24 @@ impl StateRunner {
         B: ChatBackend + ?Sized,
         M: Mcp + ?Sized,
     {
-        use crate::agent::context::{CompactBudget, compact};
-        use crate::agent::prompt::{
-            UserTurnMessageInput, build_system_prompt, build_system_prompt_with_header,
-            build_user_turn_message_from_input,
-        };
-
-        // Reset the visible state tuple to match the freshly-provided
-        // workflow. `AgentState::new(workflow)` wipes steps/terminal_reason
-        // so the same `StateRunner` could in theory be reused across runs,
-        // though `self` is consumed below.
-        self.state = AgentState::new(workflow);
-        self.state.last_node_id = anchor_node_id;
-
-        // Build the system prompt from the raw openai-shaped tool list.
-        // `build_system_prompt` expects `clickweave_mcp::Tool`; the raw
-        // `Vec<Value>` is already openai-shape, so extract the minimum
-        // fields each tool entry carries.
-        //
-        // D18 (Task 3.5): the system prompt is stable across runs —
-        // variant context + prior-turn log are pre-composed into `goal`
-        // at the caller seam (`build_goal_block`) so they land in
-        // `messages[1]`, preserving the `messages[0]` cache prefix.
-        let tool_list_for_prompt = openai_tools_to_mcp_tool_list(&mcp_tools);
-        let system_text = if let Some(prompt) = self.agent_system_prompt_override.as_deref() {
-            build_system_prompt_with_header(prompt, &tool_list_for_prompt)
-        } else {
-            build_system_prompt(&tool_list_for_prompt)
-        };
-
-        // Stable list of advertised MCP tool names for the per-turn
-        // `<tools_in_scope>` filter. Computed once per run since `mcp_tools`
-        // is itself stable across the loop (mid-run mutations would
-        // invalidate the prompt-cache prefix).
-        let advertised_tool_names: Vec<String> = tool_list_for_prompt
-            .iter()
-            .map(|t| t.name.clone())
-            .collect();
-
-        // `goal` already carries the prior-turn log + variant-context
-        // composed by `build_goal_block` at the Tauri seam. Feed it
-        // straight into the user turn so messages[1] is the single
-        // run-specific slot.
-        let initial_scope = self.compute_tools_in_scope(&advertised_tool_names);
-        let initial_user = build_user_turn_message_from_input(UserTurnMessageInput {
-            wm: &self.world_model,
-            ts: &self.task_state,
-            current_step: 0,
-            observation_text: &goal,
-            retrieved: &[],
-            applicable_skills: &[],
-            tools_in_scope_names: &initial_scope,
-            max_elements: self.config.state_block_max_elements,
-        });
-
-        let mut messages = vec![Message::system(system_text), Message::user(initial_user)];
-
-        // Add the pseudo-tools so the LLM sees the full state-spine
-        // vocabulary: six task-state mutations plus the two action
-        // pseudo-tools. Seeded once per run and never mutated — mid-run
-        // tool-list changes invalidate every prior prompt-cache prefix.
-        // The MCP tool set is unchanged: pseudo-tools do not dispatch
-        // against `Mcp`; `parse_agent_turn` recognises them and routes
-        // them into `AgentTurn.{mutations, action}` directly.
-        let tools: Vec<Value> = mcp_tools
-            .iter()
-            .cloned()
-            .chain(crate::agent::prompt::pseudo_tools())
-            .collect();
-
-        // Annotations index is seeded once per run so permission-policy
-        // evaluation and the destructive cap see the same `read_only_hint`
-        // / `destructive_hint` view.
-        let annotations_by_tool = build_annotations_index(&mcp_tools);
-
-        let budget = CompactBudget {
-            recent_n: self.config.recent_n,
-            ..CompactBudget::default()
-        };
-        let mut previous_result: Option<String> = None;
-        // Loop detection: `(tool_name, arguments, error)` from the last
-        // failing live call.
-        let mut last_failure: Option<(String, Value, String)> = None;
-        // No-progress detector for the success path. Failures already
-        // abort on identical-error repeats via `last_failure` above;
-        // this covers successful calls that don't advance the world.
-        let mut last_action: Option<LastActionProgress> = None;
-        let mut recent_actions: VecDeque<ActionProgressSignature> = VecDeque::new();
-        let mut pending_text_submit_search: Option<TextSubmitSearchProgress> = None;
+        let mut loop_ctx = self.initialize_run_loop(&goal, workflow, &mcp_tools, anchor_node_id);
+        let mut trackers = RunLoopTrackers::default();
 
         for _step_index in 0..self.config.max_steps {
             if self.state.completed {
                 break;
             }
 
-            // 1. Observe — fetch elements + detect page transition.
-            //    Capture the pre-mirror world-model signatures so the
-            //    `WorldModelChanged` diff emitted by `run_turn` sees the
-            //    direct-observation writes below. Only seed the
-            //    baseline when it is empty: early-exit branches (policy
-            //    deny, approval reject)
-            //    skip `run_turn` entirely, so the baseline must persist
-            //    across iterations until `run_turn.take()` consumes it.
-            //    `run_turn` falls back to an internal snapshot when
-            //    `None`, preserving the direct-driver test path.
-            if self.turn_pre_signatures.is_none() {
-                self.turn_pre_signatures = Some(self.world_model.field_signatures());
-            }
-            // Spec 3: snapshot the world model before this iteration's
-            // dispatch so any successful tool call this turn pushes a
-            // `RecordedStep` whose `world_model_pre` matches what the
-            // LLM saw at decision time. Captured here before the
-            // CDP-page summary mirror mutates `world_model.cdp_page`.
-            self.pre_dispatch_snapshot = Some(
-                crate::agent::step_record::WorldModelSnapshot::from_world_model(&self.world_model),
-            );
-            let CdpPageObservation {
-                page_url,
-                page_fingerprint,
-                inventory,
-            } = self.fetch_cdp_page_summary(mcp).await;
-
-            // Mirror only the compact CDP page summary. CDP target
-            // candidates are intentionally not written to
-            // `world_model.elements`: the DOM is an ephemeral query
-            // result and belongs in explicit `cdp_find_elements` /
-            // `cdp_get_element_context` tool results, not in every
-            // subsequent state block. Native AX/OCR element surfaces
-            // still flow through `update_continuity_after_tool_success`.
-            {
-                use crate::agent::world_model::{
-                    CdpPageState, Fresh, FreshnessSource, ObservedElement,
-                };
-                if matches!(
-                    self.world_model
-                        .elements
-                        .as_ref()
-                        .and_then(|f| f.value.first()),
-                    Some(ObservedElement::Cdp(_))
-                ) {
-                    self.world_model.elements = None;
-                }
-                // `fetch_cdp_page_summary` writes the response `page_url` into
-                // `state.current_url` on success and clears it on every
-                // miss path (missing tool / parse failure / MCP error /
-                // call failure). Mirror the URL + inventory-derived
-                // fingerprint into `world_model.cdp_page` when fresh,
-                // otherwise drop the stale page context entirely.
-                let url = if page_url.is_empty() {
-                    self.state.current_url.clone()
-                } else {
-                    page_url
-                };
-                if !url.is_empty() {
-                    self.world_model.cdp_page = Some(Fresh {
-                        value: CdpPageState {
-                            url,
-                            page_fingerprint,
-                            element_inventory: inventory,
-                        },
-                        written_at: self.step_index,
-                        source: FreshnessSource::DirectObservation,
-                        ttl_steps: Some(2),
-                    });
-                } else {
-                    self.world_model.cdp_page = None;
-                }
-            }
-            let elements: Vec<clickweave_core::cdp::CdpFindElementMatch> = self
-                .world_model
-                .elements
-                .as_ref()
-                .map(|fresh| {
-                    fresh
-                        .value
-                        .iter()
-                        .filter_map(|element| match element {
-                            crate::agent::world_model::ObservedElement::Cdp(match_) => {
-                                Some(match_.clone())
-                            }
-                            _ => None,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            // Top-of-loop observe — unconditional. Drains pending
-            // invalidation events queued by the prior iteration's
-            // dispatch (focus shift, navigation, app lifecycle, tool
-            // failure) and re-infers `phase` so episodic retrieval and
-            // prompt render both see the
-            // post-event state. `run_turn` runs another `observe()`
-            // after dispatch; the two passes are idempotent — events
-            // are drained once per queue-and-observe cycle, so a second
-            // call with no pending events is a no-op for invalidation
-            // and just re-runs phase inference.
-            //
-            // `prev_phase_at_top` is captured *before* the observe so
-            // the `Exploring/Executing -> Recovering` transition is
-            // detectable here for episodic retrieval triggers.
-            let prev_phase_at_top = self.task_state.phase;
-            // Surface snapshot staleness as an invalidation event so
-            // `observe()` drops AX / screenshot bodies that have aged
-            // past their TTL even when no other event arrived.
-            self.queue_snapshot_stale_if_aged();
-            self.observe();
-            if prev_phase_at_top != self.task_state.phase {
-                self.emit_event(AgentEvent::TaskStateChanged {
-                    run_id: self.run_id,
-                    task_state: self.task_state.clone(),
-                })
-                .await;
-            }
-
-            // No pre-step CDP maybe-connect — legacy also defers the
-            // decision to the post-tool hook (`maybe_cdp_connect` after
-            // a successful `launch_app` / `focus_window`). CDP tools the
-            // LLM picks before a connection exists return a "not
-            // connected" MCP error that the recovery strategy absorbs.
-
-            // Spec 2: episodic retrieval. `try_retrieve_episodic` returns
-            // an empty vec when episodic is inactive or no trigger condition
-            // fires.
-            let retrieved = self.try_retrieve_episodic(prev_phase_at_top).await;
+            // 1. Observe — refresh the compact CDP page summary, drain
+            // invalidations, re-infer phase, and run episodic retrieval if
+            // this iteration hits a retrieval trigger.
+            let (elements, retrieved) = self.observe_for_next_turn(mcp).await;
 
             // 2. Compose the per-turn user message with the state block +
             // the previous tool body as the observation, then compact the
             // history before the LLM call.
-            let step_obs = previous_result.clone().unwrap_or_default();
-            let step_scope = self.compute_tools_in_scope(&advertised_tool_names);
+            let step_obs = trackers.previous_result.clone().unwrap_or_default();
+            let step_scope = self.compute_tools_in_scope(&loop_ctx.advertised_tool_names);
             // Spec 3: drain `pending_applicable_skills` once per turn —
             // the block surfaces in the next user turn after the
             // `push_subgoal` that produced it, then disappears.
@@ -4275,12 +5237,12 @@ impl StateRunner {
                 tools_in_scope_names: &step_scope,
                 max_elements: self.config.state_block_max_elements,
             });
-            messages.push(Message::user(step_msg));
-            messages = compact(messages, &budget);
+            loop_ctx.messages.push(Message::user(step_msg));
+            loop_ctx.messages = compact(loop_ctx.messages, &loop_ctx.budget);
 
             // 3. LLM call.
             let response = llm
-                .chat(&messages, Some(&tools))
+                .chat(&loop_ctx.messages, Some(&loop_ctx.tools))
                 .await
                 .context("Agent LLM call failed")?;
             let choice = response
@@ -4293,8 +5255,10 @@ impl StateRunner {
             //    `0..N` task-state mutations followed by exactly one
             //    action.
             let mut turn = parse_agent_turn(&choice.message)?;
-            if guard_completion_after_unverified_side_effect(previous_result.as_deref(), &mut turn)
-            {
+            if guard_completion_after_unverified_side_effect(
+                trackers.previous_result.as_deref(),
+                &mut turn,
+            ) {
                 warn!("state-spine: blocked completion after unverified side-effectful action");
                 self.emit_event(AgentEvent::Warning {
                     message: UNVERIFIED_SIDE_EFFECT_COMPLETION_BLOCKED_REASON.to_string(),
@@ -4302,646 +5266,54 @@ impl StateRunner {
                 .await;
             }
 
-            // 4'. Apply task-state mutations BEFORE any early-exit
-            //     branching. Synthetic focus-skip / live policy-deny /
-            //     live approval-reject all record a step and `continue`
-            //     before `run_turn` would otherwise apply them, so
-            //     mutations would be silently dropped on those paths.
-            //     Applying here guarantees the AgentTurn contract
-            //     ("mutations apply before the action runs") regardless
-            //     of which branch the action takes — and `run_turn`
-            //     receives an action-only turn so it does not
-            //     double-apply.
-            //
-            //     `outer_milestones_appended` counts CompleteSubgoal
-            //     pops that landed in this turn so the
-            //     SubgoalCompleted boundary write below still runs even
-            //     when the action takes an early-exit branch.
-            let outer_milestones_before = self.task_state.milestones.len();
-            if !turn.mutations.is_empty() {
-                let warnings = self.apply_mutations(&turn.mutations);
-                for w in warnings {
-                    tracing::warn!(warning = %w, "state-spine: mutation warning");
-                }
-                self.emit_event(AgentEvent::TaskStateChanged {
-                    run_id: self.run_id,
-                    task_state: self.task_state.clone(),
-                })
-                .await;
-            }
-            let outer_milestones_appended = self
-                .task_state
-                .milestones
-                .len()
-                .saturating_sub(outer_milestones_before);
+            self.prepare_turn_for_dispatch(
+                &mut turn,
+                &mut trackers.last_action,
+                &mut trackers.recent_actions,
+            )
+            .await;
 
-            // 4''. SubgoalCompleted boundary writes — one StepRecord
-            //      per CompleteSubgoal mutation that successfully
-            //      popped a subgoal. Hoisted above the early-exit
-            //      branches so a turn like `complete_subgoal` +
-            //      skipped `focus_window` still produces the boundary
-            //      record. Without this hoist, mutations would land on
-            //      `task_state` (via 4') but the matching
-            //      `BoundaryKind::SubgoalCompleted` `StepRecord` would
-            //      be silently dropped whenever the action took the
-            //      synthetic-skip / policy-deny / approval-reject
-            //      `continue`.
-            if outer_milestones_appended > 0 {
-                self.write_subgoal_completed_records(outer_milestones_appended, &turn)
-                    .await;
-                reset_no_progress_tracking(&mut last_action, &mut recent_actions);
-            }
-
-            // 4''-bis. Spec 3: skill retrieval on `push_subgoal`.
-            //          `apply_mutations` populates `last_pushed_subgoal_ids`;
-            //          here we consume it once per turn and accumulate
-            //          retrieved skills in `pending_applicable_skills` so
-            //          the next user-turn render splices them into the
-            //          `<applicable_skills>` block.
-            //
-            //          Runs *before* the synthetic-focus-skip / live-policy-
-            //          deny / live-approval-reject early-exit branches so
-            //          retrieval fires for every real `push_subgoal`
-            //          regardless of which dispatch branch the action
-            //          eventually takes.
-            if self.skill_ctx.enabled
-                && self.config.skills_enabled
-                && !self.last_pushed_subgoal_ids.is_empty()
+            if self
+                .handle_no_focus_launch_skip(&turn, &elements, &mut loop_ctx, &mut trackers, mcp)
+                .await
             {
-                let pushed = std::mem::take(&mut self.last_pushed_subgoal_ids);
-                let k = self.config.applicable_skills_k;
-                for id in &pushed {
-                    let Some(subgoal) = self
-                        .task_state
-                        .subgoal_stack
-                        .iter()
-                        .find(|s| s.id == *id)
-                        .cloned()
-                    else {
-                        continue;
-                    };
-                    let subgoal_sig = crate::agent::skills::signature::compute_subgoal_signature(
-                        &subgoal.text,
-                        &self.world_model,
-                    );
-                    let app_sig = crate::agent::skills::signature::compute_applicability_signature(
-                        &self.world_model,
-                    );
-                    let candidates = self.skill_index.read().lookup_at(
-                        &subgoal_sig,
-                        &app_sig,
-                        &subgoal.text,
-                        k,
-                        chrono::Utc::now(),
-                    );
-                    self.pending_applicable_skills.extend(candidates);
-                }
-            }
-
-            // 4''-ter. Spec 3: expand a resolved `invoke_skill` into
-            // the first replayed tool call. Phase 4's full replay
-            // engine still owns nested sub-skills, loops, capture
-            // propagation, and divergence recovery; this bridge covers
-            // confirmed leaf tool-call skills.
-            if let AgentAction::InvokeSkill {
-                skill_id,
-                version,
-                parameters,
-            } = turn.action.clone()
-            {
-                turn.action = match self.dispatch_skill(&skill_id, version, parameters).await {
-                    Ok(frame) => Self::skill_frame_to_single_step_action(&frame),
-                    Err(reason) => AgentAction::AgentReplan { reason },
-                };
-            }
-
-            // 4a. Synthetic `launch_app` skip for the no-focus policy.
-            // A no-args launch of an already-running app is a focus
-            // change in native-devtools. When background operation is
-            // required, treat that as a successful app-state observation
-            // and let the CDP lifecycle helper attach without sending the
-            // foregrounding MCP call.
-            if let AgentAction::ToolCall {
-                tool_name,
-                arguments,
-                tool_call_id,
-            } = &turn.action
-                && tool_name == "launch_app"
-                && let Some(running) = self.running_app_for_no_focus_launch(arguments, mcp).await
-            {
-                self.emit_event(AgentEvent::SubAction {
-                    tool_name: "launch_app".to_string(),
-                    summary: "skipped: app already running; focus changes disabled".to_string(),
-                })
-                .await;
-                let skip_body = Self::skipped_launch_result_text(&running);
-                debug!(
-                    tool = "launch_app",
-                    app = running.name,
-                    "state-spine: suppressing launch_app for already-running app",
-                );
-                let step_idx_for_event = self.state.steps.len();
-                self.state.steps.push(AgentStep {
-                    index: step_idx_for_event,
-                    elements: elements.clone(),
-                    command: AgentCommand::ToolCall {
-                        tool_name: tool_name.clone(),
-                        arguments: arguments.clone(),
-                        tool_call_id: tool_call_id.clone(),
-                    },
-                    outcome: StepOutcome::Success(skip_body.clone()),
-                    page_url: self.state.current_url.clone(),
-                });
-                self.advance_recorded_step_index();
-                self.emit_world_model_changed_for_recorded_step().await;
-                self.state.consecutive_errors = 0;
-                self.consecutive_errors = 0;
-                last_failure = None;
-                self.clear_last_failure_tracking();
-                self.maybe_cdp_connect(tool_name, arguments, &skip_body, mcp)
-                    .await;
-                previous_result = Some(skip_body.clone());
-                if let Some(nudge) = self
-                    .track_repeat_action(
-                        tool_name,
-                        arguments,
-                        &skip_body,
-                        &annotations_by_tool,
-                        &mut last_action,
-                        &mut recent_actions,
-                    )
-                    .await
-                {
-                    previous_result = Some(nudge);
-                }
-                self.emit_event(AgentEvent::StepCompleted {
-                    step_index: step_idx_for_event,
-                    tool_name: "launch_app".to_string(),
-                    summary: crate::agent::prompt::truncate_summary(&skip_body, 120),
-                })
-                .await;
-                append_assistant_and_tool_result(
-                    &mut messages,
-                    tool_name,
-                    arguments,
-                    tool_call_id,
-                    previous_result.as_deref(),
-                );
                 continue;
             }
 
             force_background_launch_app(&mut turn.action, self.config.allow_focus_window);
 
-            // 4a'. Synthetic `focus_window` skip. When the MCP surface +
-            // app kind lets us suppress the focus-stealing MCP call
-            // (Native + full AX toolset, Electron/Chrome with live CDP,
-            // or `allow_focus_window = false`), we emit a synthetic
-            // `Success` outcome whose body matches the legacy sentinel
-            // strings and advance the loop without dispatching. The
-            // runner records a step and a `StepCompleted` event so the
-            // call stays visible to the transcript / UI, but the
-            // workflow-graph filter (`is_synthetic_focus_skip`) keeps
-            // it out of the recorded workflow. Port of the legacy
-            // `AgentRunner::execute_response`'s focus_window guard.
-            if let AgentAction::ToolCall {
-                tool_name,
-                arguments,
-                tool_call_id,
-            } = &turn.action
-                && tool_name == "focus_window"
-                && let Some(reason) = self.should_skip_focus_window(arguments, mcp)
+            if self
+                .handle_synthetic_focus_skip(&turn, &elements, &mut loop_ctx, &mut trackers, mcp)
+                .await
             {
-                self.emit_event(AgentEvent::SubAction {
-                    tool_name: "focus_window".to_string(),
-                    summary: reason.sub_action_summary().to_string(),
-                })
-                .await;
-                let skip_body = reason.llm_message().to_string();
-                debug!(
-                    tool = "focus_window",
-                    app = arguments
-                        .get("app_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(""),
-                    reason = skip_body,
-                    "state-spine: suppressing focus_window",
-                );
-                let step_idx_for_event = self.state.steps.len();
-                self.state.steps.push(AgentStep {
-                    index: step_idx_for_event,
-                    elements: elements.clone(),
-                    command: AgentCommand::ToolCall {
-                        tool_name: tool_name.clone(),
-                        arguments: arguments.clone(),
-                        tool_call_id: tool_call_id.clone(),
-                    },
-                    outcome: StepOutcome::Success(skip_body.clone()),
-                    page_url: self.state.current_url.clone(),
-                });
-                self.advance_recorded_step_index();
-                self.emit_world_model_changed_for_recorded_step().await;
-                self.state.consecutive_errors = 0;
-                self.consecutive_errors = 0;
-                last_failure = None;
-                // Synthetic focus_window skip is a successful
-                // observation outcome — clear failure tracking the
-                // same way the live ToolSuccess path does.
-                self.clear_last_failure_tracking();
-                // `CdpAttachable` and the no-focus policy both require
-                // app-scoped CDP acquisition. The post-tool
-                // `maybe_cdp_connect` hook only runs on real ToolSuccess,
-                // so synthetic skips must drive `auto_connect_cdp`
-                // directly. On success the helper marks `cdp_state`
-                // connected and clears `cdp_connect_status`; on failure
-                // terminal paths record the reason. The actual
-                // `world_model.cdp_page` write happens at the next
-                // turn's `fetch_cdp_page_summary` mirror, so the finalizer
-                // refreshes the MCP tool cache here.
-                if let Some((app_name, kind_hint)) =
-                    self.cdp_target_for_skipped_focus_window(reason, arguments, mcp)
-                    && let Some(cdp_port) = self
-                        .auto_connect_cdp(&app_name, kind_hint.as_deref(), mcp)
-                        .await
-                {
-                    self.finalize_cdp_connected(&app_name, cdp_port, mcp).await;
-                }
-                previous_result = Some(skip_body.clone());
-                // Synthetic skip is a successful dispatch from the LLM's
-                // view — feed it through the same streak detector so a
-                // run that keeps emitting `focus_window` against an
-                // already-attached CDP target gets a no-progress nudge
-                // instead of silent skips forever.
-                if let Some(nudge) = self
-                    .track_repeat_action(
-                        tool_name,
-                        arguments,
-                        &skip_body,
-                        &annotations_by_tool,
-                        &mut last_action,
-                        &mut recent_actions,
-                    )
-                    .await
-                {
-                    previous_result = Some(nudge);
-                }
-                self.emit_event(AgentEvent::StepCompleted {
-                    step_index: step_idx_for_event,
-                    tool_name: "focus_window".to_string(),
-                    summary: crate::agent::prompt::truncate_summary(&skip_body, 120),
-                })
-                .await;
-                append_assistant_and_tool_result(
-                    &mut messages,
-                    tool_name,
-                    arguments,
-                    tool_call_id,
-                    previous_result.as_deref(),
-                );
                 continue;
             }
 
-            // 4a-bis. Raw CDP lifecycle guard. The runner owns CDP
-            // acquisition/release at app scope; a model-authored
-            // `cdp_connect({"port": 9222})` can attach to any app
-            // listening on that port, which is exactly the failure mode
-            // this guard blocks. Surface a synthetic error and keep MCP
-            // untouched.
-            if let AgentAction::ToolCall {
-                tool_name,
-                arguments,
-                tool_call_id,
-            } = &turn.action
-                && let Some(err_msg) = Self::raw_cdp_lifecycle_blocked(tool_name, arguments)
+            match self
+                .guard_runtime_managed_cdp(&turn, &elements, &mut loop_ctx, &mut trackers)
+                .await
             {
-                warn!(
-                    tool = %tool_name,
-                    "state-spine: raw CDP lifecycle tool blocked"
-                );
-                self.emit_event(AgentEvent::SubAction {
-                    tool_name: tool_name.clone(),
-                    summary: "blocked: CDP lifecycle is runtime-managed".to_string(),
-                })
-                .await;
-                let step_idx_for_event = self.state.steps.len();
-                self.state.steps.push(AgentStep {
-                    index: step_idx_for_event,
-                    elements: elements.clone(),
-                    command: AgentCommand::ToolCall {
-                        tool_name: tool_name.clone(),
-                        arguments: arguments.clone(),
-                        tool_call_id: tool_call_id.clone(),
-                    },
-                    outcome: StepOutcome::Error(err_msg.clone()),
-                    page_url: self.state.current_url.clone(),
-                });
-                self.advance_recorded_step_index();
-                self.emit_world_model_changed_for_recorded_step().await;
-                self.state.consecutive_errors += 1;
-                self.consecutive_errors = self.state.consecutive_errors;
-                previous_result = Some(err_msg.clone());
-                append_assistant_and_tool_result(
-                    &mut messages,
-                    tool_name,
-                    arguments,
-                    tool_call_id,
-                    previous_result.as_deref(),
-                );
-                self.emit_event(AgentEvent::StepFailed {
-                    step_index: step_idx_for_event,
-                    tool_name: tool_name.clone(),
-                    error: err_msg.clone(),
-                })
-                .await;
-                let looped = matches!(
-                    last_failure.as_ref(),
-                    Some((prev_tool, prev_args, prev_err))
-                        if prev_tool == tool_name
-                            && prev_args == arguments
-                            && prev_err == &err_msg
-                );
-                if looped {
-                    warn!(
-                        tool = %tool_name,
-                        "state-spine: identical raw CDP lifecycle block repeated — aborting"
-                    );
-                    self.state.terminal_reason = Some(TerminalReason::LoopDetected {
-                        tool_name: tool_name.clone(),
-                        error: err_msg.clone(),
-                    });
-                    break;
-                }
-                last_failure = Some((tool_name.clone(), arguments.clone(), err_msg.clone()));
-                let action = recovery_strategy(
-                    self.state.consecutive_errors,
-                    self.config.max_consecutive_errors,
-                );
-                if matches!(action, RecoveryAction::Abort) {
-                    warn!(
-                        errors = self.state.consecutive_errors,
-                        "state-spine: too many consecutive raw CDP lifecycle blocks — aborting"
-                    );
-                    self.state.terminal_reason = Some(TerminalReason::MaxErrorsReached {
-                        consecutive_errors: self.state.consecutive_errors,
-                    });
-                    break;
-                }
-                reset_no_progress_tracking(&mut last_action, &mut recent_actions);
-                continue;
+                LoopStepFlow::Continue => continue,
+                LoopStepFlow::Break => break,
+                LoopStepFlow::Dispatch => {}
             }
 
-            // 4a-bis. Coordinate-primitive guard. Defense-in-depth
-            // behind the per-turn `<tools_in_scope>` filter: the filter
-            // narrows the LLM-facing tool list, but a wrong-family
-            // dispatch can still reach this point via a malformed turn
-            // or future replay path. When a
-            // structured surface is wired (CDP page attached, or
-            // Native focus + AX dispatch toolset), reject the
-            // coordinate primitive with a synthetic `StepOutcome::Error`
-            // so it never hits MCP.
-            if let AgentAction::ToolCall {
-                tool_name,
-                arguments,
-                tool_call_id,
-            } = &turn.action
-                && let Some(err_msg) = self.coordinate_primitive_blocked(tool_name, mcp)
+            match self
+                .guard_coordinate_primitive(&turn, &elements, &mut loop_ctx, &mut trackers, mcp)
+                .await
             {
-                warn!(
-                    tool = %tool_name,
-                    "state-spine: coordinate primitive blocked by structured-surface guard"
-                );
-                self.emit_event(AgentEvent::SubAction {
-                    tool_name: tool_name.clone(),
-                    summary: "blocked: structured surface wired (CDP/AX)".to_string(),
-                })
-                .await;
-                let step_idx_for_event = self.state.steps.len();
-                self.state.steps.push(AgentStep {
-                    index: step_idx_for_event,
-                    elements: elements.clone(),
-                    command: AgentCommand::ToolCall {
-                        tool_name: tool_name.clone(),
-                        arguments: arguments.clone(),
-                        tool_call_id: tool_call_id.clone(),
-                    },
-                    outcome: StepOutcome::Error(err_msg.clone()),
-                    page_url: self.state.current_url.clone(),
-                });
-                self.advance_recorded_step_index();
-                self.emit_world_model_changed_for_recorded_step().await;
-                self.state.consecutive_errors += 1;
-                self.consecutive_errors = self.state.consecutive_errors;
-                previous_result = Some(err_msg.clone());
-                append_assistant_and_tool_result(
-                    &mut messages,
-                    tool_name,
-                    arguments,
-                    tool_call_id,
-                    previous_result.as_deref(),
-                );
-                self.emit_event(AgentEvent::StepFailed {
-                    step_index: step_idx_for_event,
-                    tool_name: tool_name.clone(),
-                    error: err_msg.clone(),
-                })
-                .await;
-                let looped = matches!(
-                    last_failure.as_ref(),
-                    Some((prev_tool, prev_args, prev_err))
-                        if prev_tool == tool_name
-                            && prev_args == arguments
-                            && prev_err == &err_msg
-                );
-                if looped {
-                    warn!(
-                        tool = %tool_name,
-                        "state-spine: identical coordinate-primitive block repeated — aborting"
-                    );
-                    self.state.terminal_reason = Some(TerminalReason::LoopDetected {
-                        tool_name: tool_name.clone(),
-                        error: err_msg.clone(),
-                    });
-                    break;
-                }
-                last_failure = Some((tool_name.clone(), arguments.clone(), err_msg.clone()));
-                let action = recovery_strategy(
-                    self.state.consecutive_errors,
-                    self.config.max_consecutive_errors,
-                );
-                if matches!(action, RecoveryAction::Abort) {
-                    warn!(
-                        errors = self.state.consecutive_errors,
-                        "state-spine: too many consecutive coordinate-primitive blocks — aborting"
-                    );
-                    self.state.terminal_reason = Some(TerminalReason::MaxErrorsReached {
-                        consecutive_errors: self.state.consecutive_errors,
-                    });
-                    break;
-                }
-                reset_no_progress_tracking(&mut last_action, &mut recent_actions);
-                continue;
+                LoopStepFlow::Continue => continue,
+                LoopStepFlow::Break => break,
+                LoopStepFlow::Dispatch => {}
             }
 
-            // 4a. Permission policy + approval gate for live `ToolCall`
-            // actions. Mirrors the legacy `AgentRunner::execute_response`
-            // pre-dispatch policy check. Observation tools bypass approval.
-            if let AgentAction::ToolCall {
-                tool_name,
-                arguments,
-                tool_call_id,
-            } = &turn.action
+            match self
+                .handle_permission_gate(&turn, &elements, &mut loop_ctx, &mut trackers)
+                .await
             {
-                let needs_approval = !is_observation_tool(tool_name, &annotations_by_tool);
-                if needs_approval {
-                    match self.policy_for(tool_name, arguments, &annotations_by_tool) {
-                        PermissionAction::Deny => {
-                            warn!(tool = %tool_name, "state-spine: tool denied by permission policy");
-                            let err_msg =
-                                format!("Tool `{}` denied by permission policy", tool_name);
-                            let step_idx_for_event = self.state.steps.len();
-                            self.state.steps.push(AgentStep {
-                                index: step_idx_for_event,
-                                elements: elements.clone(),
-                                command: AgentCommand::ToolCall {
-                                    tool_name: tool_name.clone(),
-                                    arguments: arguments.clone(),
-                                    tool_call_id: tool_call_id.clone(),
-                                },
-                                outcome: StepOutcome::Error(err_msg.clone()),
-                                page_url: self.state.current_url.clone(),
-                            });
-                            self.advance_recorded_step_index();
-                            self.emit_world_model_changed_for_recorded_step().await;
-                            // Shared with other policy-deny paths — see
-                            // `record_policy_deny_failure` for rationale.
-                            self.record_policy_deny_failure(tool_name);
-                            self.state.consecutive_errors += 1;
-                            self.consecutive_errors = self.state.consecutive_errors;
-                            previous_result = Some(err_msg.clone());
-                            append_assistant_and_tool_result(
-                                &mut messages,
-                                tool_name,
-                                arguments,
-                                tool_call_id,
-                                previous_result.as_deref(),
-                            );
-
-                            // Parity with the `TurnOutcome::ToolError` path:
-                            // emit `StepFailed`, honor loop-detection on the
-                            // identical `(tool, args, error)` tuple, and
-                            // respect the `recovery_strategy` so repeated
-                            // policy denials hit the same `MaxErrorsReached`
-                            // terminal state as real MCP errors.
-                            self.emit_event(AgentEvent::StepFailed {
-                                step_index: step_idx_for_event,
-                                tool_name: tool_name.clone(),
-                                error: err_msg.clone(),
-                            })
-                            .await;
-
-                            let looped = matches!(
-                                last_failure.as_ref(),
-                                Some((prev_tool, prev_args, prev_err))
-                                    if prev_tool == tool_name
-                                        && prev_args == arguments
-                                        && prev_err == &err_msg
-                            );
-                            if looped {
-                                warn!(
-                                    tool = %tool_name,
-                                    "state-spine: identical policy-deny repeated — aborting"
-                                );
-                                self.state.terminal_reason = Some(TerminalReason::LoopDetected {
-                                    tool_name: tool_name.clone(),
-                                    error: err_msg.clone(),
-                                });
-                                break;
-                            }
-                            last_failure =
-                                Some((tool_name.clone(), arguments.clone(), err_msg.clone()));
-
-                            let action = recovery_strategy(
-                                self.state.consecutive_errors,
-                                self.config.max_consecutive_errors,
-                            );
-                            if matches!(action, RecoveryAction::Abort) {
-                                warn!(
-                                    errors = self.state.consecutive_errors,
-                                    "state-spine: too many consecutive policy denials — aborting"
-                                );
-                                self.state.terminal_reason =
-                                    Some(TerminalReason::MaxErrorsReached {
-                                        consecutive_errors: self.state.consecutive_errors,
-                                    });
-                                break;
-                            }
-                            // Denied dispatch breaks the success streak — the
-                            // intended action did not run, so any prior
-                            // `last_action` no longer represents a consecutive
-                            // chain.
-                            reset_no_progress_tracking(&mut last_action, &mut recent_actions);
-                            continue;
-                        }
-                        PermissionAction::Allow => {
-                            // Policy pre-authorised this tool — skip the
-                            // approval prompt entirely.
-                            debug!(
-                                tool = %tool_name,
-                                "state-spine: permission policy allowed tool — skipping approval"
-                            );
-                        }
-                        PermissionAction::Ask => {
-                            match self
-                                .request_approval(tool_name, arguments, self.state.steps.len(), "")
-                                .await
-                            {
-                                Some(ApprovalResult::Rejected) => {
-                                    // Operator rejected: record a Replan
-                                    // step and re-observe next iteration
-                                    // — matches the legacy `StepOutcome::Replan`
-                                    // return from `execute_response`.
-                                    self.state.steps.push(AgentStep {
-                                        index: self.state.steps.len(),
-                                        elements: elements.clone(),
-                                        command: AgentCommand::ToolCall {
-                                            tool_name: tool_name.clone(),
-                                            arguments: arguments.clone(),
-                                            tool_call_id: tool_call_id.clone(),
-                                        },
-                                        outcome: StepOutcome::Replan(
-                                            "User rejected action".to_string(),
-                                        ),
-                                        page_url: self.state.current_url.clone(),
-                                    });
-                                    self.advance_recorded_step_index();
-                                    self.emit_world_model_changed_for_recorded_step().await;
-                                    previous_result =
-                                        Some("Replan: user rejected action".to_string());
-                                    append_assistant_and_tool_result(
-                                        &mut messages,
-                                        tool_name,
-                                        arguments,
-                                        tool_call_id,
-                                        previous_result.as_deref(),
-                                    );
-                                    // Rejected dispatch breaks the streak.
-                                    reset_no_progress_tracking(
-                                        &mut last_action,
-                                        &mut recent_actions,
-                                    );
-                                    continue;
-                                }
-                                Some(ApprovalResult::Unavailable) => {
-                                    warn!("state-spine: approval system unavailable — terminating");
-                                    self.state.terminal_reason =
-                                        Some(TerminalReason::ApprovalUnavailable);
-                                    break;
-                                }
-                                // Approved or no gate configured — proceed.
-                                Some(ApprovalResult::Approved) | None => {}
-                            }
-                        }
-                    }
-                }
+                LoopStepFlow::Continue => continue,
+                LoopStepFlow::Break => break,
+                LoopStepFlow::Dispatch => {}
             }
 
             // 5. Dispatch the action via run_turn. Mutations were
@@ -4967,445 +5339,22 @@ impl StateRunner {
                 tracing::warn!(warning = %w, "state-spine: mutation warning");
             }
 
-            // 5b. RecoverySucceeded boundary write — a tool success that
-            //     cleared the consecutive-error streak (D8). Only fires on
-            //     the exact `Recovering -> Executing` transition: the
-            //     previous turn had errors, this turn brought the counter
-            //     to zero. Tool calls that never errored (previous_errors
-            //     == 0) and repeated-error turns (consecutive_errors > 0)
-            //     are both skipped.
-            // Spec 2: per-turn bookkeeping for the episodic write/retrieve
-            // path. Tool failures populate `last_failed_*` (consumed by
-            // `try_retrieve_episodic` when capturing a `Recovering`-entry
-            // snapshot); successes clear it. While in `Recovering`, push
-            // a `CompactAction` per dispatched tool so the eventual
-            // write carries the full recovery action sequence.
-            if self.episodic_active() {
-                match &outcome {
-                    TurnOutcome::ToolError { tool_name, error } => {
-                        self.last_failed_tool_name = Some(tool_name.clone());
-                        self.last_failed_error_kind = Some(error.clone());
-                    }
-                    TurnOutcome::ToolSuccess { .. } => {
-                        self.clear_last_failure_tracking();
-                    }
-                    _ => {}
-                }
-                if self.task_state.phase == crate::agent::phase::Phase::Recovering
-                    && let AgentAction::ToolCall {
-                        tool_name,
-                        arguments,
-                        ..
-                    } = &turn.action
-                {
-                    let outcome_kind = match &outcome {
-                        TurnOutcome::ToolSuccess { .. } => "ok",
-                        TurnOutcome::ToolError { .. } => "error",
-                        TurnOutcome::Done { .. } => "done",
-                        TurnOutcome::Replan { .. } => "replan",
-                    };
-                    let brief_args = brief_summarize_args(arguments);
-                    self.recovery_actions_accumulator.push(
-                        crate::agent::episodic::types::CompactAction {
-                            tool_name: tool_name.clone(),
-                            brief_args,
-                            outcome_kind: outcome_kind.to_string(),
-                        },
-                    );
-                }
-            }
-
-            if previous_errors > 0
-                && self.consecutive_errors == 0
-                && matches!(outcome, TurnOutcome::ToolSuccess { .. })
+            match self
+                .handle_run_turn_result(
+                    &goal,
+                    mcp,
+                    &mcp_tools,
+                    &mut loop_ctx,
+                    &mut trackers,
+                    &turn,
+                    &elements,
+                    previous_errors,
+                    outcome,
+                )
+                .await
             {
-                self.write_recovery_succeeded_record(&turn, &outcome).await;
-
-                // Spec 2: queue an episodic-memory write for this
-                // recovery (D30). Best-effort — backpressure / disabled
-                // writer / missing snapshot are all silent no-ops so
-                // the agent loop keeps running on D32.
-                if self.episodic_active()
-                    && let Some(entry) = self.recovering_snapshot.take()
-                    && let Some(writer) = &self.episodic_writer
-                {
-                    let actions = std::mem::take(&mut self.recovery_actions_accumulator);
-                    let record = self.build_step_record(
-                        crate::agent::step_record::BoundaryKind::RecoverySucceeded,
-                        serde_json::to_value(&turn.action)
-                            .unwrap_or_else(|_| serde_json::json!({})),
-                        serde_json::json!({"kind": "tool_success"}),
-                    );
-                    let queue_result = writer
-                        .queue(
-                            crate::agent::episodic::types::WriteRequest::DeriveAndInsert {
-                                entry: Box::new(entry),
-                                recovery_success: Box::new(record),
-                                recovery_actions: actions,
-                            },
-                        )
-                        .await;
-                    // Surface backpressure drops as a Warning event so
-                    // consumers can distinguish "no recovery happened"
-                    // from "recovery succeeded but the episodic write
-                    // was dropped." D32 keeps the agent loop running
-                    // either way; this is purely observability.
-                    if let Err(e) = queue_result {
-                        self.emit_event(AgentEvent::Warning {
-                            message: format!("episodic: write dropped: backpressure ({e})"),
-                        })
-                        .await;
-                    }
-                }
-            }
-
-            // 6. Map the TurnOutcome into AgentStep + TerminalReason.
-            match outcome {
-                TurnOutcome::ToolSuccess {
-                    tool_name,
-                    tool_body,
-                } => {
-                    let (command, step_outcome) = match &turn.action {
-                        AgentAction::ToolCall {
-                            arguments,
-                            tool_call_id,
-                            ..
-                        } => (
-                            AgentCommand::ToolCall {
-                                tool_name: tool_name.clone(),
-                                arguments: arguments.clone(),
-                                tool_call_id: tool_call_id.clone(),
-                            },
-                            StepOutcome::Success(tool_body.clone()),
-                        ),
-                        // run_turn only returns ToolSuccess for ToolCall
-                        // actions; the other arms are unreachable here.
-                        _ => unreachable!("ToolSuccess outcome implies ToolCall action"),
-                    };
-                    let step_idx_for_event = self.state.steps.len();
-                    self.state.steps.push(AgentStep {
-                        index: step_idx_for_event,
-                        elements: elements.clone(),
-                        command,
-                        outcome: step_outcome,
-                        page_url: self.state.current_url.clone(),
-                    });
-                    self.advance_recorded_step_index();
-                    // Spec 3: push a `RecordedStep` parallel to the
-                    // `AgentStep` push so the extractor can read this
-                    // tool dispatch back at the next CompleteSubgoal
-                    // boundary. `world_model_pre` is the snapshot taken
-                    // before the iteration's observe + fetch (captured
-                    // at the top of the loop into `pre_dispatch_snapshot`);
-                    // `world_model_post` is the live world model now
-                    // that `update_continuity_after_tool_success` and
-                    // queued invalidations have applied.
-                    let tool_arguments_for_record = match &turn.action {
-                        AgentAction::ToolCall { arguments, .. } => arguments.clone(),
-                        _ => unreachable!("ToolSuccess outcome implies ToolCall action"),
-                    };
-                    let unverified_side_effect = is_unverified_side_effect_action(
-                        &tool_name,
-                        &tool_arguments_for_record,
-                        &annotations_by_tool,
-                    );
-                    let pre_snapshot = self.pre_dispatch_snapshot.take().unwrap_or_else(|| {
-                        crate::agent::step_record::WorldModelSnapshot::from_world_model(
-                            &self.world_model,
-                        )
-                    });
-                    let post_snapshot =
-                        crate::agent::step_record::WorldModelSnapshot::from_world_model(
-                            &self.world_model,
-                        );
-                    self.recorded_steps.push(RecordedStep {
-                        tool_name: tool_name.clone(),
-                        arguments: tool_arguments_for_record,
-                        result_text: tool_body.clone(),
-                        world_model_pre: pre_snapshot,
-                        world_model_post: post_snapshot,
-                    });
-                    let unverified_side_effect_nudge = if unverified_side_effect {
-                        Some(build_unverified_side_effect_nudge(&tool_body))
-                    } else {
-                        None
-                    };
-                    previous_result = Some(
-                        unverified_side_effect_nudge
-                            .clone()
-                            .unwrap_or(tool_body.clone()),
-                    );
-                    // Clear the loop-detection tracker on any success.
-                    last_failure = None;
-                    // Emit StepCompleted so subscribers see a successful turn.
-                    self.emit_event(AgentEvent::StepCompleted {
-                        step_index: step_idx_for_event,
-                        tool_name: tool_name.clone(),
-                        summary: crate::agent::prompt::truncate_summary(&tool_body, 120),
-                    })
-                    .await;
-                    if unverified_side_effect {
-                        self.emit_event(AgentEvent::Warning {
-                            message: format!(
-                                "{}: `{}` result requires verification before completion",
-                                UNVERIFIED_SIDE_EFFECT_PREFIX, tool_name
-                            ),
-                        })
-                        .await;
-                    }
-                    // Destructive-cap accounting mirrors
-                    // `AgentRunner::handle_step_outcome`'s cap branch.
-                    if matches!(
-                        self.maybe_halt_on_destructive_cap(&tool_name, &annotations_by_tool),
-                        CapStatus::CapReached
-                    ) {
-                        self.emit_destructive_cap_hit().await;
-                        break;
-                    }
-
-                    // Workflow-graph emission. Non-observation tools become
-                    // nodes on `state.workflow`; the first node chains from
-                    // `state.last_node_id` (seeded by `anchor_node_id` at
-                    // the top of `run`). Boundary extraction records produced
-                    // node ids into draft-skill lineage so selective-delete
-                    // can prune derived skills later.
-                    let tool_arguments = match &turn.action {
-                        AgentAction::ToolCall { arguments, .. } => arguments.clone(),
-                        _ => unreachable!("ToolSuccess outcome implies ToolCall action"),
-                    };
-                    let produced_node_id = self
-                        .add_workflow_node(
-                            &tool_name,
-                            &tool_arguments,
-                            &mcp_tools,
-                            &annotations_by_tool,
-                        )
-                        .await;
-                    // Spec 3: track every node produced inside each
-                    // active subgoal frame. Drained at
-                    // `complete_subgoal` so the extracted skill records
-                    // its `produced_node_ids` lineage.
-                    if let Some(node_id) = produced_node_id {
-                        self.record_produced_node_id(node_id);
-                    }
-
-                    // Auto-connect CDP after a successful `launch_app`
-                    // / `focus_window` (Electron / Chrome targets only;
-                    // native apps short-circuit inside the helper).
-                    // Keeps `cdp_state` in lock-step with `quit_app`
-                    // too. Synthetic focus_window skips never reach
-                    // this arm — they short-circuit before tool
-                    // dispatch above (4a') — so the hook does not need
-                    // an is-synthetic guard here.
-                    self.maybe_cdp_connect(&tool_name, &tool_arguments, &tool_body, mcp)
-                        .await;
-
-                    if let Some(nudge) = self
-                        .track_post_text_submit_search(
-                            &tool_name,
-                            &tool_arguments,
-                            &tool_body,
-                            &mut pending_text_submit_search,
-                        )
-                        .await
-                    {
-                        previous_result = Some(match unverified_side_effect_nudge.as_deref() {
-                            Some(side_effect_nudge) => {
-                                format!("{side_effect_nudge}\n\n{nudge}")
-                            }
-                            None => nudge,
-                        });
-                    }
-
-                    if let Some(nudge) = self
-                        .track_repeat_action(
-                            &tool_name,
-                            &tool_arguments,
-                            &tool_body,
-                            &annotations_by_tool,
-                            &mut last_action,
-                            &mut recent_actions,
-                        )
-                        .await
-                    {
-                        previous_result = Some(match unverified_side_effect_nudge.as_deref() {
-                            Some(side_effect_nudge) => {
-                                format!("{side_effect_nudge}\n\n{nudge}")
-                            }
-                            None => nudge,
-                        });
-                    }
-                }
-                TurnOutcome::ToolError { tool_name, error } => {
-                    let (command, step_outcome, tool_arguments) = match &turn.action {
-                        AgentAction::ToolCall {
-                            arguments,
-                            tool_call_id,
-                            ..
-                        } => (
-                            AgentCommand::ToolCall {
-                                tool_name: tool_name.clone(),
-                                arguments: arguments.clone(),
-                                tool_call_id: tool_call_id.clone(),
-                            },
-                            StepOutcome::Error(error.clone()),
-                            arguments.clone(),
-                        ),
-                        _ => unreachable!("ToolError outcome implies ToolCall action"),
-                    };
-                    let step_idx_for_event = self.state.steps.len();
-                    self.state.steps.push(AgentStep {
-                        index: step_idx_for_event,
-                        elements: elements.clone(),
-                        command,
-                        outcome: step_outcome,
-                        page_url: self.state.current_url.clone(),
-                    });
-                    self.advance_recorded_step_index();
-                    self.state.consecutive_errors = self.consecutive_errors;
-                    previous_result = Some(error.clone());
-
-                    // Emit StepFailed so subscribers see the failing turn.
-                    self.emit_event(AgentEvent::StepFailed {
-                        step_index: step_idx_for_event,
-                        tool_name: tool_name.clone(),
-                        error: error.clone(),
-                    })
-                    .await;
-
-                    // Loop detection: if the identical (tool, args) call
-                    // came back with the identical error on two successive
-                    // turns, halt instead of burning the max-errors budget.
-                    let looped = matches!(
-                        last_failure.as_ref(),
-                        Some((prev_tool, prev_args, prev_err))
-                            if prev_tool == &tool_name
-                                && prev_args == &tool_arguments
-                                && prev_err == &error
-                    );
-                    if looped {
-                        warn!(
-                            tool = %tool_name,
-                            error = %error,
-                            "state-spine: identical failing tool call repeated — aborting"
-                        );
-                        self.state.terminal_reason =
-                            Some(TerminalReason::LoopDetected { tool_name, error });
-                        break;
-                    }
-                    last_failure = Some((tool_name, tool_arguments, error));
-                    // Failures use `last_failure`; clear the success-side tracker.
-                    reset_no_progress_tracking(&mut last_action, &mut recent_actions);
-
-                    // Recovery strategy: `Abort` halts with MaxErrorsReached;
-                    // `Continue` falls through to the next iteration which
-                    // re-observes. Legacy placed this wiring in 3a.6's scope
-                    // but the 3a.4 test matrix requires MaxErrorsReached as
-                    // a terminal reason, so the whole hook lands together
-                    // here.
-                    let action = recovery_strategy(
-                        self.state.consecutive_errors,
-                        self.config.max_consecutive_errors,
-                    );
-                    if matches!(action, RecoveryAction::Abort) {
-                        warn!(
-                            errors = self.state.consecutive_errors,
-                            "state-spine: too many consecutive errors — aborting"
-                        );
-                        self.state.terminal_reason = Some(TerminalReason::MaxErrorsReached {
-                            consecutive_errors: self.state.consecutive_errors,
-                        });
-                        break;
-                    }
-                }
-                TurnOutcome::Done { summary } => {
-                    // Post-`agent_done` VLM verification. A NO verdict
-                    // halts the run and surfaces a disagreement event so
-                    // the user can adjudicate; a YES verdict (or any
-                    // verification error — no backend, screenshot failure,
-                    // empty reply, call failure) falls through to normal
-                    // completion. Verification must never tank the run.
-                    let disagreement = self.verify_completion(&goal, &summary, mcp).await;
-                    if let Some((screenshot_b64, vlm_reasoning)) = disagreement {
-                        warn!(
-                            "state-spine: VLM disagreed with agent_done — halting for user review"
-                        );
-                        self.emit_event(AgentEvent::CompletionDisagreement {
-                            screenshot_b64,
-                            vlm_reasoning: vlm_reasoning.clone(),
-                            agent_summary: summary.clone(),
-                        })
-                        .await;
-                        self.state.terminal_reason = Some(TerminalReason::CompletionDisagreement {
-                            agent_summary: summary.clone(),
-                            vlm_reasoning,
-                        });
-                        // Leave `state.completed` as `false` — the run
-                        // halts pending user decision instead of
-                        // re-planning automatically.
-                        break;
-                    }
-
-                    self.state.completed = true;
-                    self.state.summary = Some(summary.clone());
-                    self.state.terminal_reason = Some(TerminalReason::Completed {
-                        summary: summary.clone(),
-                    });
-                    self.emit_event(AgentEvent::GoalComplete { summary }).await;
-                    break;
-                }
-                TurnOutcome::Replan { reason } => {
-                    // Replan does not add a step; the next iteration
-                    // re-observes. Record the reason as the observation
-                    // for the next turn so the LLM sees why it was asked
-                    // to replan.
-                    previous_result = Some(format!("replan: {}", reason));
-                    // Replan = explicit tactic change; reset the streak.
-                    reset_no_progress_tracking(&mut last_action, &mut recent_actions);
-                }
-            }
-
-            // 7. Append the assistant action + its result onto the
-            // transcript so the next iteration's LLM call sees what
-            // ran. Mutation pseudo-tools that may have appeared in the
-            // model's `tool_calls` array are deliberately omitted here:
-            // they are already reflected in the `<task_state>` block
-            // the next turn renders, and including them would invite
-            // the LLM to expect an MCP-shaped tool result for them.
-            // `AgentDone` already broke out of the loop above; that
-            // path leaves no trailing transcript entry.
-            match &turn.action {
-                AgentAction::ToolCall {
-                    tool_name,
-                    arguments,
-                    tool_call_id,
-                } => {
-                    append_assistant_and_tool_result(
-                        &mut messages,
-                        tool_name,
-                        arguments,
-                        tool_call_id,
-                        previous_result.as_deref(),
-                    );
-                }
-                AgentAction::AgentReplan { reason } => {
-                    // Surface the replan as a plain assistant message
-                    // rather than a synthetic tool result; the harness
-                    // does not produce a tool_call_id for it and there
-                    // is no MCP body to attach.
-                    messages.push(Message::assistant(format!("replan: {}", reason)));
-                }
-                AgentAction::AgentDone { .. } => {
-                    // `TurnOutcome::Done` already broke above — this
-                    // arm is unreachable in practice but kept exhaustive
-                    // so the matcher does not silently regress.
-                }
-                AgentAction::InvokeSkill { .. } => {
-                    // The replay engine appends its own per-step entries
-                    // through `dispatch_tool_call_through_helper`. The
-                    // outer transcript site has nothing to add for the
-                    // synthetic invoke_skill call itself.
-                }
+                LoopStepFlow::Break => break,
+                LoopStepFlow::Continue | LoopStepFlow::Dispatch => {}
             }
         }
 
