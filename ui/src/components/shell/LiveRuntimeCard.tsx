@@ -84,7 +84,7 @@ export function LiveRuntimeCard() {
         ) : null}
       </header>
 
-      <dl className="grid grid-cols-4 gap-px border-b border-[var(--hairline)] bg-[var(--hairline)]">
+      <dl className="grid grid-cols-[repeat(auto-fit,minmax(88px,1fr))] gap-px border-b border-[var(--hairline)] bg-[var(--hairline)]">
         <Stat label="Phase" value={phase ?? "—"} />
         <Stat label="Step" value={stepN > 0 ? `Step ${stepN}` : "—"} />
         <Stat label="Elapsed" value={formatElapsed(elapsed)} mono />
