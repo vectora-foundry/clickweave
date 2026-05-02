@@ -57,7 +57,7 @@ export function OverviewView() {
       <WorkflowRow />
       <StatsStrip onOpenSkillsManager={() => setSkillsDrawerOpen(true)} />
       {skillsDrawerOpen && (
-        <div className="fixed inset-y-0 right-0 z-30 w-[420px] border-l border-[var(--hairline-strong)] bg-[var(--oxide)] shadow-2xl">
+        <div className="fixed inset-y-0 right-0 z-30 flex w-[420px] flex-col border-l border-[var(--hairline-strong)] bg-[var(--oxide)] shadow-2xl">
           <div className="flex items-center justify-between border-b border-[var(--hairline)] px-4 py-2">
             <h3 className="text-[12px] font-medium text-[var(--text-primary)]">
               Skills
@@ -69,7 +69,7 @@ export function OverviewView() {
               ×
             </button>
           </div>
-          <div className="h-[calc(100%-40px)] overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-y-auto">
             <SkillsPanel />
           </div>
         </div>
