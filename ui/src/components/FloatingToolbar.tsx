@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, type ReactNode } from "react";
 import type { ExecutionMode } from "../bindings";
 import { isWalkthroughBusy, type WalkthroughStatus } from "../store/slices/walkthroughSlice";
 
@@ -129,6 +129,29 @@ export function FloatingToolbar({
   const runLabel = executionMode === "Test" ? "Test" : "Run";
   const walkthroughBusy = isWalkthroughBusy(walkthroughStatus);
 
+  let runStatusPill: ReactNode = null;
+  if (runningHint && executorState === "running") {
+    runStatusPill = (
+      <span className="flex shrink-0 items-center gap-1.5 px-1.5 text-[11px] text-[var(--accent-green)]">
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent-green)]" />
+        Running
+        <span className="text-[10px] text-[var(--text-muted)]">(⌘⇧Esc to stop)</span>
+      </span>
+    );
+  } else if (!runningHint && lastRunStatus) {
+    const statusColor =
+      lastRunStatus === "completed" ? "var(--accent-green)" : "var(--accent-coral)";
+    runStatusPill = (
+      <span
+        className="flex shrink-0 items-center gap-1.5 px-1.5 text-[11px]"
+        style={{ color: statusColor }}
+      >
+        <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: statusColor }} />
+        Last run: {lastRunStatus === "completed" ? "Completed" : "Failed"}
+      </span>
+    );
+  }
+
   return (
     <>
       <div className="absolute bottom-14 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-lg border border-[var(--border)] bg-[var(--bg-panel)] px-2 py-1 shadow-lg">
@@ -191,34 +214,7 @@ export function FloatingToolbar({
               Logs
             </button>
             <div className="mx-1 h-4 w-px bg-[var(--border)]" />
-            {runningHint && executorState === "running" ? (
-              <span className="flex items-center gap-1.5 px-1.5 text-[11px] text-[var(--accent-green)] shrink-0">
-                <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent-green)] animate-pulse" />
-                Running
-                <span className="text-[var(--text-muted)] text-[10px]">(⌘⇧Esc to stop)</span>
-              </span>
-            ) : !runningHint && lastRunStatus ? (
-              <span
-                className="flex items-center gap-1.5 px-1.5 text-[11px] shrink-0"
-                style={{
-                  color:
-                    lastRunStatus === "completed"
-                      ? "var(--accent-green)"
-                      : "var(--accent-coral)",
-                }}
-              >
-                <span
-                  className="h-1.5 w-1.5 rounded-full"
-                  style={{
-                    backgroundColor:
-                      lastRunStatus === "completed"
-                        ? "var(--accent-green)"
-                        : "var(--accent-coral)",
-                  }}
-                />
-                Last run: {lastRunStatus === "completed" ? "Completed" : "Failed"}
-              </span>
-            ) : null}
+            {runStatusPill}
             {hasAiNodes && !isRunning && (
               <span className="rounded bg-[var(--accent-blue)]/20 px-1.5 py-0.5 text-[10px] font-medium text-[var(--accent-blue)]">
                 AI
