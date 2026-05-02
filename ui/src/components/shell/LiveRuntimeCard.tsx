@@ -96,7 +96,7 @@ export function LiveRuntimeCard() {
         />
       </dl>
 
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {activeRunId ? (
           <RunTraceView runId={activeRunId} />
         ) : (

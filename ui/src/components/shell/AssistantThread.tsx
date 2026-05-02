@@ -101,7 +101,7 @@ export function AssistantThread({
   const hasMessages = messages.length > 0;
 
   return (
-    <div className="relative flex h-full flex-col bg-[var(--bg-panel)]">
+    <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[var(--bg-panel)]">
       {showHeader && (
         <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-2.5">
           <div className="flex items-center gap-2">
@@ -157,61 +157,60 @@ export function AssistantThread({
       {/* Intent — editable inline */}
       <IntentBar />
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-3 py-3">
-        {!hasMessages && (
-          <div className="flex h-full items-center justify-center">
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {/* Messages */}
+        <div className={`${hasMessages ? "" : "flex min-h-[120px] items-center justify-center"} px-3 py-3`}>
+          {!hasMessages && (
             <p className="text-center text-xs text-[var(--text-muted)]">
               Ask me to create or modify your workflow.
             </p>
-          </div>
-        )}
+          )}
 
-        <div className="space-y-3">
-          {messages.map((entry, idx) => {
-            if (entry.role === "system") {
+          <div className="space-y-3">
+            {messages.map((entry, idx) => {
+              if (entry.role === "system") {
+                return (
+                  <div
+                    key={`${entry.timestamp}-${idx}`}
+                    className="flex justify-center"
+                  >
+                    <div className="max-w-[70%] rounded border border-[var(--accent-blue)]/60 bg-[var(--accent-blue)]/10 px-2 py-1 text-center text-[11px] text-[var(--text-secondary)]">
+                      {entry.content}
+                    </div>
+                  </div>
+                );
+              }
+              const isUser = entry.role === "user";
               return (
                 <div
                   key={`${entry.timestamp}-${idx}`}
-                  className="flex justify-center"
+                  className={`group flex flex-col ${isUser ? "items-end" : "items-start"}`}
                 >
-                  <div className="max-w-[70%] rounded border border-[var(--accent-blue)]/60 bg-[var(--accent-blue)]/10 px-2 py-1 text-center text-[11px] text-[var(--text-secondary)]">
-                    {entry.content}
+                  <div
+                    className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
+                      isUser
+                        ? "bg-[var(--accent-coral)]/15 text-[var(--text-primary)]"
+                        : "bg-[var(--bg-hover)] text-[var(--text-primary)]"
+                    }`}
+                  >
+                    <div className="whitespace-pre-wrap break-words leading-relaxed select-text">
+                      {entry.content}
+                    </div>
                   </div>
                 </div>
               );
-            }
-            const isUser = entry.role === "user";
-            return (
-              <div
-                key={`${entry.timestamp}-${idx}`}
-                className={`group flex flex-col ${isUser ? "items-end" : "items-start"}`}
-              >
-                <div
-                  className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
-                    isUser
-                      ? "bg-[var(--accent-coral)]/15 text-[var(--text-primary)]"
-                      : "bg-[var(--bg-hover)] text-[var(--text-primary)]"
-                  }`}
-                >
-                  <div className="whitespace-pre-wrap break-words leading-relaxed select-text">
-                    {entry.content}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+            })}
 
-          <div ref={messagesEndRef} />
+            <div ref={messagesEndRef} />
+          </div>
         </div>
-      </div>
 
-      {/* Error */}
-      {error && (
-        <div className="mx-3 mb-2 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-400">
-          {error}
-        </div>
-      )}
+        {/* Error */}
+        {error && (
+          <div className="mx-3 mb-2 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-400">
+            {error}
+          </div>
+        )}
 
       {/* Ambiguity resolution cards — newest first, persists across runs. */}
       {ambiguityResolutions.map((r) => (
@@ -323,7 +322,8 @@ export function AssistantThread({
         </div>
       )}
 
-      {agentActive && activeRunId && <RunTraceView runId={activeRunId} />}
+        {agentActive && activeRunId && <RunTraceView runId={activeRunId} />}
+      </div>
 
       {/* Input — hidden while the agent is running OR while a VLM
           completion-disagreement resolver is pending. In the
