@@ -24,4 +24,22 @@ describe("WorkflowRow", () => {
     useStore.getState().undo();
     expect(useStore.getState().workflow.name).toBe("MyFlow");
   });
+
+  it("keeps long workflow names from pushing the rename control offscreen", () => {
+    const longName = `Workflow-${"VeryLongNameWithoutBreaks".repeat(10)}`;
+    useStore.setState({
+      workflow: {
+        ...useStore.getState().workflow,
+        name: longName,
+      },
+    });
+
+    render(<WorkflowRow />);
+
+    expect(screen.getByText(longName)).toHaveClass("min-w-0", "truncate");
+    expect(screen.getByText(longName)).toHaveAttribute("title", longName);
+    expect(screen.getByRole("button", { name: /rename/i })).toHaveClass(
+      "shrink-0",
+    );
+  });
 });

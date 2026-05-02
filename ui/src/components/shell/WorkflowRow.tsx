@@ -28,7 +28,7 @@ export function WorkflowRow() {
   };
 
   return (
-    <div className="flex items-center gap-2 px-6 py-2">
+    <div className="flex min-w-0 items-center gap-2 px-6 py-2">
       {editing ? (
         <input
           ref={inputRef}
@@ -39,10 +39,13 @@ export function WorkflowRow() {
             if (e.key === "Enter") commit();
             if (e.key === "Escape") setEditing(false);
           }}
-          className="bg-transparent text-[15px] font-medium text-[var(--text-primary)] outline-none"
+          className="min-w-0 flex-1 bg-transparent text-[15px] font-medium text-[var(--text-primary)] outline-none"
         />
       ) : (
-        <h1 className="text-[15px] font-medium text-[var(--text-primary)]">
+        <h1
+          className="min-w-0 truncate text-[15px] font-medium text-[var(--text-primary)]"
+          title={workflow.name}
+        >
           {workflow.name}
         </h1>
       )}
@@ -50,7 +53,7 @@ export function WorkflowRow() {
         onClick={startEdit}
         title="Rename workflow"
         aria-label="Rename workflow"
-        className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+        className="shrink-0 rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
       >
         <svg
           width="12"
