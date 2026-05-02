@@ -61,6 +61,15 @@ Layout under the workflow dir:
   - `frontend/architecture.md` — React stack, directory layout, Zustand slices, graph editor behavior
   - `mcp/integration.md` — MCP client lifecycle, tool mapping, protocol types
 
+## Historical Solution Check
+- When fixing a regression, reintroducing behavior, or changing agent/runtime/tooling logic, check whether the project previously had a solution before designing a new one.
+- Use git history, not only current code:
+  - `git log --all --oneline -S'<term>' -- <paths>`
+  - `git log --all --oneline -G'<regex>' -- <paths>`
+  - `git show <commit> -- <paths>`
+- If a previous approach existed and was removed, identify what problem it solved, why it was removed, and whether the removal was intentional, obsolete, or collateral from a refactor.
+- Do not blindly restore old code; use the history check to avoid repeating already-failed designs or losing useful behavior during rewrites.
+
 ## Design Docs & Implementation Plans
 - **Design docs** (durable decision record) live in a separate private repo — see `.claude/issues.local.md` for the path convention. Do not commit design docs to this public repo.
 - **Implementation plans** (ephemeral guidance for the coding agent): `internal_docs/plans/` (gitignored, local-only), named `YYYY-MM-DD_HH-MM-SS-<topic>.md`. Scoped to one execution, not a durable artifact.

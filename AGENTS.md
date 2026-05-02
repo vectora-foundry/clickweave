@@ -36,6 +36,15 @@
   - `frontend/architecture.md` — React stack, directory layout, Zustand slices (including agent slice), graph editor behavior
   - `mcp/integration.md` — MCP client lifecycle, tool mapping, protocol types
 
+## Historical Solution Check
+- When fixing a regression, reintroducing behavior, or changing agent/runtime/tooling logic, check whether the project previously had a solution before designing a new one.
+- Use git history, not only current code:
+  - `git log --all --oneline -S'<term>' -- <paths>`
+  - `git log --all --oneline -G'<regex>' -- <paths>`
+  - `git show <commit> -- <paths>`
+- If a previous approach existed and was removed, identify what problem it solved, why it was removed, and whether the removal was intentional, obsolete, or collateral from a refactor.
+- Do not blindly restore old code; use the history check to avoid repeating already-failed designs or losing useful behavior during rewrites.
+
 ## Design & Implementation Plans
 - Location: `internal_docs/plans/` (gitignored, local-only)
 - Naming: `YYYY-MM-DD_HH-MM-SS-<topic>.md` (e.g., `2026-02-12_10-07-02-app-name-resolution.md`)
