@@ -6,6 +6,8 @@
 //! - Last `recent_n` assistant/tool pairs — preserved verbatim.
 //! - Beyond `recent_n` — collapsed to a brief harness-authored line.
 //! - Snapshot tool-result messages older than the current step are dropped.
+//! - Per-turn `<world_model>` / `<task_state>` user messages older than the
+//!   current step are collapsed; the latest user turn carries the live state.
 //!
 //! Continuity data lives in `WorldModel`; the transcript no longer carries it.
 //!
@@ -24,6 +26,8 @@ const CHARS_PER_TOKEN: usize = 4;
 /// Prefix marking a tool-result body that has already been collapsed by
 /// [`collapse_superseded_snapshots`]. Used to make the pass idempotent.
 const SUPERSEDED_PREFIX: &str = "[superseded ";
+const STALE_STATE_BLOCK_PLACEHOLDER: &str =
+    "[stale state block omitted; latest <world_model>/<task_state> is in the current user turn]";
 
 /// Tools whose results embed a full page snapshot. Each successive call
 /// returns a fresh view of the same page, so older payloads rarely help
@@ -38,8 +42,11 @@ const SUPERSEDED_PREFIX: &str = "[superseded ";
 pub(crate) const SNAPSHOT_PRODUCING_TOOLS: &[&str] = &[
     "cdp_take_dom_snapshot",
     "cdp_take_snapshot",
+    "cdp_summarize_page",
     "cdp_find_elements",
+    "cdp_get_element_context",
     "cdp_wait_for",
+    "cdp_wait_for_page_change",
     "take_ax_snapshot",
     "wait_for",
 ];
@@ -173,8 +180,11 @@ const SNAPSHOT_TOOL_NAMES: &[&str] = &[
     "take_screenshot",
     "cdp_take_dom_snapshot",
     "cdp_take_snapshot",
+    "cdp_summarize_page",
     "cdp_find_elements",
+    "cdp_get_element_context",
     "cdp_wait_for",
+    "cdp_wait_for_page_change",
     "wait_for",
 ];
 
@@ -248,6 +258,8 @@ pub fn compact(messages: Vec<Message>, budget: &CompactBudget) -> Vec<Message> {
             out.push(collapse_pair_to_brief(pair));
         }
     }
+
+    collapse_stale_user_state_blocks(&mut out);
 
     // If we are still over budget, collapse more-recent pairs (after the
     // protected system + goal) until we fit.
@@ -370,6 +382,36 @@ fn drop_following_snapshot_observation(pair: &mut [Message], tool_name: &str) {
         };
         msg.content = Some(Content::Text(rewritten));
     }
+}
+
+fn collapse_stale_user_state_blocks(messages: &mut [Message]) {
+    let latest_state_idx = messages
+        .iter()
+        .enumerate()
+        .skip(2)
+        .filter(|(_, msg)| is_runtime_state_message(msg))
+        .map(|(idx, _)| idx)
+        .last();
+    let Some(latest_state_idx) = latest_state_idx else {
+        return;
+    };
+
+    for (idx, msg) in messages.iter_mut().enumerate().skip(2) {
+        if idx == latest_state_idx || !is_runtime_state_message(msg) {
+            continue;
+        }
+        msg.content = Some(Content::Text(STALE_STATE_BLOCK_PLACEHOLDER.to_string()));
+    }
+}
+
+fn is_runtime_state_message(msg: &Message) -> bool {
+    msg.role == Role::User
+        && msg.content_text().is_some_and(|text| {
+            text.contains("<world_model>")
+                && text.contains("</world_model>")
+                && text.contains("<task_state>")
+                && text.contains("</task_state>")
+        })
 }
 
 fn replace_observation_body(text: &str, replacement: &str) -> Option<String> {
@@ -719,6 +761,54 @@ mod state_spine_compact_tests {
         assert!(
             text.contains("cdp_click"),
             "collapsed summary should mention the tool name; got: {text}"
+        );
+    }
+
+    #[test]
+    fn stale_state_blocks_are_omitted_inside_recent_window() {
+        let old_dom = "old-dom ".repeat(8_000);
+        let current_dom = "current-dom ".repeat(20);
+        let messages = vec![
+            msg(Role::System, "sys"),
+            msg(Role::User, "goal"),
+            msg(
+                Role::User,
+                &format!(
+                    "<world_model>\n{old_dom}\n</world_model>\n<task_state>\ngoal: g\n</task_state>\ncurrent_step: 0"
+                ),
+            ),
+            assistant_call("cdp_click", "tc-click"),
+            tool_result_with_id("cdp_click", "tc-click", "clicked"),
+            msg(
+                Role::User,
+                &format!(
+                    "<world_model>\n{current_dom}\n</world_model>\n<task_state>\ngoal: g\n</task_state>\ncurrent_step: 1"
+                ),
+            ),
+        ];
+        let budget = CompactBudget {
+            max_tokens: 100_000,
+            recent_n: 6,
+        };
+
+        let out = compact(messages, &budget);
+        let joined = out
+            .iter()
+            .filter_map(|m| m.content_text())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            joined.contains(STALE_STATE_BLOCK_PLACEHOLDER),
+            "prior runtime state block should be replaced with a small placeholder"
+        );
+        assert!(
+            !joined.contains("old-dom old-dom old-dom"),
+            "old DOM state must not survive verbatim inside the recent window"
+        );
+        assert!(
+            joined.contains("current-dom current-dom"),
+            "latest runtime state block must remain available to the next model call"
         );
     }
 

@@ -3749,9 +3749,8 @@ mod state_spine_event_contract_tests {
     }
 
     /// Direct-observation writes the top-level `run` loop performs after
-    /// `fetch_elements` (populating `world_model.elements` and
-    /// `world_model.cdp_page`) must surface in
-    /// `WorldModelChanged.changed_fields`. Without the pre-mirror
+    /// `fetch_cdp_page_summary` (populating `world_model.cdp_page`) must
+    /// surface in `WorldModelChanged.changed_fields`. Without the pre-mirror
     /// signature capture these writes happen before `run_turn` snapshots
     /// pre/post signatures, so the diff would silently report no change
     /// on the very turn that changed the rendered state block.
@@ -3764,12 +3763,15 @@ mod state_spine_event_contract_tests {
             ),
             llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
         ]);
-        // Non-empty elements + page_url → first-turn mirror flips
-        // `world_model.elements` and `world_model.cdp_page` from None
-        // to Some, which must show up in the diff.
-        let body = r#"{"page_url":"https://example.com","source":"cdp","matches":[{"uid":"1_0","role":"button","label":"Submit","tag":"button","disabled":false,"parent_role":null,"parent_name":null}]}"#;
-        let mcp =
-            StaticMcp::with_tools(&["cdp_find_elements"]).with_reply("cdp_find_elements", body);
+        // Page URL + inventory → first-turn mirror flips
+        // `world_model.cdp_page` from None to Some. CDP element candidates
+        // are no longer mirrored into `world_model.elements`; they stay in
+        // explicit `cdp_find_elements` tool results.
+        let summary_body = r#"{"page_url":"https://example.com","source":"dom_summary","inventory":[{"role":"button","count":1,"sample_labels":["Submit"]}]}"#;
+        let find_body = r#"{"page_url":"https://example.com","source":"cdp","matches":[{"uid":"1_0","role":"button","label":"Submit","tag":"button","disabled":false,"parent_role":null,"parent_name":null}]}"#;
+        let mcp = StaticMcp::with_tools(&["cdp_summarize_page", "cdp_find_elements"])
+            .with_reply("cdp_summarize_page", summary_body)
+            .with_reply("cdp_find_elements", find_body);
 
         let run_id = uuid::Uuid::new_v4();
         let (event_tx, mut event_rx) = mpsc::channel::<RunnerOutput>(32);
@@ -3799,11 +3801,10 @@ mod state_spine_event_contract_tests {
             })
             .collect();
         assert!(
-            changed_fields_sets
+            !changed_fields_sets
                 .iter()
                 .any(|cf| cf.iter().any(|f| f == "elements")),
-            "some WorldModelChanged event must report `elements` in changed_fields \
-             after fetch_elements populates world_model.elements; got {:?}",
+            "automatic CDP summary must not report `elements` changes; got {:?}",
             changed_fields_sets,
         );
         assert!(
@@ -4380,6 +4381,47 @@ mod repeat_action_loop_detection_tests {
             count_no_progress(&events),
             0,
             "observation-only tools must be exempt; events={:?}",
+            events,
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_send_search_after_text_input_emits_no_progress_warning() {
+        let mcp = StaticMcp::with_tools(&["cdp_fill", "cdp_find_elements", "cdp_press_key"])
+            .with_reply(
+                "cdp_fill",
+                "Filled uid=d1 'Message' (textbox) with 'hello' (strategy=rich_editor_keyboard, observed_text=true)",
+            )
+            .with_reply(
+                "cdp_find_elements",
+                r#"{"page_url":"about:blank","source":"cdp","matches":[],"inventory":[]}"#,
+            );
+
+        let events = run_scenario(
+            vec![
+                llm_reply_tool(
+                    "cdp_fill",
+                    serde_json::json!({"uid": "d1", "value": "hello"}),
+                ),
+                llm_reply_tool(
+                    "cdp_find_elements",
+                    serde_json::json!({"query": "Send", "role": "button"}),
+                ),
+                llm_reply_tool("cdp_find_elements", serde_json::json!({"query": "send"})),
+                llm_reply_tool(
+                    "cdp_find_elements",
+                    serde_json::json!({"query": "send button", "role": "button"}),
+                ),
+                llm_reply_tool("agent_done", serde_json::json!({"summary": "ok"})),
+            ],
+            mcp,
+            8,
+        )
+        .await;
+
+        assert!(
+            count_no_progress(&events) >= 1,
+            "repeated send searches after composing text must emit a no-progress warning; events={:?}",
             events,
         );
     }

@@ -128,10 +128,8 @@ mod tests {
     }
 
     fn base_wm() -> WorldModel {
-        // FocusedApp fields are { name, kind, pid }. CdpPageState is
-        // { url: String, page_fingerprint: String }. Neither
-        // CdpFindElementMatch nor AxElement implements Default, so each
-        // field is listed explicitly.
+        // FocusedApp fields are { name, kind, pid }. AxElement does not
+        // implement Default, so each field is listed explicitly.
         let mut wm = WorldModel::default();
         wm.focused_app = Some(stale_now(FocusedApp {
             name: "Safari".to_string(),
@@ -141,6 +139,7 @@ mod tests {
         wm.cdp_page = Some(stale_now(CdpPageState {
             url: "https://accounts.google.com/signin".to_string(),
             page_fingerprint: "fp_signin".to_string(),
+            element_inventory: Vec::new(),
         }));
         wm.modal_present = Some(stale_now(true));
         wm.dialog_present = Some(stale_now(false));
@@ -152,6 +151,7 @@ mod tests {
             disabled: false,
             parent_role: None,
             parent_name: None,
+            ..Default::default()
         };
         wm.elements = Some(stale_now(vec![
             ObservedElement::Cdp(cdp_match),
@@ -195,6 +195,7 @@ mod tests {
         wm2.cdp_page = Some(stale_now(CdpPageState {
             url: "https://login.microsoft.com".to_string(),
             page_fingerprint: "fp_msft".to_string(),
+            element_inventory: Vec::new(),
         }));
         let a = compute_pre_state_signature(&base_wm(), &[]);
         let b = compute_pre_state_signature(&wm2, &[]);

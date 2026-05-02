@@ -1,5 +1,5 @@
 /// Parsed response from upstream `cdp_find_elements`.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct CdpFindElementsResponse {
     #[serde(default)]
     pub page_url: String,
@@ -7,9 +7,26 @@ pub struct CdpFindElementsResponse {
     pub source: String,
     #[serde(default)]
     pub matches: Vec<CdpFindElementMatch>,
+    #[serde(default)]
+    pub inventory: Vec<CdpElementInventory>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+/// Parsed response from upstream `cdp_summarize_page`.
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+pub struct CdpPageSummaryResponse {
+    #[serde(default)]
+    pub page_url: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub snapshot_generation: u64,
+    #[serde(default)]
+    pub inventory: Vec<CdpElementInventory>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct CdpFindElementMatch {
     pub uid: String,
     #[serde(default)]
@@ -24,6 +41,46 @@ pub struct CdpFindElementMatch {
     pub parent_role: Option<String>,
     #[serde(default)]
     pub parent_name: Option<String>,
+    #[serde(default)]
+    pub accessible_name: String,
+    #[serde(default)]
+    pub visible_text: String,
+    #[serde(default)]
+    pub value: String,
+    #[serde(default)]
+    pub placeholder: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub alt_text: String,
+    #[serde(default)]
+    pub test_id: String,
+    #[serde(default)]
+    pub matched_on: Vec<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub viewport_rect: Option<CdpViewportRect>,
+    #[serde(default)]
+    pub in_viewport: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+pub struct CdpViewportRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+pub struct CdpElementInventory {
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub count: usize,
+    #[serde(default)]
+    pub sample_labels: Vec<String>,
 }
 
 /// Pick a random port in the ephemeral range (49152-65535).
@@ -195,6 +252,61 @@ mod page_selection_tests {
             url: url.to_string(),
             selected: false,
         }
+    }
+
+    #[test]
+    fn cdp_find_elements_response_parses_dom_evidence_fields() {
+        let body = r#"{
+          "page_url": "app://signal",
+          "source": "dom",
+          "matches": [{
+            "uid": "d7",
+            "role": "button",
+            "label": "Chat with Alice",
+            "tag": "button",
+            "disabled": false,
+            "visible_text": "Note to Self Tue Photo",
+            "matched_on": ["visible_text"],
+            "warnings": ["accessible_name_visible_text_mismatch"],
+            "viewport_rect": {"x": 91, "y": 157, "width": 357, "height": 72},
+            "in_viewport": true
+          }],
+          "inventory": [{"role": "button", "count": 1, "sample_labels": ["Chat with Alice"]}]
+        }"#;
+
+        let parsed: CdpFindElementsResponse = serde_json::from_str(body).unwrap();
+
+        assert_eq!(parsed.matches[0].visible_text, "Note to Self Tue Photo");
+        assert_eq!(parsed.matches[0].matched_on, vec!["visible_text"]);
+        assert_eq!(
+            parsed.matches[0].warnings,
+            vec!["accessible_name_visible_text_mismatch"]
+        );
+        assert_eq!(parsed.matches[0].in_viewport, Some(true));
+        assert_eq!(
+            parsed.matches[0].viewport_rect.as_ref().map(|r| r.width),
+            Some(357.0)
+        );
+        assert_eq!(parsed.inventory[0].count, 1);
+    }
+
+    #[test]
+    fn cdp_page_summary_response_parses_inventory_without_matches() {
+        let body = r#"{
+          "page_url": "app://signal",
+          "title": "Signal",
+          "source": "dom_summary",
+          "snapshot_generation": 7,
+          "inventory": [{"role": "button", "count": 2, "sample_labels": ["Note to Self"]}]
+        }"#;
+
+        let parsed: CdpPageSummaryResponse = serde_json::from_str(body).unwrap();
+
+        assert_eq!(parsed.page_url, "app://signal");
+        assert_eq!(parsed.title, "Signal");
+        assert_eq!(parsed.snapshot_generation, 7);
+        assert_eq!(parsed.inventory[0].role, "button");
+        assert_eq!(parsed.inventory[0].sample_labels, vec!["Note to Self"]);
     }
 
     #[test]

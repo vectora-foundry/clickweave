@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use clickweave_core::cdp::CdpFindElementMatch;
+use clickweave_core::cdp::{CdpElementInventory, CdpFindElementMatch, CdpPageSummaryResponse};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -53,6 +53,26 @@ pub struct WindowRef {
 pub struct CdpPageState {
     pub url: String,
     pub page_fingerprint: String,
+    #[serde(default)]
+    pub element_inventory: Vec<CdpElementInventorySummary>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct CdpElementInventorySummary {
+    pub role: String,
+    pub count: usize,
+    pub sample_labels: Vec<String>,
+}
+
+impl From<CdpElementInventory> for CdpElementInventorySummary {
+    fn from(value: CdpElementInventory) -> Self {
+        Self {
+            role: value.role,
+            count: value.count,
+            sample_labels: value.sample_labels,
+        }
+    }
 }
 
 /// Source-agnostic observed element (D16).
@@ -394,8 +414,8 @@ impl WorldModel {
     /// failures elevate uncertainty but leave other fields reachable.
     ///
     /// Tool selection:
-    /// - `elements`: try `cdp_find_elements` first; fall back to
-    ///   `take_ax_snapshot` when the observer returns `Ok(None)`.
+    /// - `cdp_page`: try `cdp_summarize_page` for compact CDP context.
+    /// - `elements`: only refresh from native AX when CDP is unavailable.
     /// - `focused_app`: parse from `list_apps` (the row with `focused=true`).
     /// - `window_list`: parse from `list_windows`.
     /// - `modal_present` / `dialog_present` are inferred by the runner at
@@ -405,55 +425,63 @@ impl WorldModel {
         obs: &O,
         step_index: usize,
     ) -> Result<(), String> {
-        // Try CDP first; fall back to AX when CDP is not attached in
-        // this MCP session (observer returns Ok(None)).
-        if self.elements.is_none() {
-            let try_result = obs
-                .observe(
-                    "cdp_find_elements",
-                    serde_json::json!({ "query": "", "max_results": 300 }),
-                )
-                .await;
-            match try_result {
-                Ok(Some(body)) => match serde_json::from_str::<
-                    clickweave_core::cdp::CdpFindElementsResponse,
-                >(&body)
-                {
+        let mut cdp_unavailable = false;
+        if self.cdp_page.is_none() {
+            match obs
+                .observe("cdp_summarize_page", serde_json::json!({}))
+                .await
+            {
+                Ok(Some(body)) => match serde_json::from_str::<CdpPageSummaryResponse>(&body) {
                     Ok(resp) => {
-                        let els: Vec<ObservedElement> =
-                            resp.matches.into_iter().map(ObservedElement::Cdp).collect();
-                        self.elements = Some(Fresh {
-                            value: els,
+                        let page_fingerprint = crate::agent::transition::page_inventory_fingerprint(
+                            &resp.page_url,
+                            &resp.inventory,
+                        );
+                        let element_inventory = resp
+                            .inventory
+                            .into_iter()
+                            .map(CdpElementInventorySummary::from)
+                            .collect();
+                        self.cdp_page = Some(Fresh {
+                            value: CdpPageState {
+                                url: resp.page_url,
+                                page_fingerprint,
+                                element_inventory,
+                            },
                             written_at: step_index,
                             source: FreshnessSource::DirectObservation,
                             ttl_steps: Some(2),
                         });
+                        cdp_unavailable = false;
                     }
-                    Err(_) => self.bump_uncertainty(0.1, "cdp_find_elements parse failed".into()),
+                    Err(_) => self.bump_uncertainty(0.1, "cdp_summarize_page parse failed".into()),
                 },
                 Ok(None) => {
-                    // CDP unavailable — try AX.
-                    match obs.observe("take_ax_snapshot", serde_json::json!({})).await {
-                        Ok(Some(body)) => {
-                            let parsed = parse_ax_snapshot(&body);
-                            let els: Vec<ObservedElement> =
-                                parsed.into_iter().map(ObservedElement::Ax).collect();
-                            self.elements = Some(Fresh {
-                                value: els,
-                                written_at: step_index,
-                                source: FreshnessSource::DirectObservation,
-                                ttl_steps: Some(2),
-                            });
-                        }
-                        Ok(None) => {
-                            self.bump_uncertainty(0.1, "neither CDP nor AX available".into());
-                        }
-                        Err(e) => {
-                            self.bump_uncertainty(0.15, format!("take_ax_snapshot: {}", e));
-                        }
-                    }
+                    cdp_unavailable = true;
                 }
-                Err(e) => self.bump_uncertainty(0.15, format!("cdp_find_elements: {}", e)),
+                Err(e) => self.bump_uncertainty(0.15, format!("cdp_summarize_page: {}", e)),
+            }
+        }
+
+        if self.elements.is_none() && cdp_unavailable {
+            match obs.observe("take_ax_snapshot", serde_json::json!({})).await {
+                Ok(Some(body)) => {
+                    let parsed = parse_ax_snapshot(&body);
+                    let els: Vec<ObservedElement> =
+                        parsed.into_iter().map(ObservedElement::Ax).collect();
+                    self.elements = Some(Fresh {
+                        value: els,
+                        written_at: step_index,
+                        source: FreshnessSource::DirectObservation,
+                        ttl_steps: Some(2),
+                    });
+                }
+                Ok(None) => {
+                    self.bump_uncertainty(0.1, "neither CDP nor AX available".into());
+                }
+                Err(e) => {
+                    self.bump_uncertainty(0.15, format!("take_ax_snapshot: {}", e));
+                }
             }
         }
 
@@ -710,6 +738,7 @@ mod tests {
             value: CdpPageState {
                 url: "https://old.example.com/".to_string(),
                 page_fingerprint: "abc".to_string(),
+                element_inventory: Vec::new(),
             },
             written_at: 1,
             source: FreshnessSource::DirectObservation,
@@ -898,8 +927,8 @@ mod refresh_tests {
             _args: serde_json::Value,
         ) -> Result<Option<String>, String> {
             match tool_name {
-                "cdp_find_elements" => Ok(Some(
-                    r#"{"page_url":"https://example.com/","source":"cdp","matches":[{"uid":"d1","role":"button","label":"OK","tag":"button"}]}"#
+                "cdp_summarize_page" => Ok(Some(
+                    r#"{"page_url":"https://example.com/","source":"dom_summary","inventory":[{"role":"button","count":1,"sample_labels":["OK"]}]}"#
                         .to_string(),
                 )),
                 "take_ax_snapshot" => Ok(Some("uid=a1g1 button \"OK\"".to_string())),
@@ -909,20 +938,22 @@ mod refresh_tests {
     }
 
     #[tokio::test]
-    async fn refresh_repopulates_elements_via_cdp_when_available() {
-        // CDP availability is signaled by the observer returning
-        // Ok(Some(_)) from cdp_find_elements. The observer is the
-        // authoritative source for "CDP is currently attached".
+    async fn refresh_repopulates_cdp_page_without_cdp_elements() {
+        // CDP availability is signaled by the observer returning a compact
+        // `cdp_summarize_page` body. The DOM candidate list remains an
+        // explicit query result, not a world-model field.
         let mut wm = WorldModel::default();
         wm.apply_events(vec![InvalidationEvent::CdpNavigation {
             new_url: "https://example.com/".to_string(),
         }]);
         let obs = StubObserver;
         wm.refresh_invalid_fields(&obs, 1).await.unwrap();
-        let els = wm.elements.as_ref().unwrap();
+        let page = wm.cdp_page.as_ref().expect("cdp page populated");
+        assert_eq!(page.value.url, "https://example.com/");
+        assert_eq!(page.value.element_inventory[0].role, "button");
         assert!(
-            matches!(els.value.first(), Some(ObservedElement::Cdp(_))),
-            "elements must be repopulated via CDP path when the observer returns a CDP body"
+            wm.elements.is_none(),
+            "CDP summaries must not populate elements"
         );
     }
 
@@ -937,7 +968,7 @@ mod refresh_tests {
                 _args: serde_json::Value,
             ) -> Result<Option<String>, String> {
                 match tool_name {
-                    "cdp_find_elements" => Ok(None),
+                    "cdp_summarize_page" => Ok(None),
                     "take_ax_snapshot" => Ok(Some("uid=a1g1 button \"OK\"".to_string())),
                     _ => Ok(None),
                 }
@@ -949,7 +980,7 @@ mod refresh_tests {
         let els = wm.elements.as_ref().unwrap();
         assert!(
             matches!(els.value.first(), Some(ObservedElement::Ax(_))),
-            "expected AX fallback when cdp_find_elements returns None"
+            "expected AX fallback when cdp_summarize_page returns None"
         );
     }
 
@@ -1018,7 +1049,10 @@ mod observation_union_tests {
     fn hardcoded_tool_is_observation_without_annotations() {
         let annotations: HashMap<String, ToolAnnotations> = HashMap::new();
         assert!(is_observation("take_screenshot", &annotations));
+        assert!(is_observation("cdp_summarize_page", &annotations));
         assert!(is_observation("cdp_find_elements", &annotations));
+        assert!(is_observation("cdp_get_element_context", &annotations));
+        assert!(is_observation("cdp_wait_for_page_change", &annotations));
     }
 
     #[test]

@@ -132,6 +132,7 @@ mod tests {
             w.cdp_page = Some(fresh(CdpPageState {
                 url: url.to_string(),
                 page_fingerprint: String::new(),
+                element_inventory: Vec::new(),
             }));
         }
         w

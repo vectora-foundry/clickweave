@@ -175,6 +175,7 @@ mod tests {
                 disabled: false,
                 parent_role: None,
                 parent_name: None,
+                ..Default::default()
             }));
         }
         wm.elements = Some(Fresh {

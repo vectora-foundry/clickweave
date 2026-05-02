@@ -35,8 +35,17 @@ use crate::agent::types::{
     AgentCommand, AgentConfig, AgentEvent, AgentState, AgentStep, ApprovalRequest, RunnerOutput,
     StepOutcome, TerminalReason, WorldModelDiff,
 };
-use crate::agent::world_model::{InvalidationEvent, ObservedElement, WorldModel};
+use crate::agent::world_model::{
+    CdpElementInventorySummary, InvalidationEvent, ObservedElement, WorldModel,
+};
 use crate::executor::Mcp;
+
+#[derive(Debug, Default)]
+pub(crate) struct CdpPageObservation {
+    pub page_url: String,
+    pub page_fingerprint: String,
+    pub inventory: Vec<CdpElementInventorySummary>,
+}
 
 /// The one action an `AgentTurn` must carry (D10).
 ///
@@ -1158,48 +1167,55 @@ impl StateRunner {
         }
     }
 
-    /// Fetch interactive elements from the current page via MCP.
+    /// Fetch compact CDP page inventory from the current page via MCP.
     ///
-    /// Port of `AgentRunner::fetch_elements`: calls `cdp_find_elements` when
-    /// the tool is available, parses the response into `CdpFindElementMatch`es,
-    /// updates `state.current_url`, and returns the parsed matches. Errors and
-    /// missing-tool paths return an empty vec so the rest of the loop degrades
-    /// gracefully. A serde parse failure (schema drift between server and
-    /// engine) surfaces as an `AgentEvent::Warning` — a genuinely empty page
-    /// and a wire-format drift look identical from the agent's perspective, so
-    /// the operator needs the explicit signal.
-    pub(crate) async fn fetch_elements<M: Mcp + ?Sized>(
+    /// This deliberately calls `cdp_summarize_page`, not
+    /// `cdp_find_elements`: the top-of-loop observation should tell the model
+    /// which page and element categories exist without injecting a transient
+    /// page-wide DOM list into every prompt. Explicit target candidates enter
+    /// the transcript only when the agent asks for `cdp_find_elements`, and
+    /// ambiguous matches can be expanded with `cdp_get_element_context`.
+    pub(crate) async fn fetch_cdp_page_summary<M: Mcp + ?Sized>(
         &mut self,
         mcp: &M,
-    ) -> Vec<clickweave_core::cdp::CdpFindElementMatch> {
-        if !mcp.has_tool("cdp_find_elements") {
+    ) -> CdpPageObservation {
+        if !mcp.has_tool("cdp_summarize_page") {
             // No CDP surface this turn — clear the sticky URL so the
             // next-turn state-block mirror does not render a stale page.
             self.state.current_url = String::new();
-            return Vec::new();
+            return CdpPageObservation::default();
         }
         match mcp
-            .call_tool(
-                "cdp_find_elements",
-                Some(serde_json::json!({"query": "", "max_results": 300})),
-            )
+            .call_tool("cdp_summarize_page", Some(serde_json::json!({})))
             .await
         {
             Ok(result) if result.is_error != Some(true) => {
                 let text = crate::cdp_lifecycle::extract_text(&result);
-                match serde_json::from_str::<clickweave_core::cdp::CdpFindElementsResponse>(&text) {
+                match serde_json::from_str::<clickweave_core::cdp::CdpPageSummaryResponse>(&text) {
                     Ok(parsed) => {
-                        self.state.current_url = parsed.page_url;
-                        return parsed.matches;
+                        self.state.current_url = parsed.page_url.clone();
+                        let page_fingerprint = crate::agent::transition::page_inventory_fingerprint(
+                            &parsed.page_url,
+                            &parsed.inventory,
+                        );
+                        return CdpPageObservation {
+                            page_url: parsed.page_url,
+                            page_fingerprint,
+                            inventory: parsed
+                                .inventory
+                                .into_iter()
+                                .map(CdpElementInventorySummary::from)
+                                .collect(),
+                        };
                     }
                     Err(parse_err) => {
                         tracing::debug!(
                             error = %parse_err,
-                            "state-spine: failed to parse cdp_find_elements response"
+                            "state-spine: failed to parse cdp_summarize_page response"
                         );
                         self.emit_event(AgentEvent::Warning {
                             message: format!(
-                                "cdp_find_elements response failed to parse: {} — continuing with empty elements",
+                                "cdp_summarize_page response failed to parse: {} — continuing without CDP page summary",
                                 parse_err
                             ),
                         })
@@ -1216,11 +1232,11 @@ impl StateRunner {
                 self.state.current_url = String::new();
             }
             Err(e) => {
-                tracing::debug!(error = %e, "state-spine: cdp_find_elements call failed");
+                tracing::debug!(error = %e, "state-spine: cdp_summarize_page call failed");
                 self.state.current_url = String::new();
             }
         }
-        Vec::new()
+        CdpPageObservation::default()
     }
 
     /// Build a terminal `StepRecord` for a completed / halted run. Used by
@@ -1512,7 +1528,7 @@ impl StateRunner {
         // 2. Observe: snapshot field signatures → drain pending events +
         //    re-infer phase → compute diff → emit `WorldModelChanged` (D17).
         //    If `run()` captured signatures before its observe-phase
-        //    mirror (`fetch_elements` → `world_model.elements`/`cdp_page`)
+        //    mirror (`fetch_cdp_page_summary` → `world_model.cdp_page`)
         //    use that baseline so direct-observation writes also surface
         //    in `changed_fields`; otherwise (unit/test callers) fall back
         //    to snapshotting here.
@@ -1768,6 +1784,65 @@ impl StateRunner {
         .await;
         Some(build_no_progress_nudge(tool_name, count, tool_body))
     }
+
+    async fn track_post_text_submit_search(
+        &mut self,
+        tool_name: &str,
+        tool_arguments: &Value,
+        tool_body: &str,
+        pending: &mut Option<TextSubmitSearchProgress>,
+    ) -> Option<String> {
+        if is_text_composition_tool(tool_name) {
+            *pending = Some(TextSubmitSearchProgress {
+                context_signature: stable_no_progress_context_signature(&self.world_model),
+                count: 0,
+            });
+            return None;
+        }
+
+        if tool_name != "cdp_find_elements" {
+            if !OBSERVATION_TOOLS.contains(&tool_name) {
+                *pending = None;
+            }
+            return None;
+        }
+
+        if !is_send_submit_cdp_search(tool_arguments) {
+            return None;
+        }
+
+        let Some(progress) = pending.as_mut() else {
+            return None;
+        };
+        let context_signature = stable_no_progress_context_signature(&self.world_model);
+        if progress.context_signature != context_signature {
+            *pending = None;
+            return None;
+        }
+
+        if cdp_find_elements_has_matches(tool_body) != Some(false) {
+            progress.count = 0;
+            return None;
+        }
+
+        progress.count += 1;
+        if progress.count < TEXT_SUBMIT_SEARCH_THRESHOLD {
+            return None;
+        }
+
+        warn!(
+            count = progress.count,
+            "state-spine: repeated post-text send search detected — injecting no-progress nudge"
+        );
+        self.emit_event(AgentEvent::Warning {
+            message: format!(
+                "{}: repeated send/submit search after composing text",
+                NO_PROGRESS_WARNING_PREFIX
+            ),
+        })
+        .await;
+        Some(build_post_text_submit_nudge(progress.count, tool_body))
+    }
 }
 
 /// Result of requesting user approval for a tool action. Shared by both
@@ -1963,7 +2038,10 @@ const OBSERVATION_TOOLS: &[&str] = &[
     "load_image",
     "cdp_list_pages",
     "cdp_take_snapshot",
+    "cdp_summarize_page",
     "cdp_find_elements",
+    "cdp_get_element_context",
+    "cdp_wait_for_page_change",
     "android_list_devices",
 ];
 
@@ -2007,6 +2085,8 @@ const REPEAT_ACTION_THRESHOLD: u32 = 3;
 const ACTION_CYCLE_MAX_PATTERN_LEN: usize = 3;
 const ACTION_CYCLE_WINDOW: usize = ACTION_CYCLE_MAX_PATTERN_LEN * 2;
 
+const TEXT_SUBMIT_SEARCH_THRESHOLD: u32 = 3;
+
 /// Prefix on the synthetic observation injected back to the LLM when
 /// the repeat-action detector fires. Anchors the test assertion that
 /// the nudge actually reached `previous_result`.
@@ -2019,6 +2099,10 @@ pub(crate) const NO_PROGRESS_WARNING_PREFIX: &str = "no-progress";
 pub(crate) const NO_ACTION_MUTATION_ONLY_PREFIX: &str = "[NO ACTION DISPATCHED]";
 
 const NO_ACTION_MUTATION_ONLY_REASON: &str = "[NO ACTION DISPATCHED] You emitted only task-state mutation pseudo-tools. The harness updated the task state, but no MCP/environment action ran: no click, fill, typing, navigation, or selection happened. Do not infer that the UI changed; choose a real action next or emit agent_replan with a new tactic.";
+
+pub(crate) const UNVERIFIED_SIDE_EFFECT_PREFIX: &str = "[UNVERIFIED SIDE EFFECT]";
+
+const UNVERIFIED_SIDE_EFFECT_COMPLETION_BLOCKED_REASON: &str = "[UNVERIFIED SIDE EFFECT] The previous action may have changed external state, but its return value is not proof that the requested state is active. Verify the intended state with a structured observation or typed dispatch before calling complete_subgoal or agent_done.";
 
 pub(crate) const STALE_CDP_UID_PREFIX: &str = "[STALE CDP UID]";
 
@@ -2035,6 +2119,12 @@ struct ActionProgressSignature {
     tool_name: String,
     arguments: Value,
     context_signature: String,
+}
+
+#[derive(Debug, Clone)]
+struct TextSubmitSearchProgress {
+    context_signature: String,
+    count: u32,
 }
 
 fn reset_no_progress_tracking(
@@ -2098,6 +2188,13 @@ fn stable_observed_element_key(element: &ObservedElement) -> Value {
             "source": "cdp",
             "role": &el.role,
             "label": &el.label,
+            "accessible_name": &el.accessible_name,
+            "visible_text": &el.visible_text,
+            "value": &el.value,
+            "placeholder": &el.placeholder,
+            "title": &el.title,
+            "alt_text": &el.alt_text,
+            "test_id": &el.test_id,
             "tag": &el.tag,
             "disabled": el.disabled,
             "parent_role": &el.parent_role,
@@ -2155,16 +2252,130 @@ fn detect_repeated_action_cycle(
 /// stays out of the inner loop and can be exercised independently.
 fn build_no_progress_nudge(tool: &str, count: u32, prev_body: &str) -> String {
     format!(
-        "{prefix} You have issued `{tool}` with the same arguments {count} turns in a row in the same stable app/page context, but the task is not advancing. Stop repeating this call. Either (1) switch dispatch family — if `<world_model>` has a `cdp_page` block, use `cdp_*` tools (e.g. `cdp_find_elements`, `cdp_take_dom_snapshot`, `cdp_type_text`, `cdp_evaluate_script`); if it has an AX tree, take a fresh `take_ax_snapshot` and use `ax_*` tools — or (2) push a narrower subgoal via `push_subgoal` and try a different tactic, or (3) emit `agent_replan`.\n\nPrevious tool body:\n{prev_body}",
+        "{prefix} You have issued `{tool}` with the same arguments {count} turns in a row in the same stable app/page context, but the task is not advancing. Stop repeating this call. Either (1) switch dispatch family — if `<world_model>` has a `cdp_page` block, use CDP query/expand/action tools (e.g. `cdp_find_elements`, `cdp_get_element_context`, `cdp_click`, `cdp_fill`, `cdp_type_text`); if it has an AX tree, take a fresh `take_ax_snapshot` and use `ax_*` tools — or (2) push a narrower subgoal via `push_subgoal` and try a different tactic, or (3) emit `agent_replan`.\n\nPrevious tool body:\n{prev_body}",
         prefix = NO_PROGRESS_NUDGE_PREFIX,
     )
 }
 
 fn build_action_cycle_nudge(cycle_summary: &str, prev_body: &str) -> String {
     format!(
-        "{prefix} You are in a repeated action cycle in the same stable app/page context: `{cycle_summary}`. The task is not advancing. Do not run the same cycle again. Widen or change discovery with `cdp_take_dom_snapshot`/`cdp_evaluate_script`, verify the active context, or emit `agent_replan`.\n\nPrevious tool body:\n{prev_body}",
+        "{prefix} You are in a repeated action cycle in the same stable app/page context: `{cycle_summary}`. The task is not advancing. Do not run the same cycle again. Change the `cdp_find_elements` query, expand a candidate with `cdp_get_element_context`, verify the active context, or emit `agent_replan`.\n\nPrevious tool body:\n{prev_body}",
         prefix = NO_PROGRESS_NUDGE_PREFIX,
     )
+}
+
+fn build_post_text_submit_nudge(count: u32, prev_body: &str) -> String {
+    format!(
+        "{prefix} You already wrote text into a textbox/editor, then searched for Send/Submit {count} times in the same stable page context without finding a matching control. Stop repeating send-button searches. If the focused editor should submit on Enter, call `cdp_press_key` with `{{\"key\":\"Enter\"}}`; otherwise use `cdp_get_element_context` around the composer controls or emit `agent_replan`.\n\nPrevious tool body:\n{prev_body}",
+        prefix = NO_PROGRESS_NUDGE_PREFIX,
+    )
+}
+
+fn is_text_composition_tool(tool_name: &str) -> bool {
+    matches!(tool_name, "cdp_fill" | "cdp_type_text")
+}
+
+fn is_send_submit_cdp_search(arguments: &Value) -> bool {
+    let query = arguments
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    query.contains("send") || query.contains("submit")
+}
+
+fn cdp_find_elements_has_matches(tool_body: &str) -> Option<bool> {
+    let parsed: Value = serde_json::from_str(tool_body).ok()?;
+    let matches = parsed.get("matches")?.as_array()?;
+    Some(!matches.is_empty())
+}
+
+fn cdp_evaluate_script_function(arguments: &Value) -> Option<&str> {
+    arguments.get("function").and_then(Value::as_str)
+}
+
+fn cdp_evaluate_script_has_side_effect(function: &str) -> bool {
+    let f = function.to_ascii_lowercase();
+    [
+        ".click(",
+        ".dispatch_event(",
+        ".dispatchevent(",
+        ".submit(",
+        ".focus(",
+        ".blur(",
+        ".scroll",
+        ".setattribute(",
+        ".removeattribute(",
+        ".value =",
+        ".checked =",
+        ".selected =",
+        ".innerhtml =",
+        ".textcontent =",
+        "localstorage.setitem(",
+        "sessionstorage.setitem(",
+        "window.location",
+        "location.href",
+        "location =",
+        "history.pushstate(",
+        "history.replacestate(",
+    ]
+    .iter()
+    .any(|needle| f.contains(needle))
+}
+
+fn is_side_effectful_cdp_evaluate_script(tool_name: &str, arguments: &Value) -> bool {
+    tool_name == "cdp_evaluate_script"
+        && cdp_evaluate_script_function(arguments).is_some_and(cdp_evaluate_script_has_side_effect)
+}
+
+fn is_unverified_side_effect_action(
+    tool_name: &str,
+    arguments: &Value,
+    annotations_by_tool: &HashMap<String, ToolAnnotations>,
+) -> bool {
+    if tool_name == "cdp_evaluate_script" {
+        return is_side_effectful_cdp_evaluate_script(tool_name, arguments);
+    }
+
+    annotations_by_tool
+        .get(tool_name)
+        .is_some_and(|annotations| {
+            annotations.open_world_hint == Some(true) && annotations.destructive_hint == Some(true)
+        })
+}
+
+fn build_unverified_side_effect_nudge(tool_body: &str) -> String {
+    format!(
+        "{prefix} The last action may have changed external state, but its return value is not proof that the requested state is active. Before completing a subgoal or the whole goal, verify with structured state: use a typed dispatch when a stable target exists, or run a focused observation that proves the intended active context.\n\nPrevious action result:\n{tool_body}",
+        prefix = UNVERIFIED_SIDE_EFFECT_PREFIX,
+    )
+}
+
+fn previous_result_is_unverified_side_effect(previous_result: Option<&str>) -> bool {
+    previous_result.is_some_and(|body| body.starts_with(UNVERIFIED_SIDE_EFFECT_PREFIX))
+}
+
+fn guard_completion_after_unverified_side_effect(
+    previous_result: Option<&str>,
+    turn: &mut AgentTurn,
+) -> bool {
+    if !previous_result_is_unverified_side_effect(previous_result) {
+        return false;
+    }
+
+    let before = turn.mutations.len();
+    turn.mutations
+        .retain(|m| !matches!(m, TaskStateMutation::CompleteSubgoal { .. }));
+    let stripped_complete = before != turn.mutations.len();
+
+    let blocked_done = matches!(turn.action, AgentAction::AgentDone { .. });
+    if blocked_done {
+        turn.action = AgentAction::AgentReplan {
+            reason: UNVERIFIED_SIDE_EFFECT_COMPLETION_BLOCKED_REASON.to_string(),
+        };
+    }
+
+    stripped_complete || blocked_done
 }
 
 fn is_stale_cdp_uid_error(tool_name: &str, error: &str) -> bool {
@@ -2177,7 +2388,7 @@ fn is_stale_cdp_uid_error(tool_name: &str, error: &str) -> bool {
 
 fn build_stale_cdp_uid_nudge(error: &str) -> String {
     format!(
-        "{prefix} The CDP element id from a previous observation is no longer valid. No click, fill, selection, or typing happened. Rediscover the target with `cdp_find_elements`, `cdp_take_dom_snapshot`, or `cdp_evaluate_script` before the next `cdp_click`/`cdp_fill`; do not reuse prior `d<N>` ids.\n\nOriginal error:\n{error}",
+        "{prefix} The CDP element id from a previous observation is no longer valid. No click, fill, selection, or typing happened. Rediscover the target with `cdp_find_elements` before the next `cdp_click`/`cdp_fill`; do not reuse prior `d<N>` ids.\n\nOriginal error:\n{error}",
         prefix = STALE_CDP_UID_PREFIX,
     )
 }
@@ -2756,8 +2967,7 @@ impl StateRunner {
                      CDP-backed and a `cdp_page` is live in <world_model>. Coordinate \
                      clicks bypass the page's event loop and steal foreground. Use \
                      `cdp_click` / `cdp_fill` / `cdp_type_text` / `cdp_press_key` \
-                     against the `d<N>` uids in the elements list, or \
-                     `cdp_evaluate_script` for JS-driven action."
+                     against `d<N>` uids returned by `cdp_find_elements`."
                 ))
             }
             AppKind::Native if mcp_has_toolset(mcp, AX_DISPATCH_TOOLSET) => Some(format!(
@@ -3213,8 +3423,8 @@ impl StateRunner {
     /// `CdpAttachable` synthetic-skip path. Emits the `CdpConnected`
     /// event so the UI surfaces the connect, then refreshes the
     /// client-side tool cache so observation gates (notably
-    /// `fetch_elements`'s `cdp_find_elements` lookup) see the CDP tools
-    /// the server surfaced post-connect.
+    /// `fetch_cdp_page_summary`'s `cdp_summarize_page` lookup) see the
+    /// CDP tools the server surfaced post-connect.
     async fn finalize_cdp_connected<M: Mcp + ?Sized>(
         &self,
         app_name: &str,
@@ -3849,6 +4059,7 @@ impl StateRunner {
         // this covers successful calls that don't advance the world.
         let mut last_action: Option<LastActionProgress> = None;
         let mut recent_actions: VecDeque<ActionProgressSignature> = VecDeque::new();
+        let mut pending_text_submit_search: Option<TextSubmitSearchProgress> = None;
 
         for _step_index in 0..self.config.max_steps {
             if self.state.completed {
@@ -3871,68 +4082,54 @@ impl StateRunner {
             // Spec 3: snapshot the world model before this iteration's
             // dispatch so any successful tool call this turn pushes a
             // `RecordedStep` whose `world_model_pre` matches what the
-            // LLM saw at decision time. Captured here (before
-            // `fetch_elements` mutates `world_model.elements`) so the
-            // pre-state reflects the page the LLM was looking at, not
-            // the post-fetch mirror.
+            // LLM saw at decision time. Captured here before the
+            // CDP-page summary mirror mutates `world_model.cdp_page`.
             self.pre_dispatch_snapshot = Some(
                 crate::agent::step_record::WorldModelSnapshot::from_world_model(&self.world_model),
             );
-            let elements = self.fetch_elements(mcp).await;
+            let CdpPageObservation {
+                page_url,
+                page_fingerprint,
+                inventory,
+            } = self.fetch_cdp_page_summary(mcp).await;
 
-            // Mirror the observation into the world model so the state
-            // block renderer can print the interactive-element surface
-            // and the current CDP page context. The element surface is
-            // source-agnostic: CDP results from `fetch_elements` write
-            // here as `ObservedElement::Cdp`; native AX results from
-            // `take_ax_snapshot` and OCR results from `find_text` are
-            // mirrored by `update_continuity_after_tool_success` as
-            // `ObservedElement::Ax` and `ObservedElement::Ocr`
-            // respectively, so that path is preserved across turns
-            // where CDP is not the active discovery surface.
+            // Mirror only the compact CDP page summary. CDP target
+            // candidates are intentionally not written to
+            // `world_model.elements`: the DOM is an ephemeral query
+            // result and belongs in explicit `cdp_find_elements` /
+            // `cdp_get_element_context` tool results, not in every
+            // subsequent state block. Native AX/OCR element surfaces
+            // still flow through `update_continuity_after_tool_success`.
             {
-                use crate::agent::transition::page_fingerprint;
                 use crate::agent::world_model::{
                     CdpPageState, Fresh, FreshnessSource, ObservedElement,
                 };
-                let observed: Vec<ObservedElement> =
-                    elements.iter().cloned().map(ObservedElement::Cdp).collect();
-                if !observed.is_empty() {
-                    // Fresh CDP observation overwrites whatever was
-                    // there — CDP is the most recent discovery signal.
-                    self.world_model.elements = Some(Fresh {
-                        value: observed,
-                        written_at: self.step_index,
-                        source: FreshnessSource::DirectObservation,
-                        ttl_steps: Some(2),
-                    });
-                } else if matches!(
+                if matches!(
                     self.world_model
                         .elements
                         .as_ref()
                         .and_then(|f| f.value.first()),
                     Some(ObservedElement::Cdp(_))
                 ) {
-                    // Last turn's CDP cache has nothing to refresh it —
-                    // drop it so the renderer does not print stale CDP
-                    // elements. Non-CDP element sources (AX from
-                    // `take_ax_snapshot`, OCR from `find_text`) are
-                    // left intact and age out via the snapshot-stale
-                    // event when their TTL expires.
                     self.world_model.elements = None;
                 }
-                // `fetch_elements` writes the response `page_url` into
+                // `fetch_cdp_page_summary` writes the response `page_url` into
                 // `state.current_url` on success and clears it on every
                 // miss path (missing tool / parse failure / MCP error /
-                // call failure). Mirror the URL + elements-derived
+                // call failure). Mirror the URL + inventory-derived
                 // fingerprint into `world_model.cdp_page` when fresh,
                 // otherwise drop the stale page context entirely.
-                let url = self.state.current_url.clone();
+                let url = if page_url.is_empty() {
+                    self.state.current_url.clone()
+                } else {
+                    page_url
+                };
                 if !url.is_empty() {
                     self.world_model.cdp_page = Some(Fresh {
                         value: CdpPageState {
                             url,
-                            page_fingerprint: page_fingerprint(&elements),
+                            page_fingerprint,
+                            element_inventory: inventory,
                         },
                         written_at: self.step_index,
                         source: FreshnessSource::DirectObservation,
@@ -3942,6 +4139,23 @@ impl StateRunner {
                     self.world_model.cdp_page = None;
                 }
             }
+            let elements: Vec<clickweave_core::cdp::CdpFindElementMatch> = self
+                .world_model
+                .elements
+                .as_ref()
+                .map(|fresh| {
+                    fresh
+                        .value
+                        .iter()
+                        .filter_map(|element| match element {
+                            crate::agent::world_model::ObservedElement::Cdp(match_) => {
+                                Some(match_.clone())
+                            }
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
 
             // Top-of-loop observe — unconditional. Drains pending
             // invalidation events queued by the prior iteration's
@@ -4019,6 +4233,14 @@ impl StateRunner {
             //    `0..N` task-state mutations followed by exactly one
             //    action.
             let mut turn = parse_agent_turn(&choice.message)?;
+            if guard_completion_after_unverified_side_effect(previous_result.as_deref(), &mut turn)
+            {
+                warn!("state-spine: blocked completion after unverified side-effectful action");
+                self.emit_event(AgentEvent::Warning {
+                    message: UNVERIFIED_SIDE_EFFECT_COMPLETION_BLOCKED_REASON.to_string(),
+                })
+                .await;
+            }
 
             // 4'. Apply task-state mutations BEFORE any early-exit
             //     branching. Synthetic focus-skip / live policy-deny /
@@ -4273,7 +4495,7 @@ impl StateRunner {
                 // connected and clears `cdp_connect_status`; on failure
                 // terminal paths record the reason. The actual
                 // `world_model.cdp_page` write happens at the next
-                // turn's `fetch_elements` mirror, so the finalizer
+                // turn's `fetch_cdp_page_summary` mirror, so the finalizer
                 // refreshes the MCP tool cache here.
                 if let Some((app_name, kind_hint)) =
                     self.cdp_target_for_skipped_focus_window(reason, arguments, mcp)
@@ -4822,6 +5044,11 @@ impl StateRunner {
                         AgentAction::ToolCall { arguments, .. } => arguments.clone(),
                         _ => unreachable!("ToolSuccess outcome implies ToolCall action"),
                     };
+                    let unverified_side_effect = is_unverified_side_effect_action(
+                        &tool_name,
+                        &tool_arguments_for_record,
+                        &annotations_by_tool,
+                    );
                     let pre_snapshot = self.pre_dispatch_snapshot.take().unwrap_or_else(|| {
                         crate::agent::step_record::WorldModelSnapshot::from_world_model(
                             &self.world_model,
@@ -4838,7 +5065,16 @@ impl StateRunner {
                         world_model_pre: pre_snapshot,
                         world_model_post: post_snapshot,
                     });
-                    previous_result = Some(tool_body.clone());
+                    let unverified_side_effect_nudge = if unverified_side_effect {
+                        Some(build_unverified_side_effect_nudge(&tool_body))
+                    } else {
+                        None
+                    };
+                    previous_result = Some(
+                        unverified_side_effect_nudge
+                            .clone()
+                            .unwrap_or(tool_body.clone()),
+                    );
                     // Clear the loop-detection tracker on any success.
                     last_failure = None;
                     // Emit StepCompleted so subscribers see a successful turn.
@@ -4848,6 +5084,15 @@ impl StateRunner {
                         summary: crate::agent::prompt::truncate_summary(&tool_body, 120),
                     })
                     .await;
+                    if unverified_side_effect {
+                        self.emit_event(AgentEvent::Warning {
+                            message: format!(
+                                "{}: `{}` result requires verification before completion",
+                                UNVERIFIED_SIDE_EFFECT_PREFIX, tool_name
+                            ),
+                        })
+                        .await;
+                    }
                     // Destructive-cap accounting mirrors
                     // `AgentRunner::handle_step_outcome`'s cap branch.
                     if matches!(
@@ -4896,6 +5141,23 @@ impl StateRunner {
                         .await;
 
                     if let Some(nudge) = self
+                        .track_post_text_submit_search(
+                            &tool_name,
+                            &tool_arguments,
+                            &tool_body,
+                            &mut pending_text_submit_search,
+                        )
+                        .await
+                    {
+                        previous_result = Some(match unverified_side_effect_nudge.as_deref() {
+                            Some(side_effect_nudge) => {
+                                format!("{side_effect_nudge}\n\n{nudge}")
+                            }
+                            None => nudge,
+                        });
+                    }
+
+                    if let Some(nudge) = self
                         .track_repeat_action(
                             &tool_name,
                             &tool_arguments,
@@ -4906,7 +5168,12 @@ impl StateRunner {
                         )
                         .await
                     {
-                        previous_result = Some(nudge);
+                        previous_result = Some(match unverified_side_effect_nudge.as_deref() {
+                            Some(side_effect_nudge) => {
+                                format!("{side_effect_nudge}\n\n{nudge}")
+                            }
+                            None => nudge,
+                        });
                     }
                 }
                 TurnOutcome::ToolError { tool_name, error } => {
@@ -5887,6 +6154,78 @@ mod parse_agent_turn_tool_calls_tests {
 }
 
 #[cfg(test)]
+mod unverified_side_effect_guard_tests {
+    use super::*;
+    use crate::agent::permissions::ToolAnnotations;
+    use crate::agent::task_state::TaskStateMutation;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    #[test]
+    fn detects_obvious_side_effectful_eval_but_allows_read_only_eval() {
+        let annotations = HashMap::new();
+
+        assert!(is_unverified_side_effect_action(
+            "cdp_evaluate_script",
+            &json!({"function": "() => document.querySelector('button')?.click()"}),
+            &annotations,
+        ));
+        assert!(!is_unverified_side_effect_action(
+            "cdp_evaluate_script",
+            &json!({"function": "() => Array.from(document.querySelectorAll('button')).map((b) => b.textContent)"}),
+            &annotations,
+        ));
+    }
+
+    #[test]
+    fn uses_open_world_destructive_annotations_for_future_tools() {
+        let mut annotations = HashMap::new();
+        annotations.insert(
+            "future_action".to_string(),
+            ToolAnnotations {
+                destructive_hint: Some(true),
+                open_world_hint: Some(true),
+                ..ToolAnnotations::default()
+            },
+        );
+
+        assert!(is_unverified_side_effect_action(
+            "future_action",
+            &json!({}),
+            &annotations,
+        ));
+    }
+
+    #[test]
+    fn guard_completion_after_unverified_side_effect_strips_complete_and_blocks_done() {
+        let mut turn = AgentTurn {
+            mutations: vec![
+                TaskStateMutation::PushSubgoal {
+                    text: "find target".to_string(),
+                },
+                TaskStateMutation::CompleteSubgoal {
+                    summary: "target open".to_string(),
+                },
+            ],
+            action: AgentAction::AgentDone {
+                summary: "done".to_string(),
+            },
+        };
+
+        assert!(guard_completion_after_unverified_side_effect(
+            Some("[UNVERIFIED SIDE EFFECT] previous result"),
+            &mut turn,
+        ));
+        assert_eq!(turn.mutations.len(), 1);
+        assert!(matches!(
+            turn.mutations[0],
+            TaskStateMutation::PushSubgoal { .. }
+        ));
+        assert!(matches!(turn.action, AgentAction::AgentReplan { .. }));
+    }
+}
+
+#[cfg(test)]
 mod no_progress_guard_tests {
     use super::*;
     use crate::agent::world_model::{CdpPageState, Fresh, FreshnessSource, OcrMatch};
@@ -5984,6 +6323,7 @@ mod no_progress_guard_tests {
             value: CdpPageState {
                 url: "app://synthetic/page".to_string(),
                 page_fingerprint: "count=1;hash=a".to_string(),
+                element_inventory: Vec::new(),
             },
             written_at: 1,
             source: FreshnessSource::DirectObservation,
@@ -6009,6 +6349,7 @@ mod no_progress_guard_tests {
             disabled: false,
             parent_role: None,
             parent_name: None,
+            ..Default::default()
         })
     }
 
@@ -6018,6 +6359,7 @@ mod no_progress_guard_tests {
             value: CdpPageState {
                 url: "app://synthetic/page".to_string(),
                 page_fingerprint: page_fingerprint.to_string(),
+                element_inventory: Vec::new(),
             },
             written_at: 1,
             source: FreshnessSource::DirectObservation,
@@ -6075,6 +6417,27 @@ mod no_progress_guard_tests {
     }
 
     #[test]
+    fn stable_context_changes_when_cdp_visible_text_changes() {
+        let mut before_el = cdp("d1", "button", "Chat with Ljuba Isakovic", "button");
+        if let ObservedElement::Cdp(el) = &mut before_el {
+            el.visible_text = "Note to Self Tue Photo".to_string();
+        }
+        let mut after_el = before_el.clone();
+        if let ObservedElement::Cdp(el) = &mut after_el {
+            el.visible_text = "Note to Self Wed New message".to_string();
+        }
+
+        let before = wm_with_cdp_elements("count=1;hash=a", vec![before_el]);
+        let after = wm_with_cdp_elements("count=1;hash=b", vec![after_el]);
+
+        assert_ne!(
+            stable_no_progress_context_signature(&before),
+            stable_no_progress_context_signature(&after),
+            "visible text changes must reset no-progress tracking even when the accessibility label is unchanged"
+        );
+    }
+
+    #[test]
     fn stable_context_ignores_ocr_confidence_jitter() {
         let mut before = WorldModel::default();
         before.elements = Some(Fresh {
@@ -6120,6 +6483,48 @@ mod no_progress_guard_tests {
         let nudge = build_stale_cdp_uid_nudge("No node with given id found");
         assert!(nudge.starts_with(STALE_CDP_UID_PREFIX));
         assert!(nudge.contains("Rediscover the target"));
+        assert!(!nudge.contains("cdp_evaluate_script"));
+    }
+
+    #[test]
+    fn recovery_nudges_do_not_recommend_eval_script_for_discovery() {
+        let repeated = build_no_progress_nudge("cdp_click", 2, "clicked");
+        let cycle = build_action_cycle_nudge("cdp_find_elements -> cdp_click", "clicked");
+        let post_text = build_post_text_submit_nudge(3, r#"{"matches":[]}"#);
+
+        assert!(repeated.contains("cdp_find_elements"));
+        assert!(cycle.contains("cdp_get_element_context"));
+        assert!(post_text.contains("cdp_press_key"));
+        assert!(!repeated.contains("cdp_evaluate_script"));
+        assert!(!cycle.contains("cdp_evaluate_script"));
+        assert!(!post_text.contains("cdp_evaluate_script"));
+    }
+
+    #[test]
+    fn post_text_send_search_helpers_detect_empty_send_searches() {
+        assert!(is_send_submit_cdp_search(
+            &serde_json::json!({"query":"Send", "role":"button"})
+        ));
+        assert!(is_send_submit_cdp_search(
+            &serde_json::json!({"query":"send button"})
+        ));
+        assert!(is_send_submit_cdp_search(
+            &serde_json::json!({"query":"Submit"})
+        ));
+        assert!(!is_send_submit_cdp_search(
+            &serde_json::json!({"query":"Message", "role":"textbox"})
+        ));
+
+        assert_eq!(
+            cdp_find_elements_has_matches(r#"{"matches":[],"inventory":[]}"#),
+            Some(false)
+        );
+        assert_eq!(
+            cdp_find_elements_has_matches(
+                r#"{"matches":[{"uid":"d1","role":"button","label":"Send"}]}"#
+            ),
+            Some(true)
+        );
     }
 }
 
@@ -6330,6 +6735,7 @@ mod source_agnostic_elements_tests {
             disabled: false,
             parent_role: None,
             parent_name: None,
+            ..Default::default()
         };
         r.world_model.elements = Some(crate::agent::world_model::Fresh {
             value: vec![ObservedElement::Cdp(cdp_match.clone())],
@@ -6941,6 +7347,7 @@ mod coordinate_primitive_guard_tests {
             value: CdpPageState {
                 url: url.to_string(),
                 page_fingerprint: "fp".to_string(),
+                element_inventory: Vec::new(),
             },
             written_at: 0,
             source: FreshnessSource::DirectObservation,
@@ -6959,6 +7366,7 @@ mod coordinate_primitive_guard_tests {
         let msg = blocked.unwrap();
         assert!(msg.contains("cdp_page"));
         assert!(msg.contains("cdp_click"));
+        assert!(!msg.contains("cdp_evaluate_script"));
     }
 
     #[test]

@@ -117,10 +117,11 @@ pub fn tools_in_scope(
         Some(AppKind::ElectronApp | AppKind::ChromeBrowser) if cdp_page_attached => all_tool_names
             .iter()
             .filter(|n| {
-                matches!(
-                    classify_tool_family(n),
-                    DispatchFamily::Cdp | DispatchFamily::Universal
-                )
+                n.as_str() != "cdp_evaluate_script"
+                    && matches!(
+                        classify_tool_family(n),
+                        DispatchFamily::Cdp | DispatchFamily::Universal
+                    )
             })
             .cloned()
             .collect(),
@@ -554,6 +555,16 @@ mod state_spine_prompt_tests {
     }
 
     #[test]
+    fn system_prompt_does_not_recommend_eval_script_for_routine_cdp_inspection() {
+        let tools: Vec<Tool> = vec![];
+        let s = build_system_prompt(&tools);
+        assert!(
+            !s.contains("cdp_evaluate_script"),
+            "default guidance should not steer routine CDP inspection through approval-gated eval"
+        );
+    }
+
+    #[test]
     fn system_prompt_lists_tools_with_descriptions() {
         let tools = vec![
             Tool {
@@ -726,7 +737,11 @@ mod state_spine_prompt_tests {
     fn tools_in_scope_keeps_cdp_and_universal_when_cdp_page_attached() {
         let all = names(&[
             "cdp_click",
+            "cdp_summarize_page",
             "cdp_find_elements",
+            "cdp_get_element_context",
+            "cdp_wait_for_page_change",
+            "cdp_evaluate_script",
             "ax_click",
             "click",
             "find_text",
@@ -735,9 +750,13 @@ mod state_spine_prompt_tests {
         ]);
         let scope = tools_in_scope(Some(AppKind::ElectronApp), true, &all);
         assert!(scope.iter().any(|n| n == "cdp_click"));
+        assert!(scope.iter().any(|n| n == "cdp_summarize_page"));
         assert!(scope.iter().any(|n| n == "cdp_find_elements"));
+        assert!(scope.iter().any(|n| n == "cdp_get_element_context"));
+        assert!(scope.iter().any(|n| n == "cdp_wait_for_page_change"));
         assert!(scope.iter().any(|n| n == "take_screenshot"));
         assert!(scope.iter().any(|n| n == "focus_window"));
+        assert!(!scope.iter().any(|n| n == "cdp_evaluate_script"));
         // Wrong-family tools must be filtered out so the LLM is not tempted.
         assert!(!scope.iter().any(|n| n == "ax_click"));
         assert!(!scope.iter().any(|n| n == "click"));

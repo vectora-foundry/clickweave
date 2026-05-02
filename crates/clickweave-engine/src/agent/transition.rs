@@ -6,16 +6,15 @@
 use std::collections::BTreeSet;
 
 use blake3::Hasher;
-use clickweave_core::cdp::CdpFindElementMatch;
+use clickweave_core::cdp::{CdpElementInventory, CdpFindElementMatch};
 
 /// Generate a stable, non-reversible fingerprint for a single element.
 ///
-/// The hashed input includes the element's `uid`, `role`, `label`,
-/// `tag`, and parent info so that elements with the same visual
-/// description but different DOM identities produce different
-/// fingerprints. The returned value intentionally omits the raw label /
-/// parent text because `page_fingerprint` is rendered into prompts and
-/// durable traces.
+/// The hashed input includes the element's `uid`, role/tag, legacy label,
+/// visible/accessibility evidence, and parent info so that elements with
+/// stale accessibility names still change when rendered text changes. The
+/// returned value intentionally omits the raw text because
+/// `page_fingerprint` is rendered into prompts and durable traces.
 pub fn element_fingerprint(el: &CdpFindElementMatch) -> String {
     let parent = match (&el.parent_role, &el.parent_name) {
         (Some(role), Some(name)) => format!("{}:{}", role, name),
@@ -28,6 +27,20 @@ pub fn element_fingerprint(el: &CdpFindElementMatch) -> String {
     hasher.update(el.role.as_bytes());
     hasher.update(b"\0");
     hasher.update(el.label.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(el.accessible_name.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(el.visible_text.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(el.value.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(el.placeholder.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(el.title.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(el.alt_text.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(el.test_id.as_bytes());
     hasher.update(b"\0");
     hasher.update(el.tag.as_bytes());
     hasher.update(b"\0");
@@ -83,6 +96,37 @@ pub fn page_fingerprint(elements: &[CdpFindElementMatch]) -> String {
     format!("count={};hash={}", elements.len(), &hex[..16])
 }
 
+/// Generate a stable, non-reversible fingerprint from the compact CDP page
+/// summary. This lets Clickweave track a CDP page without injecting a
+/// page-wide element list into every model turn.
+pub fn page_inventory_fingerprint(url: &str, inventory: &[CdpElementInventory]) -> String {
+    let mut rows: Vec<&CdpElementInventory> = inventory.iter().collect();
+    rows.sort_by(|a, b| a.role.cmp(&b.role).then(a.count.cmp(&b.count)));
+
+    let mut hasher = Hasher::new();
+    hasher.update(url.as_bytes());
+    hasher.update(b"\0");
+    for row in &rows {
+        hasher.update(row.role.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(row.count.to_string().as_bytes());
+        hasher.update(b"\0");
+        for label in &row.sample_labels {
+            hasher.update(label.as_bytes());
+            hasher.update(b"\0");
+        }
+        hasher.update(b"\0");
+    }
+    let total: usize = inventory.iter().map(|row| row.count).sum();
+    let hex = hasher.finalize().to_hex();
+    format!(
+        "roles={};elements={};hash={}",
+        inventory.len(),
+        total,
+        &hex[..16]
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,6 +140,7 @@ mod tests {
             disabled: false,
             parent_role: None,
             parent_name: None,
+            ..Default::default()
         }
     }
 
@@ -120,6 +165,7 @@ mod tests {
             disabled: false,
             parent_role: Some("form".to_string()),
             parent_name: Some("Login".to_string()),
+            ..Default::default()
         };
         let fp = element_fingerprint(&el);
         assert_eq!(fp.len(), 16);
@@ -127,6 +173,20 @@ mod tests {
         assert_ne!(
             fp,
             element_fingerprint(&make_element("1_0", "button", "Submit", "button"))
+        );
+    }
+
+    #[test]
+    fn element_fingerprint_includes_visible_text() {
+        let mut before = make_element("d1", "button", "Chat with Alice", "button");
+        before.visible_text = "Note to Self Tue Photo".to_string();
+        let mut after = before.clone();
+        after.visible_text = "Note to Self Wed New message".to_string();
+
+        assert_ne!(
+            element_fingerprint(&before),
+            element_fingerprint(&after),
+            "visible text changes must be visible to page fingerprints even when label is stable"
         );
     }
 
@@ -200,6 +260,32 @@ mod tests {
         let page_a = vec![make_element("1_0", "button", "Submit", "button")];
         let page_b = vec![make_element("2_0", "heading", "Dashboard", "h1")];
         assert_ne!(page_fingerprint(&page_a), page_fingerprint(&page_b));
+    }
+
+    #[test]
+    fn page_inventory_fingerprint_is_order_independent() {
+        let inventory_a = vec![
+            CdpElementInventory {
+                role: "button".to_string(),
+                count: 2,
+                sample_labels: vec!["Submit".to_string()],
+            },
+            CdpElementInventory {
+                role: "textbox".to_string(),
+                count: 1,
+                sample_labels: vec!["Email".to_string()],
+            },
+        ];
+        let mut inventory_b = inventory_a.clone();
+        inventory_b.reverse();
+
+        assert_eq!(
+            page_inventory_fingerprint("https://example.com/", &inventory_a),
+            page_inventory_fingerprint("https://example.com/", &inventory_b)
+        );
+        assert!(
+            !page_inventory_fingerprint("https://example.com/", &inventory_a).contains("Submit")
+        );
     }
 
     #[test]

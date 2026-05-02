@@ -186,8 +186,8 @@ impl Mcp for MockMcp {
     }
 
     fn has_tool(&self, name: &str) -> bool {
-        // Support cdp_find_elements and any tools in the list
-        if name == "cdp_find_elements" {
+        // Support CDP observation helpers and any tools in the list.
+        if name == "cdp_find_elements" || name == "cdp_summarize_page" {
             return true;
         }
         self.tools
@@ -1430,7 +1430,7 @@ async fn tool_list_is_stable_across_cdp_connect_boundary() {
     );
 
     // MCP results queue matches the expected call sequence. Pre-connect,
-    // `cdp_find_elements` is not in the client's tool cache, so step 0's
+    // `cdp_summarize_page` is not in the client's tool cache, so step 0's
     // observation is a no-op (empty elements) and consumes no result.
     //   step 0 act      -> launch_app
     //   post-hook probe -> probe_app (must say ElectronApp to trigger CDP)
@@ -1439,9 +1439,9 @@ async fn tool_list_is_stable_across_cdp_connect_boundary() {
     //   post-hook relaunch -> launch_app
     //   post-hook connect  -> cdp_connect (flips the server's tool set)
     //   (refresh_server_tool_list reloads the client cache after connect)
-    //   step 1 observe  -> cdp_find_elements
+    //   step 1 observe  -> cdp_summarize_page
     //   step 1 act      -> click
-    //   step 2 observe  -> cdp_find_elements
+    //   step 2 observe  -> cdp_summarize_page
     let cdp_page = |url: &str| ToolCallResult {
         content: vec![ToolContent::Text {
             text: serde_json::json!({
@@ -1530,13 +1530,24 @@ async fn tool_list_is_stable_across_cdp_connect_boundary() {
         }),
     ];
     // Extras model CDP tools the server only surfaces after `cdp_connect`:
-    //   - `cdp_find_elements` is what the agent's observation gate checks
-    //     (`has_tool(...)` in `fetch_elements`), so it must become visible
+    //   - `cdp_summarize_page` is what the agent's observation gate checks
+    //     (`has_tool(...)` in `fetch_cdp_page_summary`), so it must become visible
     //     on the *client-side cache* after the post-hook runs, or every
     //     later observation will return empty.
     //   - `cdp_click` stands in for any CDP tool that must NOT silently
     //     show up in the agent's LLM-visible tool list mid-run.
     let extra_tools = vec![
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "cdp_summarize_page",
+                "description": "Summarize page via CDP",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        }),
         serde_json::json!({
             "type": "function",
             "function": {
@@ -1601,19 +1612,19 @@ async fn tool_list_is_stable_across_cdp_connect_boundary() {
     );
 
     // The client-side tool cache must have been refreshed after cdp_connect
-    // — otherwise later observation steps would see `has_tool("cdp_find_elements")`
-    // return false and degrade to empty-element native paths.
+    // — otherwise later observation steps would see `has_tool("cdp_summarize_page")`
+    // return false and degrade to empty CDP page paths.
     assert!(
-        mcp.has_tool("cdp_find_elements"),
-        "Post-CDP-connect refresh did not run: cdp_find_elements is still \
-         absent from the client tool cache, so fetch_elements would return \
-         empty on every later observation."
+        mcp.has_tool("cdp_summarize_page"),
+        "Post-CDP-connect refresh did not run: cdp_summarize_page is still \
+         absent from the client tool cache, so fetch_cdp_page_summary would \
+         return empty on every later observation."
     );
 
     // And the agent's recorded step for the post-connect click should carry
-    // a CDP-sourced page_url, which only happens if fetch_elements actually
-    // dispatched `cdp_find_elements` — i.e. the gate in fetch_elements saw
-    // the refreshed cache.
+    // a CDP-sourced page_url, which only happens if fetch_cdp_page_summary
+    // actually dispatched `cdp_summarize_page` — i.e. the gate in
+    // fetch_cdp_page_summary saw the refreshed cache.
     let click_step = state
         .steps
         .iter()
@@ -1727,7 +1738,8 @@ impl Mcp for RoutingMockMcp {
     }
 
     fn has_tool(&self, name: &str) -> bool {
-        if name == "cdp_find_elements" || name == "take_screenshot" {
+        if name == "cdp_summarize_page" || name == "cdp_find_elements" || name == "take_screenshot"
+        {
             return true;
         }
         self.tools

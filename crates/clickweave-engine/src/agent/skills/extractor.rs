@@ -26,6 +26,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use parking_lot::RwLock;
+use serde_json::Value;
 use uuid::Uuid;
 
 use super::index::SkillIndex;
@@ -76,6 +77,11 @@ pub async fn maybe_extract_skill(
     );
 
     let new_sketch = build_action_sketch(action_sequence);
+    if action_sketch_contains_unverified_side_effect(&new_sketch) {
+        return Ok(MaybeExtracted::Skipped {
+            reason: "unverified side-effectful action".into(),
+        });
+    }
 
     // Look at every skill in the same signature family. Phase 3
     // matches purely on `subgoal_signature`; Phase 4+5 layer in the
@@ -191,6 +197,67 @@ fn is_mergeable_project_local_draft(skill: &Skill) -> bool {
     skill.scope == SkillScope::ProjectLocal
         && skill.state == SkillState::Draft
         && !skill.edited_by_user
+}
+
+fn action_sketch_contains_unverified_side_effect(steps: &[ActionSketchStep]) -> bool {
+    steps.iter().any(|step| match step {
+        ActionSketchStep::ToolCall {
+            tool,
+            args,
+            expected_world_model_delta,
+            ..
+        } => {
+            expected_world_model_delta.changed_fields.is_empty()
+                && script_tool_args_have_obvious_side_effect(tool, args)
+        }
+        ActionSketchStep::SubSkill { .. } => false,
+        ActionSketchStep::Loop { body, .. } => action_sketch_contains_unverified_side_effect(body),
+    })
+}
+
+fn script_tool_args_have_obvious_side_effect(tool: &str, args: &Value) -> bool {
+    if !matches!(
+        tool,
+        "cdp_evaluate_script" | "evaluate_script" | "execute_script"
+    ) && !tool.ends_with("_evaluate_script")
+        && !tool.ends_with("_execute_script")
+    {
+        return false;
+    }
+
+    ["function", "script", "code"]
+        .iter()
+        .filter_map(|key| args.get(*key).and_then(Value::as_str))
+        .any(script_source_has_obvious_side_effect)
+}
+
+fn script_source_has_obvious_side_effect(source: &str) -> bool {
+    let source = source.to_ascii_lowercase();
+    [
+        ".click(",
+        ".dispatch_event(",
+        ".dispatchevent(",
+        ".submit(",
+        ".focus(",
+        ".blur(",
+        ".scroll",
+        ".setattribute(",
+        ".removeattribute(",
+        ".value =",
+        ".checked =",
+        ".selected =",
+        ".innerhtml =",
+        ".textcontent =",
+        "localstorage.setitem(",
+        "sessionstorage.setitem(",
+        "window.location",
+        "location.href",
+        "location =",
+        "history.pushstate(",
+        "history.replacestate(",
+    ]
+    .iter()
+    .any(|needle| source.contains(needle))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -384,10 +451,18 @@ mod tests {
     use crate::agent::world_model::WorldModel;
 
     fn fixture_recorded_step(tool: &str, body: &str) -> RecordedStep {
+        fixture_recorded_step_with_args(tool, serde_json::json!({"x": 1}), body)
+    }
+
+    fn fixture_recorded_step_with_args(
+        tool: &str,
+        arguments: serde_json::Value,
+        body: &str,
+    ) -> RecordedStep {
         let wm = WorldModel::default();
         RecordedStep {
             tool_name: tool.into(),
-            arguments: serde_json::json!({"x": 1}),
+            arguments,
             result_text: body.into(),
             world_model_pre: WorldModelSnapshot::from_world_model(&wm),
             world_model_post: WorldModelSnapshot::from_world_model(&wm),
@@ -474,6 +549,42 @@ mod tests {
         }
         // Index now has one entry, store has one file.
         assert_eq!(idx.read().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn skips_unverified_side_effectful_script_without_world_model_delta() {
+        let (_tmp, idx, store, ctx) = fixture_index_with_store();
+        let wm = WorldModel::default();
+        let m = fixture_milestone("open target");
+        let out = maybe_extract_skill(
+            &m,
+            &[fixture_recorded_step_with_args(
+                "cdp_evaluate_script",
+                serde_json::json!({
+                    "function": "() => document.querySelector('button')?.click()"
+                }),
+                "\"clicked\"",
+            )],
+            compute_subgoal_signature(&m.text, &wm),
+            &wm,
+            &idx,
+            &store,
+            &ctx,
+            Uuid::nil(),
+            "wfh",
+            1,
+            &[],
+        )
+        .await
+        .unwrap();
+
+        match out {
+            MaybeExtracted::Skipped { reason } => {
+                assert_eq!(reason, "unverified side-effectful action");
+            }
+            other => panic!("expected skipped extraction, got {:?}", other),
+        }
+        assert_eq!(idx.read().len(), 0);
     }
 
     #[tokio::test]

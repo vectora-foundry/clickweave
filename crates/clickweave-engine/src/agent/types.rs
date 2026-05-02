@@ -323,8 +323,9 @@ pub struct AgentConfig {
     /// per-call whether the focus is redundant and should be suppressed
     /// anyway.
     pub allow_focus_window: bool,
-    /// Maximum elements to render in the state block (D19).
-    /// Defaults to 300 to match `cdp_find_elements { max_results: 300 }`.
+    /// Maximum elements to render in the state block (D19). The runner may
+    /// fetch a larger CDP set for fingerprints/inventory, but the prompt
+    /// renders a bounded slice so one page cannot dominate the context window.
     pub state_block_max_elements: usize,
     /// Recent-N window for compaction (D12).
     pub recent_n: usize,
@@ -404,7 +405,7 @@ impl Default for AgentConfig {
             build_workflow: true,
             consecutive_destructive_cap: DEFAULT_CONSECUTIVE_DESTRUCTIVE_CAP,
             allow_focus_window: false,
-            state_block_max_elements: 300,
+            state_block_max_elements: crate::agent::render::DEFAULT_MAX_ELEMENTS,
             recent_n: 6,
             uncertainty_threshold: 0.75,
             episodic_enabled: true,
