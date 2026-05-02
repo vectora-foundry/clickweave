@@ -59,7 +59,7 @@ For Electron/Chrome apps, Clickweave connects to the app's remote debugging port
 
 Only one CDP connection at a time is supported; switching apps requires disconnect/reconnect. The deterministic executor ensures a live CDP session before CDP node dispatch. The state-spine agent runner auto-connects after successful `launch_app` / `focus_window` calls for Electron/Chrome targets and then refreshes the client-side tool cache so `has_tool()` reflects server-side availability.
 
-The agent's LLM-visible tool list is stable for the run. `run_agent_workflow` seeds it once from `mcp.tools_as_openai()`, and `StateRunner::run` appends only the harness-local completion/replan pseudo-tools. Later `refresh_server_tool_list()` calls update `has_tool()` for observation gates, not the list passed to the LLM.
+The agent's LLM-visible tool list is stable for the run. `run_agent_workflow` seeds it once from `mcp.tools_as_openai()`, and `StateRunner::run` appends harness-local pseudo-tools such as `get_current_datetime`, completion/replan, task-state mutation, and skill invocation tools. Later `refresh_server_tool_list()` calls update `has_tool()` for observation gates, not the list passed to the LLM.
 
 ### Concurrency
 
@@ -100,6 +100,8 @@ Client sends JSON-RPC 2.0 messages and parses server responses into typed struct
 ```
 
 Used by the deterministic executor and by the agent entry point when seeding the LLM-visible MCP tool surface at run start.
+
+The state-spine agent then appends harness-local pseudo-tools to that OpenAI-shaped list. These pseudo-tools are not returned by the MCP server and must not be sent over JSON-RPC; the runner intercepts them before MCP dispatch. `get_current_datetime` is the current read-only example.
 
 ## State-Spine Agent MCP Use
 

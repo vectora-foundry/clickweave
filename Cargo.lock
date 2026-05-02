@@ -399,6 +399,7 @@ dependencies = [
  "clickweave-core",
  "clickweave-llm",
  "clickweave-mcp",
+ "iana-time-zone",
  "notify",
  "parking_lot",
  "rusqlite",

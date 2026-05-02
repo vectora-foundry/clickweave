@@ -13,6 +13,7 @@ mod prompt;
 mod recovery;
 mod render;
 mod runner;
+mod time_oracle;
 // Phase 2 (episodic memory) integration tests construct
 // `WorldModelSnapshot`, `StepRecord`, and `TaskState` values from
 // outside the crate, so these modules surface as `pub mod`. The

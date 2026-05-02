@@ -71,7 +71,7 @@ The state-spine types live in focused modules under `crates/clickweave-engine/sr
 - `TaskState` (`task_state.rs`) — `{ goal, subgoal_stack: Vec<Subgoal>, watch_slots: Vec<WatchSlot>, hypotheses, phase, milestones }`. The stack is flat (D4); watch-slot names are a fixed enum `{ PendingModal, PendingAuth, PendingFocusShift }` (D13).
 - `Phase` (`phase.rs`) — `{ Exploring, Executing, Recovering }`. Derived from `PhaseSignals { stack_depth, consecutive_errors, last_replan_step, current_step }` via the pure `phase::infer` function. Precedence: `Recovering > Executing > Exploring`. Harness-inferred; the LLM never authors it (D5).
 - `AgentTurn` (`runner.rs`) — the batched single-pass LLM output: `{ mutations: Vec<TaskStateMutation>, action: AgentAction }`. Mutations apply in order before the action dispatches (D7).
-- `AgentAction` — `ToolCall { tool_name, arguments, tool_call_id } | InvokeSkill { skill_id, version, parameters } | AgentDone { summary } | AgentReplan { reason }`.
+- `AgentAction` — `ToolCall { tool_name, arguments, tool_call_id } | InvokeSkill { skill_id, version, parameters } | AgentDone { summary } | AgentReplan { reason }`. `get_current_datetime` is a harness-local observation pseudo-tool represented as `ToolCall` and intercepted before MCP dispatch.
 - `TaskStateMutation` — the typed pseudo-tools: `PushSubgoal`, `CompleteSubgoal`, `SetWatchSlot`, `ClearWatchSlot`, `RecordHypothesis`, `RefuteHypothesis` (D10). Never dispatched to MCP.
 - `StepRecord` / `BoundaryKind` (`step_record.rs`) — boundary snapshots written to `events.jsonl` at terminal events, `CompleteSubgoal` mutations, and `Recovering → Executing` transitions (D8). Feeder for Spec 2's episodic memory layer.
 
@@ -119,7 +119,7 @@ Each `run_agent` call carries an optional `anchor_node_id` and a `prior_turns` l
 
 ### Agent UI Projection
 
-`AgentState.steps: Vec<AgentStep>` and `AgentCommand` remain the current frontend projection while Spec 3 surfaces are landing. `StateRunner` writes `AgentStep` records alongside its native `StepRecord` / `AgentTurn` representations so existing UI panels can render the step timeline until the live trace surface owns that display path. This is an implementation bridge, not a backward-compatibility contract.
+`AgentState.steps: Vec<AgentStep>` and `AgentCommand` remain the current frontend projection while Spec 3 surfaces are landing. `StateRunner` writes `AgentStep` records alongside its native `StepRecord` / `AgentTurn` representations so existing UI panels can render the step timeline until the live trace surface owns that display path. This is an implementation bridge, not a backward-compatibility contract. Harness-local observations such as `get_current_datetime` are recorded as tool-call steps but remain observation-only and never become workflow graph nodes.
 
 ### Tool Exposure
 
@@ -127,7 +127,7 @@ The tool list passed to the LLM is stable across the lifetime of a run. All tool
 
 **Rationale.** Mid-conversation changes to the tool list invalidate every prior prompt-cache prefix. Exposing the superset up-front trades an occasional wasted tool-call turn for a stable prompt prefix and higher cache hit rates across the run. This matches how modern agent runtimes handle tool surfaces and pairs with D6 / D18 — the system prompt and the user-turn state block are both designed to keep the cacheable prefix stable.
 
-**Implications for contributors.** Do not add code paths that mutate the tool list mid-run. New tools should be exposed at run start via `mcp.tools_as_openai()` in `agent/mod.rs`. If a new capability genuinely needs runtime activation, prefer a guard inside the tool handler over refreshing the list. The typed pseudo-tools (`push_subgoal`, `complete_subgoal`, `set_watch_slot`, `clear_watch_slot`, `record_hypothesis`, `refute_hypothesis`) live in the `AgentTurn` output schema rather than the MCP tool list, preserving the stable-tool-surface invariant (D10).
+**Implications for contributors.** Do not add code paths that mutate the tool list mid-run. New MCP-backed tools should be exposed at run start via `mcp.tools_as_openai()` in `agent/mod.rs`. Harness-local tools that must not depend on the external MCP server should be added as stable pseudo-tools and intercepted by the runner. If a new capability genuinely needs runtime activation, prefer a guard inside the tool handler over refreshing the list. The typed mutation pseudo-tools (`push_subgoal`, `complete_subgoal`, `set_watch_slot`, `clear_watch_slot`, `record_hypothesis`, `refute_hypothesis`) live in the `AgentTurn` output schema rather than the MCP tool list; action pseudo-tools such as `get_current_datetime`, `agent_done`, `agent_replan`, and `invoke_skill` are appended once at run start, preserving the stable-tool-surface invariant (D10).
 
 ### Events
 

@@ -49,8 +49,10 @@ pub(crate) struct CdpPageObservation {
 
 /// The one action an `AgentTurn` must carry (D10).
 ///
-/// `ToolCall` dispatches to MCP; `AgentDone` / `AgentReplan` are harness-local
-/// pseudo-tools that never reach MCP.
+/// `ToolCall` usually dispatches to MCP; harness-local observation pseudo-tools
+/// such as `get_current_datetime` are intercepted by `McpToolExecutor`.
+/// `AgentDone` / `AgentReplan` are harness-local pseudo-tools that never reach
+/// MCP.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentAction {
@@ -2024,6 +2026,7 @@ fn is_coordinate_primitive(name: &str) -> bool {
 /// a shared module is out of scope for Task 3a.2 (refactoring pass
 /// owned by 3b).
 const OBSERVATION_TOOLS: &[&str] = &[
+    crate::agent::time_oracle::TOOL_NAME,
     "take_screenshot",
     "list_apps",
     "list_windows",
@@ -3820,6 +3823,10 @@ impl<M: Mcp + ?Sized> ToolExecutor for McpToolExecutor<'_, M> {
         tool_name: &str,
         arguments: &serde_json::Value,
     ) -> Result<String, String> {
+        if tool_name == crate::agent::time_oracle::TOOL_NAME {
+            return Ok(crate::agent::time_oracle::current_datetime_json());
+        }
+
         let result = self
             .mcp
             .call_tool(tool_name, Some(arguments.clone()))
@@ -3836,6 +3843,59 @@ impl<M: Mcp + ?Sized> ToolExecutor for McpToolExecutor<'_, M> {
         } else {
             Ok(text)
         }
+    }
+}
+
+#[cfg(test)]
+mod datetime_oracle_executor_tests {
+    use super::*;
+    use crate::executor::Mcp;
+    use clickweave_mcp::ToolCallResult;
+    use serde_json::{Value, json};
+
+    struct PanicMcp;
+
+    impl Mcp for PanicMcp {
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: Option<Value>,
+        ) -> anyhow::Result<ToolCallResult> {
+            panic!("date/time oracle must be answered by the harness before MCP dispatch");
+        }
+
+        fn has_tool(&self, _name: &str) -> bool {
+            false
+        }
+
+        fn tools_as_openai(&self) -> Vec<Value> {
+            Vec::new()
+        }
+
+        async fn refresh_server_tool_list(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn get_current_datetime_is_intercepted_before_mcp() {
+        let executor = McpToolExecutor { mcp: &PanicMcp };
+
+        let body = executor
+            .call_tool(crate::agent::time_oracle::TOOL_NAME, &json!({}))
+            .await
+            .expect("oracle response");
+        let value: Value = serde_json::from_str(&body).expect("oracle JSON");
+
+        assert_eq!(value["kind"], "current_datetime");
+        assert_eq!(value["source"], "system_clock");
+        assert!(
+            value["utc_datetime"]
+                .as_str()
+                .is_some_and(|s| s.ends_with('Z'))
+        );
+        assert!(value["unix_millis"].as_i64().is_some());
+        assert!(value["timezone"]["offset"].as_str().is_some());
     }
 }
 
@@ -5986,6 +6046,25 @@ mod parse_agent_turn_tool_calls_tests {
                 assert_eq!(parameters, json!({"app": "Notes"}));
             }
             other => panic!("expected invoke_skill, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn maps_get_current_datetime_to_tool_call_action() {
+        let msg = Message::assistant_tool_calls(vec![tc("tc1", "get_current_datetime", json!({}))]);
+        let turn = parse_agent_turn(&msg).unwrap();
+        assert!(turn.mutations.is_empty());
+        match turn.action {
+            AgentAction::ToolCall {
+                tool_name,
+                arguments,
+                tool_call_id,
+            } => {
+                assert_eq!(tool_name, "get_current_datetime");
+                assert_eq!(arguments, json!({}));
+                assert_eq!(tool_call_id, "tc1");
+            }
+            other => panic!("expected get_current_datetime tool call, got {:?}", other),
         }
     }
 

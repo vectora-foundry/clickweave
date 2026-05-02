@@ -1053,6 +1053,7 @@ mod observation_union_tests {
         assert!(is_observation("cdp_find_elements", &annotations));
         assert!(is_observation("cdp_get_element_context", &annotations));
         assert!(is_observation("cdp_wait_for_page_change", &annotations));
+        assert!(is_observation("get_current_datetime", &annotations));
     }
 
     #[test]

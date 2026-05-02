@@ -329,6 +329,33 @@ pub fn agent_replan_tool() -> Value {
     })
 }
 
+/// Tool definition for the harness-local date/time oracle.
+///
+/// This is intentionally a pseudo-tool, not an MCP server tool: the harness
+/// answers it directly from the process clock so relative-date goals can ask
+/// for a current runtime fact without relying on model memory or stale prompt
+/// context.
+pub fn get_current_datetime_tool() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": crate::agent::time_oracle::TOOL_NAME,
+            "description": "Return the current UTC and local date/time from the Clickweave runtime. Use this before interpreting relative dates such as today, tomorrow, yesterday, or current time.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            },
+            "annotations": {
+                "readOnlyHint": true,
+                "destructiveHint": false,
+                "idempotentHint": false,
+                "openWorldHint": false
+            }
+        }
+    })
+}
+
 // --- Task-state mutation pseudo-tools ---
 //
 // These describe the `AgentTurn.mutations` surface to the LLM via the
@@ -493,10 +520,10 @@ pub fn invoke_skill_tool() -> Value {
 /// All harness-local pseudo-tools that the LLM may emit in a turn.
 ///
 /// Order is intentional: the action pseudo-tools (`agent_done`,
-/// `agent_replan`) come last so the LLM-facing tool list ends with the
-/// "terminate the loop" choices, while the mutations cluster together at
-/// the start of the pseudo-tool block. `invoke_skill` is appended after
-/// `agent_replan` so the tool-list prefix stays stable for prompt-cache
+/// `agent_replan`) remain near the end so the LLM-facing tool list still
+/// clusters the "terminate the loop" choices, while the mutations cluster
+/// together at the start of the pseudo-tool block. `invoke_skill` is appended
+/// after `agent_replan` so the tool-list prefix stays stable for prompt-cache
 /// compatibility across runs that toggle the skills layer.
 pub fn pseudo_tools() -> Vec<Value> {
     vec![
@@ -506,6 +533,7 @@ pub fn pseudo_tools() -> Vec<Value> {
         clear_watch_slot_tool(),
         record_hypothesis_tool(),
         refute_hypothesis_tool(),
+        get_current_datetime_tool(),
         agent_done_tool(),
         agent_replan_tool(),
         invoke_skill_tool(),
@@ -879,6 +907,29 @@ mod state_spine_prompt_tests {
             .as_array()
             .unwrap();
         assert!(required.iter().any(|r| r == "reason"));
+    }
+
+    #[test]
+    fn get_current_datetime_tool_is_read_only_and_takes_no_args() {
+        let tool = get_current_datetime_tool();
+        assert_eq!(tool["function"]["name"], "get_current_datetime");
+        assert_eq!(
+            tool["function"]["annotations"]["readOnlyHint"],
+            Value::Bool(true)
+        );
+        assert_eq!(
+            tool["function"]["annotations"]["destructiveHint"],
+            Value::Bool(false)
+        );
+        assert_eq!(
+            tool["function"]["parameters"]["additionalProperties"],
+            Value::Bool(false)
+        );
+        assert!(
+            tool["function"]["parameters"]["properties"]
+                .as_object()
+                .is_some_and(|o| o.is_empty())
+        );
     }
 
     #[test]
