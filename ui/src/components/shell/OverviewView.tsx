@@ -8,6 +8,7 @@ import { OverviewAssistantCard } from "./OverviewAssistantCard";
 import { StatsStrip } from "./StatsStrip";
 import { WorkflowRow } from "./WorkflowRow";
 import { SkillsPanel } from "../skills/SkillsPanel";
+import { SkillDetailView } from "../skills/SkillDetailView";
 
 /**
  * Overview view body composition. The Overview is the new primary
@@ -21,17 +22,32 @@ import { SkillsPanel } from "../skills/SkillsPanel";
 export function OverviewView() {
   const [skillsDrawerOpen, setSkillsDrawerOpen] = useState(false);
 
-  const { workflow, isNewWorkflow, agentStatus } = useStore(
+  const {
+    workflow,
+    projectPath,
+    isNewWorkflow,
+    agentStatus,
+    agentRunId,
+    selectedSkill,
+    storeTraces,
+    skillsGlobalParticipation,
+  } = useStore(
     useShallow((s) => ({
       workflow: s.workflow,
+      projectPath: s.projectPath,
       isNewWorkflow: s.isNewWorkflow,
       agentStatus: s.agentStatus,
+      agentRunId: s.agentRunId,
+      selectedSkill: s.selectedSkill,
+      storeTraces: s.storeTraces,
+      skillsGlobalParticipation: s.skillsGlobalParticipation,
     })),
   );
   const setAssistantSurface = useStore((s) => s.setAssistantSurface);
   const setCurrentView = useStore((s) => s.setCurrentView);
   const skipIntentEntry = useStore((s) => s.skipIntentEntry);
   const startAgent = useStore((s) => s.startAgent);
+  const loadSkillsForPanel = useStore((s) => s.loadSkillsForPanel);
 
   if (isNewWorkflow && workflow.nodes.length === 0) {
     return (
@@ -57,20 +73,50 @@ export function OverviewView() {
       <WorkflowRow />
       <StatsStrip onOpenSkillsManager={() => setSkillsDrawerOpen(true)} />
       {skillsDrawerOpen && (
-        <div className="fixed inset-y-0 right-0 z-30 flex w-[420px] flex-col border-l border-[var(--hairline-strong)] bg-[var(--oxide)] shadow-2xl">
+        <div className="fixed inset-y-0 right-0 z-30 flex w-[min(720px,100vw)] flex-col border-l border-[var(--hairline-strong)] bg-[var(--oxide)] shadow-2xl">
           <div className="flex items-center justify-between border-b border-[var(--hairline)] px-4 py-2">
             <h3 className="text-[12px] font-medium text-[var(--text-primary)]">
               Skills
             </h3>
             <button
+              type="button"
+              aria-label="Close skills manager"
               onClick={() => setSkillsDrawerOpen(false)}
               className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
             >
               ×
             </button>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="min-h-0 flex flex-1 overflow-hidden">
             <SkillsPanel />
+            <div className="min-w-0 flex-1 overflow-hidden bg-[var(--bg-panel)]">
+              {selectedSkill ? (
+                <SkillDetailView
+                  skillId={selectedSkill.id}
+                  version={selectedSkill.version}
+                  projectPath={projectPath}
+                  workflowName={workflow.name}
+                  workflowId={workflow.id}
+                  runId={agentRunId}
+                  storeTraces={storeTraces}
+                  onChanged={() =>
+                    loadSkillsForPanel({
+                      projectPath,
+                      workflowName: workflow.name,
+                      workflowId: workflow.id,
+                      includeGlobal: skillsGlobalParticipation,
+                      storeTraces,
+                    }).catch((e) =>
+                      console.error("Failed to reload skills panel", e),
+                    )
+                  }
+                />
+              ) : (
+                <div className="flex h-full items-center justify-center px-4 text-xs italic text-[var(--text-muted)]">
+                  No skill selected.
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

@@ -15,13 +15,33 @@ vi.mock("./OverviewAssistantCard", () => ({
   OverviewAssistantCard: () => <div data-testid="overview-assistant-card" />,
 }));
 vi.mock("./StatsStrip", () => ({
-  StatsStrip: () => <div data-testid="stats-strip" />,
+  StatsStrip: ({
+    onOpenSkillsManager,
+  }: {
+    onOpenSkillsManager: () => void;
+  }) => (
+    <div data-testid="stats-strip">
+      <button type="button" onClick={onOpenSkillsManager}>
+        Skills Manager
+      </button>
+    </div>
+  ),
 }));
 vi.mock("./WorkflowRow", () => ({
   WorkflowRow: () => <div data-testid="workflow-row" />,
 }));
-vi.mock("../skills/SkillsPanel", () => ({
-  SkillsPanel: () => <div data-testid="skills-panel" />,
+vi.mock("../skills/SkillDetailView", () => ({
+  SkillDetailView: ({
+    skillId,
+    version,
+  }: {
+    skillId: string;
+    version: number;
+  }) => (
+    <div data-testid="skill-detail-view">
+      {skillId} v{version}
+    </div>
+  ),
 }));
 
 import { OverviewView } from "./OverviewView";
@@ -91,5 +111,58 @@ describe("OverviewView walkthrough entry", () => {
     expect(
       screen.getByTestId("live-runtime-card").parentElement?.parentElement,
     ).toHaveClass("min-w-0");
+  });
+
+  it("shows skill details inside the Overview Skills Manager drawer after selection", () => {
+    useStore.setState({
+      isNewWorkflow: false,
+      selectedSkill: null,
+      drafts: [
+        {
+          id: "login-skill",
+          version: 1,
+          name: "Login Skill",
+          description: "Logs in to the app",
+          state: "draft",
+          scope: "project_local",
+          occurrence_count: 1,
+          success_rate: 1,
+          edited_by_user: false,
+        },
+      ],
+      confirmed: [],
+      promoted: [],
+      projectPath: "/tmp/project.clickweave",
+      storeTraces: true,
+      skillsGlobalParticipation: false,
+      workflow: {
+        ...useStore.getState().workflow,
+        id: "workflow-1",
+        name: "Workflow",
+        nodes: [
+          {
+            id: "node-1",
+            name: "Start",
+            node_type: { type: "Unknown" },
+            position: { x: 0, y: 0 },
+            enabled: true,
+            timeout_ms: null,
+            settle_ms: null,
+            retries: 0,
+            trace_level: "Minimal",
+            expected_outcome: null,
+          },
+        ],
+      },
+    });
+
+    render(<OverviewView />);
+
+    fireEvent.click(screen.getByRole("button", { name: /skills manager/i }));
+    fireEvent.click(screen.getByRole("button", { name: /login skillv1/i }));
+
+    expect(screen.getByTestId("skill-detail-view")).toHaveTextContent(
+      "login-skill v1",
+    );
   });
 });

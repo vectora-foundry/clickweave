@@ -1,6 +1,8 @@
+import { useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../../store/useAppStore";
 import { isAgentActive } from "../../store/slices/agentSlice";
+import { isWalkthroughCapturing } from "../../store/slices/walkthroughSlice";
 import { AssistantThread } from "./AssistantThread";
 
 /**
@@ -36,10 +38,26 @@ export function OverviewAssistantCard() {
       intent: s.workflow.intent,
     })),
   );
-  const startAgent = useStore((s) => s.startAgent);
 
   const live = isAgentActive(agentStatus, completionDisagreement);
   const goal = traceSubgoal || intent;
+  const sendInFlightRef = useRef(false);
+  const [sendInFlight, setSendInFlight] = useState(false);
+  const handleSendMessage = async (message: string) => {
+    if (sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
+    setSendInFlight(true);
+    try {
+      const state = useStore.getState();
+      if (isWalkthroughCapturing(state.walkthroughStatus)) {
+        await state.cancelWalkthrough();
+      }
+      await useStore.getState().startAgent(message);
+    } finally {
+      sendInFlightRef.current = false;
+      setSendInFlight(false);
+    }
+  };
 
   return (
     <section className="flex h-full min-w-0 flex-col overflow-hidden rounded-[var(--radius-card)] border border-[var(--hairline)] bg-[var(--oxide)]">
@@ -70,9 +88,10 @@ export function OverviewAssistantCard() {
         <AssistantThread
           error={assistantError}
           messages={messages}
-          onSendMessage={startAgent}
+          onSendMessage={handleSendMessage}
           showHeader={false}
           showClearIcon={true}
+          composerDisabled={sendInFlight}
         />
       </div>
     </section>

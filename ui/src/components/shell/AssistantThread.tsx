@@ -27,6 +27,8 @@ interface AssistantThreadProps {
   showHeader: boolean;
   /** Standalone trash icon at the top of the body (Overview card uses this — D14). */
   showClearIcon?: boolean;
+  /** Temporarily locks the composer while the caller prepares a run. */
+  composerDisabled?: boolean;
   /** Drawer wrapper's close handler. Required when `showHeader` is true. */
   onCloseDrawer?: () => void;
 }
@@ -37,6 +39,7 @@ export function AssistantThread({
   onSendMessage,
   showHeader,
   showClearIcon,
+  composerDisabled = false,
   onCloseDrawer,
 }: AssistantThreadProps) {
   const [input, setInput] = useState("");
@@ -85,6 +88,7 @@ export function AssistantThread({
   }, []);
 
   const handleSend = () => {
+    if (composerDisabled) return;
     const trimmed = input.trim();
     if (!trimmed) return;
     setInput("");
@@ -351,13 +355,14 @@ export function AssistantThread({
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
+                disabled={composerDisabled}
                 placeholder="Ask about your workflow..."
                 rows={2}
                 className="flex-1 resize-none rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none focus:border-[var(--accent-coral)]"
               />
               <button
                 onClick={handleSend}
-                disabled={!input.trim()}
+                disabled={composerDisabled || !input.trim()}
                 className="self-end rounded-lg bg-[var(--accent-coral)] px-3 py-2 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
               >
                 Send
