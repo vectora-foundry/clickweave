@@ -45,6 +45,9 @@ export function AppShell() {
   const agentNodeCount = useStore(
     (s) => s.workflow.nodes.filter((n) => n.source_run_id != null).length,
   );
+  const onIntentEmptyState = useStore(
+    (s) => s.isNewWorkflow && s.workflow.nodes.length === 0,
+  );
 
   const activeAmbiguity =
     ambiguityResolutions.find((r) => r.id === activeAmbiguityId) ?? null;
@@ -115,7 +118,7 @@ export function AppShell() {
           {currentView === "overview" ? <OverviewView /> : <CanvasView />}
         </main>
       </div>
-      <LogsBar />
+      {!onIntentEmptyState && <LogsBar />}
 
       <SettingsModal
         open={showSettings}

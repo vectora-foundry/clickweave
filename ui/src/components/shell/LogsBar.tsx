@@ -1,4 +1,4 @@
-import { Copy, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronUp, Copy, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../../store/useAppStore";
@@ -47,8 +47,15 @@ export function LogsBar() {
       <div className="flex h-9 items-center gap-2 border-b border-[var(--hairline)] px-3">
         <button
           onClick={toggle}
-          className="text-[11px] font-medium tracking-[0.06em] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+          aria-expanded={open}
+          aria-label={open ? "Collapse logs" : "Expand logs"}
+          className="flex items-center gap-1.5 text-[11px] font-medium tracking-[0.06em] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
         >
+          {open ? (
+            <ChevronDown size={12} strokeWidth={1.5} />
+          ) : (
+            <ChevronUp size={12} strokeWidth={1.5} />
+          )}
           Logs
         </button>
         <span className="font-mono text-[10px] text-[var(--text-muted)]">{logs.length}</span>
