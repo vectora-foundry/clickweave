@@ -10,6 +10,12 @@ export interface UiSlice {
   currentView: "overview" | "canvas";
   detailTab: DetailTab;
   sidebarCollapsed: boolean;
+  /**
+   * Collapsed state for the AppShell utility sidebar (Overview / Canvas
+   * nav). Distinct from `sidebarCollapsed`, which belongs to the
+   * Canvas-internal `NodePalette`.
+   */
+  utilitySidebarCollapsed: boolean;
   logsDrawerOpen: boolean;
   nodeSearch: string;
   showSettings: boolean;
@@ -53,6 +59,7 @@ export interface UiSlice {
   setCurrentView: (view: "overview" | "canvas") => void;
   setDetailTab: (tab: DetailTab) => void;
   toggleSidebar: () => void;
+  toggleUtilitySidebar: () => void;
   toggleLogsDrawer: () => void;
   setNodeSearch: (s: string) => void;
   setShowSettings: (show: boolean) => void;
@@ -71,6 +78,7 @@ export const createUiSlice: StateCreator<StoreState, [], [], UiSlice> = (set, ge
   currentView: "overview",
   detailTab: "setup" as DetailTab,
   sidebarCollapsed: false,
+  utilitySidebarCollapsed: false,
   logsDrawerOpen: false,
   nodeSearch: "",
   showSettings: false,
@@ -88,6 +96,8 @@ export const createUiSlice: StateCreator<StoreState, [], [], UiSlice> = (set, ge
   setCurrentView: (view) => set({ currentView: view }),
   setDetailTab: (tab) => set({ detailTab: tab }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+  toggleUtilitySidebar: () =>
+    set((s) => ({ utilitySidebarCollapsed: !s.utilitySidebarCollapsed })),
   toggleLogsDrawer: () => set((s) => ({ logsDrawerOpen: !s.logsDrawerOpen })),
   setNodeSearch: (s) => set({ nodeSearch: s }),
   setShowSettings: (show) => set({ showSettings: show }),

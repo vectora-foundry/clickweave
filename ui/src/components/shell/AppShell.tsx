@@ -113,7 +113,7 @@ export function AppShell() {
       <TitleBar />
       <VerdictBar />
       <div className="flex flex-1 overflow-hidden">
-        <Sidebar />
+        {!onIntentEmptyState && <Sidebar />}
         <main className="flex flex-1 flex-col overflow-hidden">
           {currentView === "overview" ? <OverviewView /> : <CanvasView />}
         </main>
