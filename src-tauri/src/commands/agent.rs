@@ -372,13 +372,55 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
     run_id: &str,
     event: &AgentEvent,
 ) {
+    let handled = match event {
+        AgentEvent::StepCompleted { .. }
+        | AgentEvent::NodeAdded { .. }
+        | AgentEvent::EdgeAdded { .. }
+        | AgentEvent::GoalComplete { .. }
+        | AgentEvent::Error { .. }
+        | AgentEvent::Warning { .. }
+        | AgentEvent::CdpConnected { .. }
+        | AgentEvent::StepFailed { .. }
+        | AgentEvent::SubAction { .. }
+        | AgentEvent::CompletionDisagreement { .. }
+        | AgentEvent::ConsecutiveDestructiveCapHit { .. }
+        | AgentEvent::CompletionDisagreementResolved { .. } => {
+            forward_lifecycle_agent_event(app, run_id, event)
+        }
+        AgentEvent::TaskStateChanged { .. }
+        | AgentEvent::WorldModelChanged { .. }
+        | AgentEvent::BoundaryRecordWritten { .. } => forward_state_agent_event(app, run_id, event),
+        AgentEvent::EpisodesRetrieved { .. }
+        | AgentEvent::EpisodeWritten { .. }
+        | AgentEvent::EpisodePromoted { .. } => forward_episodic_agent_event(app, run_id, event),
+        AgentEvent::SkillInvoked { .. }
+        | AgentEvent::SkillExtracted { .. }
+        | AgentEvent::SkillConfirmed { .. } => forward_skill_agent_event(app, run_id, event),
+    };
+    debug_assert!(handled, "agent event was classified but not forwarded");
+}
+
+fn emit_agent_event<R, S>(app: &tauri::AppHandle<R>, topic: &str, payload: S)
+where
+    R: tauri::Runtime,
+    S: Serialize + Clone,
+{
+    let _ = app.emit(topic, payload);
+}
+
+fn forward_lifecycle_agent_event<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    run_id: &str,
+    event: &AgentEvent,
+) -> bool {
     match event {
         AgentEvent::StepCompleted {
             step_index,
             tool_name,
             summary,
         } => {
-            let _ = app.emit(
+            emit_agent_event(
+                app,
                 "agent://step",
                 AgentStepPayload {
                     run_id: run_id.to_string(),
@@ -387,38 +429,49 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                     step_number: *step_index,
                 },
             );
+            true
         }
         AgentEvent::NodeAdded { node } => {
-            let _ = app.emit(
+            emit_agent_event(
+                app,
                 "agent://node_added",
                 serde_json::json!({ "run_id": run_id, "node": node }),
             );
+            true
         }
         AgentEvent::EdgeAdded { edge } => {
-            let _ = app.emit(
+            emit_agent_event(
+                app,
                 "agent://edge_added",
                 serde_json::json!({ "run_id": run_id, "edge": edge }),
             );
+            true
         }
         AgentEvent::GoalComplete { .. } => {
             // Terminal completion is emitted as agent://complete by the
             // main task after the agent loop finishes. This in-band
             // event is only used for durable tracing.
+            true
         }
         AgentEvent::Error { message } => {
-            let _ = app.emit(
+            emit_agent_event(
+                app,
                 "agent://error",
                 serde_json::json!({ "run_id": run_id, "message": message }),
             );
+            true
         }
         AgentEvent::Warning { message } => {
-            let _ = app.emit(
+            emit_agent_event(
+                app,
                 "agent://warning",
                 serde_json::json!({ "run_id": run_id, "message": message }),
             );
+            true
         }
         AgentEvent::CdpConnected { app_name, port } => {
-            let _ = app.emit(
+            emit_agent_event(
+                app,
                 "agent://cdp_connected",
                 serde_json::json!({
                     "run_id": run_id,
@@ -426,13 +479,15 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                     "port": port,
                 }),
             );
+            true
         }
         AgentEvent::StepFailed {
             step_index,
             tool_name,
             error,
         } => {
-            let _ = app.emit(
+            emit_agent_event(
+                app,
                 "agent://step_failed",
                 serde_json::json!({
                     "run_id": run_id,
@@ -441,9 +496,11 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                     "error": error,
                 }),
             );
+            true
         }
         AgentEvent::SubAction { tool_name, summary } => {
-            let _ = app.emit(
+            emit_agent_event(
+                app,
                 "agent://sub_action",
                 serde_json::json!({
                     "run_id": run_id,
@@ -451,13 +508,15 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                     "summary": summary,
                 }),
             );
+            true
         }
         AgentEvent::CompletionDisagreement {
             screenshot_b64,
             vlm_reasoning,
             agent_summary,
         } => {
-            let _ = app.emit(
+            emit_agent_event(
+                app,
                 "agent://completion_disagreement",
                 serde_json::json!({
                     "run_id": run_id,
@@ -466,12 +525,14 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                     "agent_summary": agent_summary,
                 }),
             );
+            true
         }
         AgentEvent::ConsecutiveDestructiveCapHit {
             recent_tool_names,
             cap,
         } => {
-            let _ = app.emit(
+            emit_agent_event(
+                app,
                 "agent://consecutive_destructive_cap_hit",
                 serde_json::json!({
                     "run_id": run_id,
@@ -479,17 +540,29 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                     "cap": cap,
                 }),
             );
+            true
         }
         // `CompletionDisagreementResolved` is emitted by the Tauri layer
         // (not the engine) so the agent loop never sends it through this
         // channel. Persisting it is handled in
         // `await_disagreement_resolution`.
-        AgentEvent::CompletionDisagreementResolved { .. } => {}
+        AgentEvent::CompletionDisagreementResolved { .. } => true,
+        _ => false,
+    }
+}
+
+fn forward_state_agent_event<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    run_id: &str,
+    event: &AgentEvent,
+) -> bool {
+    match event {
         AgentEvent::TaskStateChanged {
             run_id: event_run_id,
             task_state,
         } => {
-            let _ = app.emit(
+            emit_agent_event(
+                app,
                 "agent://task_state_changed",
                 serde_json::json!({
                     "run_id": run_id,
@@ -497,12 +570,14 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                     "task_state": task_state,
                 }),
             );
+            true
         }
         AgentEvent::WorldModelChanged {
             run_id: event_run_id,
             diff,
         } => {
-            let _ = app.emit(
+            emit_agent_event(
+                app,
                 "agent://world_model_changed",
                 serde_json::json!({
                     "run_id": run_id,
@@ -510,6 +585,7 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                     "diff": diff,
                 }),
             );
+            true
         }
         AgentEvent::BoundaryRecordWritten {
             run_id: event_run_id,
@@ -517,7 +593,8 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
             step_index,
             milestone_text,
         } => {
-            let _ = app.emit(
+            emit_agent_event(
+                app,
                 "agent://boundary_record_written",
                 serde_json::json!({
                     "run_id": run_id,
@@ -527,7 +604,18 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                     "milestone_text": milestone_text,
                 }),
             );
+            true
         }
+        _ => false,
+    }
+}
+
+fn forward_episodic_agent_event<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    run_id: &str,
+    event: &AgentEvent,
+) -> bool {
+    match event {
         // Spec 2 D33: episodic-memory events. The runner emits
         // `EpisodesRetrieved` when retrieval surfaces candidates; the
         // background `EpisodicWriter` task emits `EpisodeWritten`
@@ -543,7 +631,8 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
             episode_ids,
             scope_breakdown,
         } => {
-            let _ = app.emit(
+            emit_agent_event(
+                app,
                 "agent://episodes_retrieved",
                 serde_json::json!({
                     "run_id": run_id,
@@ -554,6 +643,7 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                     "scope_breakdown": scope_breakdown,
                 }),
             );
+            true
         }
         AgentEvent::EpisodeWritten {
             run_id: event_run_id,
@@ -562,7 +652,8 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
             scope,
             occurrence_count,
         } => {
-            let _ = app.emit(
+            emit_agent_event(
+                app,
                 "agent://episode_written",
                 serde_json::json!({
                     "run_id": run_id,
@@ -573,13 +664,15 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                     "occurrence_count": occurrence_count,
                 }),
             );
+            true
         }
         AgentEvent::EpisodePromoted {
             run_id: event_run_id,
             promoted_episode_ids,
             skipped_count,
         } => {
-            let _ = app.emit(
+            emit_agent_event(
+                app,
                 "agent://episode_promoted",
                 serde_json::json!({
                     "run_id": run_id,
@@ -588,14 +681,26 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                     "skipped_count": skipped_count,
                 }),
             );
+            true
         }
+        _ => false,
+    }
+}
+
+fn forward_skill_agent_event<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    run_id: &str,
+    event: &AgentEvent,
+) -> bool {
+    match event {
         AgentEvent::SkillInvoked {
             run_id: event_run_id,
             skill_id,
             version,
             parameter_count,
         } => {
-            let _ = app.emit(
+            emit_agent_event(
+                app,
                 "agent://skill_invoked",
                 serde_json::json!({
                     "run_id": run_id,
@@ -605,6 +710,7 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                     "parameter_count": parameter_count,
                 }),
             );
+            true
         }
         AgentEvent::SkillExtracted {
             run_id: event_run_id,
@@ -613,7 +719,8 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
             state,
             scope,
         } => {
-            let _ = app.emit(
+            emit_agent_event(
+                app,
                 "agent://skill_extracted",
                 serde_json::json!({
                     "run_id": run_id,
@@ -624,13 +731,15 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                     "scope": scope,
                 }),
             );
+            true
         }
         AgentEvent::SkillConfirmed {
             run_id: event_run_id,
             skill_id,
             version,
         } => {
-            let _ = app.emit(
+            emit_agent_event(
+                app,
                 "agent://skill_confirmed",
                 serde_json::json!({
                     "run_id": run_id,
@@ -639,7 +748,9 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
                     "version": version,
                 }),
             );
+            true
         }
+        _ => false,
     }
 }
 

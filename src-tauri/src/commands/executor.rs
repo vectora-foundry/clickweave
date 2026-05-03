@@ -72,11 +72,8 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
     storage.set_persistent(persist_traces);
     let project_path = request.project_path.map(|p| project_dir(&p));
 
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<ExecutorEvent>(256);
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel::<ExecutorEvent>(256);
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<ExecutorCommand>(8);
-
-    let emit_handle = app.clone();
-    let cleanup_handle = emit_handle.clone();
 
     let mcp_binary_path =
         crate::mcp_resolve::resolve_mcp_binary().map_err(|e| CommandError::mcp(format!("{e}")))?;
@@ -114,121 +111,23 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
         guard.task_handle = Some(task_handle);
     }
 
+    spawn_executor_event_forwarder(app.clone(), event_rx);
+
+    Ok(())
+}
+
+fn spawn_executor_event_forwarder(
+    emit_handle: tauri::AppHandle,
+    mut event_rx: tokio::sync::mpsc::Receiver<ExecutorEvent>,
+) {
+    let cleanup_handle = emit_handle.clone();
     tauri::async_runtime::spawn(async move {
         let mut saw_idle = false;
         while let Some(event) = event_rx.recv().await {
             if matches!(event, ExecutorEvent::StateChanged(ExecutorState::Idle)) {
                 saw_idle = true;
             }
-            let emit_result = match event {
-                ExecutorEvent::Log(msg) | ExecutorEvent::Error(msg) => {
-                    emit_handle.emit("executor://log", LogPayload { message: msg })
-                }
-                ExecutorEvent::StateChanged(state) => emit_handle.emit(
-                    "executor://state",
-                    StatePayload {
-                        state: match state {
-                            ExecutorState::Idle => "idle".to_owned(),
-                            ExecutorState::Running => "running".to_owned(),
-                        },
-                    },
-                ),
-                ExecutorEvent::NodeStarted(id) => emit_handle.emit(
-                    "executor://node_started",
-                    NodePayload {
-                        node_id: id.to_string(),
-                    },
-                ),
-                ExecutorEvent::NodeCompleted(id) => emit_handle.emit(
-                    "executor://node_completed",
-                    NodePayload {
-                        node_id: id.to_string(),
-                    },
-                ),
-                ExecutorEvent::NodeFailed(id, err) => emit_handle.emit(
-                    "executor://node_failed",
-                    NodeErrorPayload {
-                        node_id: id.to_string(),
-                        error: err,
-                    },
-                ),
-                ExecutorEvent::WorkflowCompleted => {
-                    emit_handle.emit("executor://workflow_completed", ())
-                }
-                ExecutorEvent::ChecksCompleted(verdicts) => {
-                    emit_handle.emit("executor://checks_completed", verdicts)
-                }
-                ExecutorEvent::RunCreated(_, _) => Ok(()),
-                ExecutorEvent::SupervisionPassed {
-                    node_id,
-                    node_name,
-                    summary,
-                } => emit_handle.emit(
-                    "executor://supervision_passed",
-                    SupervisionPassedPayload {
-                        node_id: node_id.to_string(),
-                        node_name,
-                        summary,
-                    },
-                ),
-                ExecutorEvent::SupervisionPaused {
-                    node_id,
-                    node_name,
-                    finding,
-                    screenshot,
-                } => emit_handle.emit(
-                    "executor://supervision_paused",
-                    SupervisionPausedPayload {
-                        node_id: node_id.to_string(),
-                        node_name,
-                        finding,
-                        screenshot,
-                    },
-                ),
-                ExecutorEvent::AmbiguityResolved {
-                    node_id,
-                    target,
-                    candidates,
-                    chosen_uid,
-                    reasoning,
-                    viewport_width,
-                    viewport_height,
-                    screenshot_path,
-                    screenshot_base64,
-                } => emit_handle.emit(
-                    "executor://ambiguity_resolved",
-                    AmbiguityResolvedPayload {
-                        node_id: node_id.to_string(),
-                        target,
-                        candidates: candidates
-                            .into_iter()
-                            .map(|c| CandidateViewPayload {
-                                uid: c.uid,
-                                snippet: c.snippet,
-                                rect: c.rect.map(|r| CandidateRectPayload {
-                                    x: r.x,
-                                    y: r.y,
-                                    width: r.width,
-                                    height: r.height,
-                                }),
-                            })
-                            .collect(),
-                        chosen_uid,
-                        reasoning,
-                        viewport_width,
-                        viewport_height,
-                        screenshot_path,
-                        screenshot_base64,
-                    },
-                ),
-                ExecutorEvent::NodeCancelled(id) => emit_handle.emit(
-                    "executor://node_cancelled",
-                    NodePayload {
-                        node_id: id.to_string(),
-                    },
-                ),
-            };
-            if let Err(e) = emit_result {
+            if let Err(e) = emit_executor_event(&emit_handle, event) {
                 warn!("Failed to emit executor event to UI: {}", e);
             }
         }
@@ -251,8 +150,126 @@ pub async fn run_workflow(app: tauri::AppHandle, request: RunRequest) -> Result<
         guard.cmd_tx = None;
         guard.task_handle = None;
     });
+}
 
-    Ok(())
+fn emit_executor_event(emit_handle: &tauri::AppHandle, event: ExecutorEvent) -> tauri::Result<()> {
+    match event {
+        ExecutorEvent::Log(msg) | ExecutorEvent::Error(msg) => {
+            emit_handle.emit("executor://log", LogPayload { message: msg })
+        }
+        ExecutorEvent::StateChanged(state) => {
+            emit_handle.emit("executor://state", StatePayload::from_state(state))
+        }
+        ExecutorEvent::NodeStarted(id) => emit_handle.emit(
+            "executor://node_started",
+            NodePayload {
+                node_id: id.to_string(),
+            },
+        ),
+        ExecutorEvent::NodeCompleted(id) => emit_handle.emit(
+            "executor://node_completed",
+            NodePayload {
+                node_id: id.to_string(),
+            },
+        ),
+        ExecutorEvent::NodeFailed(id, err) => emit_handle.emit(
+            "executor://node_failed",
+            NodeErrorPayload {
+                node_id: id.to_string(),
+                error: err,
+            },
+        ),
+        ExecutorEvent::WorkflowCompleted => emit_handle.emit("executor://workflow_completed", ()),
+        ExecutorEvent::ChecksCompleted(verdicts) => {
+            emit_handle.emit("executor://checks_completed", verdicts)
+        }
+        ExecutorEvent::RunCreated(_, _) => Ok(()),
+        ExecutorEvent::SupervisionPassed {
+            node_id,
+            node_name,
+            summary,
+        } => emit_handle.emit(
+            "executor://supervision_passed",
+            SupervisionPassedPayload {
+                node_id: node_id.to_string(),
+                node_name,
+                summary,
+            },
+        ),
+        ExecutorEvent::SupervisionPaused {
+            node_id,
+            node_name,
+            finding,
+            screenshot,
+        } => emit_handle.emit(
+            "executor://supervision_paused",
+            SupervisionPausedPayload {
+                node_id: node_id.to_string(),
+                node_name,
+                finding,
+                screenshot,
+            },
+        ),
+        ExecutorEvent::AmbiguityResolved {
+            node_id,
+            target,
+            candidates,
+            chosen_uid,
+            reasoning,
+            viewport_width,
+            viewport_height,
+            screenshot_path,
+            screenshot_base64,
+        } => emit_handle.emit(
+            "executor://ambiguity_resolved",
+            AmbiguityResolvedPayload {
+                node_id: node_id.to_string(),
+                target,
+                candidates: candidates
+                    .into_iter()
+                    .map(CandidateViewPayload::from)
+                    .collect(),
+                chosen_uid,
+                reasoning,
+                viewport_width,
+                viewport_height,
+                screenshot_path,
+                screenshot_base64,
+            },
+        ),
+        ExecutorEvent::NodeCancelled(id) => emit_handle.emit(
+            "executor://node_cancelled",
+            NodePayload {
+                node_id: id.to_string(),
+            },
+        ),
+    }
+}
+
+impl StatePayload {
+    fn from_state(state: ExecutorState) -> Self {
+        Self {
+            state: match state {
+                ExecutorState::Idle => "idle".to_owned(),
+                ExecutorState::Running => "running".to_owned(),
+            },
+        }
+    }
+}
+
+impl From<clickweave_engine::CandidateView> for CandidateViewPayload {
+    fn from(candidate: clickweave_engine::CandidateView) -> Self {
+        Self {
+            uid: candidate.uid,
+            snippet: candidate.snippet,
+            rect: candidate.rect.map(|r| CandidateRectPayload {
+                x: r.x,
+                y: r.y,
+                width: r.width,
+                height: r.height,
+            }),
+        }
+    }
 }
 
 #[tauri::command]

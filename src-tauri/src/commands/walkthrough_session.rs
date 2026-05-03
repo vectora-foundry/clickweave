@@ -13,8 +13,8 @@ use clickweave_core::walkthrough::session::{
     CDP_RETRIEVE_CLICK_JS, CDP_RETRIEVE_HOVERS_JS, CDP_STOP_HOVER_JS, CachedApp,
 };
 use clickweave_core::walkthrough::{
-    ScreenshotKind, WalkthroughEvent, WalkthroughEventKind, WalkthroughSessionRuntime,
-    WalkthroughStatus, WalkthroughStorage,
+    ScreenshotKind, ScreenshotMeta, WalkthroughEvent, WalkthroughEventKind,
+    WalkthroughSessionRuntime, WalkthroughStatus, WalkthroughStorage,
 };
 use clickweave_mcp::McpClient;
 use tauri::{Emitter, Manager};
@@ -79,6 +79,25 @@ struct CdpClickRequest {
     selected_page_url: Option<String>,
     click_event_id: Uuid,
     click_timestamp: u64,
+}
+
+#[derive(Default)]
+struct CaptureFocusState {
+    last_pid: i32,
+    self_focused: bool,
+}
+
+struct ClickEnrichmentSummary {
+    screenshot_path: Option<String>,
+    screenshot_meta: Option<ScreenshotMeta>,
+    ax_label_data: Option<(String, Option<String>)>,
+    has_actionable_ax: bool,
+}
+
+enum CdpConnectOutcome {
+    Ready,
+    Cancelled,
+    Failed(String),
 }
 
 // CachedApp is imported from clickweave_core::walkthrough::session.
@@ -317,30 +336,12 @@ pub(super) async fn process_capture_events(
     // Spawn a background task that continuously captures the region under the
     // cursor. Aborted when the event loop exits.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    let cursor_poll_handle = {
-        let buf = screenshot_buffer.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                let buf2 = buf.clone();
-                let _ = tokio::task::spawn_blocking(move || {
-                    let (cx, cy) = crate::platform::get_cursor_position();
-                    if let Some(shot) = crate::platform::capture_cursor_region(cx, cy)
-                        && let Ok(mut guard) = buf2.write()
-                    {
-                        *guard = Some(Arc::new(shot));
-                    }
-                })
-                .await;
-            }
-        })
-    };
+    let cursor_poll_handle = spawn_cursor_polling(screenshot_buffer.clone());
 
     // Cache PID → app info to avoid repeated lookups.
     let mut app_cache: HashMap<i32, CachedApp> = HashMap::new();
     let app_kind_cache: Arc<Mutex<HashMap<i32, AppKind>>> = Arc::new(Mutex::new(HashMap::new()));
-    let mut last_pid: i32 = 0;
-    let mut self_focused = false;
+    let mut focus_state = CaptureFocusState::default();
 
     if let Some(ref mcp) = mcp {
         populate_app_cache(mcp, &mut app_cache).await;
@@ -348,102 +349,33 @@ pub(super) async fn process_capture_events(
 
     // Spawn the sequential CDP click consumer.  It processes requests in FIFO
     // order so each shift() retrieves the entry that matches the system click.
-    let cdp_consumer_handle = {
-        let mcp_for_cdp = mcp.clone();
-        let app_for_cdp = app.clone();
-        let storage_for_cdp = storage.clone();
-        let dir_for_cdp = session_dir.clone();
-        tokio::spawn(async move {
-            let mut rx = cdp_rx;
-            while let Some(req) = rx.recv().await {
-                if let Some(ref mcp) = mcp_for_cdp {
-                    cdp_retrieve_click(
-                        mcp,
-                        req.port,
-                        req.selected_page_url.as_deref(),
-                        &app_for_cdp,
-                        &storage_for_cdp,
-                        &dir_for_cdp,
-                        req.click_event_id,
-                        req.click_timestamp,
-                    )
-                    .await;
-                }
-            }
-        })
-    };
+    let cdp_consumer_handle = spawn_cdp_click_consumer(
+        mcp.clone(),
+        app.clone(),
+        storage.clone(),
+        session_dir.clone(),
+        cdp_rx,
+    );
 
-    'event_loop: loop {
-        // Drain completed background tasks and wait for the next capture event.
-        let capture = loop {
-            tokio::select! {
-                biased;
-                _ = cancel.changed() => break 'event_loop,
-                Some(result) = bg_tasks.join_next() => {
-                    if let Err(e) = result {
-                        tracing::warn!("Background enrichment task panicked: {e}");
-                    }
-                    continue;
-                }
-                msg = event_rx.recv() => match msg {
-                    Some(c) => break c,
-                    None => break 'event_loop,
-                },
-            }
-        };
+    while let Some(capture) = next_capture_event(&mut event_rx, &mut cancel, &mut bg_tasks).await {
         // Detect app focus changes.
-        if capture.target_pid != 0 && capture.target_pid != last_pid {
-            let app_name = resolve_app_name(capture.target_pid, &mcp, &mut app_cache).await;
-
-            // Skip events targeting our own app (recording bar clicks, etc.).
-            // We track focus but don't emit the AppFocused event for ourselves.
-            if app_name == SELF_APP_NAME {
-                last_pid = capture.target_pid;
-                self_focused = true;
-                continue;
-            }
-
-            // Classify the app's UI framework (Chrome, Electron, or Native).
-            let app_kind = {
-                let mut cache = app_kind_cache.lock().unwrap();
-                if let Some(&cached_kind) = cache.get(&capture.target_pid) {
-                    cached_kind
-                } else {
-                    let bundle_id = app_cache
-                        .get(&capture.target_pid)
-                        .and_then(|c| c.bundle_id.as_deref());
-                    let bundle_path = bundle_path_from_pid(capture.target_pid);
-                    let kind = classify_app(bundle_id, bundle_path.as_deref());
-                    if kind != AppKind::Native {
-                        tracing::info!(
-                            "App '{}' (PID {}) classified as {:?}",
-                            app_name,
-                            capture.target_pid,
-                            kind,
-                        );
-                    }
-                    cache.insert(capture.target_pid, kind);
-                    kind
-                }
-            };
-
-            let focus_event = WalkthroughEvent {
-                id: Uuid::new_v4(),
-                timestamp: capture.timestamp,
-                kind: WalkthroughEventKind::AppFocused {
-                    app_name: app_name.clone(),
-                    pid: capture.target_pid,
-                    window_title: None,
-                    app_kind,
-                },
-            };
-            persist_and_emit(&app, &storage, &session_dir, &focus_event);
-            last_pid = capture.target_pid;
-            self_focused = false;
+        if handle_capture_focus_change(
+            &capture,
+            &mcp,
+            &mut app_cache,
+            &app_kind_cache,
+            &mut focus_state,
+            &app,
+            &storage,
+            &session_dir,
+        )
+        .await
+        {
+            continue;
         }
 
         // Skip events while our own app is focused.
-        if self_focused {
+        if focus_state.self_focused {
             continue;
         }
 
@@ -471,57 +403,25 @@ pub(super) async fn process_capture_events(
                 // Persist the click event immediately so it's never lost.
                 persist_and_emit(&app, &storage, &session_dir, &click_event);
 
-                // Spawn enrichment (screenshot + accessibility + VLM) as a
-                // background task so the event loop stays responsive.
-                // Only spawn enrichment if MCP is available.
-                if let Some(ref mcp_arc) = mcp {
-                    let task_app_name = app_cache.get(&capture.target_pid).map(|c| c.name.clone());
-
-                    // Queue CDP click retrieval (processed sequentially to
-                    // preserve FIFO ordering with the JS click listener).
-                    if let Some(app_state) = task_app_name
-                        .as_deref()
-                        .and_then(|name| cdp_state.get(name))
-                    {
-                        let _ = cdp_tx.send(CdpClickRequest {
-                            port: app_state.port,
-                            selected_page_url: app_state.selected_page_url.clone(),
-                            click_event_id: click_event.id,
-                            click_timestamp: capture.timestamp,
-                        });
-                    }
-
-                    let task_mcp = mcp_arc.clone();
-                    let task_vlm = vlm_backend.clone();
-                    let task_app = app.clone();
-                    let task_storage = storage.clone();
-                    let task_dir = session_dir.clone();
-                    let ts = capture.timestamp;
-                    let task_kind_cache = app_kind_cache.clone();
-                    let task_pid = capture.target_pid;
+                spawn_click_enrichment(
+                    &mcp,
+                    &vlm_backend,
+                    &cdp_state,
+                    &cdp_tx,
+                    &mut bg_tasks,
+                    &app_cache,
+                    &app_kind_cache,
+                    &app,
+                    &storage,
+                    &session_dir,
+                    &click_event,
+                    capture.target_pid,
+                    capture.timestamp,
+                    x,
+                    y,
                     #[cfg(any(target_os = "macos", target_os = "windows"))]
-                    let task_prehover = screenshot_buffer.read().ok().and_then(|g| g.clone());
-
-                    bg_tasks.spawn(async move {
-                        enrich_click_background(
-                            task_mcp,
-                            task_vlm,
-                            task_app,
-                            task_storage,
-                            task_dir,
-                            task_app_name,
-                            x,
-                            y,
-                            ts,
-                            VLM_CALL_TIMEOUT,
-                            task_kind_cache,
-                            task_pid,
-                            #[cfg(any(target_os = "macos", target_os = "windows"))]
-                            task_prehover,
-                        )
-                        .await;
-                    });
-                }
+                    &screenshot_buffer,
+                );
 
                 continue;
             }
@@ -586,6 +486,221 @@ pub(super) async fn process_capture_events(
     }
 
     tracing::info!("Walkthrough capture event loop ended");
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn spawn_cursor_polling(screenshot_buffer: ScreenshotBuffer) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            let buf = screenshot_buffer.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let (cx, cy) = crate::platform::get_cursor_position();
+                if let Some(shot) = crate::platform::capture_cursor_region(cx, cy)
+                    && let Ok(mut guard) = buf.write()
+                {
+                    *guard = Some(Arc::new(shot));
+                }
+            })
+            .await;
+        }
+    })
+}
+
+fn spawn_cdp_click_consumer(
+    mcp: Option<Arc<McpClient>>,
+    app: tauri::AppHandle,
+    storage: WalkthroughStorage,
+    session_dir: std::path::PathBuf,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<CdpClickRequest>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(req) = rx.recv().await {
+            if let Some(ref mcp) = mcp {
+                cdp_retrieve_click(
+                    mcp,
+                    req.port,
+                    req.selected_page_url.as_deref(),
+                    &app,
+                    &storage,
+                    &session_dir,
+                    req.click_event_id,
+                    req.click_timestamp,
+                )
+                .await;
+            }
+        }
+    })
+}
+
+async fn next_capture_event(
+    event_rx: &mut tokio::sync::mpsc::UnboundedReceiver<CaptureEvent>,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+    bg_tasks: &mut tokio::task::JoinSet<()>,
+) -> Option<CaptureEvent> {
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancel.changed() => return None,
+            Some(result) = bg_tasks.join_next() => {
+                if let Err(e) = result {
+                    tracing::warn!("Background enrichment task panicked: {e}");
+                }
+            }
+            msg = event_rx.recv() => return msg,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_capture_focus_change(
+    capture: &CaptureEvent,
+    mcp: &Option<Arc<McpClient>>,
+    app_cache: &mut HashMap<i32, CachedApp>,
+    app_kind_cache: &Arc<Mutex<HashMap<i32, AppKind>>>,
+    focus_state: &mut CaptureFocusState,
+    app: &tauri::AppHandle,
+    storage: &WalkthroughStorage,
+    session_dir: &std::path::Path,
+) -> bool {
+    if capture.target_pid == 0 || capture.target_pid == focus_state.last_pid {
+        return false;
+    }
+
+    let app_name = resolve_app_name(capture.target_pid, mcp, app_cache).await;
+
+    // Skip events targeting our own app (recording bar clicks, etc.).
+    // We track focus but don't emit the AppFocused event for ourselves.
+    if app_name == SELF_APP_NAME {
+        focus_state.last_pid = capture.target_pid;
+        focus_state.self_focused = true;
+        return true;
+    }
+
+    let app_kind = app_kind_for_capture(capture.target_pid, &app_name, app_cache, app_kind_cache);
+    let focus_event = WalkthroughEvent {
+        id: Uuid::new_v4(),
+        timestamp: capture.timestamp,
+        kind: WalkthroughEventKind::AppFocused {
+            app_name: app_name.clone(),
+            pid: capture.target_pid,
+            window_title: None,
+            app_kind,
+        },
+    };
+    persist_and_emit(app, storage, session_dir, &focus_event);
+    focus_state.last_pid = capture.target_pid;
+    focus_state.self_focused = false;
+    false
+}
+
+fn app_kind_for_capture(
+    target_pid: i32,
+    app_name: &str,
+    app_cache: &HashMap<i32, CachedApp>,
+    app_kind_cache: &Arc<Mutex<HashMap<i32, AppKind>>>,
+) -> AppKind {
+    let mut cache = app_kind_cache.lock().unwrap();
+    if let Some(&cached_kind) = cache.get(&target_pid) {
+        return cached_kind;
+    }
+
+    let bundle_id = app_cache
+        .get(&target_pid)
+        .and_then(|c| c.bundle_id.as_deref());
+    let bundle_path = bundle_path_from_pid(target_pid);
+    let kind = classify_app(bundle_id, bundle_path.as_deref());
+    if kind != AppKind::Native {
+        tracing::info!(
+            "App '{}' (PID {}) classified as {:?}",
+            app_name,
+            target_pid,
+            kind,
+        );
+    }
+    cache.insert(target_pid, kind);
+    kind
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_click_enrichment(
+    mcp: &Option<Arc<McpClient>>,
+    vlm_backend: &Option<Arc<clickweave_llm::LlmClient>>,
+    cdp_state: &HashMap<String, CdpAppState>,
+    cdp_tx: &tokio::sync::mpsc::UnboundedSender<CdpClickRequest>,
+    bg_tasks: &mut tokio::task::JoinSet<()>,
+    app_cache: &HashMap<i32, CachedApp>,
+    app_kind_cache: &Arc<Mutex<HashMap<i32, AppKind>>>,
+    app: &tauri::AppHandle,
+    storage: &WalkthroughStorage,
+    session_dir: &std::path::Path,
+    click_event: &WalkthroughEvent,
+    target_pid: i32,
+    timestamp: u64,
+    x: f64,
+    y: f64,
+    #[cfg(any(target_os = "macos", target_os = "windows"))] screenshot_buffer: &ScreenshotBuffer,
+) {
+    let Some(mcp_arc) = mcp else {
+        return;
+    };
+
+    let task_app_name = app_cache.get(&target_pid).map(|c| c.name.clone());
+    queue_cdp_click_resolution(
+        cdp_state,
+        cdp_tx,
+        task_app_name.as_deref(),
+        click_event.id,
+        timestamp,
+    );
+
+    let task_mcp = mcp_arc.clone();
+    let task_vlm = vlm_backend.clone();
+    let task_app = app.clone();
+    let task_storage = storage.clone();
+    let task_dir = session_dir.to_path_buf();
+    let task_kind_cache = app_kind_cache.clone();
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let task_prehover = screenshot_buffer.read().ok().and_then(|g| g.clone());
+
+    bg_tasks.spawn(async move {
+        enrich_click_background(
+            task_mcp,
+            task_vlm,
+            task_app,
+            task_storage,
+            task_dir,
+            task_app_name,
+            x,
+            y,
+            timestamp,
+            VLM_CALL_TIMEOUT,
+            task_kind_cache,
+            target_pid,
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            task_prehover,
+        )
+        .await;
+    });
+}
+
+fn queue_cdp_click_resolution(
+    cdp_state: &HashMap<String, CdpAppState>,
+    cdp_tx: &tokio::sync::mpsc::UnboundedSender<CdpClickRequest>,
+    app_name: Option<&str>,
+    click_event_id: Uuid,
+    click_timestamp: u64,
+) {
+    let Some(app_state) = app_name.and_then(|name| cdp_state.get(name)) else {
+        return;
+    };
+
+    let _ = cdp_tx.send(CdpClickRequest {
+        port: app_state.port,
+        selected_page_url: app_state.selected_page_url.clone(),
+        click_event_id,
+        click_timestamp,
+    });
 }
 
 async fn drain_capture_tasks(
@@ -952,229 +1067,248 @@ async fn setup_cdp_apps(
     }
 
     for cdp_app in cdp_apps {
-        // Check for cancellation between apps.
         if *cancel.borrow() {
             break;
         }
 
-        // Check if the app is already running with a debug port — if so, skip
-        // the quit/relaunch cycle and reuse the existing port.
-        let port = match existing_debug_port(&cdp_app.name).await {
-            Some(p) => {
-                tracing::info!(
-                    "'{}' already running with --remote-debugging-port={}, reusing",
-                    cdp_app.name,
-                    p
-                );
-                emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Connecting);
-                p
-            }
-            None => {
-                let port = rand_ephemeral_port();
-
-                if cdp_app.binary_path.is_some() {
-                    emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Launching);
-                } else {
-                    emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Restarting);
-                }
-
-                // Quit existing instance and wait for it to exit.
-                let quit_args = serde_json::json!({ "app_name": &cdp_app.name });
-                match mcp.call_tool("quit_app", Some(quit_args)).await {
-                    Ok(r) if r.is_error == Some(true) => {
-                        tracing::debug!(
-                            "quit_app for '{}' returned error (may not be running)",
-                            cdp_app.name
-                        );
-                    }
-                    Err(e) => {
-                        tracing::debug!("quit_app for '{}' failed: {e}", cdp_app.name);
-                    }
-                    _ => {}
-                }
-
-                // Poll until the app is no longer reported as running (up to 10s).
-                let poll_args =
-                    serde_json::json!({ "app_name": &cdp_app.name, "user_apps_only": true });
-                let mut quit_confirmed = false;
-                for _ in 0..20 {
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    if let Ok(r) = mcp.call_tool("list_apps", Some(poll_args.clone())).await {
-                        let text = r
-                            .content
-                            .iter()
-                            .filter_map(|c| c.as_text())
-                            .collect::<String>();
-                        if text.trim() == "[]" {
-                            quit_confirmed = true;
-                            break;
-                        }
-                    }
-                }
-
-                if !quit_confirmed {
-                    tracing::warn!("'{}' did not quit within 10s, force-killing", cdp_app.name);
-                    let force_args =
-                        serde_json::json!({ "app_name": &cdp_app.name, "force": true });
-                    let _ = mcp.call_tool("quit_app", Some(force_args)).await;
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                }
-
-                // Relaunch with debug port.
-                let launch_args = if let Some(ref binary_path) = cdp_app.binary_path {
-                    serde_json::json!({
-                        "app_name": binary_path,
-                        "args": [format!("--remote-debugging-port={}", port)],
-                    })
-                } else {
-                    serde_json::json!({
-                        "app_name": &cdp_app.name,
-                        "args": [format!("--remote-debugging-port={}", port)],
-                    })
-                };
-
-                let launch_result = mcp.call_tool("launch_app", Some(launch_args)).await;
-
-                match &launch_result {
-                    Err(e) => {
-                        tracing::warn!("Failed to launch '{}' with CDP: {}", cdp_app.name, e);
-                        emit_cdp_progress(
-                            app,
-                            &cdp_app.name,
-                            CdpSetupStatus::Failed {
-                                reason: e.to_string(),
-                            },
-                        );
-                        continue;
-                    }
-                    Ok(r) if r.is_error == Some(true) => {
-                        let reason = r
-                            .content
-                            .iter()
-                            .filter_map(|c| c.as_text())
-                            .collect::<Vec<_>>()
-                            .join("; ");
-                        tracing::warn!(
-                            "launch_app for '{}' returned error: {reason}",
-                            cdp_app.name
-                        );
-                        emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Failed { reason });
-                        continue;
-                    }
-                    _ => {}
-                }
-
-                // Wait for the app to start.
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-                port
-            }
+        let Some(port) = prepare_cdp_recording_port(cdp_app, mcp, app).await else {
+            continue;
         };
 
         emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Connecting);
-
-        // Connect to this app's CDP port (with cancellation + polling).
-        let connect_result = tokio::select! {
-            biased;
-            _ = cancel.changed() => {
-                tracing::info!("CDP setup cancelled during connect for '{}'", cdp_app.name);
-                break;
+        match connect_cdp_for_setup(mcp, port, &cdp_app.name, cancel).await {
+            CdpConnectOutcome::Ready => {}
+            CdpConnectOutcome::Cancelled => break,
+            CdpConnectOutcome::Failed(reason) => {
+                tracing::warn!("CDP connect failed for '{}': {}", cdp_app.name, reason);
+                emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Failed { reason });
+                continue;
             }
-            result = poll_cdp_ready(mcp, port, 10) => result,
-        };
+        }
 
-        match connect_result {
-            Ok(()) => {
-                tracing::info!("CDP connected to '{}' (port {})", cdp_app.name, port,);
-
-                // Inject click listener for record-time element capture.
-                let inject_args = serde_json::json!({ "function": CDP_CLICK_LISTENER_JS });
-                let inject_ok = match mcp
-                    .call_tool("cdp_evaluate_script", Some(inject_args))
-                    .await
-                {
-                    Ok(r) if r.is_error != Some(true) => {
-                        tracing::info!("Injected click listener into '{}'", cdp_app.name);
-                        true
-                    }
-                    Ok(r) => {
-                        let err: String = r.content.iter().filter_map(|c| c.as_text()).collect();
-                        tracing::warn!(
-                            "CDP click listener injection rejected for '{}': {err}",
-                            cdp_app.name
-                        );
-                        false
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to inject click listener into '{}': {e}",
-                            cdp_app.name
-                        );
-                        false
-                    }
-                };
-
-                // Inject hover listener alongside click listener.
-                if inject_ok {
-                    let hover_js = CDP_HOVER_LISTENER_JS
-                        .replace("__CW_MIN_DWELL__", &hover_dwell_ms.to_string());
-                    let hover_args = serde_json::json!({ "function": hover_js });
-                    match mcp.call_tool("cdp_evaluate_script", Some(hover_args)).await {
-                        Ok(r) if r.is_error != Some(true) => {
-                            tracing::info!("Injected hover listener into '{}'", cdp_app.name);
-                        }
-                        Ok(r) => {
-                            let err: String =
-                                r.content.iter().filter_map(|c| c.as_text()).collect();
-                            tracing::warn!(
-                                "CDP hover listener injection rejected for '{}': {err}",
-                                cdp_app.name
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "Failed to inject hover listener into '{}': {e}",
-                                cdp_app.name
-                            );
-                        }
-                    }
-                }
-
-                // Capture the page URL the listeners were injected into so
-                // later reconnects can restore that tab rather than relying
-                // on `cdp_connect`'s first-non-extension auto-select.
-                let selected_page_url = current_selected_page_url(mcp).await;
-
-                // Disconnect so the next app can connect.
-                let _ = mcp.call_tool("cdp_disconnect", None).await;
-
-                if inject_ok {
-                    emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Ready);
-                    state.insert(
-                        cdp_app.name.clone(),
-                        CdpAppState {
-                            port,
-                            selected_page_url,
-                        },
-                    );
-                } else {
-                    emit_cdp_progress(
-                        app,
-                        &cdp_app.name,
-                        CdpSetupStatus::Failed {
-                            reason: "Click listener injection failed".to_string(),
-                        },
-                    );
-                }
+        match install_cdp_recording_listeners(mcp, &cdp_app.name, hover_dwell_ms).await {
+            Ok(selected_page_url) => {
+                emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Ready);
+                state.insert(
+                    cdp_app.name.clone(),
+                    CdpAppState {
+                        port,
+                        selected_page_url,
+                    },
+                );
             }
-            Err(e) => {
-                tracing::warn!("CDP connect failed for '{}': {}", cdp_app.name, e);
-                emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Failed { reason: e });
-            }
+            Err(reason) => emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Failed { reason }),
         }
     }
 
     state
+}
+
+async fn prepare_cdp_recording_port(
+    cdp_app: &CdpAppConfig,
+    mcp: &McpClient,
+    app: &tauri::AppHandle,
+) -> Option<u16> {
+    if let Some(port) = existing_debug_port(&cdp_app.name).await {
+        tracing::info!(
+            "'{}' already running with --remote-debugging-port={}, reusing",
+            cdp_app.name,
+            port
+        );
+        emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Connecting);
+        return Some(port);
+    }
+
+    let port = rand_ephemeral_port();
+    if cdp_app.binary_path.is_some() {
+        emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Launching);
+    } else {
+        emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Restarting);
+    }
+
+    quit_existing_cdp_app(mcp, &cdp_app.name).await;
+    if !wait_for_app_exit(mcp, &cdp_app.name).await {
+        force_quit_cdp_app(mcp, &cdp_app.name).await;
+    }
+    if !launch_cdp_app(mcp, cdp_app, port, app).await {
+        return None;
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    Some(port)
+}
+
+async fn quit_existing_cdp_app(mcp: &McpClient, app_name: &str) {
+    let quit_args = serde_json::json!({ "app_name": app_name });
+    match mcp.call_tool("quit_app", Some(quit_args)).await {
+        Ok(r) if r.is_error == Some(true) => {
+            tracing::debug!(
+                "quit_app for '{}' returned error (may not be running)",
+                app_name
+            );
+        }
+        Err(e) => {
+            tracing::debug!("quit_app for '{}' failed: {e}", app_name);
+        }
+        _ => {}
+    }
+}
+
+async fn wait_for_app_exit(mcp: &McpClient, app_name: &str) -> bool {
+    let poll_args = serde_json::json!({ "app_name": app_name, "user_apps_only": true });
+    for _ in 0..20 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        if let Ok(r) = mcp.call_tool("list_apps", Some(poll_args.clone())).await {
+            let text = r
+                .content
+                .iter()
+                .filter_map(|c| c.as_text())
+                .collect::<String>();
+            if text.trim() == "[]" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+async fn force_quit_cdp_app(mcp: &McpClient, app_name: &str) {
+    tracing::warn!("'{}' did not quit within 10s, force-killing", app_name);
+    let force_args = serde_json::json!({ "app_name": app_name, "force": true });
+    let _ = mcp.call_tool("quit_app", Some(force_args)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+}
+
+async fn launch_cdp_app(
+    mcp: &McpClient,
+    cdp_app: &CdpAppConfig,
+    port: u16,
+    app: &tauri::AppHandle,
+) -> bool {
+    let launch_args = if let Some(ref binary_path) = cdp_app.binary_path {
+        serde_json::json!({
+            "app_name": binary_path,
+            "args": [format!("--remote-debugging-port={}", port)],
+        })
+    } else {
+        serde_json::json!({
+            "app_name": &cdp_app.name,
+            "args": [format!("--remote-debugging-port={}", port)],
+        })
+    };
+
+    match mcp.call_tool("launch_app", Some(launch_args)).await {
+        Err(e) => {
+            tracing::warn!("Failed to launch '{}' with CDP: {}", cdp_app.name, e);
+            emit_cdp_progress(
+                app,
+                &cdp_app.name,
+                CdpSetupStatus::Failed {
+                    reason: e.to_string(),
+                },
+            );
+            false
+        }
+        Ok(r) if r.is_error == Some(true) => {
+            let reason = r
+                .content
+                .iter()
+                .filter_map(|c| c.as_text())
+                .collect::<Vec<_>>()
+                .join("; ");
+            tracing::warn!("launch_app for '{}' returned error: {reason}", cdp_app.name);
+            emit_cdp_progress(app, &cdp_app.name, CdpSetupStatus::Failed { reason });
+            false
+        }
+        _ => true,
+    }
+}
+
+async fn connect_cdp_for_setup(
+    mcp: &McpClient,
+    port: u16,
+    app_name: &str,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+) -> CdpConnectOutcome {
+    tokio::select! {
+        biased;
+        _ = cancel.changed() => {
+            tracing::info!("CDP setup cancelled during connect for '{}'", app_name);
+            CdpConnectOutcome::Cancelled
+        }
+        result = poll_cdp_ready(mcp, port, 10) => match result {
+            Ok(()) => {
+                tracing::info!("CDP connected to '{}' (port {})", app_name, port);
+                CdpConnectOutcome::Ready
+            }
+            Err(reason) => CdpConnectOutcome::Failed(reason),
+        },
+    }
+}
+
+async fn install_cdp_recording_listeners(
+    mcp: &McpClient,
+    app_name: &str,
+    hover_dwell_ms: u64,
+) -> Result<Option<String>, String> {
+    let inject_ok = inject_cdp_click_listener(mcp, app_name).await;
+    if inject_ok {
+        inject_cdp_hover_listener(mcp, app_name, hover_dwell_ms).await;
+    }
+
+    let selected_page_url = current_selected_page_url(mcp).await;
+    let _ = mcp.call_tool("cdp_disconnect", None).await;
+
+    if inject_ok {
+        Ok(selected_page_url)
+    } else {
+        Err("Click listener injection failed".to_string())
+    }
+}
+
+async fn inject_cdp_click_listener(mcp: &McpClient, app_name: &str) -> bool {
+    let inject_args = serde_json::json!({ "function": CDP_CLICK_LISTENER_JS });
+    match mcp
+        .call_tool("cdp_evaluate_script", Some(inject_args))
+        .await
+    {
+        Ok(r) if r.is_error != Some(true) => {
+            tracing::info!("Injected click listener into '{}'", app_name);
+            true
+        }
+        Ok(r) => {
+            let err: String = r.content.iter().filter_map(|c| c.as_text()).collect();
+            tracing::warn!(
+                "CDP click listener injection rejected for '{}': {err}",
+                app_name
+            );
+            false
+        }
+        Err(e) => {
+            tracing::warn!("Failed to inject click listener into '{}': {e}", app_name);
+            false
+        }
+    }
+}
+
+async fn inject_cdp_hover_listener(mcp: &McpClient, app_name: &str, hover_dwell_ms: u64) {
+    let hover_js = CDP_HOVER_LISTENER_JS.replace("__CW_MIN_DWELL__", &hover_dwell_ms.to_string());
+    let hover_args = serde_json::json!({ "function": hover_js });
+    match mcp.call_tool("cdp_evaluate_script", Some(hover_args)).await {
+        Ok(r) if r.is_error != Some(true) => {
+            tracing::info!("Injected hover listener into '{}'", app_name);
+        }
+        Ok(r) => {
+            let err: String = r.content.iter().filter_map(|c| c.as_text()).collect();
+            tracing::warn!(
+                "CDP hover listener injection rejected for '{}': {err}",
+                app_name
+            );
+        }
+        Err(e) => {
+            tracing::warn!("Failed to inject hover listener into '{}': {e}", app_name);
+        }
+    }
 }
 
 /// Poll `cdp_connect` + `cdp_list_pages` until a page is available.
@@ -1539,9 +1673,6 @@ async fn enrich_click_background(
         Arc<CursorRegionCapture>,
     >,
 ) {
-    use base64::Engine;
-    use clickweave_core::walkthrough::ScreenshotMeta;
-
     // Run enrichment without checking the cancel token — we want MCP calls
     // to complete even after Stop is pressed so every click gets a screenshot.
     // The drain timeout in the event loop bounds total shutdown time.
@@ -1552,199 +1683,280 @@ async fn enrich_click_background(
         persist_and_emit(&app, &storage, &session_dir, ev);
     }
 
-    // Extract screenshot info and AX label from enrichment events.
-    let mut screenshot_path: Option<String> = None;
-    let mut screenshot_meta: Option<ScreenshotMeta> = None;
-    let mut ax_label_data: Option<(String, Option<String>)> = None;
-    let mut has_actionable_ax = false;
+    let summary = summarize_click_enrichment(&enrichment_events);
+    maybe_reclassify_empty_ax_app(
+        &app,
+        &storage,
+        &session_dir,
+        &app_kind_cache,
+        target_pid,
+        app_name.as_deref(),
+        timestamp,
+        summary.has_actionable_ax,
+    );
 
-    for ev in &enrichment_events {
+    // Both crop and VLM need a screenshot. Bail early if we don't have one.
+    let (Some(screenshot_path), Some(screenshot_meta)) =
+        (summary.screenshot_path, summary.screenshot_meta)
+    else {
+        return;
+    };
+
+    let crop_fut = persist_click_crop(
+        app.clone(),
+        storage.clone(),
+        session_dir.clone(),
+        screenshot_path.clone(),
+        screenshot_meta,
+        x,
+        y,
+        timestamp,
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        prehover_screenshot,
+    );
+    let vlm_fut = persist_vlm_click_label(
+        &app,
+        &storage,
+        &session_dir,
+        vlm_backend,
+        app_name.as_deref(),
+        &screenshot_path,
+        screenshot_meta,
+        summary.ax_label_data.as_ref(),
+        summary.has_actionable_ax,
+        x,
+        y,
+        timestamp,
+        vlm_timeout,
+    );
+
+    tokio::join!(crop_fut, vlm_fut);
+}
+
+fn summarize_click_enrichment(events: &[WalkthroughEvent]) -> ClickEnrichmentSummary {
+    let mut summary = ClickEnrichmentSummary {
+        screenshot_path: None,
+        screenshot_meta: None,
+        ax_label_data: None,
+        has_actionable_ax: false,
+    };
+
+    for ev in events {
         match &ev.kind {
             WalkthroughEventKind::ScreenshotCaptured { path, meta, .. } => {
-                screenshot_path = Some(path.clone());
-                screenshot_meta = *meta;
+                summary.screenshot_path = Some(path.clone());
+                summary.screenshot_meta = *meta;
             }
             WalkthroughEventKind::AccessibilityElementCaptured { label, role, .. } => {
-                // Only treat as actionable if we also have a non-empty label.
-                // Elements with an actionable role but no label (e.g. unlabeled
-                // buttons with a subrole) should still get VLM fallback.
-                has_actionable_ax = !label.is_empty()
+                // Empty labels still need VLM fallback even if the AX role is actionable.
+                summary.has_actionable_ax = !label.is_empty()
                     && clickweave_core::walkthrough::is_actionable_ax_role(role.as_deref());
-                ax_label_data = Some((label.clone(), role.clone()));
+                summary.ax_label_data = Some((label.clone(), role.clone()));
             }
             _ => {}
         }
     }
 
-    // Reactive Electron detection: if native AX returned nothing useful
-    // and the app is still classified as Native, recheck for Electron
-    // framework. This catches apps with unusual bundle structures that
-    // slipped past proactive detection.
-    if !has_actionable_ax {
-        let current_kind = app_kind_cache.lock().unwrap().get(&target_pid).copied();
-        if current_kind == Some(AppKind::Native) {
-            let rechecked = classify_app_by_pid(target_pid);
-            if rechecked != AppKind::Native {
-                tracing::info!(
-                    "Reactive detection: PID {} reclassified as {:?} (empty AX triggered recheck)",
-                    target_pid,
-                    rechecked,
-                );
-                app_kind_cache.lock().unwrap().insert(target_pid, rechecked);
+    summary
+}
 
-                // Re-emit focus event with corrected app_kind so downstream
-                // normalization picks up the reclassification.
-                let updated_focus = WalkthroughEvent {
-                    id: Uuid::new_v4(),
-                    timestamp,
-                    kind: WalkthroughEventKind::AppFocused {
-                        app_name: app_name.clone().unwrap_or_default(),
-                        pid: target_pid,
-                        window_title: None,
-                        app_kind: rechecked,
-                    },
-                };
-                persist_and_emit(&app, &storage, &session_dir, &updated_focus);
-            }
-        }
+#[allow(clippy::too_many_arguments)]
+fn maybe_reclassify_empty_ax_app(
+    app: &tauri::AppHandle,
+    storage: &WalkthroughStorage,
+    session_dir: &std::path::Path,
+    app_kind_cache: &Arc<Mutex<HashMap<i32, AppKind>>>,
+    target_pid: i32,
+    app_name: Option<&str>,
+    timestamp: u64,
+    has_actionable_ax: bool,
+) {
+    if has_actionable_ax {
+        return;
+    }
+    let current_kind = app_kind_cache.lock().unwrap().get(&target_pid).copied();
+    if current_kind != Some(AppKind::Native) {
+        return;
     }
 
-    // Both crop and VLM need a screenshot. Bail early if we don't have one.
-    let (Some(screenshot_path), Some(screenshot_meta)) = (screenshot_path, screenshot_meta) else {
+    let rechecked = classify_app_by_pid(target_pid);
+    if rechecked == AppKind::Native {
         return;
+    }
+
+    tracing::info!(
+        "Reactive detection: PID {} reclassified as {:?} (empty AX triggered recheck)",
+        target_pid,
+        rechecked,
+    );
+    app_kind_cache.lock().unwrap().insert(target_pid, rechecked);
+
+    let updated_focus = WalkthroughEvent {
+        id: Uuid::new_v4(),
+        timestamp,
+        kind: WalkthroughEventKind::AppFocused {
+            app_name: app_name.unwrap_or_default().to_string(),
+            pid: target_pid,
+            window_title: None,
+            app_kind: rechecked,
+        },
     };
+    persist_and_emit(app, storage, session_dir, &updated_focus);
+}
 
-    // Crop and VLM are independent — run them concurrently.
-    //
-    // For the crop, the cursor region capture (polled every 100ms) IS the
-    // template — it's already the right size and shows the screen before
-    // hover effects. Just JPEG-encode and emit it. Fall back to the MCP
-    // screenshot + crop_click_region if the buffer was empty.
-    //
-    // VLM sends the screenshot to the vision model to identify the element.
-    // Skipped when the click already has an actionable accessibility label.
+#[allow(clippy::too_many_arguments)]
+async fn persist_click_crop(
+    app: tauri::AppHandle,
+    storage: WalkthroughStorage,
+    session_dir: std::path::PathBuf,
+    screenshot_path: String,
+    screenshot_meta: ScreenshotMeta,
+    x: f64,
+    y: f64,
+    timestamp: u64,
+    #[cfg(any(target_os = "macos", target_os = "windows"))] prehover_screenshot: Option<
+        Arc<CursorRegionCapture>,
+    >,
+) {
+    use super::walkthrough_enrichment::crop_click_region;
 
-    let crop_app = app.clone();
-    let crop_storage = storage.clone();
-    let crop_dir = session_dir.clone();
-    let crop_path = screenshot_path.clone();
-    let crop_fut = async move {
-        use super::walkthrough_enrichment::crop_click_region;
+    let artifacts_dir = session_dir.join("artifacts");
 
-        let artifacts_dir = crop_dir.join("artifacts");
-
-        let emit_crop = |b64: String, path: std::path::PathBuf| {
-            let ev = WalkthroughEvent {
-                id: Uuid::new_v4(),
-                timestamp,
-                kind: WalkthroughEventKind::ScreenshotCaptured {
-                    path: path.to_string_lossy().to_string(),
-                    kind: ScreenshotKind::ClickCrop,
-                    meta: None,
-                    image_b64: Some(b64),
-                },
-            };
-            persist_and_emit(&crop_app, &crop_storage, &crop_dir, &ev);
-        };
-
-        // Try the cursor region capture first (pre-hover, already cropped).
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        if let Some(shot) = prehover_screenshot {
-            tracing::debug!("Using cursor region capture for click crop");
-            let artifacts_for_capture = artifacts_dir.clone();
-            let crop_result = tokio::task::spawn_blocking(move || {
-                let img =
-                    image::RgbaImage::from_raw(shot.width, shot.height, shot.rgba_bytes.clone())?;
-                let dynamic = image::DynamicImage::ImageRgba8(img);
-                let mut jpeg_buf = std::io::Cursor::new(Vec::new());
-                dynamic
-                    .write_to(&mut jpeg_buf, image::ImageFormat::Jpeg)
-                    .ok()?;
-                let jpeg_bytes = jpeg_buf.into_inner();
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg_bytes);
-                let filename = format!("crop_{timestamp}.jpg");
-                let path = artifacts_for_capture.join(&filename);
-                let _ = std::fs::write(&path, &jpeg_bytes);
-                Some((b64, path))
-            })
-            .await;
-            if let Ok(Some((crop_b64, crop_path))) = crop_result {
-                emit_crop(crop_b64, crop_path);
-                return;
-            }
-        }
-
-        // Fallback: crop from the MCP screenshot.
-        tracing::debug!("Falling back to MCP screenshot for crop");
-        let bytes = match tokio::fs::read(&crop_path).await {
-            Ok(b) => b,
-            Err(_) => return,
-        };
-        let (px, py) = screenshot_meta.screen_to_pixel(x, y);
-        let scale = screenshot_meta.scale;
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    if let Some(shot) = prehover_screenshot {
+        tracing::debug!("Using cursor region capture for click crop");
+        let artifacts_for_capture = artifacts_dir.clone();
         let crop_result = tokio::task::spawn_blocking(move || {
-            let img = image::load_from_memory(&bytes).ok()?;
-            crop_click_region(&img, px, py, scale).map(|(jpeg, b64)| {
-                let filename = format!("crop_{timestamp}.jpg");
-                let path = artifacts_dir.join(&filename);
-                let _ = std::fs::write(&path, &jpeg);
-                (b64, path)
-            })
+            encode_cursor_region_crop(shot, artifacts_for_capture, timestamp)
         })
         .await;
         if let Ok(Some((crop_b64, crop_path))) = crop_result {
-            emit_crop(crop_b64, crop_path);
-        }
-    };
-
-    let vlm_fut = async {
-        if has_actionable_ax {
+            persist_click_crop_event(&app, &storage, &session_dir, crop_b64, crop_path, timestamp);
             return;
         }
-        let backend = match vlm_backend {
-            Some(ref b) => b,
-            None => return,
-        };
-        let ax_ref = ax_label_data
-            .as_ref()
-            .map(|(l, r)| (l.as_str(), r.as_deref()));
-        let req = match prepare_vlm_click_request(
-            &screenshot_path,
-            x,
-            y,
-            screenshot_meta,
-            ax_ref,
-            None,
-            app_name.as_deref(),
-        ) {
-            Some(r) => r,
-            None => return,
-        };
+    }
 
-        let vlm_result = tokio::time::timeout(
-            vlm_timeout,
-            execute_vlm_click_request(backend.as_ref(), &req),
-        )
-        .await;
+    tracing::debug!("Falling back to MCP screenshot for crop");
+    let bytes = match tokio::fs::read(&screenshot_path).await {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    let (px, py) = screenshot_meta.screen_to_pixel(x, y);
+    let scale = screenshot_meta.scale;
+    let crop_result = tokio::task::spawn_blocking(move || {
+        let img = image::load_from_memory(&bytes).ok()?;
+        crop_click_region(&img, px, py, scale).map(|(jpeg, b64)| {
+            let filename = format!("crop_{timestamp}.jpg");
+            let path = artifacts_dir.join(&filename);
+            let _ = std::fs::write(&path, &jpeg);
+            (b64, path)
+        })
+    })
+    .await;
+    if let Ok(Some((crop_b64, crop_path))) = crop_result {
+        persist_click_crop_event(&app, &storage, &session_dir, crop_b64, crop_path, timestamp);
+    }
+}
 
-        match vlm_result {
-            Ok(Some(label)) => {
-                tracing::info!("VLM resolved click at ts={timestamp} → \"{label}\"");
-                let vlm_event = WalkthroughEvent {
-                    id: Uuid::new_v4(),
-                    timestamp,
-                    kind: WalkthroughEventKind::VlmLabelResolved { label },
-                };
-                persist_and_emit(&app, &storage, &session_dir, &vlm_event);
-            }
-            Ok(None) => {}
-            Err(_) => {
-                tracing::warn!("VLM timed out for click at ts={timestamp}");
-            }
-        }
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn encode_cursor_region_crop(
+    shot: Arc<CursorRegionCapture>,
+    artifacts_dir: std::path::PathBuf,
+    timestamp: u64,
+) -> Option<(String, std::path::PathBuf)> {
+    use base64::Engine;
+
+    let img = image::RgbaImage::from_raw(shot.width, shot.height, shot.rgba_bytes.clone())?;
+    let dynamic = image::DynamicImage::ImageRgba8(img);
+    let mut jpeg_buf = std::io::Cursor::new(Vec::new());
+    dynamic
+        .write_to(&mut jpeg_buf, image::ImageFormat::Jpeg)
+        .ok()?;
+    let jpeg_bytes = jpeg_buf.into_inner();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg_bytes);
+    let filename = format!("crop_{timestamp}.jpg");
+    let path = artifacts_dir.join(&filename);
+    let _ = std::fs::write(&path, &jpeg_bytes);
+    Some((b64, path))
+}
+
+fn persist_click_crop_event(
+    app: &tauri::AppHandle,
+    storage: &WalkthroughStorage,
+    session_dir: &std::path::Path,
+    b64: String,
+    path: std::path::PathBuf,
+    timestamp: u64,
+) {
+    let ev = WalkthroughEvent {
+        id: Uuid::new_v4(),
+        timestamp,
+        kind: WalkthroughEventKind::ScreenshotCaptured {
+            path: path.to_string_lossy().to_string(),
+            kind: ScreenshotKind::ClickCrop,
+            meta: None,
+            image_b64: Some(b64),
+        },
+    };
+    persist_and_emit(app, storage, session_dir, &ev);
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn persist_vlm_click_label(
+    app: &tauri::AppHandle,
+    storage: &WalkthroughStorage,
+    session_dir: &std::path::Path,
+    vlm_backend: Option<Arc<clickweave_llm::LlmClient>>,
+    app_name: Option<&str>,
+    screenshot_path: &str,
+    screenshot_meta: ScreenshotMeta,
+    ax_label_data: Option<&(String, Option<String>)>,
+    has_actionable_ax: bool,
+    x: f64,
+    y: f64,
+    timestamp: u64,
+    vlm_timeout: tokio::time::Duration,
+) {
+    if has_actionable_ax {
+        return;
+    }
+    let Some(backend) = vlm_backend else {
+        return;
+    };
+    let ax_ref = ax_label_data.map(|(label, role)| (label.as_str(), role.as_deref()));
+    let Some(req) = prepare_vlm_click_request(
+        screenshot_path,
+        x,
+        y,
+        screenshot_meta,
+        ax_ref,
+        None,
+        app_name,
+    ) else {
+        return;
     };
 
-    tokio::join!(crop_fut, vlm_fut);
+    let vlm_result = tokio::time::timeout(
+        vlm_timeout,
+        execute_vlm_click_request(backend.as_ref(), &req),
+    )
+    .await;
+
+    match vlm_result {
+        Ok(Some(label)) => {
+            tracing::info!("VLM resolved click at ts={timestamp} -> \"{label}\"");
+            let vlm_event = WalkthroughEvent {
+                id: Uuid::new_v4(),
+                timestamp,
+                kind: WalkthroughEventKind::VlmLabelResolved { label },
+            };
+            persist_and_emit(app, storage, session_dir, &vlm_event);
+        }
+        Ok(None) => {}
+        Err(_) => {
+            tracing::warn!("VLM timed out for click at ts={timestamp}");
+        }
+    }
 }
 
 #[cfg(test)]
