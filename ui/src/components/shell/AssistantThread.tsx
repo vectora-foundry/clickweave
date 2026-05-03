@@ -1,3 +1,4 @@
+import { Trash2 } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import type { AssistantMessage } from "../../store/slices/assistantSlice";
 import { useStore } from "../../store/useAppStore";
@@ -142,18 +143,7 @@ export function AssistantThread({
             title="Clear the conversation and remove agent-built nodes"
             className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
           >
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.3"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M3 4h10M6 4V2h4v2M5 4l1 10h4l1-10" />
-            </svg>
+            <Trash2 size={12} strokeWidth={1.5} />
           </button>
         </div>
       )}

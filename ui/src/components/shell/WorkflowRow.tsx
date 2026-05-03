@@ -1,3 +1,4 @@
+import { Pencil } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import { useStore } from "../../store/useAppStore";
 
@@ -55,18 +56,7 @@ export function WorkflowRow() {
         aria-label="Rename workflow"
         className="shrink-0 rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
       >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.3"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M11.5 2.5l2 2L5 13l-3 1 1-3 8.5-8.5z" />
-        </svg>
+        <Pencil size={12} strokeWidth={1.5} />
       </button>
     </div>
   );

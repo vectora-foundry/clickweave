@@ -1,3 +1,4 @@
+import { ArrowUpRight } from "lucide-react";
 import { useStore } from "../../store/useAppStore";
 import { CanvasPreviewCanvas } from "./CanvasPreviewCanvas";
 
@@ -23,18 +24,7 @@ export function CanvasPreviewCard() {
           aria-label="Open in canvas"
           className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
         >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.3"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M9 2h5v5M14 2L8.5 7.5M7 14H2V9M2 14l5.5-5.5" />
-          </svg>
+          <ArrowUpRight size={14} strokeWidth={1.5} />
         </button>
       </header>
       <div className="min-h-0 min-w-0 flex-1">

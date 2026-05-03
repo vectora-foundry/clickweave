@@ -1,3 +1,4 @@
+import { Copy, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../../store/useAppStore";
@@ -60,15 +61,10 @@ export function LogsBar() {
               className="ml-2 h-6 flex-1 rounded border border-[var(--hairline)] bg-[var(--ink)] px-2 text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent-coral)]"
             />
             <button onClick={onCopy} aria-label="Copy logs" className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="4" y="4" width="9" height="9" rx="1" />
-                <path d="M3 11V3a1 1 0 011-1h8" />
-              </svg>
+              <Copy size={12} strokeWidth={1.5} />
             </button>
             <button onClick={clearLogs} aria-label="Clear logs" className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 4h10M6 4V2h4v2M5 4l1 10h4l1-10" />
-              </svg>
+              <Trash2 size={12} strokeWidth={1.5} />
             </button>
           </>
         )}
