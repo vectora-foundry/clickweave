@@ -60,7 +60,7 @@ This loop is the implementation of **Spec 1 of 3** of the agent redesign. The au
 
 ### Entry Point
 
-Tauri command `run_agent` (`src-tauri/src/commands/agent.rs`) dispatches through `run_agent_workflow` (`crates/clickweave-engine/src/agent/mod.rs`) which builds a `StateRunner` and drives it. `AgentRunRequest { goal, agent, project_path, workflow_name, workflow_id }` carries the goal and the LLM endpoint used for decisions.
+Tauri command `run_agent` (`src-tauri/src/commands/agent/commands.rs`) dispatches through `run_agent_workflow` (`crates/clickweave-engine/src/agent/mod.rs`) which builds a `StateRunner` and drives it. `AgentRunRequest { goal, agent, project_path, workflow_name, workflow_id }` carries the goal and the LLM endpoint used for decisions.
 
 ### Core types
 

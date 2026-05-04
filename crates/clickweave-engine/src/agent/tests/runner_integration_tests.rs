@@ -424,7 +424,7 @@ mod boundary_persistence_tests;
 // (`clickweave_engine::agent::run_agent_workflow`) with `ScriptedLlm` +
 // `StaticMcp` stubs and lock the legacy `AgentState` contract
 // that external callers (the Tauri command at
-// `src-tauri/src/commands/agent.rs:507-525`) depend on. These tests are
+// `src-tauri/src/commands/agent/commands.rs`) depend on. These tests are
 // distinct from `top_level_loop_tests` above: those exercise
 // `StateRunner::run` directly; these go through the builder chain
 // `run_agent_workflow` assembles so the wrapper's behaviour is pinned too.
@@ -435,7 +435,7 @@ mod boundary_persistence_tests;
 // Signature note: `run_agent_workflow` was generified in Task 3a.8 from
 // `mcp: &McpClient` to `mcp: &M where M: Mcp + ?Sized` so this test can
 // feed it a `StaticMcp` stub without constructing a real MCP subprocess.
-// The concrete call site in `src-tauri/src/commands/agent.rs` keeps
+// The concrete call site in `src-tauri/src/commands/agent/commands.rs` keeps
 // working because `McpClient` satisfies the `Mcp` trait through the
 // existing blanket impl in `crate::executor`.
 

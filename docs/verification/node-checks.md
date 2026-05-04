@@ -69,7 +69,7 @@ Defined in `crates/clickweave-core/src/workflow.rs`:
 | `crates/clickweave-engine/src/executor/verdict.rs` | Deterministic verdict logic, VLM screenshot verdict, missing-outcome warning |
 | `crates/clickweave-engine/src/executor/run_loop.rs` | Inline verdict evaluation after node execution, fail-fast logic, verdict accumulation and emission |
 | `crates/clickweave-core/src/workflow.rs` | Core types: `NodeRole`, `CheckType`, `CheckVerdict`, `CheckResult`, `NodeVerdict` |
-| `crates/clickweave-core/src/storage.rs` | `save_node_verdict()` — persists `verdict.json` per node |
+| `crates/clickweave-core/src/storage/mod.rs` | `save_node_verdict()` — persists `verdict.json` per node |
 | `ui/src/components/VerdictBar.tsx` | Verdict display with expandable per-node details |
 | `ui/src/components/node-detail/tabs/SetupTab.tsx` | Verification toggle for eligible node types |
 | `ui/src/store/slices/verdictSlice.ts` | Zustand state for verdicts |
