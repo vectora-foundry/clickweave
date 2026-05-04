@@ -1,7 +1,5 @@
 use super::*;
-use clickweave_core::MouseButton;
-
-use super::*;
+use clickweave_core::{MouseButton, cdp::rand_ephemeral_port};
 
 fn click_event(timestamp: u64, x: f64, y: f64) -> WalkthroughEvent {
     WalkthroughEvent {
