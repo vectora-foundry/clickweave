@@ -79,14 +79,24 @@ export function TraceTab({
     const screenshots = selectedRun.artifacts.filter(isImageArtifact);
     for (const art of screenshots) {
       if (artifactPreviews[art.artifact_id]) continue;
-      commands.readArtifactBase64(art.path).then((result) => {
-        if (result.status === "ok") {
-          setArtifactPreviews((prev) => ({
-            ...prev,
-            [art.artifact_id]: result.data,
-          }));
-        }
-      });
+      commands
+        .readArtifactBase64({
+          project_path: projectPath,
+          workflow_id: workflowId,
+          workflow_name: workflowName,
+          node_name: nodeName,
+          execution_dir: selectedRun.execution_dir ?? null,
+          run_id: selectedRun.run_id,
+          artifact_path: art.path,
+        })
+        .then((result) => {
+          if (result.status === "ok") {
+            setArtifactPreviews((prev) => ({
+              ...prev,
+              [art.artifact_id]: result.data,
+            }));
+          }
+        });
     }
   }, [selectedRun]); // eslint-disable-line react-hooks/exhaustive-deps
 

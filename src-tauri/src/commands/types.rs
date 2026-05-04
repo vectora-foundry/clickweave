@@ -133,6 +133,17 @@ pub struct RunEventsQuery {
 }
 
 #[derive(Debug, Serialize, Deserialize, Type)]
+pub struct ReadArtifactQuery {
+    pub project_path: Option<String>,
+    pub workflow_id: String,
+    pub workflow_name: String,
+    pub node_name: String,
+    pub execution_dir: Option<String>,
+    pub run_id: String,
+    pub artifact_path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Type)]
 pub struct ImportedAsset {
     pub relative_path: String,
     pub absolute_path: String,

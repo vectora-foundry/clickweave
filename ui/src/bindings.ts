@@ -105,9 +105,9 @@ async loadRunEvents(query: RunEventsQuery) : Promise<Result<TraceEvent[], Comman
     else return { status: "error", error: e  as any };
 }
 },
-async readArtifactBase64(path: string) : Promise<Result<string, CommandError>> {
+async readArtifactBase64(query: ReadArtifactQuery) : Promise<Result<string, CommandError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("read_artifact_base64", { path }) };
+    return { status: "ok", data: await TAURI_INVOKE("read_artifact_base64", { query }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -716,6 +716,7 @@ export type ProvenanceEntry = { run_id: string; step_index: number; completed_at
 export type PruneSkillLineageRequest = { project_path: string | null; workflow_name: string; workflow_id: string; node_ids: string[]; store_traces: boolean }
 export type QuitAppParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { app_name: string }
 export type RejectSkillProposalRequest = { skill_id: string; version: number; project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
+export type ReadArtifactQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string; execution_dir: string | null; run_id: string; artifact_path: string }
 export type RunEventsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string; execution_dir: string | null; run_id: string }
 export type RunRequest = { workflow: Workflow; project_path: string | null; agent: EndpointConfig; fast: EndpointConfig | null; 
 /**
