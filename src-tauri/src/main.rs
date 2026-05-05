@@ -143,6 +143,7 @@ fn main() {
             commands::skills::fork_skill,
             commands::skills::delete_skill,
             commands::skills::list_skills_for_panel,
+            commands::run_trace::load_latest_run_trace,
         ])
         .typ::<TaskState>()
         .typ::<Subgoal>()

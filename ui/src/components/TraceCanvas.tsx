@@ -1,38 +1,32 @@
-import { useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   ReactFlow,
   Background,
+  Controls,
+  MarkerType,
   type Edge as RFEdge,
   type Node as RFNode,
   type NodeTypes,
 } from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
 import { useShallow } from "zustand/react/shallow";
-import { useStore } from "../../store/useAppStore";
-import {
-  TraceStepNode,
-  type TraceStepNodeData,
-} from "../TraceStepNode";
+import { useStore } from "../store/useAppStore";
+import { TraceStepNode, type TraceStepNodeData } from "./TraceStepNode";
 import {
   TraceTerminalNode,
   type TraceTerminalNodeData,
-} from "../TraceTerminalNode";
-import "@xyflow/react/dist/style.css";
+} from "./TraceTerminalNode";
+import { TraceSidePanel } from "./TraceSidePanel";
 
 const NODE_TYPES: NodeTypes = {
   traceStep: TraceStepNode,
   traceTerminal: TraceTerminalNode,
 };
 
-const noopToggle = (_: number) => {};
-
 const NODE_VERTICAL_GAP = 100;
+const NODE_X = 0;
 
-/**
- * Read-only preview of the latest run trace, used in the Overview.
- * Mirrors `TraceCanvas` but disables panning, zoom, selection, and the
- * expand-on-click affordance.
- */
-export function CanvasPreviewCanvas() {
+export function TraceCanvas() {
   const { agentRunId, trace } = useStore(
     useShallow((s) => {
       const id = s.agentRunId;
@@ -42,6 +36,23 @@ export function CanvasPreviewCanvas() {
       };
     }),
   );
+
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [selectedStepIndex, setSelectedStepIndex] = useState<number | null>(
+    null,
+  );
+
+  const toggleExpanded = useCallback((stepIndex: number) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(stepIndex)) {
+        next.delete(stepIndex);
+      } else {
+        next.add(stepIndex);
+      }
+      return next;
+    });
+  }, []);
 
   const { rfNodes, rfEdges } = useMemo(() => {
     if (!trace) return { rfNodes: [] as RFNode[], rfEdges: [] as RFEdge[] };
@@ -62,19 +73,19 @@ export function CanvasPreviewCanvas() {
     const nodes: RFNode[] = sortedSteps.map((step, i) => ({
       id: `step-${step.stepIndex}`,
       type: "traceStep",
-      position: { x: 0, y: i * NODE_VERTICAL_GAP },
+      position: { x: NODE_X, y: i * NODE_VERTICAL_GAP },
       data: {
         stepIndex: step.stepIndex,
         toolName: step.toolName,
         phase: step.phase,
         body: step.body,
         failed: step.failed,
-        expanded: false,
+        expanded: expanded.has(step.stepIndex),
         changedFields: deltasByStep.get(step.stepIndex) ?? [],
         milestoneText: milestonesByStep.get(step.stepIndex) ?? null,
-        onToggle: noopToggle,
+        onToggle: toggleExpanded,
       } as TraceStepNodeData,
-      selectable: false,
+      selectable: true,
       draggable: false,
       connectable: false,
     }));
@@ -83,8 +94,13 @@ export function CanvasPreviewCanvas() {
       nodes.push({
         id: "terminal",
         type: "traceTerminal",
-        position: { x: 0, y: sortedSteps.length * NODE_VERTICAL_GAP },
-        data: { frame: trace.terminalFrame } as TraceTerminalNodeData,
+        position: {
+          x: NODE_X,
+          y: sortedSteps.length * NODE_VERTICAL_GAP,
+        },
+        data: {
+          frame: trace.terminalFrame,
+        } as TraceTerminalNodeData,
         selectable: false,
         draggable: false,
         connectable: false,
@@ -93,10 +109,12 @@ export function CanvasPreviewCanvas() {
 
     const edges: RFEdge[] = [];
     for (let i = 0; i < sortedSteps.length - 1; i++) {
+      const from = sortedSteps[i];
+      const to = sortedSteps[i + 1];
       edges.push({
-        id: `e-${sortedSteps[i].stepIndex}-${sortedSteps[i + 1].stepIndex}`,
-        source: `step-${sortedSteps[i].stepIndex}`,
-        target: `step-${sortedSteps[i + 1].stepIndex}`,
+        id: `e-${from.stepIndex}-${to.stepIndex}`,
+        source: `step-${from.stepIndex}`,
+        target: `step-${to.stepIndex}`,
         selectable: false,
       });
     }
@@ -111,7 +129,14 @@ export function CanvasPreviewCanvas() {
     }
 
     return { rfNodes: nodes, rfEdges: edges };
-  }, [trace]);
+  }, [trace, expanded, toggleExpanded]);
+
+  const onNodeClick = useCallback((_: unknown, node: RFNode) => {
+    if (node.type === "traceStep") {
+      const data = node.data as TraceStepNodeData;
+      setSelectedStepIndex(data.stepIndex);
+    }
+  }, []);
 
   if (
     !agentRunId ||
@@ -119,30 +144,45 @@ export function CanvasPreviewCanvas() {
     (trace.steps.length === 0 && !trace.terminalFrame)
   ) {
     return (
-      <div className="flex h-full w-full items-center justify-center text-xs text-[var(--text-muted)]">
-        No active run yet.
+      <div className="flex h-full w-full items-center justify-center bg-[var(--bg-dark)] text-sm text-[var(--text-muted)]">
+        No active run yet. Start the agent to see its trace here.
       </div>
     );
   }
 
   return (
-    <div className="h-full w-full">
+    <div className="relative h-full w-full" data-trace-canvas-wrapper>
       <ReactFlow
         nodes={rfNodes}
         edges={rfEdges}
         nodeTypes={NODE_TYPES}
         nodesDraggable={false}
         nodesConnectable={false}
-        elementsSelectable={false}
-        panOnDrag={false}
-        zoomOnScroll={false}
-        zoomOnPinch={false}
-        zoomOnDoubleClick={false}
+        elementsSelectable
         fitView
+        fitViewOptions={{ maxZoom: 1 }}
+        defaultEdgeOptions={{
+          type: "smoothstep",
+          selectable: false,
+          markerEnd: { type: MarkerType.ArrowClosed, color: "#666" },
+          style: { stroke: "#555", strokeWidth: 2 },
+        }}
+        onNodeClick={onNodeClick}
         proOptions={{ hideAttribution: true }}
+        style={{ background: "var(--bg-dark)" }}
       >
-        <Background gap={24} size={1} color="rgb(var(--bone) / 0.04)" />
+        <Background color="#333" gap={20} />
+        <Controls
+          showInteractive={false}
+          style={{ background: "var(--bg-panel)", borderColor: "var(--border)" }}
+        />
       </ReactFlow>
+
+      <TraceSidePanel
+        trace={trace}
+        selectedStepIndex={selectedStepIndex}
+        onClose={() => setSelectedStepIndex(null)}
+      />
     </div>
   );
 }

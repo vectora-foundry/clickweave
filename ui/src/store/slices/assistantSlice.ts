@@ -121,6 +121,12 @@ export interface AssistantSlice {
   setTerminalFrame: (runId: string, frame: TerminalFrame) => void;
   clearTrace: (runId: string) => void;
   /**
+   * Drop a fully-built trace (hydrated from disk) into `runTraces` and
+   * point `agentRunId` at it. Only applied when no live run is active
+   * — a hydrated trace must never override a fresh `agent://started`.
+   */
+  hydrateRunTrace: (trace: RunTrace) => void;
+  /**
    * Full Clear-conversation flow (D1.C1): delete every agent-built
    * node, wipe the cache + variant-index + transcript files via the
    * Tauri command, and empty the local messages array. Not undoable.
@@ -383,6 +389,14 @@ export const createAssistantSlice: StateCreator<
       const { [runId]: _removed, ...remaining } = s.runTraces;
       return { runTraces: remaining };
     });
+  },
+
+  hydrateRunTrace: (trace) => {
+    if (get().agentRunId !== null) return;
+    set((s) => ({
+      runTraces: { ...s.runTraces, [trace.runId]: trace },
+      agentRunId: trace.runId,
+    }));
   },
 
   clearConversationFlow: async () => {

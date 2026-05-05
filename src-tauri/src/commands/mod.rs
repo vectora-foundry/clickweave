@@ -4,6 +4,7 @@ mod chrome_profiles;
 pub mod error;
 mod executor;
 mod project;
+pub mod run_trace;
 mod runs;
 pub mod skills;
 mod types;

@@ -5,6 +5,7 @@ import { makeDefaultWorkflow } from "../state";
 import { errorMessage } from "../../utils/commandError";
 import type { StoreState } from "./types";
 import { loadAgentChat } from "../agentChatPersistence";
+import { loadLatestRunTrace } from "../runTracePersistence";
 import { isAgentActive } from "./agentSlice";
 
 export interface ProjectSlice {
@@ -83,6 +84,16 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
     });
     if (rehydrated.length > 0) {
       get().setMessages(rehydrated);
+    }
+
+    const hydratedTrace = await loadLatestRunTrace({
+      projectPath: projectResult.data.path,
+      workflowName: projectResult.data.workflow.name,
+      workflowId: projectResult.data.workflow.id,
+      storeTraces: get().storeTraces,
+    });
+    if (hydratedTrace) {
+      get().hydrateRunTrace(hydratedTrace);
     }
 
     pushLog(`Opened: ${filePath}`);

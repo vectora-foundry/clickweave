@@ -3,7 +3,7 @@ import { useStore } from "../../store/useAppStore";
 
 const NAV_ITEMS = [
   { id: "overview" as const, label: "Overview", Icon: LayoutDashboard },
-  { id: "canvas" as const, label: "Canvas", Icon: Network },
+  { id: "canvas" as const, label: "Trace", Icon: Network },
 ];
 
 export function Sidebar() {

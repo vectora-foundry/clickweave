@@ -459,6 +459,59 @@ describe("clearConversationFlow", () => {
     expect(s.agentRunFinishedAt).toBeNull();
   });
 
+  it("hydrateRunTrace drops the trace and sets agentRunId when no run is active", () => {
+    useStore.setState({ agentRunId: null, runTraces: {} });
+    useStore.getState().hydrateRunTrace({
+      runId: "hydrated-2026-04-01",
+      phase: "executing",
+      activeSubgoal: "Click button",
+      steps: [
+        {
+          stepIndex: 0,
+          toolName: "click",
+          phase: "executing",
+          body: "ok",
+          failed: false,
+        },
+      ],
+      worldModelDeltas: [],
+      milestones: [],
+      terminalFrame: null,
+    });
+    const s = useStore.getState();
+    expect(s.agentRunId).toBe("hydrated-2026-04-01");
+    expect(s.runTraces["hydrated-2026-04-01"].steps).toHaveLength(1);
+  });
+
+  it("hydrateRunTrace is a no-op while a live run is active", () => {
+    useStore.setState({
+      agentRunId: "live-run",
+      runTraces: {
+        "live-run": {
+          runId: "live-run",
+          phase: "exploring",
+          activeSubgoal: "",
+          steps: [],
+          worldModelDeltas: [],
+          milestones: [],
+          terminalFrame: null,
+        },
+      },
+    });
+    useStore.getState().hydrateRunTrace({
+      runId: "hydrated-x",
+      phase: "executing",
+      activeSubgoal: "",
+      steps: [],
+      worldModelDeltas: [],
+      milestones: [],
+      terminalFrame: null,
+    });
+    const s = useStore.getState();
+    expect(s.agentRunId).toBe("live-run");
+    expect(s.runTraces["hydrated-x"]).toBeUndefined();
+  });
+
   it("drops the active run buffer and trace when clearing conversation", async () => {
     useStore.setState({
       agentRunId: "r1",

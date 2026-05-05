@@ -1,14 +1,10 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
-// `?raw` is Vite's first-class file-as-string import — no Node types
-// needed at typecheck time.
-import graphCanvasSource from "../GraphCanvas.tsx?raw";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
-// jsdom doesn't ship ResizeObserver; React Flow needs it.
 class ResizeObserverMock {
   observe() {}
   unobserve() {}
@@ -16,7 +12,6 @@ class ResizeObserverMock {
 }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).ResizeObserver = ResizeObserverMock;
-// jsdom also lacks DOMMatrixReadOnly, used by React Flow's panZoom.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 if (!(globalThis as any).DOMMatrixReadOnly) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -29,118 +24,108 @@ if (!(globalThis as any).DOMMatrixReadOnly) {
 import { CanvasPreviewCanvas } from "./CanvasPreviewCanvas";
 import { useStore } from "../../store/useAppStore";
 
-describe("CanvasPreviewCanvas (D12)", () => {
+describe("CanvasPreviewCanvas (trace preview)", () => {
   beforeEach(() => {
-    useStore.setState({
-      workflow: {
-        ...useStore.getState().workflow,
-        nodes: [],
-        edges: [],
-        groups: [],
-      },
-    });
+    useStore.setState({ agentRunId: null, runTraces: {} });
   });
 
-  it("renders a react-flow root with no draggable nodes", () => {
-    const { container } = render(<CanvasPreviewCanvas />);
-    const rf = container.querySelector(".react-flow");
-    expect(rf).not.toBeNull();
-    // No draggable class on the rendered nodes.
-    const draggable = container.querySelector(".react-flow__node.draggable");
-    expect(draggable).toBeNull();
+  it("shows an empty-state message when no run is active", () => {
+    render(<CanvasPreviewCanvas />);
+    expect(screen.getByText(/No active run yet/i)).toBeInTheDocument();
   });
 
-  it("wraps every custom node in pointer-events:none (P1.M4)", () => {
+  it("renders trace step tiles for the active run", async () => {
     useStore.setState({
-      workflow: {
-        ...useStore.getState().workflow,
-        nodes: [
-          {
-            id: "n1",
-            name: "First",
-            node_type: { type: "ManualStep" },
-            position: { x: 0, y: 0 },
-            enabled: true,
-            timeout_ms: null,
-            settle_ms: null,
-            retries: 0,
-            trace_level: "Minimal",
-            role: "Default",
-            expected_outcome: null,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          } as any,
-        ],
-      },
-    });
-    const { container } = render(<CanvasPreviewCanvas />);
-    const wrapper = container.querySelector(
-      ".react-flow__node > div[style*='pointer-events']",
-    );
-    expect(wrapper).not.toBeNull();
-  });
-
-  it("renders user group containers through the editor projection", async () => {
-    useStore.setState({
-      workflow: {
-        ...useStore.getState().workflow,
-        nodes: [
-          {
-            id: "n1",
-            name: "First",
-            node_type: { type: "ManualStep" },
-            position: { x: 0, y: 0 },
-            enabled: true,
-            timeout_ms: null,
-            settle_ms: null,
-            retries: 0,
-            trace_level: "Minimal",
-            role: "Default",
-            expected_outcome: null,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          } as any,
-          {
-            id: "n2",
-            name: "Second",
-            node_type: { type: "ManualStep" },
-            position: { x: 200, y: 0 },
-            enabled: true,
-            timeout_ms: null,
-            settle_ms: null,
-            retries: 0,
-            trace_level: "Minimal",
-            role: "Default",
-            expected_outcome: null,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          } as any,
-        ],
-        edges: [],
-        groups: [
-          {
-            id: "group-1",
-            name: "Review steps",
-            color: "#22c55e",
-            node_ids: ["n1", "n2"],
-            parent_group_id: null,
-          },
-        ],
+      agentRunId: "run-1",
+      runTraces: {
+        "run-1": {
+          runId: "run-1",
+          phase: "executing",
+          activeSubgoal: "Click button",
+          steps: [
+            {
+              stepIndex: 0,
+              toolName: "click",
+              phase: "executing",
+              body: "Clicked at (10,20)",
+              failed: false,
+            },
+            {
+              stepIndex: 1,
+              toolName: "type_text",
+              phase: "executing",
+              body: "typed 'hi'",
+              failed: false,
+            },
+          ],
+          worldModelDeltas: [],
+          milestones: [],
+          terminalFrame: null,
+        },
       },
     });
 
     render(<CanvasPreviewCanvas />);
 
     await waitFor(() => {
-      expect(screen.getByText("Review steps")).toBeTruthy();
+      expect(screen.getByText("click")).toBeInTheDocument();
+      expect(screen.getByText("type_text")).toBeInTheDocument();
     });
   });
 
-  it("registers nodeTypes keys that match the editor's GraphCanvas keys (P2.M2)", () => {
-    // Snake-case key for agent-run groups; camelCase for the others.
-    // GraphCanvas is a wrapper that delegates to an inner component, so
-    // `.toString()` only sees the wrapper — read the source file
-    // directly to verify the registered keys.
-    expect(graphCanvasSource).toContain("agent_run_group");
-    expect(graphCanvasSource).toContain("appGroup");
-    expect(graphCanvasSource).toContain("userGroup");
-    expect(graphCanvasSource).toContain("workflow:");
+  it("renders the terminal node alone for runs that ended before any step", async () => {
+    useStore.setState({
+      agentRunId: "run-3",
+      runTraces: {
+        "run-3": {
+          runId: "run-3",
+          phase: "exploring",
+          activeSubgoal: "",
+          steps: [],
+          worldModelDeltas: [],
+          milestones: [],
+          terminalFrame: { kind: "error", detail: "MCP spawn failed" },
+        },
+      },
+    });
+
+    render(<CanvasPreviewCanvas />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Error")).toBeInTheDocument();
+      expect(screen.getByText(/MCP spawn failed/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/No active run/i)).not.toBeInTheDocument();
+  });
+
+  it("renders the terminal node when the run has finished", async () => {
+    useStore.setState({
+      agentRunId: "run-2",
+      runTraces: {
+        "run-2": {
+          runId: "run-2",
+          phase: "executing",
+          activeSubgoal: "",
+          steps: [
+            {
+              stepIndex: 0,
+              toolName: "click",
+              phase: "executing",
+              body: "ok",
+              failed: false,
+            },
+          ],
+          worldModelDeltas: [],
+          milestones: [],
+          terminalFrame: { kind: "complete", detail: "Goal completed." },
+        },
+      },
+    });
+
+    render(<CanvasPreviewCanvas />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Complete")).toBeInTheDocument();
+    });
   });
 });

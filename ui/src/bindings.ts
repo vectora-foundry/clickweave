@@ -398,6 +398,14 @@ async listSkillsForPanel(request: ListSkillsRequest) : Promise<Result<SkillSumma
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async loadLatestRunTrace(request: LoadLatestRunTraceRequest) : Promise<Result<HydratedRunTrace | null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_latest_run_trace", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -634,12 +642,21 @@ export type FindTextParams = { search_text?: string; scope?: string | null }
 export type FocusWindowParams = ({ method: "AppName"; value: string } | { method: "WindowId"; value: number } | { method: "Pid"; value: number }) & ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { bring_to_front: boolean; app_kind?: AppKind; chrome_profile_id?: string | null }
 export type ForkSkillRequest = { skill_id: string; version: number; new_name: string; project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
 export type HoverParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target?: ClickTarget | null; dwell_ms: number }
+export type HydratedMilestoneKind = "subgoal_completed" | "recovery_succeeded"
+export type HydratedPhase = "exploring" | "executing" | "recovering"
+export type HydratedRunTrace = { run_id: string; phase: HydratedPhase; active_subgoal: string; steps: HydratedTraceStep[]; world_model_deltas: HydratedWorldModelDelta[]; milestones: HydratedTraceMilestone[]; terminal_frame: HydratedTerminalFrame | null }
+export type HydratedTerminalFrame = { kind: HydratedTerminalKind; detail: string }
+export type HydratedTerminalKind = "complete" | "stopped" | "error" | "disagreement_cancelled"
+export type HydratedTraceMilestone = { step_index: number; kind: HydratedMilestoneKind; text: string }
+export type HydratedTraceStep = { step_index: number; tool_name: string; phase: HydratedPhase; body: string; failed: boolean }
+export type HydratedWorldModelDelta = { step_index: number; changed_fields: string[] }
 export type Hypothesis = { text: string; recorded_at_step: number; refuted: boolean }
 export type ImportedAsset = { relative_path: string; absolute_path: string }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 export type LaunchAppParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { app_name: string }
 export type ListSkillsRequest = { scope: SkillScope; project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
 export type LoadAgentChatRequest = { project_path: string | null; workflow_name: string; workflow_id: string }
+export type LoadLatestRunTraceRequest = { project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
 export type LoopPredicate = { kind: "world_model_delta"; expr: string } | { kind: "step_count_reached"; count: number }
 export type McpToolCallParams = { tool_name: string; arguments: JsonValue }
 export type Milestone = { subgoal_id: SubgoalId; text: string; summary: string; pushed_at_step: number; completed_at_step: number }
@@ -715,8 +732,8 @@ export type PromoteSkillToGlobalRequest = { skill_id: string; version: number; p
 export type ProvenanceEntry = { run_id: string; step_index: number; completed_at: string; workflow_hash: string }
 export type PruneSkillLineageRequest = { project_path: string | null; workflow_name: string; workflow_id: string; node_ids: string[]; store_traces: boolean }
 export type QuitAppParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { app_name: string }
-export type RejectSkillProposalRequest = { skill_id: string; version: number; project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
 export type ReadArtifactQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string; execution_dir: string | null; run_id: string; artifact_path: string }
+export type RejectSkillProposalRequest = { skill_id: string; version: number; project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
 export type RunEventsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string; execution_dir: string | null; run_id: string }
 export type RunRequest = { workflow: Workflow; project_path: string | null; agent: EndpointConfig; fast: EndpointConfig | null; 
 /**
