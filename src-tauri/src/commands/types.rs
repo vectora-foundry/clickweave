@@ -15,14 +15,14 @@ pub struct McpStatus(pub Result<String, String>);
 pub fn resolve_storage(
     app: &tauri::AppHandle,
     project_path: &Option<String>,
-    workflow_name: &str,
-    workflow_id: uuid::Uuid,
+    project_name: &str,
+    project_id: uuid::Uuid,
 ) -> RunStorage {
     match project_path {
-        Some(p) => RunStorage::new(&project_dir(p), workflow_name),
+        Some(p) => RunStorage::new(&project_dir(p), project_name),
         None => {
             let app_data_dir = app.state::<AppDataDir>();
-            RunStorage::new_app_data(&app_data_dir.0, workflow_name, workflow_id)
+            RunStorage::new_app_data(&app_data_dir.0, project_name, project_id)
         }
     }
 }
@@ -117,16 +117,16 @@ fn default_supervision_delay_ms() -> u64 {
 #[derive(Debug, Serialize, Deserialize, Type)]
 pub struct RunsQuery {
     pub project_path: Option<String>,
-    pub workflow_id: String,
-    pub workflow_name: String,
+    pub project_id: String,
+    pub project_name: String,
     pub node_name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Type)]
 pub struct RunEventsQuery {
     pub project_path: Option<String>,
-    pub workflow_id: String,
-    pub workflow_name: String,
+    pub project_id: String,
+    pub project_name: String,
     pub node_name: String,
     pub execution_dir: Option<String>,
     pub run_id: String,
@@ -135,8 +135,8 @@ pub struct RunEventsQuery {
 #[derive(Debug, Serialize, Deserialize, Type)]
 pub struct ReadArtifactQuery {
     pub project_path: Option<String>,
-    pub workflow_id: String,
-    pub workflow_name: String,
+    pub project_id: String,
+    pub project_name: String,
     pub node_name: String,
     pub execution_dir: Option<String>,
     pub run_id: String,

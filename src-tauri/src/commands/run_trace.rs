@@ -21,8 +21,8 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Deserialize, Type)]
 pub struct LoadLatestRunTraceRequest {
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
     pub store_traces: bool,
 }
 
@@ -426,15 +426,15 @@ pub async fn load_latest_run_trace(
     if !request.store_traces {
         return Ok(None);
     }
-    let workflow_uuid: Uuid = request
-        .workflow_id
+    let project_uuid: Uuid = request
+        .project_id
         .parse()
-        .map_err(|_| CommandError::validation("Invalid workflow ID"))?;
+        .map_err(|_| CommandError::validation("Invalid project ID"))?;
     let storage = resolve_storage(
         &app,
         &request.project_path,
-        &request.workflow_name,
-        workflow_uuid,
+        &request.project_name,
+        project_uuid,
     );
     let base = storage.base_path();
     if !base.exists() {

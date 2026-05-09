@@ -7,9 +7,9 @@ use tracing::warn;
 #[tauri::command]
 #[specta::specta]
 pub fn list_runs(app: tauri::AppHandle, query: RunsQuery) -> Result<Vec<NodeRun>, CommandError> {
-    let workflow_id = parse_uuid(&query.workflow_id, "workflow")?;
+    let project_id = parse_uuid(&query.project_id, "project")?;
 
-    let storage = resolve_storage(&app, &query.project_path, &query.workflow_name, workflow_id);
+    let storage = resolve_storage(&app, &query.project_path, &query.project_name, project_id);
     storage
         .load_runs_for_node(&query.node_name)
         .map_err(|e| CommandError::io(format!("Failed to load runs: {}", e)))
@@ -21,10 +21,10 @@ pub fn load_run_events(
     app: tauri::AppHandle,
     query: RunEventsQuery,
 ) -> Result<Vec<TraceEvent>, CommandError> {
-    let workflow_id = parse_uuid(&query.workflow_id, "workflow")?;
+    let project_id = parse_uuid(&query.project_id, "project")?;
     let run_id = parse_uuid(&query.run_id, "run")?;
 
-    let storage = resolve_storage(&app, &query.project_path, &query.workflow_name, workflow_id);
+    let storage = resolve_storage(&app, &query.project_path, &query.project_name, project_id);
     let run_dir = storage
         .find_run_dir(&query.node_name, run_id, query.execution_dir.as_deref())
         .map_err(|e| CommandError::io(format!("Failed to find run directory: {}", e)))?;
@@ -69,10 +69,10 @@ pub fn read_artifact_base64(
     query: ReadArtifactQuery,
 ) -> Result<String, CommandError> {
     use base64::Engine;
-    let workflow_id = parse_uuid(&query.workflow_id, "workflow")?;
+    let project_id = parse_uuid(&query.project_id, "project")?;
     let run_id = parse_uuid(&query.run_id, "run")?;
 
-    let storage = resolve_storage(&app, &query.project_path, &query.workflow_name, workflow_id);
+    let storage = resolve_storage(&app, &query.project_path, &query.project_name, project_id);
     let run_dir = storage
         .find_run_dir(&query.node_name, run_id, query.execution_dir.as_deref())
         .map_err(|e| CommandError::io(format!("Failed to find run directory: {}", e)))?;
