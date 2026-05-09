@@ -159,8 +159,8 @@ fn test_format_execution_dirname_produces_expected_format() {
 #[test]
 fn test_new_app_data_path_structure() {
     let app_data_dir = PathBuf::from("/tmp/com.clickweave.app");
-    let workflow_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-    let storage = RunStorage::new_app_data(&app_data_dir, "My Workflow", workflow_id);
+    let project_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+    let storage = RunStorage::new_app_data(&app_data_dir, "My Workflow", project_id);
     assert_eq!(
         storage.base_path,
         PathBuf::from("/tmp/com.clickweave.app/runs/my-workflow_550e8400")

@@ -12,11 +12,11 @@ use super::*;
 ///       artifacts/
 /// ```
 pub struct RunStorage {
-    /// Points to `runs/<workflow_dir>/`
+    /// Points to `runs/<project_dir>/`
     pub(super) base_path: PathBuf,
     /// Points to the project-local procedural-skills directory for this
-    /// workflow. Saved projects use `<project>/.clickweave/skills/`;
-    /// unsaved projects use `<app_data>/skills/<workflow_uuid>/`.
+    /// project. Saved projects use `<project>/.clickweave/skills/`;
+    /// unsaved projects use `<app_data>/skills/<project_id>/`.
     pub(super) project_skills_path: PathBuf,
     /// The current execution directory name (set by `begin_execution`).
     pub(super) execution_dir: Option<String>,
@@ -61,7 +61,7 @@ impl RunStorage {
 
     /// Directory holding the project-local procedural-skill files (Spec 3).
     /// Saved projects use `<project>/.clickweave/skills/`; unsaved projects
-    /// use `<app_data>/skills/<workflow_uuid>/` so first-save can move the
+    /// use `<app_data>/skills/<project_id>/` so first-save can move the
     /// directory into the project without depending on the run-log layout.
     ///
     /// Creates the directory if it does not yet exist (mkdir -p
@@ -125,13 +125,13 @@ impl RunStorage {
 
     /// Create storage for a saved project.
     ///
-    /// Path: `<project>/.clickweave/runs/<sanitized_workflow_name>/`
-    pub fn new(project_path: &Path, workflow_name: &str) -> Self {
+    /// Path: `<project>/.clickweave/runs/<sanitized_project_name>/`
+    pub fn new(project_path: &Path, project_name: &str) -> Self {
         let clickweave_dir = project_path.join(".clickweave");
         Self {
             base_path: clickweave_dir
                 .join("runs")
-                .join(sanitize_name(workflow_name)),
+                .join(sanitize_name(project_name)),
             project_skills_path: clickweave_dir.join("skills"),
             execution_dir: None,
             persistent: true,
@@ -140,13 +140,13 @@ impl RunStorage {
 
     /// Create storage for an unsaved project (app data fallback).
     ///
-    /// Path: `<app_data>/runs/<sanitized_workflow_name>_<short_uuid>/`
-    pub fn new_app_data(app_data_dir: &Path, workflow_name: &str, workflow_id: Uuid) -> Self {
-        let short_id = &workflow_id.to_string()[..8];
-        let dir_name = format!("{}_{short_id}", sanitize_name(workflow_name));
+    /// Path: `<app_data>/runs/<sanitized_project_name>_<short_uuid>/`
+    pub fn new_app_data(app_data_dir: &Path, project_name: &str, project_id: Uuid) -> Self {
+        let short_id = &project_id.to_string()[..8];
+        let dir_name = format!("{}_{short_id}", sanitize_name(project_name));
         Self {
             base_path: app_data_dir.join("runs").join(dir_name),
-            project_skills_path: app_data_dir.join("skills").join(workflow_id.to_string()),
+            project_skills_path: app_data_dir.join("skills").join(project_id.to_string()),
             execution_dir: None,
             persistent: true,
         }
