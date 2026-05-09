@@ -9,11 +9,11 @@ pub(super) fn ensure_agent_idle(app: &tauri::AppHandle) -> Result<(), CommandErr
     Ok(())
 }
 
-pub(super) fn parse_workflow_id(request: &AgentRunRequest) -> Result<uuid::Uuid, CommandError> {
+pub(super) fn parse_project_id(request: &AgentRunRequest) -> Result<uuid::Uuid, CommandError> {
     request
-        .workflow_id
+        .project_id
         .parse()
-        .map_err(|_| CommandError::validation("Invalid workflow ID"))
+        .map_err(|_| CommandError::validation("Invalid project ID"))
 }
 
 pub(super) fn resolve_run_id(
@@ -83,7 +83,7 @@ pub(super) fn build_episodic_context(
         enabled: true,
         workflow_local_path: wl_path,
         global_path,
-        workflow_hash: request.workflow_id.clone(),
+        project_id: request.project_id.clone(),
     })
 }
 
@@ -114,7 +114,7 @@ pub(super) fn build_skill_context(
         enabled: persist_traces && enabled,
         project_skills_dir,
         global_skills_dir,
-        project_id: request.workflow_id.clone(),
+        project_id: request.project_id.clone(),
     })
 }
 

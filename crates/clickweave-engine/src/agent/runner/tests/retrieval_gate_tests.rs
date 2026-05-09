@@ -10,7 +10,7 @@ fn enabled_runner_with_store() -> (StateRunner, TempDir) {
         enabled: true,
         workflow_local_path: wl_path.clone(),
         global_path: None,
-        workflow_hash: "gate-test-workflow".into(),
+        project_id: "gate-test-workflow".into(),
     };
     let runner = StateRunner::new_with_episodic("goal".to_string(), AgentConfig::default(), ctx);
     // Sanity: store opened.

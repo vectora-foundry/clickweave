@@ -66,7 +66,7 @@ impl StateRunner {
                     consecutive_errors_at_entry: self.consecutive_errors as u32,
                     step_index: self.step_index,
                 },
-                workflow_hash: self.episodic_ctx.workflow_hash.clone(),
+                workflow_hash: self.episodic_ctx.project_id.clone(),
                 pre_state_signature: sig.clone(),
                 active_watch_slots: active_slots.clone(),
                 events_jsonl_ref: events_ref,
@@ -76,7 +76,7 @@ impl StateRunner {
 
         let subgoal_owned = self.task_state.subgoal_stack.last().map(|s| s.text.clone());
         let goal_owned = self.task_state.goal.clone();
-        let workflow_hash = self.episodic_ctx.workflow_hash.clone();
+        let workflow_hash = self.episodic_ctx.project_id.clone();
         let now = chrono::Utc::now();
 
         let q = RetrievalQuery {
@@ -632,7 +632,7 @@ impl StateRunner {
         // re-walking `task_state.milestones`.
         let queue = std::mem::take(&mut self.completed_subgoal_extraction_queue);
         if !queue.is_empty() && self.skill_ctx.enabled && self.config.skills_enabled {
-            let workflow_hash = self.episodic_ctx.workflow_hash.clone();
+            let workflow_hash = self.episodic_ctx.project_id.clone();
             let run_id = self.run_id;
             let step_index = self.state.steps.len();
 

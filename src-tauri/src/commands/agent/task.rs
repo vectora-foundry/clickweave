@@ -28,7 +28,7 @@ pub(super) struct AgentRunTaskInput {
     pub(super) skill_ctx: SkillContext,
     pub(super) persist_traces: bool,
     pub(super) promotion_episodic_ctx: EpisodicContext,
-    pub(super) promotion_workflow_hash: String,
+    pub(super) promotion_project_id: String,
     pub(super) run_start_utc: chrono::DateTime<chrono::Utc>,
 }
 
@@ -68,7 +68,7 @@ async fn run_agent_task(input: AgentRunTaskInput) {
         skill_ctx,
         persist_traces,
         promotion_episodic_ctx,
-        promotion_workflow_hash,
+        promotion_project_id,
         run_start_utc,
     } = input;
 
@@ -164,7 +164,7 @@ async fn run_agent_task(input: AgentRunTaskInput) {
                 &terminal_event_tx,
                 persist_traces,
                 &promotion_episodic_ctx,
-                &promotion_workflow_hash,
+                &promotion_project_id,
                 run_start_utc,
             )
             .await;
@@ -261,7 +261,7 @@ async fn handle_agent_success(
     terminal_event_tx: &tokio::sync::mpsc::Sender<RunnerOutput>,
     persist_traces: bool,
     promotion_episodic_ctx: &EpisodicContext,
-    promotion_workflow_hash: &str,
+    promotion_project_id: &str,
     run_start_utc: chrono::DateTime<chrono::Utc>,
 ) {
     let resolved_terminal = resolve_terminal_reason(
@@ -285,7 +285,7 @@ async fn handle_agent_success(
         emit_handle,
         task_run_id,
         promotion_episodic_ctx,
-        promotion_workflow_hash,
+        promotion_project_id,
         run_start_utc,
         &resolved_terminal,
     )
@@ -410,7 +410,7 @@ async fn queue_terminal_promotion(
     emit_handle: &tauri::AppHandle,
     task_run_id: &str,
     promotion_episodic_ctx: &EpisodicContext,
-    promotion_workflow_hash: &str,
+    promotion_project_id: &str,
     run_start_utc: chrono::DateTime<chrono::Utc>,
     resolved_terminal: &Option<TerminalReason>,
 ) {
@@ -428,7 +428,7 @@ async fn queue_terminal_promotion(
         _ => PromotionTerminalKind::SkipPromotion,
     };
     if let Err(e) = tx.try_send(EpisodicWriteRequest::PromotePass {
-        workflow_hash: promotion_workflow_hash.to_string(),
+        workflow_hash: promotion_project_id.to_string(),
         terminal_kind,
         run_started_at: run_start_utc,
     }) {

@@ -94,14 +94,14 @@ async fn runner_output_forwarder_skips_drain_barrier_and_persists_events() {
     let run_id = uuid::Uuid::new_v4().to_string();
 
     let tmp = tempfile::tempdir().expect("tempdir");
-    let workflow_name = "runner-output-forwarder";
-    let mut storage_inner = clickweave_core::storage::RunStorage::new(tmp.path(), workflow_name);
+    let project_name = "runner-output-forwarder";
+    let mut storage_inner = clickweave_core::storage::RunStorage::new(tmp.path(), project_name);
     let exec_dir = storage_inner.begin_execution().expect("begin_execution");
     let events_path = tmp
         .path()
         .join(".clickweave")
         .join("runs")
-        .join(workflow_name)
+        .join(project_name)
         .join(&exec_dir)
         .join("events.jsonl");
     let storage = Arc::new(Mutex::new(storage_inner));
@@ -307,14 +307,14 @@ async fn run_smoke_test_body() {
 
     // ── Arrange: real RunStorage rooted at a tempdir ───────────
     let tmp = tempfile::tempdir().expect("tempdir");
-    let workflow_name = "rubric-10-smoke";
-    let mut storage_inner = clickweave_core::storage::RunStorage::new(tmp.path(), workflow_name);
+    let project_name = "rubric-10-smoke";
+    let mut storage_inner = clickweave_core::storage::RunStorage::new(tmp.path(), project_name);
     let exec_dir = storage_inner.begin_execution().expect("begin_execution");
     let events_path = tmp
         .path()
         .join(".clickweave")
         .join("runs")
-        .join(workflow_name)
+        .join(project_name)
         .join(&exec_dir)
         .join("events.jsonl");
     let storage = Arc::new(Mutex::new(storage_inner));

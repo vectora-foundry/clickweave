@@ -122,8 +122,8 @@ pub struct AgentRunRequest {
     pub goal: String,
     pub agent: EndpointConfig,
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
     /// Permission policy for this run. When `None`, the default policy
     /// (empty rules, allow_all=false, guardrail off) is used.
     #[serde(default)]

@@ -111,7 +111,7 @@ async fn writer_emits_episode_written_event_after_derive_and_insert() {
         enabled: true,
         workflow_local_path: dir.path().join("episodic.sqlite"),
         global_path: None,
-        workflow_hash: "test-workflow".into(),
+        project_id: "test-workflow".into(),
     };
 
     let (tx, mut rx) = mpsc::channel::<RunnerOutput>(16);
@@ -181,7 +181,7 @@ async fn writer_emits_episode_promoted_event_on_clean_terminal() {
         enabled: true,
         workflow_local_path: wl_path.clone(),
         global_path: Some(g_path.clone()),
-        workflow_hash: "test-workflow".into(),
+        project_id: "test-workflow".into(),
     };
 
     let (tx, mut rx) = mpsc::channel::<RunnerOutput>(16);
@@ -268,7 +268,7 @@ async fn writer_skips_promotion_on_skip_terminal_kind_and_emits_no_event() {
         enabled: true,
         workflow_local_path: wl_path.clone(),
         global_path: Some(g_path.clone()),
-        workflow_hash: "test-workflow".into(),
+        project_id: "test-workflow".into(),
     };
 
     let (tx, mut rx) = mpsc::channel::<RunnerOutput>(16);
@@ -333,7 +333,7 @@ async fn single_writer_processes_derive_and_insert_then_promote_pass() {
         enabled: true,
         workflow_local_path: wl_path.clone(),
         global_path: Some(g_path.clone()),
-        workflow_hash: "unified-writer-test".into(),
+        project_id: "unified-writer-test".into(),
     };
 
     let (tx, mut rx) = mpsc::channel::<RunnerOutput>(16);
@@ -483,7 +483,7 @@ async fn writer_queue_returns_backpressure_without_blocking_on_saturated_channel
         enabled: true,
         workflow_local_path: dir.path().join("wl.sqlite"),
         global_path: None,
-        workflow_hash: "bp-w".into(),
+        project_id: "bp-w".into(),
     };
     let writer = EpisodicWriter::spawn(ctx, None, uuid::Uuid::new_v4()).expect("spawn");
 
@@ -555,7 +555,7 @@ async fn writer_emits_warning_on_derive_and_insert_failure() {
         enabled: true,
         workflow_local_path: wl_path.clone(),
         global_path: None,
-        workflow_hash: "warn-w".into(),
+        project_id: "warn-w".into(),
     };
     let (tx, mut rx) = mpsc::channel::<RunnerOutput>(64);
     let writer = EpisodicWriter::spawn(ctx, Some(tx), uuid::Uuid::new_v4()).expect("spawn");
@@ -631,7 +631,7 @@ async fn writer_with_config_honours_global_cap_and_prunes() {
         enabled: true,
         workflow_local_path: wl_path.clone(),
         global_path: Some(g_path.clone()),
-        workflow_hash: "promotion-cap-workflow".into(),
+        project_id: "promotion-cap-workflow".into(),
     };
 
     // Tight global cap (3) so we can prove pruning fires through the
@@ -754,7 +754,7 @@ async fn promotion_dedup_returns_existing_global_id_and_unions_refs() {
         enabled: true,
         workflow_local_path: wl_path.clone(),
         global_path: Some(g_path.clone()),
-        workflow_hash: "dedup-workflow".into(),
+        project_id: "dedup-workflow".into(),
     };
 
     let (tx, mut rx) = mpsc::channel::<RunnerOutput>(16);

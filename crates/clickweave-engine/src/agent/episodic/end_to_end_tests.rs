@@ -46,7 +46,7 @@ fn enabled_ctx(workflow_local: PathBuf) -> EpisodicContext {
         enabled: true,
         workflow_local_path: workflow_local,
         global_path: None,
-        workflow_hash: "test-workflow-uuid".into(),
+        project_id: "test-workflow-uuid".into(),
     }
 }
 

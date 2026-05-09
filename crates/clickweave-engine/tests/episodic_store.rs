@@ -330,7 +330,7 @@ async fn writer_persists_on_derive_and_insert() {
         enabled: true,
         workflow_local_path: dir.path().join("wl.sqlite"),
         global_path: None,
-        workflow_hash: "w1".into(),
+        project_id: "w1".into(),
     };
     let writer = EpisodicWriter::spawn(ctx.clone(), None, uuid::Uuid::new_v4()).unwrap();
 
@@ -423,7 +423,7 @@ async fn writer_skip_promotion_does_not_touch_global_store() {
         enabled: true,
         workflow_local_path: wl_path.clone(),
         global_path: Some(global_path.clone()),
-        workflow_hash: "w1".into(),
+        project_id: "w1".into(),
     };
     let writer = EpisodicWriter::spawn(ctx, None, uuid::Uuid::new_v4()).unwrap();
 
@@ -484,7 +484,7 @@ async fn promotion_dedup_writes_rfc3339_last_seen_at() {
         enabled: true,
         workflow_local_path: wl_path,
         global_path: Some(global_path.clone()),
-        workflow_hash: "w1".into(),
+        project_id: "w1".into(),
     };
     let writer = EpisodicWriter::spawn(ctx, None, uuid::Uuid::new_v4()).unwrap();
     writer

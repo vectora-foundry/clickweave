@@ -11,13 +11,13 @@ pub async fn run_agent(
     let mcp_binary_path =
         crate::mcp_resolve::resolve_mcp_binary().map_err(|e| CommandError::mcp(format!("{e}")))?;
 
-    let workflow_id = parse_workflow_id(&request)?;
+    let project_id = parse_project_id(&request)?;
 
     let mut storage = resolve_storage(
         &app,
         &request.project_path,
-        &request.workflow_name,
-        workflow_id,
+        &request.project_name,
+        project_id,
     );
     // Privacy kill switch: an explicit `false` from the UI disables
     // all on-disk writes for this run. The default is persist-on to
@@ -96,7 +96,7 @@ pub async fn run_agent(
     let proposal_skill_ctx = skill_ctx.clone();
     let proposal_agent_config = agent_config.clone();
     let promotion_episodic_ctx = episodic_ctx.clone();
-    let promotion_workflow_hash = episodic_ctx.workflow_hash.clone();
+    let promotion_project_id = episodic_ctx.project_id.clone();
 
     // Channels used to signal cleanup when the agent task, event forwarder,
     // and approval forwarder have all finished, preventing stale event leakage.
@@ -138,7 +138,7 @@ pub async fn run_agent(
         skill_ctx: task_skill_ctx,
         persist_traces,
         promotion_episodic_ctx,
-        promotion_workflow_hash,
+        promotion_project_id,
         run_start_utc,
     });
 
