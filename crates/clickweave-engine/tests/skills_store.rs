@@ -43,6 +43,10 @@ fn sample_skill(id: &str, version: u32) -> Skill {
         updated_at: Utc::now(),
         produced_node_ids: vec![],
         body: format!("# {id}\n\nbody for {id}\n"),
+        schema_version: clickweave_engine::agent::skills::SKILL_SCHEMA_VERSION,
+        variables: vec![],
+        sections: vec![],
+        replay: None,
     }
 }
 
@@ -142,7 +146,10 @@ fn malformed_file_errors_but_other_files_still_load() {
     assert_eq!(files.len(), 2);
 
     let bad_err = store.read_skill(&bad_path).unwrap_err();
-    assert!(matches!(bad_err, SkillError::InvalidFrontmatter(_)));
+    assert!(matches!(
+        bad_err,
+        SkillError::MissingFrontmatterDelimiter(_)
+    ));
 
     let good_again = store.read_skill(&good_path).unwrap();
     assert_eq!(good_again.id, "eps");
