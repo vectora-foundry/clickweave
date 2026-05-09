@@ -81,6 +81,7 @@ pub fn build_action_sketch(action_sequence: &[RecordedStep]) -> Vec<ActionSketch
         let (captures_pre, captures) = split_pre_post_captures(captures_for_step);
         let step = &action_sequence[idx];
         steps.push(ActionSketchStep::ToolCall {
+            step_id: format!("s_{:06}", idx),
             tool: step.tool_name.clone(),
             args: rewritten_args,
             captures_pre,

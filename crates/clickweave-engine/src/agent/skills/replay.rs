@@ -12,10 +12,10 @@
 //! `run_skill_frame`, the shared `dispatch_tool_call_through_helper`
 //! that routes both live and replayed `tool_call` steps through the
 //! existing safety surface (permission policy, coordinate-primitive
-//! guard, consecutive-destructive cap, approval gate), the `SubSkill`
-//! recursion site, the `Loop` arm, and the `<skill_in_progress>`
-//! LLM-fallback rendering — is staged for the Phase 4 follow-up. The
-//! handoff report enumerates the resume seam.
+//! guard, consecutive-destructive cap, approval gate), the `Loop` arm,
+//! and the `<skill_in_progress>` LLM-fallback rendering — is staged for
+//! the Phase 4 follow-up. The handoff report enumerates the resume
+//! seam.
 //!
 //! # Replay outcomes
 //!
@@ -38,9 +38,137 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::types::{LoopPredicate, ParameterSlot, Skill, SkillError, SkillStats};
+use super::types::{
+    Fidelity, LoopPredicate, ParameterSlot, Skill, SkillError, SkillId, SkillStats,
+};
+
+/// Wire-format version stamped into every `replay.json` sidecar.
+/// Bumped on any breaking format change; loaders reject
+/// `schema_version > REPLAY_SCHEMA_VERSION` with
+/// `ReplayParseError::UnsupportedSchemaVersion`.
+pub const REPLAY_SCHEMA_VERSION: u32 = 1;
+
+/// FIFO cap on `ReplayStepBundle::repair_history` per D31. Successive
+/// repairs evict the oldest entry once the cap is reached.
+pub const REPAIR_HISTORY_CAP: usize = 16;
+
+/// On-disk sidecar adjacent to `SKILL.md`. Carries per-step replay
+/// metadata (intent, signals, postconditions, repair history) keyed on
+/// the same `step_id` strings the action_sketch uses, plus the section
+/// retirement chain that lets historical run records resolve through
+/// chat-driven section splits.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ReplayJson {
+    pub skill_id: SkillId,
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub steps: HashMap<String, ReplayStepBundle>,
+    #[serde(default)]
+    pub section_history: Vec<SectionHistoryEntry>,
+}
+
+/// Per-step replay bundle. Phase 1 leaves `intent` / `action_kind` /
+/// preconditions / postconditions / signals empty for freshly-recorded
+/// skills — the batched intent-extraction pass that fills them lands in
+/// Phase 2. The fallback in D32 substitutes destructive-tool annotations
+/// when `requires_approval` is `None`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ReplayStepBundle {
+    pub intent: Option<String>,
+    pub action_kind: Option<String>,
+    pub preconditions: Option<serde_json::Value>,
+    #[serde(default)]
+    pub signals: Vec<Signal>,
+    pub postconditions: Option<serde_json::Value>,
+    pub requires_approval: Option<bool>,
+    #[serde(default)]
+    pub irreversible: bool,
+    #[serde(default)]
+    pub fidelity: Fidelity,
+    #[serde(default)]
+    pub repair_history: Vec<RepairHistoryEntry>,
+}
+
+/// Repair-tracker source for the deterministic runner. Ordered from
+/// highest fidelity to lowest in the runtime fallback chain (CDP → AX
+/// → image-crop → coords → keyboard).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Signal {
+    AccessibilityLabel {
+        role: String,
+        label: String,
+        parent_window: Option<String>,
+    },
+    CdpSelector {
+        selector: String,
+    },
+    Keyboard {
+        shortcut: String,
+    },
+    ImageCrop {
+        path: String,
+        bbox: [i32; 4],
+    },
+    Coords {
+        x: i32,
+        y: i32,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepairHistoryEntry {
+    pub at: chrono::DateTime<chrono::Utc>,
+    pub from_signal: Option<Signal>,
+    pub to_signal: Signal,
+    pub iteration: u32,
+}
+
+/// Recorded chain of section-id retirement so historical
+/// `runs/<run_id>.json` records continue to resolve after a chat-driven
+/// section split.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SectionHistoryEntry {
+    pub retired: String,
+    pub split_into: Vec<String>,
+    pub at_version: u32,
+    pub at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Parse a `replay.json` byte string into [`ReplayJson`]. Rejects
+/// future schema versions with `ReplayParseError::UnsupportedSchemaVersion`
+/// so a loader running an older binary can never silently zero out a
+/// sidecar it doesn't understand.
+pub fn parse_replay_json(contents: &str) -> Result<ReplayJson, ReplayParseError> {
+    let json: ReplayJson = serde_json::from_str(contents).map_err(ReplayParseError::Malformed)?;
+    if json.schema_version > REPLAY_SCHEMA_VERSION {
+        return Err(ReplayParseError::UnsupportedSchemaVersion {
+            found: json.schema_version,
+            max_supported: REPLAY_SCHEMA_VERSION,
+        });
+    }
+    Ok(json)
+}
+
+/// Drop the oldest [`RepairHistoryEntry`] entries until the bundle is
+/// at or below [`REPAIR_HISTORY_CAP`]. Idempotent.
+pub fn enforce_repair_history_cap(bundle: &mut ReplayStepBundle) {
+    while bundle.repair_history.len() > REPAIR_HISTORY_CAP {
+        bundle.repair_history.remove(0);
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ReplayParseError {
+    #[error("malformed replay.json: {0}")]
+    Malformed(serde_json::Error),
+    #[error("unsupported replay.json schema version {found}; max supported is {max_supported}")]
+    UnsupportedSchemaVersion { found: u32, max_supported: u32 },
+}
 
 /// Exponential-moving-average smoothing constant for `success_rate`.
 /// Picked low enough that a single divergent run can't crater a
@@ -439,5 +567,115 @@ mod tests {
         // 0.2 * 0.0 + 0.8 * 1.0 = 0.8
         assert!((updated.success_rate - 0.8).abs() < 1e-6);
         assert_eq!(updated.last_invoked_at, None);
+    }
+
+    #[test]
+    fn replay_roundtrip_skeleton_replay() {
+        let original = ReplayJson {
+            skill_id: "skl_skeleton".into(),
+            schema_version: REPLAY_SCHEMA_VERSION,
+            steps: HashMap::new(),
+            section_history: vec![],
+        };
+        let encoded = serde_json::to_string(&original).unwrap();
+        let decoded = parse_replay_json(&encoded).unwrap();
+        assert_eq!(decoded.skill_id, original.skill_id);
+        assert_eq!(decoded.schema_version, REPLAY_SCHEMA_VERSION);
+        assert!(decoded.steps.is_empty());
+        assert!(decoded.section_history.is_empty());
+    }
+
+    #[test]
+    fn replay_roundtrip_populated_step_bundle() {
+        let mut steps = HashMap::new();
+        steps.insert(
+            "s_002".to_string(),
+            ReplayStepBundle {
+                intent: Some("Open the compose window".into()),
+                action_kind: Some("Click".into()),
+                preconditions: None,
+                signals: vec![
+                    Signal::AccessibilityLabel {
+                        role: "button".into(),
+                        label: "New Message".into(),
+                        parent_window: Some("Inbox".into()),
+                    },
+                    Signal::Keyboard {
+                        shortcut: "cmd+n".into(),
+                    },
+                ],
+                postconditions: None,
+                requires_approval: Some(false),
+                irreversible: false,
+                fidelity: Fidelity::Solid,
+                repair_history: vec![RepairHistoryEntry {
+                    at: chrono::DateTime::parse_from_rfc3339("2026-05-09T12:34:56Z")
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                    from_signal: None,
+                    to_signal: Signal::Coords { x: 12, y: 34 },
+                    iteration: 1,
+                }],
+            },
+        );
+        let original = ReplayJson {
+            skill_id: "skl_populated".into(),
+            schema_version: REPLAY_SCHEMA_VERSION,
+            steps,
+            section_history: vec![SectionHistoryEntry {
+                retired: "sec_old".into(),
+                split_into: vec!["sec_old".into(), "sec_old_2".into()],
+                at_version: 4,
+                at: chrono::DateTime::parse_from_rfc3339("2026-05-09T13:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+            }],
+        };
+        let encoded = serde_json::to_string(&original).unwrap();
+        let decoded = parse_replay_json(&encoded).unwrap();
+        let bundle = decoded.steps.get("s_002").expect("step bundle present");
+        assert_eq!(bundle.signals.len(), 2);
+        assert_eq!(bundle.repair_history.len(), 1);
+        assert_eq!(bundle.fidelity, Fidelity::Solid);
+        assert_eq!(decoded.section_history[0].retired, "sec_old");
+    }
+
+    #[test]
+    fn replay_parse_rejects_unsupported_schema_version() {
+        let raw = serde_json::json!({
+            "skill_id": "skl_future",
+            "schema_version": REPLAY_SCHEMA_VERSION + 1,
+        });
+        let err = parse_replay_json(&raw.to_string()).unwrap_err();
+        match err {
+            ReplayParseError::UnsupportedSchemaVersion {
+                found,
+                max_supported,
+            } => {
+                assert_eq!(found, REPLAY_SCHEMA_VERSION + 1);
+                assert_eq!(max_supported, REPLAY_SCHEMA_VERSION);
+            }
+            other => panic!("expected UnsupportedSchemaVersion, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enforce_repair_history_cap_evicts_oldest() {
+        let mut bundle = ReplayStepBundle::default();
+        for i in 0..(REPAIR_HISTORY_CAP as u32 + 4) {
+            bundle.repair_history.push(RepairHistoryEntry {
+                at: chrono::DateTime::parse_from_rfc3339("2026-05-09T00:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+                from_signal: None,
+                to_signal: Signal::Coords { x: i as i32, y: 0 },
+                iteration: i,
+            });
+        }
+        enforce_repair_history_cap(&mut bundle);
+        assert_eq!(bundle.repair_history.len(), REPAIR_HISTORY_CAP);
+        // Oldest entries (iterations 0..=3) were evicted.
+        let first_kept = bundle.repair_history.first().unwrap();
+        assert_eq!(first_kept.iteration, 4);
     }
 }

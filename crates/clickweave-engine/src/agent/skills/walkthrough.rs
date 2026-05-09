@@ -50,10 +50,12 @@ pub fn walkthrough_to_skill(
     let action_sketch = workflow
         .nodes
         .iter()
-        .map(|node| {
+        .enumerate()
+        .map(|(idx, node)| {
             let invocation =
                 node_type_to_tool_invocation(&node.node_type).map_err(map_tool_mapping_error)?;
             Ok(ActionSketchStep::ToolCall {
+                step_id: format!("s_{:06}", idx),
                 tool: invocation.name,
                 args: invocation.arguments,
                 captures_pre: vec![],
@@ -113,6 +115,10 @@ pub fn walkthrough_to_skill(
         updated_at: now,
         produced_node_ids: workflow.nodes.iter().map(|node| node.id).collect(),
         body: String::new(),
+        schema_version: super::SKILL_SCHEMA_VERSION,
+        variables: vec![],
+        sections: vec![],
+        replay: None,
     })
 }
 

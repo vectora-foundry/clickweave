@@ -210,7 +210,6 @@ fn action_sketch_contains_unverified_side_effect(steps: &[ActionSketchStep]) -> 
             expected_world_model_delta.changed_fields.is_empty()
                 && script_tool_args_have_obvious_side_effect(tool, args)
         }
-        ActionSketchStep::SubSkill { .. } => false,
         ActionSketchStep::Loop { body, .. } => action_sketch_contains_unverified_side_effect(body),
     })
 }
@@ -302,6 +301,10 @@ fn build_draft_skill(
         updated_at: now,
         produced_node_ids: produced_node_ids.to_vec(),
         body: String::new(),
+        schema_version: super::SKILL_SCHEMA_VERSION,
+        variables: vec![],
+        sections: vec![],
+        replay: None,
     }
 }
 
@@ -346,18 +349,6 @@ fn sketches_equivalent(a: &[ActionSketchStep], b: &[ActionSketchStep]) -> bool {
                 tool: t2, args: a2, ..
             },
         ) => t1 == t2 && a1 == a2,
-        (
-            ActionSketchStep::SubSkill {
-                skill_id: id1,
-                version: v1,
-                ..
-            },
-            ActionSketchStep::SubSkill {
-                skill_id: id2,
-                version: v2,
-                ..
-            },
-        ) => id1 == id2 && v1 == v2,
         (ActionSketchStep::Loop { body: b1, .. }, ActionSketchStep::Loop { body: b2, .. }) => {
             sketches_equivalent(b1, b2)
         }

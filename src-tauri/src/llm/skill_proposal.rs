@@ -210,9 +210,6 @@ fn collect_candidates(
                     });
                 }
             }
-            ActionSketchStep::SubSkill { parameters, .. } => {
-                collect_literals(parameters, &step_path, "parameters", literals);
-            }
             ActionSketchStep::Loop { body, .. } => {
                 collect_candidates(body, step_path, literals, bindings);
             }
@@ -374,6 +371,7 @@ mod tests {
             },
             parameter_schema: vec![],
             action_sketch: vec![ActionSketchStep::ToolCall {
+                step_id: "s_test_click".into(),
                 tool: "click".into(),
                 args: serde_json::json!({ "text": "Vesna" }),
                 captures_pre: vec![],
@@ -396,6 +394,10 @@ mod tests {
             updated_at: now,
             produced_node_ids: vec![],
             body: String::new(),
+            schema_version: clickweave_engine::agent::skills::SKILL_SCHEMA_VERSION,
+            variables: vec![],
+            sections: vec![],
+            replay: None,
         }
     }
 }

@@ -22,6 +22,7 @@ pub fn fold_polling_loops(steps: &mut Vec<ActionSketchStep>) {
             steps.drain(i..i + repeat_len * (repeat_count - 1));
             let until = synthesize_until_predicate(&body);
             let new_loop = ActionSketchStep::Loop {
+                step_id: format!("s_loop_{:06}", i),
                 until,
                 body,
                 max_iterations: repeat_count as u32 + SAFETY_MARGIN_ITERATIONS,
@@ -92,6 +93,7 @@ mod tests {
 
     fn tc(tool: &str, args: serde_json::Value) -> ActionSketchStep {
         ActionSketchStep::ToolCall {
+            step_id: format!("s_test_{tool}"),
             tool: tool.into(),
             args,
             captures_pre: vec![],

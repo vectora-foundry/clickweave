@@ -32,6 +32,7 @@ fn make_skill(id: &str, version: u32, state: SkillState, schema: Vec<ParameterSl
         },
         parameter_schema: schema,
         action_sketch: vec![ActionSketchStep::ToolCall {
+            step_id: "s_test_noop".to_string(),
             tool: "noop".to_string(),
             args: serde_json::json!({}),
             captures_pre: vec![],
@@ -59,11 +60,16 @@ fn make_skill(id: &str, version: u32, state: SkillState, schema: Vec<ParameterSl
         updated_at: now,
         produced_node_ids: vec![],
         body: "# Test\n".to_string(),
+        schema_version: crate::agent::skills::SKILL_SCHEMA_VERSION,
+        variables: vec![],
+        sections: vec![],
+        replay: None,
     }
 }
 
 fn tool_step(tool: &str) -> ActionSketchStep {
     ActionSketchStep::ToolCall {
+        step_id: format!("s_test_{tool}"),
         tool: tool.to_string(),
         args: serde_json::json!({}),
         captures_pre: vec![],
