@@ -1,5 +1,5 @@
 pub mod agent;
 pub(crate) mod cdp_lifecycle;
-mod executor;
+pub mod executor;
 
 pub use executor::*;

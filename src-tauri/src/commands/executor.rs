@@ -1,7 +1,9 @@
 use super::error::CommandError;
 use super::types::*;
-use clickweave_engine::agent::skills::SkillStore;
+use clickweave_engine::agent::skills::{Skill, SkillStore};
+use clickweave_engine::executor::skill_runner::{SkillRunContext, run_skill_steps};
 use clickweave_engine::{ExecutorCommand, ExecutorEvent, ExecutorState};
+use clickweave_mcp::McpClient;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashMap;
@@ -74,13 +76,14 @@ fn default_supervision_delay_ms() -> u64 {
     500
 }
 
-/// Phase 1.C stub: resolves the requested skill from the project's
-/// skill store and returns Ok without dispatching the executor. Full
-/// executor wiring lands in Phase 1.D, when the native `Skill`-driven
-/// runner replaces the deleted `WorkflowExecutor`.
-//
-// 1.D WIRE-UP: replace the load-and-return body below with the real
-// dispatch into the new `skill_runner` once it lands in Phase 1.D.
+/// Dispatch a skill run via the native `skill_runner` (D28).
+///
+/// Resolves the requested skill from the project's `SkillStore`,
+/// creates a per-run record under `<skills>/<skill_id>/runs/`, spawns
+/// the MCP sidecar, and runs `run_skill_steps` against the skill's
+/// `action_sketch`. Per-step events flow through the `ExecutorEvent`
+/// channel and out to the UI via `executor://*` topics, mirroring the
+/// shape used by the deleted `WorkflowExecutor`.
 #[tauri::command]
 #[specta::specta]
 pub async fn run_skill(
@@ -94,48 +97,172 @@ pub async fn run_skill(
         }
     }
 
-    let storage = resolve_storage(
+    let mut storage = resolve_storage(
         &app,
         &request.project_path,
         &request.project_name,
         request.project_id,
     );
+    // Privacy kill switch — disable persistence before any run record
+    // is written so an opted-out run never produces on-disk artifacts.
+    let persist_traces = request.store_traces.unwrap_or(true);
+    storage.set_persistent(persist_traces);
 
     let skills_dir = storage
         .project_skills_dir()
         .map_err(|e| CommandError::io(format!("resolve project_skills_dir: {e}")))?;
     let store = SkillStore::new(skills_dir);
 
-    // Load all skills in the directory and confirm the requested
-    // `skill_id` exists. The full executor wiring lands in 1.D — for
-    // now we just verify that the IPC plumbing surfaces the right
-    // error when the caller references a missing skill.
-    let mut found = false;
-    for path in store
-        .list_files()
-        .map_err(|e| CommandError::io(format!("list skills: {e}")))?
+    let skill = load_skill_by_id(&store, &request.skill_id)?;
+
+    // Locate the MCP sidecar binary. Fall back to a clean error when
+    // the build did not link the binary symlink so the UI surfaces a
+    // helpful message rather than a generic spawn failure.
+    let mcp_binary_path = {
+        let status = app.state::<McpStatus>();
+        match &status.0 {
+            Ok(p) => p.clone(),
+            Err(reason) => {
+                return Err(CommandError::internal(format!(
+                    "MCP sidecar unavailable: {reason}"
+                )));
+            }
+        }
+    };
+
+    let cancel_token = CancellationToken::new();
+    let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::channel::<ExecutorCommand>(8);
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel::<ExecutorEvent>(64);
+
+    // Reserve a run-record on disk before spawning the runner so a
+    // crash mid-spawn still leaves a parseable history entry.
+    let run_record = storage
+        .create_skill_run(&skill.id)
+        .map_err(|e| CommandError::io(format!("create skill run: {e}")))?;
+
+    let run_generation = {
+        let handle = app.state::<Mutex<ExecutorHandle>>();
+        let mut guard = handle.lock().unwrap();
+        guard.run_generation = guard.run_generation.wrapping_add(1);
+        guard.cancel_token = Some(cancel_token.clone());
+        guard.cmd_tx = Some(cmd_tx);
+        guard.run_generation
+    };
+
+    spawn_executor_event_forwarder(app.clone(), event_rx, run_generation);
+
+    let task_handle = tauri::async_runtime::spawn(async move {
+        let _ = event_tx
+            .send(ExecutorEvent::StateChanged(ExecutorState::Running))
+            .await;
+
+        let outcome = run_skill_dispatch(
+            &skill,
+            &request.variables,
+            &mcp_binary_path,
+            &cancel_token,
+            &event_tx,
+        )
+        .await;
+
+        // Persist the final run status. We swallow disk errors here —
+        // the trace forwarder still emits the terminal events the UI
+        // listens for, so a failed save doesn't lose user-visible
+        // signal.
+        let mut updated = run_record.clone();
+        updated.finished_at = Some(chrono::Utc::now());
+        updated.duration_ms = Some(
+            (updated.finished_at.unwrap() - updated.started_at)
+                .num_milliseconds()
+                .max(0) as u64,
+        );
+        updated.status = match &outcome {
+            Ok(()) => clickweave_core::RunStatus::Ok,
+            Err(_) if cancel_token.is_cancelled() => clickweave_core::RunStatus::Cancelled,
+            Err(_) => clickweave_core::RunStatus::Failed,
+        };
+        if let Err(e) = storage.save_skill_run(&updated) {
+            warn!(error = %e, "Failed to persist skill-run terminal record");
+        }
+
+        if let Err(e) = &outcome {
+            let _ = event_tx
+                .send(ExecutorEvent::Error(format!("Skill run failed: {e}")))
+                .await;
+        }
+        let _ = event_tx.send(ExecutorEvent::WorkflowCompleted).await;
+        let _ = event_tx
+            .send(ExecutorEvent::StateChanged(ExecutorState::Idle))
+            .await;
+    });
+
     {
-        if let Ok(skill) = store.read_skill(&path)
-            && skill.id == request.skill_id
-        {
-            found = true;
-            break;
+        let handle = app.state::<Mutex<ExecutorHandle>>();
+        let mut guard = handle.lock().unwrap();
+        if guard.run_generation == run_generation {
+            guard.task_handle = Some(task_handle);
         }
     }
 
-    if !found {
-        return Err(CommandError::validation(format!(
-            "Skill not found: {}",
-            request.skill_id
-        )));
-    }
-
-    // Privacy kill switch carried forward from the legacy RunRequest —
-    // surfaced here so the field is not silently dropped while the
-    // executor wiring is staged in 1.D.
-    let _persist_traces = request.store_traces.unwrap_or(true);
-
     Ok(())
+}
+
+fn load_skill_by_id(store: &SkillStore, skill_id: &str) -> Result<Skill, CommandError> {
+    let files = store
+        .list_files()
+        .map_err(|e| CommandError::io(format!("list skills: {e}")))?;
+    for path in files {
+        match store.read_skill(&path) {
+            Ok(skill) if skill.id == skill_id => return Ok(skill),
+            Ok(_) => continue,
+            Err(e) => {
+                warn!(path = %path.display(), error = %e, "Skipping unreadable skill on dispatch")
+            }
+        }
+    }
+    Err(CommandError::validation(format!(
+        "Skill not found: {skill_id}"
+    )))
+}
+
+async fn run_skill_dispatch(
+    skill: &Skill,
+    variables: &HashMap<String, serde_json::Value>,
+    mcp_binary_path: &str,
+    cancel_token: &CancellationToken,
+    event_tx: &tokio::sync::mpsc::Sender<ExecutorEvent>,
+) -> anyhow::Result<()> {
+    let mcp = tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => {
+            anyhow::bail!("Cancelled before MCP spawn");
+        }
+        res = McpClient::spawn(mcp_binary_path, &[]) => res?,
+    };
+
+    let mut ctx = SkillRunContext::new(&mcp, variables.clone());
+
+    tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => {
+            anyhow::bail!("Cancelled");
+        }
+        res = run_skill_steps(&mut ctx, &skill.action_sketch) => {
+            match res {
+                Ok(()) => {
+                    let _ = event_tx
+                        .send(ExecutorEvent::Log(format!(
+                            "Skill '{}' completed ({} steps)",
+                            skill.name,
+                            ctx.completed_steps.len()
+                        )))
+                        .await;
+                    Ok(())
+                }
+                Err(e) => Err(anyhow::anyhow!(format!("{e}"))),
+            }
+        }
+    }
 }
 
 fn spawn_executor_event_forwarder(
@@ -342,14 +469,6 @@ pub async fn supervision_respond(
     };
     tx.try_send(command)
         .map_err(|e| CommandError::internal(format!("Failed to send command: {}", e)))
-}
-
-// Suppresses "function never used" while the executor wiring is staged
-// in 1.D. The forwarder is kept here so the wire-up commit only adds
-// the `tauri::async_runtime::spawn` call site, not the helper itself.
-#[allow(dead_code)]
-fn _phase1c_keep_forwarder_alive() {
-    let _ = spawn_executor_event_forwarder;
 }
 
 #[cfg(test)]
