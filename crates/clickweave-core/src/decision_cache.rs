@@ -6,11 +6,11 @@ use uuid::Uuid;
 /// Caches LLM decisions made during Test mode so they can be replayed in Run mode
 /// without repeating the LLM calls.
 ///
-/// Stored as `decisions.json` alongside the workflow's run directory.
+/// Stored as `decisions.json` alongside the project's run directory.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DecisionCache {
     pub version: u32,
-    pub workflow_id: Uuid,
+    pub project_id: Uuid,
     /// Keyed by `"node_id\0target\0app_name"` (NUL separator cannot appear in UI text).
     pub click_disambiguation: HashMap<String, ClickDisambiguation>,
     /// Keyed by `"node_id\0target\0app_name"`.
@@ -66,21 +66,21 @@ pub fn cache_key(node_id: Uuid, target: &str, app_name: Option<&str>) -> String 
 }
 
 impl DecisionCache {
-    pub fn new(workflow_id: Uuid) -> Self {
+    pub fn new(project_id: Uuid) -> Self {
         Self {
             version: 1,
-            workflow_id,
+            project_id,
             ..Default::default()
         }
     }
 
     /// Load a decision cache from disk, validating that it belongs to the
-    /// expected workflow. Returns `None` if the file does not exist, cannot
-    /// be deserialized, or belongs to a different workflow.
-    pub fn load(path: &Path, expected_workflow_id: Uuid) -> Option<Self> {
+    /// expected project. Returns `None` if the file does not exist, cannot
+    /// be deserialized, or belongs to a different project.
+    pub fn load(path: &Path, expected_project_id: Uuid) -> Option<Self> {
         let data = std::fs::read_to_string(path).ok()?;
         let cache: Self = serde_json::from_str(&data).ok()?;
-        if cache.workflow_id != expected_workflow_id {
+        if cache.project_id != expected_project_id {
             return None;
         }
         Some(cache)
@@ -122,8 +122,8 @@ mod tests {
         let path = dir.join("decisions.json");
 
         let node_id = Uuid::new_v4();
-        let workflow_id = Uuid::new_v4();
-        let mut cache = DecisionCache::new(workflow_id);
+        let project_id = Uuid::new_v4();
+        let mut cache = DecisionCache::new(project_id);
         cache.click_disambiguation.insert(
             cache_key(node_id, "2", Some("Calculator")),
             ClickDisambiguation {
@@ -144,7 +144,7 @@ mod tests {
         );
 
         cache.save(&path).expect("save");
-        let loaded = DecisionCache::load(&path, workflow_id).expect("load");
+        let loaded = DecisionCache::load(&path, project_id).expect("load");
 
         assert_eq!(loaded.version, 1);
         assert_eq!(loaded.click_disambiguation.len(), 1);
@@ -169,13 +169,13 @@ mod tests {
             .join(Uuid::new_v4().to_string());
         let path = dir.join("decisions.json");
 
-        let workflow_id = Uuid::new_v4();
-        let mut cache = DecisionCache::new(workflow_id);
+        let project_id = Uuid::new_v4();
+        let mut cache = DecisionCache::new(project_id);
         let key = "Discord".to_string();
         cache.cdp_port.insert(key.clone(), CdpPort { port: 52341 });
 
         cache.save(&path).expect("save");
-        let loaded = DecisionCache::load(&path, workflow_id).expect("load");
+        let loaded = DecisionCache::load(&path, project_id).expect("load");
 
         assert_eq!(loaded.cdp_port.len(), 1);
         let entry = loaded.cdp_port.get("Discord").unwrap();
@@ -193,18 +193,18 @@ mod tests {
     }
 
     #[test]
-    fn load_rejects_wrong_workflow_id() {
+    fn load_rejects_wrong_project_id() {
         let dir = std::env::temp_dir()
             .join("clickweave_test_cache")
             .join(Uuid::new_v4().to_string());
         let path = dir.join("decisions.json");
 
-        let workflow_id = Uuid::new_v4();
-        let cache = DecisionCache::new(workflow_id);
+        let project_id = Uuid::new_v4();
+        let cache = DecisionCache::new(project_id);
         cache.save(&path).expect("save");
 
         // Load with the correct ID succeeds
-        assert!(DecisionCache::load(&path, workflow_id).is_some());
+        assert!(DecisionCache::load(&path, project_id).is_some());
 
         // Load with a different ID returns None
         let other_id = Uuid::new_v4();
