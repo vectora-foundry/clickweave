@@ -1,20 +1,36 @@
 use super::error::CommandError;
 use super::types::*;
-use clickweave_core::{NodeRun, TraceEvent};
+use clickweave_core::{SkillRun, TraceEvent};
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
+/// List historical runs for a skill (D27).
+///
+/// When `query.run_id` is `Some`, the result contains at most a single
+/// matching record (or empty when the run cannot be found). When
+/// `None`, every persisted run for the skill is returned, sorted
+/// oldest-first by `started_at`. The legacy node-keyed result shape
+/// no longer exists — every run is keyed on `skill_id` per D28.
 #[tauri::command]
 #[specta::specta]
-pub fn list_runs(app: tauri::AppHandle, query: RunsQuery) -> Result<Vec<NodeRun>, CommandError> {
+pub fn list_runs(app: tauri::AppHandle, query: RunsQuery) -> Result<Vec<SkillRun>, CommandError> {
     let project_id = parse_uuid(&query.project_id, "project")?;
-
     let storage = resolve_storage(&app, &query.project_path, &query.project_name, project_id);
+
+    if let Some(run_id_str) = query.run_id.as_deref() {
+        let run_id = parse_uuid(run_id_str, "run")?;
+        let run = storage
+            .find_skill_run(&query.skill_id, run_id)
+            .map_err(|e| CommandError::io(format!("Failed to load skill run: {e}")))?;
+        return Ok(run.into_iter().collect());
+    }
+
     storage
-        .load_runs_for_node(&query.node_name)
-        .map_err(|e| CommandError::io(format!("Failed to load runs: {}", e)))
+        .load_runs_for_skill(&query.skill_id)
+        .map_err(|e| CommandError::io(format!("Failed to load runs: {e}")))
 }
 
+/// Load the trace event log for a single skill run (D28).
 #[tauri::command]
 #[specta::specta]
 pub fn load_run_events(
@@ -25,17 +41,25 @@ pub fn load_run_events(
     let run_id = parse_uuid(&query.run_id, "run")?;
 
     let storage = resolve_storage(&app, &query.project_path, &query.project_name, project_id);
-    let run_dir = storage
-        .find_run_dir(&query.node_name, run_id, query.execution_dir.as_deref())
-        .map_err(|e| CommandError::io(format!("Failed to find run directory: {}", e)))?;
-    let events_path = run_dir.join("events.jsonl");
+    // The run record must exist so the events.jsonl path is anchored
+    // on a known run identity. Missing record = empty event list.
+    if storage
+        .find_skill_run(&query.skill_id, run_id)
+        .map_err(|e| CommandError::io(format!("Failed to look up skill run: {e}")))?
+        .is_none()
+    {
+        return Ok(Vec::new());
+    }
+    let events_path = storage
+        .skill_run_events_dir(&query.skill_id, run_id)
+        .join("events.jsonl");
 
     if !events_path.exists() {
-        return Ok(vec![]);
+        return Ok(Vec::new());
     }
 
     let content = std::fs::read_to_string(&events_path)
-        .map_err(|e| CommandError::io(format!("Failed to read events.jsonl: {}", e)))?;
+        .map_err(|e| CommandError::io(format!("Failed to read events.jsonl: {e}")))?;
 
     let mut events = Vec::new();
     let mut malformed = 0;
@@ -62,6 +86,14 @@ pub fn load_run_events(
     Ok(events)
 }
 
+/// Read a base64-encoded artifact file from a skill run's per-run
+/// directory.
+///
+/// The artifact path is sandboxed under `<run_id>/artifacts/` so a
+/// caller cannot escape outside the directory tree even with absolute
+/// or `..`-prefixed inputs. The shape of this command is unchanged
+/// from the legacy node-keyed surface — only the run-locator fields
+/// (`skill_id` + `run_id`) are skill-keyed.
 #[tauri::command]
 #[specta::specta]
 pub fn read_artifact_base64(
@@ -73,9 +105,13 @@ pub fn read_artifact_base64(
     let run_id = parse_uuid(&query.run_id, "run")?;
 
     let storage = resolve_storage(&app, &query.project_path, &query.project_name, project_id);
-    let run_dir = storage
-        .find_run_dir(&query.node_name, run_id, query.execution_dir.as_deref())
-        .map_err(|e| CommandError::io(format!("Failed to find run directory: {}", e)))?;
+    let run_dir = storage.skill_run_events_dir(&query.skill_id, run_id);
+    if !run_dir.exists() {
+        return Err(CommandError::validation(format!(
+            "Run directory not found for skill {} run {run_id}",
+            query.skill_id
+        )));
+    }
     let data = read_artifact_bytes(&run_dir, &query.artifact_path)?;
     Ok(base64::engine::general_purpose::STANDARD.encode(&data))
 }
@@ -83,7 +119,7 @@ pub fn read_artifact_base64(
 fn read_artifact_bytes(run_dir: &Path, artifact_path: &str) -> Result<Vec<u8>, CommandError> {
     let artifacts_dir = run_dir.join("artifacts");
     let artifacts_dir = std::fs::canonicalize(&artifacts_dir)
-        .map_err(|e| CommandError::io(format!("Failed to resolve artifacts directory: {}", e)))?;
+        .map_err(|e| CommandError::io(format!("Failed to resolve artifacts directory: {e}")))?;
 
     let requested = PathBuf::from(artifact_path);
     let requested = if requested.is_absolute() {
@@ -92,15 +128,14 @@ fn read_artifact_bytes(run_dir: &Path, artifact_path: &str) -> Result<Vec<u8>, C
         artifacts_dir.join(requested)
     };
     let requested = std::fs::canonicalize(&requested)
-        .map_err(|e| CommandError::io(format!("Failed to resolve artifact: {}", e)))?;
+        .map_err(|e| CommandError::io(format!("Failed to resolve artifact: {e}")))?;
     if !requested.starts_with(&artifacts_dir) {
         return Err(CommandError::validation(
             "Artifact path is outside the selected run",
         ));
     }
 
-    std::fs::read(&requested)
-        .map_err(|e| CommandError::io(format!("Failed to read artifact: {}", e)))
+    std::fs::read(&requested).map_err(|e| CommandError::io(format!("Failed to read artifact: {e}")))
 }
 
 #[cfg(test)]

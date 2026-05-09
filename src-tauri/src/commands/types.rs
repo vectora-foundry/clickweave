@@ -82,7 +82,19 @@ pub struct RunsQuery {
     pub project_path: Option<String>,
     pub project_id: String,
     pub project_name: String,
-    pub node_name: String,
+    /// Skill identifier (D27/D28). Run records live under
+    /// `<skills>/<skill_id>/runs/`.
+    pub skill_id: String,
+    /// When `Some`, narrow the result to a single run record. When
+    /// `None`, the command returns every run for the skill (sorted
+    /// oldest-first).
+    #[serde(default)]
+    pub run_id: Option<String>,
+    /// Optional section filter retained on the wire so the UI can
+    /// request a section-scoped slice once the per-section run timeline
+    /// lands. Ignored by the Phase 1.D loader.
+    #[serde(default)]
+    pub section_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Type)]
@@ -90,8 +102,7 @@ pub struct RunEventsQuery {
     pub project_path: Option<String>,
     pub project_id: String,
     pub project_name: String,
-    pub node_name: String,
-    pub execution_dir: Option<String>,
+    pub skill_id: String,
     pub run_id: String,
 }
 
@@ -100,8 +111,7 @@ pub struct ReadArtifactQuery {
     pub project_path: Option<String>,
     pub project_id: String,
     pub project_name: String,
-    pub node_name: String,
-    pub execution_dir: Option<String>,
+    pub skill_id: String,
     pub run_id: String,
     pub artifact_path: String,
 }
