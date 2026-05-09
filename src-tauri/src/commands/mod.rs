@@ -21,8 +21,8 @@ pub use chrome_profiles::{
 };
 pub use executor::{ExecutorHandle, run_workflow, stop_workflow, supervision_respond};
 pub use project::{
-    confirmable_tools, generate_auto_id, get_mcp_status, import_asset, node_type_defaults,
-    open_project, pick_save_file, pick_workflow_file, ping, save_project, validate,
+    confirmable_tools, get_mcp_status, import_asset, open_project, pick_save_file,
+    pick_workflow_file, ping, save_project,
 };
 pub use runs::{list_runs, load_run_events, read_artifact_base64};
 pub use types::{AppDataDir, McpStatus};

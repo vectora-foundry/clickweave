@@ -1,5 +1,5 @@
 use clickweave_core::storage::RunStorage;
-use clickweave_core::{ExecutionMode, NodeType, Workflow};
+use clickweave_core::{ExecutionMode, ProjectManifest, Workflow};
 use clickweave_llm::LlmConfig;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -44,22 +44,7 @@ pub fn parse_uuid(s: &str, label: &str) -> Result<uuid::Uuid, super::error::Comm
 #[derive(Debug, Serialize, Deserialize, Type)]
 pub struct ProjectData {
     pub path: String,
-    pub workflow: Workflow,
-}
-
-#[derive(Debug, Serialize, Deserialize, Type)]
-pub struct ValidationResult {
-    pub valid: bool,
-    pub errors: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Type)]
-pub struct NodeTypeInfo {
-    pub name: &'static str,
-    pub output_role: String,
-    pub node_context: String,
-    pub icon: &'static str,
-    pub node_type: NodeType,
+    pub manifest: ProjectManifest,
 }
 
 #[derive(Debug, Serialize, Type)]

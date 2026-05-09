@@ -1,7 +1,7 @@
 use super::error::CommandError;
 use super::types::*;
+use clickweave_core::ProjectManifest;
 use clickweave_core::permissions::CONFIRMABLE_TOOLS;
-use clickweave_core::{NodeType, Workflow, validate_workflow};
 use clickweave_engine::agent::skills::move_skills_to_project;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
@@ -45,6 +45,13 @@ pub async fn pick_save_file(app: tauri::AppHandle) -> Result<Option<String>, Com
     Ok(file.map(|p| p.to_string()))
 }
 
+/// Read the slim [`ProjectManifest`] from `path`.
+///
+/// Pre-1.0 (D33): legacy `Workflow`-shaped envelopes are **not**
+/// auto-migrated. If the JSON parses but contains the legacy graph
+/// keys (`nodes`, `edges`), the loader returns a typed validation
+/// error so the UI can surface a "start a new project" hint without
+/// corrupting the file by overwriting it on the next save.
 #[tauri::command]
 #[specta::specta]
 pub fn open_project(path: String) -> Result<ProjectData, CommandError> {
@@ -57,12 +64,28 @@ pub fn open_project(path: String) -> Result<ProjectData, CommandError> {
     let content = std::fs::read_to_string(&file_path)
         .map_err(|e| CommandError::io(format!("Failed to read file: {}", e)))?;
 
-    let mut workflow: Workflow = serde_json::from_str(&content)
-        .map_err(|e| CommandError::validation(format!("Failed to parse workflow: {}", e)))?;
-
-    workflow.fixup_auto_ids();
-
-    Ok(ProjectData { path, workflow })
+    match serde_json::from_str::<ProjectManifest>(&content) {
+        Ok(manifest) => Ok(ProjectData { path, manifest }),
+        Err(parse_err) => {
+            // Detect the legacy Workflow JSON shape so the user gets a
+            // typed error instead of a generic parse failure. Either
+            // `nodes` or `edges` at the top level is enough to flag the
+            // legacy shape — both keys are absent from `ProjectManifest`.
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content)
+                && let Some(obj) = value.as_object()
+                && (obj.contains_key("nodes") || obj.contains_key("edges"))
+            {
+                return Err(CommandError::validation(
+                    "Legacy workflow project files are no longer supported; \
+                     start a new project to migrate.",
+                ));
+            }
+            Err(CommandError::validation(format!(
+                "Failed to parse project manifest: {}",
+                parse_err
+            )))
+        }
+    }
 }
 
 #[tauri::command]
@@ -70,16 +93,16 @@ pub fn open_project(path: String) -> Result<ProjectData, CommandError> {
 pub fn save_project(
     app: tauri::AppHandle,
     path: String,
-    workflow: Workflow,
+    manifest: ProjectManifest,
 ) -> Result<(), CommandError> {
     let app_data = app.state::<AppDataDir>().0.clone();
-    save_project_with_app_data(&app_data, path, workflow)
+    save_project_with_app_data(&app_data, path, manifest)
 }
 
 fn save_project_with_app_data(
     app_data_dir: &Path,
     path: String,
-    workflow: Workflow,
+    manifest: ProjectManifest,
 ) -> Result<(), CommandError> {
     let file_path = PathBuf::from(&path);
     if let Some(parent) = file_path.parent() {
@@ -87,17 +110,25 @@ fn save_project_with_app_data(
             .map_err(|e| CommandError::io(format!("Failed to create directory: {}", e)))?;
     }
 
-    let content = serde_json::to_string_pretty(&workflow)
-        .map_err(|e| CommandError::internal(format!("Failed to serialize workflow: {}", e)))?;
+    let content = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| CommandError::internal(format!("Failed to serialize manifest: {}", e)))?;
 
-    std::fs::write(&file_path, content)
+    // Atomic write: stage to `<path>.tmp`, then rename over `<path>`.
+    // A crash mid-write leaves the prior `<path>` intact.
+    let tmp_path = file_path.with_extension(match file_path.extension() {
+        Some(ext) => format!("{}.tmp", ext.to_string_lossy()),
+        None => "tmp".to_string(),
+    });
+    std::fs::write(&tmp_path, content)
         .map_err(|e| CommandError::io(format!("Failed to write file: {}", e)))?;
+    std::fs::rename(&tmp_path, &file_path)
+        .map_err(|e| CommandError::io(format!("Failed to commit file: {}", e)))?;
 
     let unsaved_skills_root = app_data_dir.join("skills");
     let saved_project_dir = project_dir(&path);
     move_skills_to_project(
         &unsaved_skills_root,
-        &workflow.id.to_string(),
+        &manifest.id.to_string(),
         &saved_project_dir,
     )
     .map_err(|e| CommandError::io(format!("Failed to move skills to project: {e}")))?;
@@ -107,60 +138,11 @@ fn save_project_with_app_data(
 
 #[tauri::command]
 #[specta::specta]
-pub fn validate(workflow: Workflow) -> ValidationResult {
-    match validate_workflow(&workflow) {
-        Ok(_) => ValidationResult {
-            valid: true,
-            errors: vec![],
-        },
-        Err(e) => ValidationResult {
-            valid: false,
-            errors: vec![e.to_string()],
-        },
-    }
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn node_type_defaults() -> Vec<NodeTypeInfo> {
-    NodeType::all_defaults()
-        .into_iter()
-        .map(|nt| NodeTypeInfo {
-            name: nt.display_name(),
-            output_role: format!("{:?}", nt.output_role()),
-            node_context: format!("{:?}", nt.node_context()),
-            icon: nt.icon(),
-            node_type: nt,
-        })
-        .collect()
-}
-
-#[tauri::command]
-#[specta::specta]
 pub fn confirmable_tools() -> Vec<ConfirmableTool> {
     CONFIRMABLE_TOOLS
         .iter()
         .map(|(name, description)| ConfirmableTool { name, description })
         .collect()
-}
-
-#[tauri::command]
-#[specta::specta]
-pub fn generate_auto_id(
-    node_type_name: String,
-    counters_json: String,
-) -> Result<(String, String), String> {
-    let mut counters: std::collections::HashMap<String, u32> =
-        serde_json::from_str(&counters_json).map_err(|e| e.to_string())?;
-
-    let node_type = NodeType::default_for_name(&node_type_name)
-        .ok_or_else(|| format!("Unknown node type: {}", node_type_name))?;
-
-    let auto_id = clickweave_core::auto_id::assign_auto_id(&node_type, &mut counters);
-
-    let updated_counters = serde_json::to_string(&counters).map_err(|e| e.to_string())?;
-
-    Ok((auto_id, updated_counters))
 }
 
 #[tauri::command]
@@ -211,24 +193,26 @@ mod tests {
     fn save_project_moves_unsaved_skills_to_saved_project_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let app_data = tmp.path().join("app-data");
-        let mut workflow = Workflow::default();
-        workflow.id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-        workflow.name = "Saved Workflow".to_string();
+        let manifest = ProjectManifest {
+            id: Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(),
+            name: "Saved Workflow".to_string(),
+            ..ProjectManifest::default()
+        };
 
-        let unsaved_dir = app_data.join("skills").join(workflow.id.to_string());
+        let unsaved_dir = app_data.join("skills").join(manifest.id.to_string());
         std::fs::create_dir_all(&unsaved_dir).unwrap();
         std::fs::write(unsaved_dir.join("alpha-v1.md"), b"alpha").unwrap();
         std::fs::write(unsaved_dir.join("alpha-v1.proposal.json"), b"{}").unwrap();
 
-        let workflow_path = tmp.path().join("saved").join("workflow.json");
+        let project_path = tmp.path().join("saved").join("workflow.json");
         save_project_with_app_data(
             &app_data,
-            workflow_path.to_string_lossy().into_owned(),
-            workflow,
+            project_path.to_string_lossy().into_owned(),
+            manifest,
         )
         .unwrap();
 
-        assert!(workflow_path.exists());
+        assert!(project_path.exists());
         assert!(!unsaved_dir.exists());
         assert_eq!(
             std::fs::read(tmp.path().join("saved/.clickweave/skills/alpha-v1.md")).unwrap(),
@@ -242,5 +226,46 @@ mod tests {
             .unwrap(),
             b"{}"
         );
+    }
+
+    #[test]
+    fn open_project_round_trips_a_freshly_saved_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app_data = tmp.path().join("app-data");
+        let manifest = ProjectManifest {
+            id: Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap(),
+            name: "Round Trip".to_string(),
+            intent: Some("test intent".to_string()),
+            ..ProjectManifest::default()
+        };
+        let project_path = tmp.path().join("rt").join("project.json");
+        save_project_with_app_data(
+            &app_data,
+            project_path.to_string_lossy().into_owned(),
+            manifest.clone(),
+        )
+        .unwrap();
+
+        let loaded = open_project(project_path.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(loaded.manifest, manifest);
+    }
+
+    #[test]
+    fn open_project_rejects_legacy_workflow_envelope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("legacy.json");
+        // Synthesize the legacy `Workflow` JSON shape: top-level
+        // `nodes`/`edges` keys without a `schema_version`. The loader
+        // must not silently accept this.
+        let legacy = serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000000",
+            "name": "Legacy",
+            "nodes": [],
+            "edges": [],
+        });
+        std::fs::write(&path, serde_json::to_string(&legacy).unwrap()).unwrap();
+
+        let err = open_project(path.to_string_lossy().into_owned()).unwrap_err();
+        assert!(err.message.to_lowercase().contains("legacy"));
     }
 }
