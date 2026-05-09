@@ -54,8 +54,8 @@ export function AppShell() {
 
   // Settings + skills panel data loading (lifted from App.tsx)
   const projectPath = useStore((s) => s.projectPath);
-  const workflowId = useStore((s) => s.workflow.id);
-  const workflowName = useStore((s) => s.workflow.name);
+  const projectId = useStore((s) => s.workflow.id);
+  const projectName = useStore((s) => s.workflow.name);
   const storeTraces = useStore((s) => s.storeTraces);
   const skillsEnabled = useStore((s) => s.skillsEnabled);
   const skillsGlobalParticipation = useStore(
@@ -83,8 +83,8 @@ export function AppShell() {
     }
     loadSkillsForPanel({
       projectPath,
-      workflowName,
-      workflowId,
+      projectName,
+      projectId,
       includeGlobal: skillsGlobalParticipation,
       storeTraces,
     }).catch((e) => console.error("Failed to load skills panel", e));
@@ -96,8 +96,8 @@ export function AppShell() {
     skillsAvailable,
     skillsGlobalParticipation,
     storeTraces,
-    workflowId,
-    workflowName,
+    projectId,
+    projectName,
   ]);
 
   useEscapeKey();

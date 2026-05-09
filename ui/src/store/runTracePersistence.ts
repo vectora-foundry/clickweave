@@ -16,8 +16,8 @@ import type {
 
 interface LoadContext {
   projectPath: string | null;
-  workflowName: string;
-  workflowId: string;
+  projectName: string;
+  projectId: string;
   storeTraces: boolean;
 }
 
@@ -55,7 +55,7 @@ function fromTerminal(f: HydratedTerminalFrame): TerminalFrame {
 
 /**
  * Load the latest run's trace from disk. Returns `null` when the
- * workflow has no recorded runs, the persistence kill switch is off,
+ * project has no recorded runs, the persistence kill switch is off,
  * or the events file is empty/malformed.
  */
 export async function loadLatestRunTrace(
@@ -64,8 +64,8 @@ export async function loadLatestRunTrace(
   try {
     const res = await commands.loadLatestRunTrace({
       project_path: ctx.projectPath,
-      workflow_name: ctx.workflowName,
-      workflow_id: ctx.workflowId,
+      project_name: ctx.projectName,
+      project_id: ctx.projectId,
       store_traces: ctx.storeTraces,
     });
     if (res.status !== "ok" || res.data == null) return null;

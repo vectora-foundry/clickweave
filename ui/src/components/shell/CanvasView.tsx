@@ -122,15 +122,15 @@ export function CanvasView() {
             skillId={selectedSkill.id}
             version={selectedSkill.version}
             projectPath={projectPath}
-            workflowName={workflow.name}
-            workflowId={workflow.id}
+            projectName={workflow.name}
+            projectId={workflow.id}
             runId={agentRunId}
             storeTraces={storeTraces}
             onChanged={() =>
               loadSkillsForPanel({
                 projectPath,
-                workflowName: workflow.name,
-                workflowId: workflow.id,
+                projectName: workflow.name,
+                projectId: workflow.id,
                 includeGlobal: skillsGlobalParticipation,
                 storeTraces,
               }).catch((e) => console.error("Failed to reload skills panel", e))

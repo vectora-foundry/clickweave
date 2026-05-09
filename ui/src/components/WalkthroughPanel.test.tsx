@@ -183,8 +183,8 @@ describe("WalkthroughPanel", () => {
         request: {
           session_id: "session-1",
           project_path: null,
-          workflow_name: "Workflow",
-          workflow_id: "workflow-1",
+          project_name: "Workflow",
+          project_id: "workflow-1",
           reviewed_draft: {
             id: "workflow-1",
             name: "Workflow",
@@ -201,8 +201,8 @@ describe("WalkthroughPanel", () => {
     await waitFor(() => {
       expect(mocks.loadSkillsForPanel).toHaveBeenCalledWith({
         projectPath: null,
-        workflowName: "Workflow",
-        workflowId: "workflow-1",
+        projectName: "Workflow",
+        projectId: "workflow-1",
         includeGlobal: false,
         storeTraces: true,
       });

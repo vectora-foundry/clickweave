@@ -121,9 +121,9 @@ async importAsset(projectPath: string) : Promise<Result<ImportedAsset | null, Co
     else return { status: "error", error: e  as any };
 }
 },
-async startWalkthrough(workflowId: string, projectPath: string | null, supervisor: EndpointConfig | null, cdpApps: CdpAppConfig[], hoverDwellThreshold: number | null) : Promise<Result<null, CommandError>> {
+async startWalkthrough(projectId: string, projectPath: string | null, supervisor: EndpointConfig | null, cdpApps: CdpAppConfig[], hoverDwellThreshold: number | null) : Promise<Result<null, CommandError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("start_walkthrough", { workflowId, projectPath, supervisor, cdpApps, hoverDwellThreshold }) };
+    return { status: "ok", data: await TAURI_INVOKE("start_walkthrough", { projectId, projectPath, supervisor, cdpApps, hoverDwellThreshold }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -177,9 +177,9 @@ async applyWalkthroughAnnotations(annotations: WalkthroughAnnotations) : Promise
     else return { status: "error", error: e  as any };
 }
 },
-async seedWalkthroughCache(workflowId: string, workflowName: string, projectPath: string | null, appEntries: AppResolutionSeedEntry[]) : Promise<Result<null, CommandError>> {
+async seedWalkthroughCache(projectId: string, projectName: string, projectPath: string | null, appEntries: AppResolutionSeedEntry[]) : Promise<Result<null, CommandError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("seed_walkthrough_cache", { workflowId, workflowName, projectPath, appEntries }) };
+    return { status: "ok", data: await TAURI_INVOKE("seed_walkthrough_cache", { projectId, projectName, projectPath, appEntries }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -420,7 +420,7 @@ async loadLatestRunTrace(request: LoadLatestRunTraceRequest) : Promise<Result<Hy
 /** user-defined types **/
 
 export type ActionConfidence = "High" | "Medium" | "Low"
-export type ActionSketchStep = { kind: "tool_call"; tool: string; args: JsonValue; captures_pre: CaptureClause[]; captures: CaptureClause[]; expected_world_model_delta: ExpectedWorldModelDelta } | { kind: "sub_skill"; skill_id: string; version: number; parameters: JsonValue; bind_outputs_as: Partial<{ [key in string]: string }> } | { kind: "loop"; until: LoopPredicate; body: ActionSketchStep[]; max_iterations: number; iteration_delay_ms: number }
+export type ActionSketchStep = { type: "tool_call"; step_id: string; tool: string; args: JsonValue; captures_pre: CaptureClause[]; captures: CaptureClause[]; expected_world_model_delta: ExpectedWorldModelDelta } | { type: "loop"; step_id: string; until: LoopPredicate; body: ActionSketchStep[]; max_iterations: number; iteration_delay_ms: number }
 /**
  * Persisted transcript — a sibling file to the workflow run metadata.
  * Kept deliberately minimal (no schema version) until the format
@@ -429,7 +429,7 @@ export type ActionSketchStep = { kind: "tool_call"; tool: string; args: JsonValu
 export type AgentChat = { messages: AgentChatMessage[] }
 export type AgentChatMessage = { role: AgentChatRole; content: string; timestamp: string; run_id?: string | null }
 export type AgentChatRole = "user" | "assistant" | "system"
-export type AgentRunRequest = { goal: string; agent: EndpointConfig; project_path: string | null; workflow_name: string; workflow_id: string; 
+export type AgentRunRequest = { goal: string; agent: EndpointConfig; project_path: string | null; project_name: string; project_id: string; 
 /**
  * Permission policy for this run. When `None`, the default policy
  * (empty rules, allow_all=false, guardrail off) is used.
@@ -561,10 +561,10 @@ export type AxTarget =
  */
 { kind: "ResolvedUid"; value: string }
 export type BindingCorrection = { step_index: number; capture_name: string; keep: boolean; correction: CaptureClause | null }
-export type BindingRef = { kind: "captured"; name: string } | { kind: "params"; name: string }
+export type BindingRef = { type: "captured"; name: string } | { type: "params"; name: string }
 export type BoundaryKind = "terminal" | "subgoal_completed" | "recovery_succeeded"
 export type CaptureClause = { name: string; source: CaptureSource }
-export type CaptureSource = { kind: "ax_descriptor"; descriptor: AxDescriptorMatch } | { kind: "tool_result"; jsonpath: string } | { kind: "literal"; value: JsonValue }
+export type CaptureSource = { type: "ax_descriptor"; descriptor: AxDescriptorMatch } | { type: "tool_result"; jsonpath: string } | { type: "literal"; value: JsonValue }
 /**
  * User-selected app for CDP during walkthrough.
  */
@@ -603,7 +603,7 @@ export type CdpTarget =
 export type CdpTypeParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { text: string }
 export type CdpWaitParams = { text: string; timeout_ms?: number }
 export type ChromeProfile = { id: string; name: string; google_email: string | null }
-export type ClearAgentConversationRequest = { project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
+export type ClearAgentConversationRequest = { project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
 export type ClickParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target?: ClickTarget | null; button: MouseButton; click_count: number }
 export type ClickTarget = { type: "Text"; text: string } | { type: "Coordinates"; x: number; y: number } | { type: "WindowControl"; action: WindowControlAction }
 /**
@@ -616,9 +616,9 @@ export type CommandError = { kind: ErrorKind; message: string }
  * TypeScript binding picks it up.
  */
 export type CompletionDisagreementActionWire = "confirm" | "cancel"
-export type ConfirmSkillProposalRequest = { skill_id: string; version: number; accepted_proposal: SkillRefinementProposal; project_path: string | null; workflow_name: string; workflow_id: string; run_id: string | null; store_traces: boolean }
+export type ConfirmSkillProposalRequest = { skill_id: string; version: number; accepted_proposal: SkillRefinementProposal; project_path: string | null; project_name: string; project_id: string; run_id: string | null; store_traces: boolean }
 export type ConfirmableTool = { name: string; description: string }
-export type DeleteSkillRequest = { skill_id: string; version: number; scope: SkillScope; project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
+export type DeleteSkillRequest = { skill_id: string; version: number; scope: SkillScope; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
 /**
  * A running app detected as Electron or Chrome, returned to the frontend for CDP selection.
  */
@@ -640,7 +640,7 @@ export type FindAppParams = { search: string }
 export type FindImageParams = { template_image: string | null; threshold: number; max_results: number }
 export type FindTextParams = { search_text?: string; scope?: string | null }
 export type FocusWindowParams = ({ method: "AppName"; value: string } | { method: "WindowId"; value: number } | { method: "Pid"; value: number }) & ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { bring_to_front: boolean; app_kind?: AppKind; chrome_profile_id?: string | null }
-export type ForkSkillRequest = { skill_id: string; version: number; new_name: string; project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
+export type ForkSkillRequest = { skill_id: string; version: number; new_name: string; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
 export type HoverParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target?: ClickTarget | null; dwell_ms: number }
 export type HydratedMilestoneKind = "subgoal_completed" | "recovery_succeeded"
 export type HydratedPhase = "exploring" | "executing" | "recovering"
@@ -654,10 +654,10 @@ export type Hypothesis = { text: string; recorded_at_step: number; refuted: bool
 export type ImportedAsset = { relative_path: string; absolute_path: string }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 export type LaunchAppParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { app_name: string }
-export type ListSkillsRequest = { scope: SkillScope; project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
-export type LoadAgentChatRequest = { project_path: string | null; workflow_name: string; workflow_id: string }
-export type LoadLatestRunTraceRequest = { project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
-export type LoopPredicate = { kind: "world_model_delta"; expr: string } | { kind: "step_count_reached"; count: number }
+export type ListSkillsRequest = { scope: SkillScope; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
+export type LoadAgentChatRequest = { project_path: string | null; project_name: string; project_id: string }
+export type LoadLatestRunTraceRequest = { project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
+export type LoopPredicate = { type: "world_model_delta"; expr: string } | { type: "step_count_reached"; count: number }
 export type McpToolCallParams = { tool_name: string; arguments: JsonValue }
 export type Milestone = { subgoal_id: SubgoalId; text: string; summary: string; pushed_at_step: number; completed_at_step: number }
 export type MouseButton = "Left" | "Right" | "Center"
@@ -682,7 +682,7 @@ export type NodeType = ({ type: "FindText" } & FindTextParams) | ({ type: "FindI
  */
 { type: "Unknown" }
 export type NodeTypeInfo = { name: string; output_role: string; node_context: string; icon: string; node_type: NodeType }
-export type OutcomePredicate = { kind: "subgoal_completed"; post_state_world_model_signature: string | null }
+export type OutcomePredicate = { type: "subgoal_completed"; post_state_world_model_signature: string | null }
 export type OutputDeclaration = { name: string; type_tag: string; from: BindingRef }
 export type ParameterSlot = { name: string; type_tag: string; description: string | null; default: JsonValue | null; enum_values: string[] | null }
 export type PermissionActionWire = "allow" | "ask" | "deny"
@@ -728,13 +728,13 @@ export type PressKeyParams = ({ verification_method?: VerificationMethod | null;
  */
 export type PriorTurnWire = { goal: string; summary: string; run_id: string }
 export type ProjectData = { path: string; workflow: Workflow }
-export type PromoteSkillToGlobalRequest = { skill_id: string; version: number; project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
+export type PromoteSkillToGlobalRequest = { skill_id: string; version: number; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
 export type ProvenanceEntry = { run_id: string; step_index: number; completed_at: string; workflow_hash: string }
-export type PruneSkillLineageRequest = { project_path: string | null; workflow_name: string; workflow_id: string; node_ids: string[]; store_traces: boolean }
+export type PruneSkillLineageRequest = { project_path: string | null; project_name: string; project_id: string; node_ids: string[]; store_traces: boolean }
 export type QuitAppParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { app_name: string }
-export type ReadArtifactQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string; execution_dir: string | null; run_id: string; artifact_path: string }
-export type RejectSkillProposalRequest = { skill_id: string; version: number; project_path: string | null; workflow_name: string; workflow_id: string; store_traces: boolean }
-export type RunEventsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string; execution_dir: string | null; run_id: string }
+export type ReadArtifactQuery = { project_path: string | null; project_id: string; project_name: string; node_name: string; execution_dir: string | null; run_id: string; artifact_path: string }
+export type RejectSkillProposalRequest = { skill_id: string; version: number; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
+export type RunEventsQuery = { project_path: string | null; project_id: string; project_name: string; node_name: string; execution_dir: string | null; run_id: string }
 export type RunRequest = { workflow: Workflow; project_path: string | null; agent: EndpointConfig; fast: EndpointConfig | null; 
 /**
  * Supervisor LLM used for step verdict in Test mode.
@@ -747,9 +747,9 @@ supervisor: EndpointConfig | null; execution_mode: ExecutionMode; supervision_de
  */
 store_traces?: boolean | null }
 export type RunStatus = "Ok" | "Failed" | "Stopped" | "Cancelled"
-export type RunsQuery = { project_path: string | null; workflow_id: string; workflow_name: string; node_name: string }
-export type SaveAgentChatRequest = { project_path: string | null; workflow_name: string; workflow_id: string; chat: AgentChat; store_traces: boolean }
-export type SaveWalkthroughAsSkillRequest = { session_id: string; project_path: string | null; workflow_name: string; workflow_id: string; reviewed_draft: Workflow | null; reviewed_actions: WalkthroughAction[] | null; store_traces: boolean }
+export type RunsQuery = { project_path: string | null; project_id: string; project_name: string; node_name: string }
+export type SaveAgentChatRequest = { project_path: string | null; project_name: string; project_id: string; chat: AgentChat; store_traces: boolean }
+export type SaveWalkthroughAsSkillRequest = { session_id: string; project_path: string | null; project_name: string; project_id: string; reviewed_draft: Workflow | null; reviewed_actions: WalkthroughAction[] | null; store_traces: boolean }
 /**
  * Screenshot coordinate metadata for mapping screen coordinates to image pixels.
  * 
@@ -759,9 +759,22 @@ export type SaveWalkthroughAsSkillRequest = { session_id: string; project_path: 
 export type ScreenshotMeta = { origin_x: number; origin_y: number; scale: number }
 export type ScreenshotMode = "Screen" | "Window" | "Region"
 export type ScrollParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { delta_y: number; x?: number | null; y?: number | null }
-export type Skill = { id: string; version: number; state: SkillState; scope: SkillScope; name: string; description: string; tags: string[]; subgoal_text: string; subgoal_signature: SubgoalSignature; applicability: ApplicabilityHints; parameter_schema: ParameterSlot[]; action_sketch: ActionSketchStep[]; outputs: OutputDeclaration[]; outcome_predicate: OutcomePredicate; provenance: ProvenanceEntry[]; stats: SkillStats; edited_by_user: boolean; created_at: string; updated_at: string; produced_node_ids: string[]; body: string }
+export type Skill = { id: string; version: number; state: SkillState; scope: SkillScope; name: string; description: string; tags: string[]; subgoal_text: string; subgoal_signature: SubgoalSignature; applicability: ApplicabilityHints; parameter_schema: ParameterSlot[]; action_sketch: ActionSketchStep[]; outputs: OutputDeclaration[]; outcome_predicate: OutcomePredicate; provenance: ProvenanceEntry[]; stats: SkillStats; edited_by_user: boolean; created_at: string; updated_at: string; produced_node_ids: string[]; body: string; 
+/**
+ * Parsed marker grammar — populated by the new parser. Empty for
+ * in-memory skills built directly from `action_sketch`.
+ */
+schema_version?: number; variables?: SkillFrontmatterVariable[]; sections?: SkillSection[] }
+export type SkillFrontmatterVariable = { name: string; type: string; description: string | null; default: JsonValue | null }
 export type SkillRefinementProposal = { parameter_schema: ParameterSlot[]; binding_corrections: BindingCorrection[]; description: string; name_suggestion: string | null }
 export type SkillScope = "project_local" | "global"
+/**
+ * Per-section view of a parsed skill body. Populated by
+ * `parser::parse_skill_md`; `body_range` is a UTF-8 byte range into
+ * the raw markdown body (start..end of the section's prose, including
+ * step markers but excluding the `##`/`###` heading line itself).
+ */
+export type SkillSection = { id: string; heading: string; level: number; step_ids: string[]; body_range: [number, number] }
 export type SkillState = "draft" | "confirmed" | "promoted"
 export type SkillStats = { occurrence_count: number; success_rate: number; last_seen_at: string | null; last_invoked_at: string | null }
 /**

@@ -194,8 +194,8 @@ export const createAssistantSlice: StateCreator<
     void saveAgentChat(
       {
         projectPath: s.projectPath,
-        workflowName: s.workflow.name,
-        workflowId: s.workflow.id,
+        projectName: s.workflow.name,
+        projectId: s.workflow.id,
         storeTraces: s.storeTraces,
       },
       s.messages,
@@ -456,8 +456,8 @@ export const createAssistantSlice: StateCreator<
     try {
       await commands.clearAgentConversation({
         project_path: state.projectPath,
-        workflow_name: state.workflow.name,
-        workflow_id: state.workflow.id,
+        project_name: state.workflow.name,
+        project_id: state.workflow.id,
         store_traces: state.storeTraces,
       });
     } catch (e) {

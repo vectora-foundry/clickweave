@@ -5,17 +5,17 @@ import { runDuration } from "../formatters";
 export function RunsTab({
   nodeName,
   projectPath,
-  workflowId,
-  workflowName,
+  projectId,
+  projectName,
   onSelectRun,
 }: {
   nodeName: string;
   projectPath: string | null;
-  workflowId: string;
-  workflowName: string;
+  projectId: string;
+  projectName: string;
   onSelectRun: (runId: string) => void;
 }) {
-  const runs = useNodeRuns(projectPath, workflowId, workflowName, nodeName);
+  const runs = useNodeRuns(projectPath, projectId, projectName, nodeName);
 
   if (runs.length === 0) {
     return <EmptyState message="No runs yet. Execute the workflow to create runs." />;

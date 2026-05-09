@@ -9,8 +9,8 @@ interface NodeDetailModalProps {
   /** All nodes in the workflow, used to compute consumers and nodeNames. */
   nodes: Node[];
   projectPath: string | null;
-  workflowId: string;
-  workflowName: string;
+  projectId: string;
+  projectName: string;
   tab: DetailTab;
   onTabChange: (tab: DetailTab) => void;
   onUpdate: (id: string, updates: Partial<Node>) => void;
@@ -28,8 +28,8 @@ export function NodeDetailModal({
   node,
   nodes,
   projectPath,
-  workflowId,
-  workflowName,
+  projectId,
+  projectName,
   tab,
   onTabChange,
   onUpdate,
@@ -135,8 +135,8 @@ export function NodeDetailModal({
             <TraceTab
               nodeName={node.name}
               projectPath={projectPath}
-              workflowId={workflowId}
-              workflowName={workflowName}
+              projectId={projectId}
+              projectName={projectName}
               initialRunId={selectedRunId}
             />
           )}
@@ -144,8 +144,8 @@ export function NodeDetailModal({
             <RunsTab
               nodeName={node.name}
               projectPath={projectPath}
-              workflowId={workflowId}
-              workflowName={workflowName}
+              projectId={projectId}
+              projectName={projectName}
               onSelectRun={(runId) => {
                 setSelectedRunId(runId);
                 onTabChange("trace");

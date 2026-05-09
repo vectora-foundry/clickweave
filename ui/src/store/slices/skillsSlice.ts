@@ -117,8 +117,8 @@ export interface SkillsSlice {
 
 export interface LoadSkillsForPanelRequest {
   projectPath: string | null;
-  workflowName: string;
-  workflowId: string;
+  projectName: string;
+  projectId: string;
   includeGlobal: boolean;
   storeTraces: boolean;
 }
@@ -155,8 +155,8 @@ export const createSkillsSlice: StateCreator<
 
   loadSkillsForPanel: async ({
     projectPath,
-    workflowName,
-    workflowId,
+    projectName,
+    projectId,
     includeGlobal,
     storeTraces,
   }) => {
@@ -166,8 +166,8 @@ export const createSkillsSlice: StateCreator<
     }
     const baseRequest = {
       project_path: projectPath,
-      workflow_name: workflowName,
-      workflow_id: workflowId,
+      project_name: projectName,
+      project_id: projectId,
       store_traces: storeTraces,
     };
     const projectLocal = await invoke<SkillSummary[]>("list_skills_for_panel", {

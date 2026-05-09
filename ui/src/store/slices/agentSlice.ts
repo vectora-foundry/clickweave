@@ -362,8 +362,8 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
           goal,
           agent: toEndpoint(agentConfig),
           project_path: projectPath,
-          workflow_name: workflow.name,
-          workflow_id: workflow.id,
+          project_name: workflow.name,
+          project_id: workflow.id,
           permissions: toPermissionPolicyWire(toolPermissions),
           consecutive_destructive_cap:
             toolPermissions.consecutiveDestructiveCap,

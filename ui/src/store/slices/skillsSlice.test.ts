@@ -129,8 +129,8 @@ describe("skillsSlice.loadSkillsForPanel", () => {
 
     await useStore.getState().loadSkillsForPanel({
       projectPath: null,
-      workflowName: "Workflow",
-      workflowId: "workflow-1",
+      projectName: "Workflow",
+      projectId: "workflow-1",
       includeGlobal: true,
       storeTraces: false,
     });
@@ -144,8 +144,8 @@ describe("skillsSlice.loadSkillsForPanel", () => {
 
     await useStore.getState().loadSkillsForPanel({
       projectPath: "/tmp/project.json",
-      workflowName: "Workflow",
-      workflowId: "workflow-1",
+      projectName: "Workflow",
+      projectId: "workflow-1",
       includeGlobal: true,
       storeTraces: true,
     });
@@ -153,8 +153,8 @@ describe("skillsSlice.loadSkillsForPanel", () => {
     expect(invoke).toHaveBeenCalledWith("list_skills_for_panel", {
       request: {
         project_path: "/tmp/project.json",
-        workflow_name: "Workflow",
-        workflow_id: "workflow-1",
+        project_name: "Workflow",
+        project_id: "workflow-1",
         scope: "project_local",
         store_traces: true,
       },
@@ -162,8 +162,8 @@ describe("skillsSlice.loadSkillsForPanel", () => {
     expect(invoke).toHaveBeenCalledWith("list_skills_for_panel", {
       request: {
         project_path: "/tmp/project.json",
-        workflow_name: "Workflow",
-        workflow_id: "workflow-1",
+        project_name: "Workflow",
+        project_id: "workflow-1",
         scope: "global",
         store_traces: true,
       },

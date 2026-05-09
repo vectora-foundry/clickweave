@@ -3,8 +3,8 @@ import type { AssistantMessage } from "./slices/assistantSlice";
 
 interface SaveContext {
   projectPath: string | null;
-  workflowName: string;
-  workflowId: string;
+  projectName: string;
+  projectId: string;
   storeTraces: boolean;
 }
 
@@ -19,8 +19,8 @@ export async function loadAgentChat(
   try {
     const res = await commands.loadAgentChat({
       project_path: ctx.projectPath,
-      workflow_name: ctx.workflowName,
-      workflow_id: ctx.workflowId,
+      project_name: ctx.projectName,
+      project_id: ctx.projectId,
     });
     if (res.status !== "ok") return [];
     return res.data.messages.map((m) => ({
@@ -52,8 +52,8 @@ export async function saveAgentChat(
   try {
     await commands.saveAgentChat({
       project_path: ctx.projectPath,
-      workflow_name: ctx.workflowName,
-      workflow_id: ctx.workflowId,
+      project_name: ctx.projectName,
+      project_id: ctx.projectId,
       store_traces: ctx.storeTraces,
       chat: {
         messages: messages.map((m) => ({

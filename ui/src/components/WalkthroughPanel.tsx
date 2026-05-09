@@ -96,8 +96,8 @@ export function WalkthroughPanel() {
         request: {
           session_id: walkthrough.sessionId,
           project_path: projectPath,
-          workflow_name: workflow.name,
-          workflow_id: workflow.id,
+          project_name: workflow.name,
+          project_id: workflow.id,
           reviewed_draft: reviewedDraft,
           reviewed_actions: walkthrough.actions,
           store_traces: storeTraces,
@@ -107,8 +107,8 @@ export function WalkthroughPanel() {
       setSaveSkillMessage(`Saved ${skill.name}`);
       await loadSkillsForPanel({
         projectPath,
-        workflowName: workflow.name,
-        workflowId: workflow.id,
+        projectName: workflow.name,
+        projectId: workflow.id,
         includeGlobal: skillsGlobalParticipation,
         storeTraces,
       }).catch(() => {});

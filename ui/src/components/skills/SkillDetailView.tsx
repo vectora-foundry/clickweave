@@ -16,8 +16,8 @@ interface SkillDetailViewProps {
   skillId: string;
   version: number;
   projectPath: string | null;
-  workflowName: string;
-  workflowId: string;
+  projectName: string;
+  projectId: string;
   runId?: string | null;
   storeTraces: boolean;
   onChanged?: () => void;
@@ -27,8 +27,8 @@ export function SkillDetailView({
   skillId,
   version,
   projectPath,
-  workflowName,
-  workflowId,
+  projectName,
+  projectId,
   runId,
   storeTraces,
   onChanged,
@@ -72,8 +72,8 @@ export function SkillDetailView({
         version,
         accepted_proposal: proposal,
         project_path: projectPath,
-        workflow_name: workflowName,
-        workflow_id: workflowId,
+        project_name: projectName,
+        project_id: projectId,
         run_id: runId ?? "",
         store_traces: storeTraces,
       },
@@ -93,8 +93,8 @@ export function SkillDetailView({
         skill_id: skillId,
         version,
         project_path: projectPath,
-        workflow_name: workflowName,
-        workflow_id: workflowId,
+        project_name: projectName,
+        project_id: projectId,
         store_traces: storeTraces,
       },
     });

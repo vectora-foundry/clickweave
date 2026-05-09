@@ -17,17 +17,17 @@ function artifactFilename(art: Artifact): string {
 export function TraceTab({
   nodeName,
   projectPath,
-  workflowId,
-  workflowName,
+  projectId,
+  projectName,
   initialRunId,
 }: {
   nodeName: string;
   projectPath: string | null;
-  workflowId: string;
-  workflowName: string;
+  projectId: string;
+  projectName: string;
   initialRunId?: string | null;
 }) {
-  const runs = useNodeRuns(projectPath, workflowId, workflowName, nodeName);
+  const runs = useNodeRuns(projectPath, projectId, projectName, nodeName);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(initialRunId ?? null);
   const [events, setEvents] = useState<TraceEvent[]>([]);
   const [expandedEvent, setExpandedEvent] = useState<number | null>(null);
@@ -58,8 +58,8 @@ export function TraceTab({
     commands
       .loadRunEvents({
         project_path: projectPath,
-        workflow_id: workflowId,
-        workflow_name: workflowName,
+        project_id: projectId,
+        project_name: projectName,
         node_name: nodeName,
         execution_dir: run?.execution_dir ?? null,
         run_id: selectedRunId,
@@ -69,7 +69,7 @@ export function TraceTab({
           setEvents(result.data);
         }
       });
-  }, [projectPath, workflowId, workflowName, nodeName, selectedRunId, runs]);
+  }, [projectPath, projectId, projectName, nodeName, selectedRunId, runs]);
 
   const selectedRun = runs.find((r) => r.run_id === selectedRunId) ?? null;
 
@@ -82,8 +82,8 @@ export function TraceTab({
       commands
         .readArtifactBase64({
           project_path: projectPath,
-          workflow_id: workflowId,
-          workflow_name: workflowName,
+          project_id: projectId,
+          project_name: projectName,
           node_name: nodeName,
           execution_dir: selectedRun.execution_dir ?? null,
           run_id: selectedRun.run_id,

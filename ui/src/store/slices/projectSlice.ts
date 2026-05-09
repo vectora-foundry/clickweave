@@ -79,8 +79,8 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
     // — missing or malformed files return an empty array.
     const rehydrated = await loadAgentChat({
       projectPath: projectResult.data.path,
-      workflowName: projectResult.data.workflow.name,
-      workflowId: projectResult.data.workflow.id,
+      projectName: projectResult.data.workflow.name,
+      projectId: projectResult.data.workflow.id,
     });
     if (rehydrated.length > 0) {
       get().setMessages(rehydrated);
@@ -88,8 +88,8 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
 
     const hydratedTrace = await loadLatestRunTrace({
       projectPath: projectResult.data.path,
-      workflowName: projectResult.data.workflow.name,
-      workflowId: projectResult.data.workflow.id,
+      projectName: projectResult.data.workflow.name,
+      projectId: projectResult.data.workflow.id,
       storeTraces: get().storeTraces,
     });
     if (hydratedTrace) {
