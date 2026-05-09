@@ -561,7 +561,7 @@ impl StateRunner {
         app_name: &str,
         mcp: &M,
     ) -> Option<u16> {
-        let port = crate::executor::deterministic::cdp::existing_debug_port(app_name).await?;
+        let port = crate::executor::cdp_helpers::existing_debug_port(app_name).await?;
         tracing::info!(
             app = app_name,
             port,
@@ -637,7 +637,7 @@ impl StateRunner {
                 })
                 .await;
                 let fallback = serde_json::json!({"app_name": app_name});
-                crate::executor::deterministic::best_effort_tool_call(
+                crate::executor::best_effort::best_effort_tool_call(
                     mcp,
                     "launch_app",
                     Some(fallback),
