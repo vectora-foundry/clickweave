@@ -35,6 +35,15 @@ async pickSaveFile() : Promise<Result<string | null, CommandError>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Read the slim [`ProjectManifest`] from `path`.
+ * 
+ * Pre-1.0 (D33): legacy `Workflow`-shaped envelopes are **not**
+ * auto-migrated. If the JSON parses but contains the legacy graph
+ * keys (`nodes`, `edges`), the loader returns a typed validation
+ * error so the UI can surface a "start a new project" hint without
+ * corrupting the file by overwriting it on the next save.
+ */
 async openProject(path: string) : Promise<Result<ProjectData, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("open_project", { path }) };
@@ -43,31 +52,23 @@ async openProject(path: string) : Promise<Result<ProjectData, CommandError>> {
     else return { status: "error", error: e  as any };
 }
 },
-async saveProject(path: string, workflow: Workflow) : Promise<Result<null, CommandError>> {
+async saveProject(path: string, manifest: ProjectManifest) : Promise<Result<null, CommandError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("save_project", { path, workflow }) };
+    return { status: "ok", data: await TAURI_INVOKE("save_project", { path, manifest }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async validate(workflow: Workflow) : Promise<ValidationResult> {
-    return await TAURI_INVOKE("validate", { workflow });
-},
-async nodeTypeDefaults() : Promise<NodeTypeInfo[]> {
-    return await TAURI_INVOKE("node_type_defaults");
-},
-async generateAutoId(nodeTypeName: string, countersJson: string) : Promise<Result<[string, string], string>> {
+/**
+ * Phase 1.C stub: resolves the requested skill from the project's
+ * skill store and returns Ok without dispatching the executor. Full
+ * executor wiring lands in Phase 1.D, when the native `Skill`-driven
+ * runner replaces the deleted `WorkflowExecutor`.
+ */
+async runSkill(request: RunSkillRequest) : Promise<Result<null, CommandError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("generate_auto_id", { nodeTypeName, countersJson }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async runWorkflow(request: RunRequest) : Promise<Result<null, CommandError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("run_workflow", { request }) };
+    return { status: "ok", data: await TAURI_INVOKE("run_skill", { request }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -681,7 +682,6 @@ export type NodeType = ({ type: "FindText" } & FindTextParams) | ({ type: "FindI
  * as disabled/unsupported.
  */
 { type: "Unknown" }
-export type NodeTypeInfo = { name: string; output_role: string; node_context: string; icon: string; node_type: NodeType }
 export type OutcomePredicate = { type: "subgoal_completed"; post_state_world_model_signature: string | null }
 export type OutputDeclaration = { name: string; type_tag: string; from: BindingRef }
 export type ParameterSlot = { name: string; type_tag: string; description: string | null; default: JsonValue | null; enum_values: string[] | null }
@@ -727,7 +727,11 @@ export type PressKeyParams = ({ verification_method?: VerificationMethod | null;
  * `clickweave_engine::agent::PriorTurn` with string UUIDs for JSON).
  */
 export type PriorTurnWire = { goal: string; summary: string; run_id: string }
-export type ProjectData = { path: string; workflow: Workflow }
+export type ProjectData = { path: string; manifest: ProjectManifest }
+/**
+ * Slim project envelope persisted to `<project>.json`.
+ */
+export type ProjectManifest = { id: string; name: string; intent?: string | null; schema_version: number }
 export type PromoteSkillToGlobalRequest = { skill_id: string; version: number; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
 export type ProvenanceEntry = { run_id: string; step_index: number; completed_at: string; workflow_hash: string }
 export type PruneSkillLineageRequest = { project_path: string | null; project_name: string; project_id: string; node_ids: string[]; store_traces: boolean }
@@ -735,17 +739,34 @@ export type QuitAppParams = ({ verification_method?: VerificationMethod | null; 
 export type ReadArtifactQuery = { project_path: string | null; project_id: string; project_name: string; node_name: string; execution_dir: string | null; run_id: string; artifact_path: string }
 export type RejectSkillProposalRequest = { skill_id: string; version: number; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
 export type RunEventsQuery = { project_path: string | null; project_id: string; project_name: string; node_name: string; execution_dir: string | null; run_id: string }
-export type RunRequest = { workflow: Workflow; project_path: string | null; agent: EndpointConfig; fast: EndpointConfig | null; 
 /**
- * Supervisor LLM used for step verdict in Test mode.
+ * IPC payload for `run_skill` (D33). Replaces the legacy `RunRequest`
+ * which carried a full `Workflow` graph. Every field on the legacy
+ * request that fed downstream privacy / supervision gates is preserved
+ * here so Phase 1.L acceptance still passes.
+ */
+export type RunSkillRequest = { 
+/**
+ * Saved-project workspace path. `None` for unsaved projects — in that
+ * case `RunStorage::new_app_data(app_data, &project_name, project_id)`
+ * resolves the storage from the manifest identity below.
+ */
+project_path: string | null; 
+/**
+ * Project identity carried forward from `ProjectManifest` (D33).
+ * Required for unsaved-project skill resolution and for run-trace
+ * storage paths.
+ */
+project_id: string; project_name: string; skill_id: string; variables?: Partial<{ [key in string]: JsonValue }>; agent: EndpointConfig; fast: EndpointConfig | null; 
+/**
+ * Optional supervisor model for Test mode.
  */
 supervisor: EndpointConfig | null; execution_mode: ExecutionMode; supervision_delay_ms?: number; 
 /**
- * Privacy kill switch: when false, the run is entirely in-memory
- * and no files are written under `.clickweave/runs/`. When missing,
- * persistence is on — matches the UI default (`storeTraces: true`).
+ * Privacy kill switch — `Some(false)` disables run/skill artifact
+ * persistence (D31). `None` falls back to settings.
  */
-store_traces?: boolean | null }
+store_traces: boolean | null }
 export type RunStatus = "Ok" | "Failed" | "Stopped" | "Cancelled"
 export type RunsQuery = { project_path: string | null; project_id: string; project_name: string; node_name: string }
 export type SaveAgentChatRequest = { project_path: string | null; project_name: string; project_id: string; chat: AgentChat; store_traces: boolean }
@@ -831,7 +852,6 @@ export type TraceEventKind = "node_started" | "tool_call" | "tool_result" | "ste
 "unknown"
 export type TraceLevel = "Off" | "Minimal" | "Full"
 export type TypeTextParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { text: string }
-export type ValidationResult = { valid: boolean; errors: string[] }
 export type VariablePromotion = { node_id: string; variable_name: string }
 /**
  * Method used to verify an action node's effect.
