@@ -12,12 +12,14 @@ mod prompts;
 pub(crate) mod retry_context;
 mod run_loop;
 pub(crate) mod screenshot;
+pub mod skill_runner;
 mod supervision;
 mod trace;
 mod variables;
 mod verdict;
 
 pub use error::*;
+pub use skill_runner::{SkillRunContext, run_skill_steps};
 
 #[cfg(test)]
 mod tests;
