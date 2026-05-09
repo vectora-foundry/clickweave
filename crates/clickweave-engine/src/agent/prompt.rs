@@ -703,6 +703,10 @@ mod state_spine_prompt_tests {
             updated_at: chrono::Utc.timestamp_opt(0, 0).unwrap(),
             produced_node_ids: vec![],
             body: String::new(),
+            schema_version: crate::agent::skills::SKILL_SCHEMA_VERSION,
+            variables: vec![],
+            sections: vec![],
+            replay: None,
         };
         let applicable = vec![RetrievedSkill {
             skill: Arc::new(skill),

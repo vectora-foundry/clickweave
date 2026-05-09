@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use tracing::warn;
 
 use super::retrieval::{ScoringWeights, is_retrieval_eligible, merge_tiers, score};
-use super::store::{SkillStore, filename_for};
+use super::store::{SkillStore, legacy_basename};
 use super::types::{
     ApplicabilitySignature, RetrievedSkill, Skill, SkillContext, SkillError, SkillState,
     SubgoalSignature,
@@ -139,7 +139,7 @@ impl SkillIndex {
             .by_id
             .iter()
             .filter_map(|(key, skill)| {
-                if filename_for(skill.as_ref()) == file_name {
+                if legacy_basename(skill.as_ref()) == file_name {
                     Some(key.clone())
                 } else {
                     None
@@ -315,6 +315,10 @@ mod tests {
             updated_at: Utc::now(),
             produced_node_ids: vec![],
             body: String::new(),
+            schema_version: super::super::SKILL_SCHEMA_VERSION,
+            variables: vec![],
+            sections: vec![],
+            replay: None,
         }
     }
 

@@ -130,6 +130,10 @@ fn indexed_skill(
         updated_at: now,
         produced_node_ids: vec![],
         body: String::new(),
+        schema_version: clickweave_engine::agent::skills::SKILL_SCHEMA_VERSION,
+        variables: vec![],
+        sections: vec![],
+        replay: None,
     }
 }
 
