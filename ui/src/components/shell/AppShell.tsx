@@ -50,8 +50,8 @@ export function AppShell() {
 
   // Settings + skills panel data loading (lifted from App.tsx)
   const projectPath = useStore((s) => s.projectPath);
-  const projectId = useStore((s) => s.workflow.id);
-  const projectName = useStore((s) => s.workflow.name);
+  const projectId = useStore((s) => s.projectId);
+  const projectName = useStore((s) => s.projectName);
   const storeTraces = useStore((s) => s.storeTraces);
   const skillsEnabled = useStore((s) => s.skillsEnabled);
   const skillsGlobalParticipation = useStore(

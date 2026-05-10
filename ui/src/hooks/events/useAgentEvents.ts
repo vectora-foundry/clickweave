@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
-import type { BoundaryKind, Edge, Node, TaskState, WorldModelDiff } from "../../bindings";
+import type { BoundaryKind, TaskState, WorldModelDiff } from "../../bindings";
 import { useStore } from "../../store/useAppStore";
 import type { AgentStatus } from "../../store/slices/agentSlice";
 import type { AgentPhase, TerminalFrame } from "../../store/slices/assistantSlice";
@@ -30,14 +30,6 @@ interface AgentStepPayload extends RunScoped {
   summary: string;
   tool_name: string;
   step_number: number;
-}
-
-interface NodeAddedPayload extends RunScoped {
-  node: Node;
-}
-
-interface EdgeAddedPayload extends RunScoped {
-  edge: Edge;
 }
 
 interface CdpConnectedPayload extends RunScoped {
@@ -97,9 +89,8 @@ interface BoundaryRecordWrittenPayload extends RunScoped {
  * Subscribe to agent backend events:
  * agent://started, agent://step, agent://complete,
  * agent://completion_disagreement, agent://stopped, agent://error,
- * agent://warning, agent://node_added, agent://edge_added,
- * agent://approval_required, agent://cdp_connected, agent://step_failed,
- * agent://sub_action.
+ * agent://warning, agent://approval_required, agent://cdp_connected,
+ * agent://step_failed, agent://sub_action.
  *
  * All run-scoped events carry a `run_id` generation ID. Events whose
  * run_id does not match the active run are silently dropped to prevent
@@ -168,24 +159,6 @@ export function useAgentEvents() {
           body: e.payload.summary,
           failed: false,
         });
-      }),
-    );
-
-    sub(
-      listen<NodeAddedPayload>("agent://node_added", (e) => {
-        if (isStale(e.payload.run_id)) return;
-        useStore
-          .getState()
-          .bufferAgentNode(e.payload.run_id, e.payload.node);
-      }),
-    );
-
-    sub(
-      listen<EdgeAddedPayload>("agent://edge_added", (e) => {
-        if (isStale(e.payload.run_id)) return;
-        useStore
-          .getState()
-          .bufferAgentEdge(e.payload.run_id, e.payload.edge);
       }),
     );
 

@@ -3,11 +3,11 @@ import { useState, useRef, useEffect } from "react";
 import { useStore } from "../../store/useAppStore";
 
 export function WorkflowRow() {
-  const workflow = useStore((s) => s.workflow);
-  const setWorkflow = useStore((s) => s.setWorkflow);
+  const projectName = useStore((s) => s.projectName);
+  const setProjectName = useStore((s) => s.setProjectName);
 
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(workflow.name);
+  const [draft, setDraft] = useState(projectName);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -15,15 +15,15 @@ export function WorkflowRow() {
   }, [editing]);
 
   const startEdit = () => {
-    setDraft(workflow.name);
+    setDraft(projectName);
     setEditing(true);
   };
 
   const commit = () => {
     const next = draft.trim();
     setEditing(false);
-    if (!next || next === workflow.name) return;
-    setWorkflow({ ...workflow, name: next });
+    if (!next || next === projectName) return;
+    setProjectName(next);
   };
 
   return (
@@ -43,9 +43,9 @@ export function WorkflowRow() {
       ) : (
         <h1
           className="min-w-0 truncate text-[15px] font-medium text-[var(--text-primary)]"
-          title={workflow.name}
+          title={projectName}
         >
-          {workflow.name}
+          {projectName}
         </h1>
       )}
       <button

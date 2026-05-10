@@ -35,7 +35,7 @@ export function OverviewAssistantCard() {
       traceSubgoal: s.agentRunId
         ? (s.runTraces[s.agentRunId]?.activeSubgoal ?? null)
         : null,
-      intent: s.workflow.intent,
+      intent: s.projectIntent,
     })),
   );
 

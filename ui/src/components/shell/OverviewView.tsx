@@ -22,7 +22,8 @@ export function OverviewView() {
   const [skillsDrawerOpen, setSkillsDrawerOpen] = useState(false);
 
   const {
-    workflow,
+    projectId,
+    projectName,
     projectPath,
     isNewWorkflow,
     agentStatus,
@@ -32,7 +33,8 @@ export function OverviewView() {
     skillsGlobalParticipation,
   } = useStore(
     useShallow((s) => ({
-      workflow: s.workflow,
+      projectId: s.projectId,
+      projectName: s.projectName,
       projectPath: s.projectPath,
       isNewWorkflow: s.isNewWorkflow,
       agentStatus: s.agentStatus,
@@ -96,15 +98,15 @@ export function OverviewView() {
                   skillId={selectedSkill.id}
                   version={selectedSkill.version}
                   projectPath={projectPath}
-                  projectName={workflow.name}
-                  projectId={workflow.id}
+                  projectName={projectName}
+                  projectId={projectId}
                   runId={agentRunId}
                   storeTraces={storeTraces}
                   onChanged={() =>
                     loadSkillsForPanel({
                       projectPath,
-                      projectName: workflow.name,
-                      projectId: workflow.id,
+                      projectName,
+                      projectId,
                       includeGlobal: skillsGlobalParticipation,
                       storeTraces,
                     }).catch((e) =>

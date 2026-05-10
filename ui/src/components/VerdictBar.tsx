@@ -6,7 +6,7 @@ export function VerdictBar() {
   const status = useStore((s) => s.verdictStatus);
   const visible = useStore((s) => s.verdictBarVisible);
   const executorState = useStore((s) => s.executorState);
-  const hasNodes = useStore((s) => s.workflow.nodes.length > 0);
+  const hasNodes = useStore((s) => s.agentSteps.length > 0 || s.agentRunId !== null);
   const dismiss = useStore((s) => s.dismissVerdictBar);
   const openModal = useStore((s) => s.openVerdictModal);
 

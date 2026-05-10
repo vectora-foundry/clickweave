@@ -24,8 +24,8 @@ export function SkillsPanel({ onNewFromWalkthrough }: SkillsPanelProps) {
   const { projectPath, projectId, projectName, storeTraces } = useStore(
     useShallow((s) => ({
       projectPath: s.projectPath,
-      projectId: s.workflow.id,
-      projectName: s.workflow.name,
+      projectId: s.projectId,
+      projectName: s.projectName,
       storeTraces: s.storeTraces,
     })),
   );

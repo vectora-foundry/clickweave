@@ -26,8 +26,9 @@ export function WalkthroughSaveSheet({
   const [error, setError] = useState<string | null>(null);
   const [showTip, setShowTip] = useState(false);
 
-  const { workflow, projectPath, storeTraces, skillsEnabled } = useStore((s) => ({
-    workflow: s.workflow,
+  const { projectId, projectName, projectPath, storeTraces, skillsEnabled } = useStore((s) => ({
+    projectId: s.projectId,
+    projectName: s.projectName,
     projectPath: s.projectPath,
     storeTraces: s.storeTraces,
     skillsEnabled: s.skillsEnabled,
@@ -43,8 +44,8 @@ export function WalkthroughSaveSheet({
       const result = await commands.saveWalkthroughAsSkill({
         session_id: sessionId,
         project_path: projectPath ?? null,
-        project_name: workflow.name,
-        project_id: workflow.id,
+        project_name: projectName,
+        project_id: projectId,
         name: name.trim() || "Recorded Walkthrough",
         store_traces: storeTraces,
       });

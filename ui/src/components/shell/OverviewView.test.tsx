@@ -52,12 +52,6 @@ describe("OverviewView walkthrough entry", () => {
       agentStatus: "idle",
       walkthroughCdpModalOpen: false,
       walkthroughCdpProgress: [],
-      workflow: {
-        ...useStore.getState().workflow,
-        nodes: [],
-        edges: [],
-        groups: [],
-      },
     });
   });
 
@@ -71,26 +65,7 @@ describe("OverviewView walkthrough entry", () => {
   });
 
   it("allows overview grid columns to shrink around long runtime content", () => {
-    useStore.setState({
-      isNewWorkflow: false,
-      workflow: {
-        ...useStore.getState().workflow,
-        nodes: [
-          {
-            id: "node-1",
-            name: "Start",
-            node_type: { type: "Unknown" },
-            position: { x: 0, y: 0 },
-            enabled: true,
-            timeout_ms: null,
-            settle_ms: null,
-            retries: 0,
-            trace_level: "Minimal",
-            expected_outcome: null,
-          },
-        ],
-      },
-    });
+    useStore.setState({ isNewWorkflow: false });
 
     const { container } = render(<OverviewView />);
 
@@ -127,27 +102,10 @@ describe("OverviewView walkthrough entry", () => {
       confirmed: [],
       promoted: [],
       projectPath: "/tmp/project.clickweave",
+      projectId: "workflow-1",
+      projectName: "Workflow",
       storeTraces: true,
       skillsGlobalParticipation: false,
-      workflow: {
-        ...useStore.getState().workflow,
-        id: "workflow-1",
-        name: "Workflow",
-        nodes: [
-          {
-            id: "node-1",
-            name: "Start",
-            node_type: { type: "Unknown" },
-            position: { x: 0, y: 0 },
-            enabled: true,
-            timeout_ms: null,
-            settle_ms: null,
-            retries: 0,
-            trace_level: "Minimal",
-            expected_outcome: null,
-          },
-        ],
-      },
     });
 
     render(<OverviewView />);

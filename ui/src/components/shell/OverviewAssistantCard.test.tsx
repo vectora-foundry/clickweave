@@ -22,21 +22,13 @@ describe("OverviewAssistantCard", () => {
       walkthroughStatus: "Idle",
       startAgent: originalStartAgent,
       cancelWalkthrough: originalCancelWalkthrough,
-      workflow: {
-        ...useStore.getState().workflow,
-        intent: null,
-      },
+      projectIntent: null,
     });
   });
 
   it("truncates long current-goal text inside the card", () => {
     const longGoal = `Goal-${"UnbrokenLongIntent".repeat(20)}`;
-    useStore.setState({
-      workflow: {
-        ...useStore.getState().workflow,
-        intent: longGoal,
-      },
-    });
+    useStore.setState({ projectIntent: longGoal });
 
     render(<OverviewAssistantCard />);
 

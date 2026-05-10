@@ -107,15 +107,10 @@ export function AssistantThread({
   const ambiguityResolutions = useStore((s) => s.ambiguityResolutions);
   const openAmbiguityModal = useStore((s) => s.openAmbiguityModal);
   const setConfirmClearOpen = useStore((s) => s.setConfirmClearOpen);
-  const agentNodeCount = useStore(
-    (s) => s.workflow.nodes.filter((n) => n.source_run_id != null).length,
-  );
-
   // Broader "active" check for features that must not race the
   // backend task — includes the VLM-disagreement resolver window.
   const agentActive = isAgentActive(agentStatus, completionDisagreement);
-  const showClearAffordance =
-    (messages.length > 0 || agentNodeCount > 0) && !agentActive;
+  const showClearAffordance = messages.length > 0 && !agentActive;
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -497,7 +492,7 @@ export function AssistantThread({
 }
 
 function IntentBar() {
-  const workflowIntent = useStore((s) => s.workflow.intent);
+  const workflowIntent = useStore((s) => s.projectIntent);
   const setIntent = useStore((s) => s.setIntent);
   const isRunning = useStore((s) => s.executorState === "running");
   const [editing, setEditing] = useState(false);

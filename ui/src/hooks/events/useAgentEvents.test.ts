@@ -1,7 +1,6 @@
 import { createElement } from "react";
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Node } from "../../bindings";
 
 const eventMock = vi.hoisted(() => ({
   listeners: new Map<string, Set<(event: { payload: unknown }) => void>>(),
@@ -29,22 +28,6 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { useStore } from "../../store/useAppStore";
 import { isStaleRunId, useAgentEvents } from "./useAgentEvents";
 
-function makeAgentNode(id: string, runId: string): Node {
-  return {
-    id,
-    name: id,
-    node_type: { type: "CdpWait", text: "Ready", timeout_ms: 1000 },
-    position: { x: 0, y: 0 },
-    enabled: true,
-    timeout_ms: null,
-    settle_ms: null,
-    retries: 0,
-    trace_level: "Minimal",
-    role: "Default",
-    expected_outcome: null,
-    source_run_id: runId,
-  };
-}
 
 function AgentEventsHarness() {
   useAgentEvents();
@@ -78,15 +61,6 @@ describe("useAgentEvents trace subscriptions", () => {
       messages: [],
       completionDisagreement: null,
       agentError: null,
-      pendingRunNodes: {},
-      pendingRunEdges: {},
-      workflow: {
-        id: "00000000-0000-0000-0000-000000000001",
-        name: "wf",
-        nodes: [],
-        edges: [],
-        groups: [],
-      },
     });
   });
 
@@ -183,87 +157,18 @@ describe("useAgentEvents trace subscriptions", () => {
     });
   });
 
-  it("buffers node and edge events, then drains them on complete (skill-only shell — no workflow mutation)", async () => {
-    // In the skill-only shell commitRunBuffer no longer appends buffered
-    // items to workflow.nodes/edges. It only drains the buffers so stale
-    // events don't accumulate.
+  it("agent://complete terminal event stamps a terminal frame on the run trace", async () => {
     await mountSubscriptions();
-
-    const node = makeAgentNode("agent-node-1", "run-1");
-    const edge = { from: "anchor", to: "agent-node-1" };
-    const workflowBefore = useStore.getState().workflow;
-
-    emit("agent://node_added", {
-      run_id: "run-1",
-      node,
-    });
-    emit("agent://edge_added", {
-      run_id: "run-1",
-      edge,
-    });
-
-    expect(useStore.getState().pendingRunNodes["run-1"]).toEqual([node]);
-    expect(useStore.getState().pendingRunEdges["run-1"]).toEqual([edge]);
 
     emit("agent://complete", {
       run_id: "run-1",
       summary: "Done",
     });
 
-    const state = useStore.getState();
-    // Workflow is not mutated — skill-only shell has no graph nodes.
-    expect(state.workflow).toBe(workflowBefore);
-    // Buffers are drained.
-    expect(state.pendingRunNodes["run-1"]).toBeUndefined();
-    expect(state.pendingRunEdges["run-1"]).toBeUndefined();
-    expect(state.runTraces["run-1"].terminalFrame).toEqual({
+    expect(useStore.getState().runTraces["run-1"].terminalFrame).toEqual({
       kind: "complete",
       detail: "Done",
     });
-  });
-
-  it("drops buffered canvas changes on stopped, error, and destructive-cap terminal paths", async () => {
-    await mountSubscriptions();
-
-    const stoppedNode = makeAgentNode("stopped-node", "run-1");
-    useStore.getState().bufferAgentNode("run-1", stoppedNode);
-    emit("agent://stopped", {
-      run_id: "run-1",
-      reason: "user_stopped",
-    });
-    expect(useStore.getState().workflow.nodes).toEqual([]);
-    expect(useStore.getState().pendingRunNodes["run-1"]).toBeUndefined();
-
-    useStore.setState({
-      agentRunId: "run-2",
-      agentStatus: "running",
-      pendingRunNodes: {},
-      pendingRunEdges: {},
-    });
-    const errorNode = makeAgentNode("error-node", "run-2");
-    useStore.getState().bufferAgentNode("run-2", errorNode);
-    emit("agent://error", {
-      run_id: "run-2",
-      message: "boom",
-    });
-    expect(useStore.getState().workflow.nodes).toEqual([]);
-    expect(useStore.getState().pendingRunNodes["run-2"]).toBeUndefined();
-
-    useStore.setState({
-      agentRunId: "run-3",
-      agentStatus: "running",
-      pendingRunNodes: {},
-      pendingRunEdges: {},
-    });
-    const capNode = makeAgentNode("cap-node", "run-3");
-    useStore.getState().bufferAgentNode("run-3", capNode);
-    emit("agent://consecutive_destructive_cap_hit", {
-      run_id: "run-3",
-      recent_tool_names: ["delete_file"],
-      cap: 1,
-    });
-    expect(useStore.getState().workflow.nodes).toEqual([]);
-    expect(useStore.getState().pendingRunNodes["run-3"]).toBeUndefined();
   });
 });
 
@@ -279,17 +184,8 @@ describe("terminal events stamp agentRunFinishedAt (D24)", () => {
       messages: [],
       completionDisagreement: null,
       agentError: null,
-      pendingRunNodes: {},
-      pendingRunEdges: {},
       agentRunStartedAt: 1_000,
       agentRunFinishedAt: null,
-      workflow: {
-        id: "00000000-0000-0000-0000-000000000001",
-        name: "wf",
-        nodes: [],
-        edges: [],
-        groups: [],
-      },
     });
   });
 

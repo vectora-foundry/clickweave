@@ -5,32 +5,22 @@ import { useStore } from "../../store/useAppStore";
 
 describe("WorkflowRow", () => {
   beforeEach(() => {
-    useStore.setState({
-      workflow: {
-        ...useStore.getState().workflow,
-        name: "MyFlow",
-      },
-    });
+    useStore.setState({ projectName: "MyFlow" });
   });
 
-  it("renames the workflow on blur commit", () => {
+  it("renames the project on blur commit", () => {
     render(<WorkflowRow />);
     fireEvent.click(screen.getByRole("button", { name: /rename/i }));
     const input = screen.getByDisplayValue("MyFlow");
     fireEvent.change(input, { target: { value: "Renamed" } });
     fireEvent.blur(input);
 
-    expect(useStore.getState().workflow.name).toBe("Renamed");
+    expect(useStore.getState().projectName).toBe("Renamed");
   });
 
-  it("keeps long workflow names from pushing the rename control offscreen", () => {
+  it("keeps long project names from pushing the rename control offscreen", () => {
     const longName = `Workflow-${"VeryLongNameWithoutBreaks".repeat(10)}`;
-    useStore.setState({
-      workflow: {
-        ...useStore.getState().workflow,
-        name: longName,
-      },
-    });
+    useStore.setState({ projectName: longName });
 
     render(<WorkflowRow />);
 
