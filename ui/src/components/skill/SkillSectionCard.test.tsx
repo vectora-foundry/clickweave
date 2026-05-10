@@ -29,6 +29,7 @@ vi.mock("../../bindings", () => ({
 import { useStore } from "../../store/useAppStore";
 import { SkillSectionCard } from "./SkillSectionCard";
 import type { SkillSection } from "../../bindings";
+import type { SectionRunStatus } from "../../store/slices/skillsSlice";
 
 const section: SkillSection = {
   id: "section_1",
@@ -52,9 +53,13 @@ function renderCard(props?: Partial<Parameters<typeof SkillSectionCard>[0]>) {
   );
 }
 
+function setRunStatus(sectionId: string, status: SectionRunStatus) {
+  useStore.setState({ sectionRunState: { [sectionId]: status } });
+}
+
 describe("SkillSectionCard", () => {
   beforeEach(() => {
-    useStore.setState({ sectionApproval: null });
+    useStore.setState({ sectionApproval: null, sectionRunState: {} });
   });
 
   afterEach(() => {
@@ -137,5 +142,88 @@ describe("SkillSectionCard", () => {
     // Click again to collapse
     fireEvent.click(screen.getByTestId("expand-toggle"));
     expect(screen.queryByText("s_001")).not.toBeInTheDocument();
+  });
+});
+
+// ── 1.J.1: Run state badge ───────────────────────────────────────────────────
+
+describe("SkillSectionCard — run state badge (1.J.1)", () => {
+  beforeEach(() => {
+    useStore.setState({ sectionApproval: null, sectionRunState: {} });
+    cleanup();
+  });
+
+  it("shows running badge when section run state is running", () => {
+    setRunStatus(section.id, "running");
+    renderCard();
+    expect(screen.getByTestId("run-state-badge")).toHaveTextContent("running");
+  });
+
+  it("shows succeeded badge when section run state is succeeded", () => {
+    setRunStatus(section.id, "succeeded");
+    renderCard();
+    expect(screen.getByTestId("run-state-badge")).toHaveTextContent("succeeded");
+  });
+
+  it("does not show a badge when status is pending", () => {
+    setRunStatus(section.id, "pending");
+    renderCard();
+    expect(screen.queryByTestId("run-state-badge")).not.toBeInTheDocument();
+  });
+
+  it("does not show a badge when no run state is set", () => {
+    renderCard();
+    expect(screen.queryByTestId("run-state-badge")).not.toBeInTheDocument();
+  });
+});
+
+// ── 1.J.3: Failure handoff — red outline and resume button ──────────────────
+
+describe("SkillSectionCard — failure handoff (1.J.3)", () => {
+  beforeEach(() => {
+    useStore.setState({ sectionApproval: null, sectionRunState: {} });
+    cleanup();
+  });
+
+  // (a) failure renders red outline via data-run-status attribute
+  it("(a) sets data-run-status=failed when the section has failed", () => {
+    setRunStatus(section.id, "failed");
+    renderCard();
+    const card = screen.getByTestId("run-state-badge").closest("[data-run-status]");
+    expect(card).toHaveAttribute("data-run-status", "failed");
+  });
+
+  // (c) Resume button appears on failed section and calls onResume
+  it("(c) shows Resume button when section is failed and onResume is provided", () => {
+    setRunStatus(section.id, "failed");
+    const onResume = vi.fn();
+    render(
+      <SkillSectionCard
+        section={section}
+        sectionBody={sectionBody}
+        selected={false}
+        onClick={vi.fn()}
+        onResume={onResume}
+      />,
+    );
+    const resumeButton = screen.getByTestId("resume-from-failure");
+    expect(resumeButton).toBeInTheDocument();
+    fireEvent.click(resumeButton);
+    expect(onResume).toHaveBeenCalledWith(section.id);
+  });
+
+  it("does not show Resume button when section is not failed", () => {
+    setRunStatus(section.id, "running");
+    const onResume = vi.fn();
+    render(
+      <SkillSectionCard
+        section={section}
+        sectionBody={sectionBody}
+        selected={false}
+        onClick={vi.fn()}
+        onResume={onResume}
+      />,
+    );
+    expect(screen.queryByTestId("resume-from-failure")).not.toBeInTheDocument();
   });
 });

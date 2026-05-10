@@ -42,24 +42,36 @@ export function useExecutorNodeEvents() {
     sub(listen<{ state: string }>("executor://state", (e) => {
       const s = e.payload.state as "idle" | "running";
       useStore.getState().setExecutorState(s);
-      if (s === "idle") useStore.getState().setActiveNode(null);
+      if (s === "idle") {
+        useStore.getState().setActiveNode(null);
+        useStore.getState().setSkillFrozen(false);
+      }
       if (s === "running") {
         useStore.getState().clearVerdicts();
         useStore.getState().setLastRunStatus(null);
+        useStore.getState().setSkillFrozen(true);
+        // Seed section run state for the currently selected skill.
+        useStore.getState().initSectionRunState();
       }
     }));
     sub(listen<{ node_id: string }>("executor://node_started", (e) => {
       useStore.getState().setActiveNode(e.payload.node_id);
       useStore.getState().pushLog(`Node started: ${e.payload.node_id}`);
+      // If node_id maps to a known section, paint it as running.
+      useStore.getState().setSectionRunStatus(e.payload.node_id, "running");
     }));
     sub(listen<{ node_id: string }>("executor://node_completed", (e) => {
       useStore.getState().setActiveNode(null);
       useStore.getState().pushLog(`Node completed: ${e.payload.node_id}`);
+      // If node_id maps to a known section, paint it as succeeded.
+      useStore.getState().setSectionRunStatus(e.payload.node_id, "succeeded");
     }));
     sub(listen<{ node_id: string; error: string }>("executor://node_failed", (e) => {
       useStore.getState().setActiveNode(null);
       useStore.getState().pushLog(`Node failed: ${e.payload.node_id} - ${e.payload.error}`);
       useStore.getState().setLastRunStatus("failed");
+      // Record section failure for failure handoff and pre-fill.
+      useStore.getState().recordSectionFailure(e.payload.node_id, e.payload.error);
     }));
     sub(listen<AmbiguityResolvedPayload>("executor://ambiguity_resolved", (e) => {
       const p = e.payload;
@@ -96,6 +108,9 @@ export function useExecutorNodeEvents() {
       useStore.getState().setActiveNode(null);
       if (useStore.getState().lastRunStatus !== "failed") {
         useStore.getState().setLastRunStatus("completed");
+        useStore.getState().finalizeSectionRunState("succeeded");
+      } else {
+        useStore.getState().finalizeSectionRunState("failed");
       }
       useStore.getState().openVerdictModal();
     }));

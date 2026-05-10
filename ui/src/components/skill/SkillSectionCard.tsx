@@ -18,6 +18,7 @@ import type { SkillSection } from "../../bindings";
 import { SkillFidelityDot } from "./SkillFidelityDot";
 import { SkillSectionApprovalOverlay } from "./SkillSectionApprovalOverlay";
 import { useStore } from "../../store/useAppStore";
+import type { SectionRunStatus } from "../../store/slices/skillsSlice";
 
 interface SkillSectionCardProps {
   section: SkillSection;
@@ -26,22 +27,40 @@ interface SkillSectionCardProps {
   /** Whether this card is within a selected range. */
   selected: boolean;
   onClick: (e: React.MouseEvent) => void;
+  /** Optional override status for the resume button in failure handoff. */
+  onResume?: (sectionId: string) => void;
 }
+
+/** Badge colors and labels for each run state. */
+const RUN_STATE_BADGE: Record<SectionRunStatus, { label: string; className: string }> = {
+  pending:   { label: "pending",   className: "bg-[var(--bg-dark)] text-[var(--text-muted)]" },
+  running:   { label: "running…",  className: "bg-blue-500/20 text-blue-300 animate-pulse" },
+  succeeded: { label: "succeeded", className: "bg-emerald-500/20 text-emerald-300" },
+  repaired:  { label: "repaired",  className: "bg-yellow-500/20 text-yellow-300" },
+  failed:    { label: "failed",    className: "bg-red-500/20 text-red-400" },
+  skipped:   { label: "skipped",   className: "bg-[var(--bg-dark)] text-[var(--text-muted)] line-through" },
+};
 
 export function SkillSectionCard({
   section,
   sectionBody,
   selected,
   onClick,
+  onResume,
 }: SkillSectionCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
 
   const sectionApproval = useStore((s) => s.sectionApproval);
+  const runStatus: SectionRunStatus | undefined = useStore(
+    (s) => s.sectionRunState[section.id],
+  );
   const hasApproval =
     sectionApproval !== null &&
     sectionApproval.scope.section_id === section.id;
+
+  const isFailed = runStatus === "failed";
 
   const firstLine = sectionBody.trim().split("\n")[0] ?? "";
   const summary = firstLine.replace(/^#+\s*/, "").trim();
@@ -52,13 +71,16 @@ export function SkillSectionCard({
   return (
     <div
       className={`group relative rounded border transition-colors ${
-        selected
-          ? "border-[var(--accent-coral)] bg-[var(--bg-input)]"
-          : "border-[var(--border)] bg-[var(--bg-panel)] hover:border-[var(--border-hover,var(--border))] hover:bg-[var(--bg-input)]"
+        isFailed
+          ? "border-red-500/60 bg-red-500/5"
+          : selected
+            ? "border-[var(--accent-coral)] bg-[var(--bg-input)]"
+            : "border-[var(--border)] bg-[var(--bg-panel)] hover:border-[var(--border-hover,var(--border))] hover:bg-[var(--bg-input)]"
       } ${isSubSection ? "ml-4" : ""}`}
       onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      data-run-status={runStatus}
     >
       <div className="flex items-start gap-2 px-3 py-2">
         {/* Fidelity dot */}
@@ -80,6 +102,19 @@ export function SkillSectionCard({
                 {stepCount} {stepCount === 1 ? "step" : "steps"}
               </span>
             )}
+
+            {/* Run state badge */}
+            {runStatus && runStatus !== "pending" && (() => {
+              const badge = RUN_STATE_BADGE[runStatus];
+              return (
+                <span
+                  data-testid="run-state-badge"
+                  className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${badge.className}`}
+                >
+                  {badge.label}
+                </span>
+              );
+            })()}
           </div>
 
           {/* One-line summary */}
@@ -92,8 +127,23 @@ export function SkillSectionCard({
 
         {/* Right side: expand / raw affordances */}
         <div className="flex shrink-0 items-center gap-1">
+          {/* Resume from failure button — shown on failed sections */}
+          {isFailed && onResume && (
+            <button
+              type="button"
+              data-testid="resume-from-failure"
+              className="rounded px-1.5 py-0.5 text-[10px] font-medium text-red-300 border border-red-500/40 hover:bg-red-500/10"
+              onClick={(e) => {
+                e.stopPropagation();
+                onResume(section.id);
+              }}
+            >
+              Resume
+            </button>
+          )}
+
           {/* Hover-revealed "Edit with assistant" button */}
-          {hovered && (
+          {hovered && !isFailed && (
             <button
               type="button"
               data-testid="edit-with-assistant"

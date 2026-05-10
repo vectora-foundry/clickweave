@@ -48,6 +48,9 @@ function reset() {
     promoted: [],
     selectedSkill: null,
     breadcrumb: [],
+    sectionRunState: {},
+    failedSectionId: null,
+    failedSectionError: null,
   });
 }
 
@@ -288,5 +291,95 @@ describe("skillsSlice.breadcrumb", () => {
     expect(useStore.getState().breadcrumb).toHaveLength(2);
     useStore.getState().popSkillBreadcrumb();
     expect(useStore.getState().breadcrumb.map((x) => x.id)).toEqual(["parent"]);
+  });
+});
+
+// ── 1.J.1: Per-section run state ────────────────────────────────────────────
+
+describe("skillsSlice.sectionRunState — 1.J.1", () => {
+  const skillWithSections: Skill = {
+    id: "skl_run",
+    version: 1,
+    name: "Run Skill",
+    description: "",
+    state: "confirmed",
+    scope: "project_local",
+    tags: [],
+    subgoal_text: "",
+    subgoal_signature: "",
+    applicability: { apps: [], hosts: [], signature: "" },
+    parameter_schema: [],
+    action_sketch: [],
+    outputs: [],
+    outcome_predicate: { type: "subgoal_completed", post_state_world_model_signature: null },
+    provenance: [],
+    stats: { occurrence_count: 1, success_rate: 1, last_seen_at: null, last_invoked_at: null },
+    edited_by_user: false,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    produced_node_ids: [],
+    body: "",
+    schema_version: 1,
+    variables: [],
+    sections: [
+      { id: "sec_a", heading: "Section A", level: 2, step_ids: ["s_1"], body_range: [0, 10] },
+      { id: "sec_b", heading: "Section B", level: 2, step_ids: ["s_2"], body_range: [10, 20] },
+    ],
+  };
+
+  beforeEach(() => {
+    reset();
+    useStore.setState({ selectedSkill: skillWithSections });
+  });
+
+  // (a) running step's section gets `running` badge when initSectionRunState + setSectionRunStatus
+  it("(a) initSectionRunState seeds all sections as pending", () => {
+    useStore.getState().initSectionRunState();
+    const state = useStore.getState().sectionRunState;
+    expect(state["sec_a"]).toBe("pending");
+    expect(state["sec_b"]).toBe("pending");
+  });
+
+  it("(a) setSectionRunStatus paints a section as running", () => {
+    useStore.getState().initSectionRunState();
+    useStore.getState().setSectionRunStatus("sec_a", "running");
+    expect(useStore.getState().sectionRunState["sec_a"]).toBe("running");
+  });
+
+  // (b) step_completed → succeeded
+  it("(b) finalizeSectionRunState(succeeded) flips pending/running sections to succeeded", () => {
+    useStore.getState().initSectionRunState();
+    useStore.getState().setSectionRunStatus("sec_a", "running");
+    useStore.getState().finalizeSectionRunState("succeeded");
+    expect(useStore.getState().sectionRunState["sec_a"]).toBe("succeeded");
+    expect(useStore.getState().sectionRunState["sec_b"]).toBe("succeeded");
+  });
+
+  // (c) step_failed → failed
+  it("(c) recordSectionFailure marks the section as failed and records the error", () => {
+    useStore.getState().initSectionRunState();
+    useStore.getState().recordSectionFailure("sec_a", "element not found");
+    expect(useStore.getState().sectionRunState["sec_a"]).toBe("failed");
+    expect(useStore.getState().failedSectionId).toBe("sec_a");
+    expect(useStore.getState().failedSectionError).toBe("element not found");
+  });
+
+  it("(c) finalizeSectionRunState preserves failed sections when status=succeeded", () => {
+    useStore.getState().initSectionRunState();
+    useStore.getState().recordSectionFailure("sec_a", "error");
+    useStore.getState().finalizeSectionRunState("succeeded");
+    // sec_a already failed — stays failed
+    expect(useStore.getState().sectionRunState["sec_a"]).toBe("failed");
+    // sec_b was pending — flips to succeeded
+    expect(useStore.getState().sectionRunState["sec_b"]).toBe("succeeded");
+  });
+
+  it("clearSectionRunState resets all run state", () => {
+    useStore.getState().initSectionRunState();
+    useStore.getState().recordSectionFailure("sec_a", "error");
+    useStore.getState().clearSectionRunState();
+    expect(useStore.getState().sectionRunState).toEqual({});
+    expect(useStore.getState().failedSectionId).toBeNull();
+    expect(useStore.getState().failedSectionError).toBeNull();
   });
 });
