@@ -1,5 +1,28 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
+const commandMocks = vi.hoisted(() => ({
+  listSkillsForPanel: vi.fn(),
+  loadSkillFull: vi.fn(),
+}));
+
+vi.mock("../../bindings", () => {
+  const cache = new Map<string | symbol, unknown>();
+  const explicit: Record<string, unknown> = {
+    listSkillsForPanel: commandMocks.listSkillsForPanel,
+    loadSkillFull: commandMocks.loadSkillFull,
+  };
+
+  return {
+    commands: new Proxy(explicit, {
+      get(target, prop) {
+        if (prop in target) return target[prop as string];
+        if (!cache.has(prop)) cache.set(prop, vi.fn(async () => undefined));
+        return cache.get(prop);
+      },
+    }),
+  };
+});
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
@@ -15,8 +38,8 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 
 import { useStore } from "../useAppStore";
-import { invoke } from "@tauri-apps/api/core";
 import type { SkillSummary } from "./skillsSlice";
+import type { Skill } from "../../bindings";
 
 function reset() {
   useStore.setState({
@@ -119,7 +142,7 @@ describe("skillsSlice.applySkillConfirmed", () => {
 describe("skillsSlice.loadSkillsForPanel", () => {
   beforeEach(() => {
     reset();
-    vi.mocked(invoke).mockReset();
+    vi.clearAllMocks();
   });
 
   it("does not read skill files when trace persistence is disabled", async () => {
@@ -135,12 +158,12 @@ describe("skillsSlice.loadSkillsForPanel", () => {
       storeTraces: false,
     });
 
-    expect(invoke).not.toHaveBeenCalled();
+    expect(commandMocks.listSkillsForPanel).not.toHaveBeenCalled();
     expect(useStore.getState().drafts).toHaveLength(0);
   });
 
   it("passes the privacy gate to both project and global list commands", async () => {
-    vi.mocked(invoke).mockResolvedValue([]);
+    commandMocks.listSkillsForPanel.mockResolvedValue({ status: "ok", data: [] });
 
     await useStore.getState().loadSkillsForPanel({
       projectPath: "/tmp/project.json",
@@ -150,24 +173,105 @@ describe("skillsSlice.loadSkillsForPanel", () => {
       storeTraces: true,
     });
 
-    expect(invoke).toHaveBeenCalledWith("list_skills_for_panel", {
-      request: {
-        project_path: "/tmp/project.json",
-        project_name: "Workflow",
-        project_id: "workflow-1",
-        scope: "project_local",
-        store_traces: true,
-      },
+    expect(commandMocks.listSkillsForPanel).toHaveBeenCalledWith({
+      project_path: "/tmp/project.json",
+      project_name: "Workflow",
+      project_id: "workflow-1",
+      scope: "project_local",
+      store_traces: true,
     });
-    expect(invoke).toHaveBeenCalledWith("list_skills_for_panel", {
-      request: {
-        project_path: "/tmp/project.json",
-        project_name: "Workflow",
-        project_id: "workflow-1",
-        scope: "global",
-        store_traces: true,
-      },
+    expect(commandMocks.listSkillsForPanel).toHaveBeenCalledWith({
+      project_path: "/tmp/project.json",
+      project_name: "Workflow",
+      project_id: "workflow-1",
+      scope: "global",
+      store_traces: true,
     });
+  });
+});
+
+describe("skillsSlice.loadSelectedSkill", () => {
+  beforeEach(() => {
+    reset();
+    vi.clearAllMocks();
+  });
+
+  const baseRequest = {
+    projectPath: "/tmp/project.json",
+    projectName: "Workflow",
+    projectId: "workflow-1",
+    includeGlobal: false,
+    storeTraces: true,
+  };
+
+  const fullSkill: Skill = {
+    id: "skl_abc",
+    version: 1,
+    name: "Test Skill",
+    description: "A test skill",
+    state: "confirmed",
+    scope: "project_local",
+    tags: [],
+    subgoal_text: "",
+    subgoal_signature: "",
+    applicability: { apps: [], hosts: [], signature: "" },
+    parameter_schema: [],
+    action_sketch: [],
+    outputs: [],
+    outcome_predicate: { type: "subgoal_completed", post_state_world_model_signature: null },
+    provenance: [],
+    stats: { occurrence_count: 1, success_rate: 1, last_seen_at: null, last_invoked_at: null },
+    edited_by_user: false,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    produced_node_ids: [],
+    body: "# Test Skill",
+    schema_version: 1,
+    variables: [],
+    sections: [
+      { id: "section_1", heading: "Step 1", level: 2, step_ids: [], body_range: [0, 10] },
+    ],
+  };
+
+  // (a) Selecting a skill triggers load_skill_full and stores the full Skill
+  it("selecting a skill triggers load_skill_full and stores full Skill shape", async () => {
+    commandMocks.loadSkillFull.mockResolvedValue({ status: "ok", data: fullSkill });
+
+    await useStore.getState().loadSelectedSkill({
+      ...baseRequest,
+      skill_id: "skl_abc",
+      version: 1,
+    });
+
+    expect(commandMocks.loadSkillFull).toHaveBeenCalledWith({
+      skill_id: "skl_abc",
+      version: 1,
+      project_path: "/tmp/project.json",
+      project_name: "Workflow",
+      project_id: "workflow-1",
+      store_traces: true,
+    });
+
+    const state = useStore.getState();
+    expect(state.selectedSkill).not.toBeNull();
+    expect(state.selectedSkill?.id).toBe("skl_abc");
+    expect(state.selectedSkill?.sections).toHaveLength(1);
+    expect(state.selectedSkill?.sections?.[0].heading).toBe("Step 1");
+  });
+
+  // (b) Clearing project clears selectedSkill
+  it("clearSelectedSkill clears the selectedSkill and breadcrumb", async () => {
+    commandMocks.loadSkillFull.mockResolvedValue({ status: "ok", data: fullSkill });
+    await useStore.getState().loadSelectedSkill({
+      ...baseRequest,
+      skill_id: "skl_abc",
+      version: 1,
+    });
+    expect(useStore.getState().selectedSkill).not.toBeNull();
+
+    useStore.getState().clearSelectedSkill();
+    expect(useStore.getState().selectedSkill).toBeNull();
+    expect(useStore.getState().breadcrumb).toHaveLength(0);
   });
 });
 

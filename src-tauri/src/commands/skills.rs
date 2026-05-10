@@ -78,6 +78,20 @@ pub struct ListSkillsRequest {
     pub store_traces: bool,
 }
 
+/// Request for [`load_skill_full`] — resolves the full [`Skill`] value
+/// (including `sections` and `body`) for a given skill id. The panel
+/// sidebar already holds `SkillSummary`; this is called once, on
+/// selection, to hydrate the detail view.
+#[derive(Debug, Deserialize, Type)]
+pub struct LoadSkillFullRequest {
+    pub skill_id: String,
+    pub version: u32,
+    pub project_path: Option<String>,
+    pub project_name: String,
+    pub project_id: String,
+    pub store_traces: bool,
+}
+
 /// Lightweight projection of [`Skill`] for the Skills panel listing.
 /// The full canvas + frontmatter are loaded on demand when the user
 /// opens a detail view, so the panel index stays small.
@@ -379,6 +393,51 @@ pub async fn delete_skill(
             .map_err(|e| CommandError::io(format!("delete skill: {e}")))?;
     }
     Ok(())
+}
+
+/// Load the full [`Skill`] value (including `sections`, `body`, and
+/// `action_sketch`) for a given `(skill_id, version)` pair. Scans the
+/// project-local skill directory for a matching file. The lightweight
+/// `list_skills_for_panel` is the preferred way to populate the sidebar
+/// index; call this only on selection.
+#[tauri::command]
+#[specta::specta]
+pub async fn load_skill_full(
+    app: tauri::AppHandle,
+    request: LoadSkillFullRequest,
+) -> Result<Skill, CommandError> {
+    ensure_skill_file_io_enabled(request.store_traces)?;
+    let dir = project_skills_dir_for(
+        &app,
+        &request.project_path,
+        &request.project_name,
+        &request.project_id,
+    )?;
+    let store = SkillStore::new(dir.clone());
+    let path = dir.join(skill_filename(&request.skill_id, request.version));
+    if path.exists() {
+        let skill = store
+            .read_skill(&path)
+            .map_err(|e| CommandError::io(format!("read skill {}-v{}: {}", request.skill_id, request.version, e)))?;
+        return Ok(skill);
+    }
+    // Fall back to scanning all files in the directory — handles the case
+    // where the caller knows the id but not the exact slugified filename.
+    let files = store
+        .list_files()
+        .map_err(|e| CommandError::io(format!("list skill files: {e}")))?;
+    for file_path in files {
+        match store.read_skill(&file_path) {
+            Ok(s) if s.id == request.skill_id && s.version == request.version => {
+                return Ok(s);
+            }
+            _ => {}
+        }
+    }
+    Err(CommandError::validation(format!(
+        "skill not found: {}-v{}",
+        request.skill_id, request.version
+    )))
 }
 
 #[tauri::command]

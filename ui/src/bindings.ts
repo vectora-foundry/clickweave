@@ -376,6 +376,14 @@ async promoteSkillToGlobal(request: PromoteSkillToGlobalRequest) : Promise<Resul
     else return { status: "error", error: e  as any };
 }
 },
+async loadSkillFull(request: LoadSkillFullRequest) : Promise<Result<Skill, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_skill_full", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async forkSkill(request: ForkSkillRequest) : Promise<Result<Skill, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("fork_skill", { request }) };
@@ -657,6 +665,7 @@ export type JsonValue = null | boolean | number | string | JsonValue[] | Partial
 export type LaunchAppParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { app_name: string }
 export type ListSkillsRequest = { scope: SkillScope; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
 export type LoadAgentChatRequest = { project_path: string | null; project_name: string; project_id: string }
+export type LoadSkillFullRequest = { skill_id: string; version: number; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
 export type LoadLatestRunTraceRequest = { project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
 export type LoopPredicate = { type: "world_model_delta"; expr: string } | { type: "step_count_reached"; count: number }
 export type McpToolCallParams = { tool_name: string; arguments: JsonValue }

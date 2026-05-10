@@ -1,11 +1,14 @@
 import type { StateCreator } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
+import { commands } from "../../bindings";
+import type { Skill } from "../../bindings";
+import { errorMessage } from "../../utils/commandError";
 import type { StoreState } from "./types";
 
 /// Lightweight projection of the engine's `Skill` type for the panel.
 /// Mirrors `SkillSummary` produced by the `list_skills_for_panel` Tauri
-/// command. Auto-generated bindings will replace this once `cargo run`
-/// regenerates `bindings.ts` in dev mode.
+/// command. Kept as a local interface so existing consumers (SkillsPanel,
+/// StatsStrip, SkillDetailView) that use the old optional-field shape
+/// stay compatible until 1.G cleans them up.
 export interface SkillSummary {
   id: string;
   version: number;
@@ -99,11 +102,14 @@ export interface SkillsSlice {
   drafts: SkillSummary[];
   confirmed: SkillSummary[];
   promoted: SkillSummary[];
-  selectedSkill: { id: string; version: number } | null;
+  /** Full `Skill` shape loaded on selection; `null` when nothing is selected. */
+  selectedSkill: Skill | null;
   breadcrumb: SkillBreadcrumbEntry[];
 
   setSkillsList: (list: SkillSummary[]) => void;
   loadSkillsForPanel: (request: LoadSkillsForPanelRequest) => Promise<void>;
+  /** Select a skill by id+version and load its full shape via IPC. */
+  loadSelectedSkill: (request: LoadSkillsForPanelRequest & { skill_id: string; version: number }) => Promise<void>;
   setSelectedSkill: (id: string, version: number) => void;
   clearSelectedSkill: () => void;
   findSkill: (id: string, version: number) => SkillSummary | null;
@@ -164,24 +170,64 @@ export const createSkillsSlice: StateCreator<
       set(bucketize([]));
       return;
     }
+    const { pushLog } = get();
     const baseRequest = {
       project_path: projectPath,
       project_name: projectName,
       project_id: projectId,
       store_traces: storeTraces,
     };
-    const projectLocal = await invoke<SkillSummary[]>("list_skills_for_panel", {
-      request: { ...baseRequest, scope: "project_local" },
+    const projectLocalResult = await commands.listSkillsForPanel({
+      ...baseRequest,
+      scope: "project_local",
     });
-    const global = includeGlobal
-      ? await invoke<SkillSummary[]>("list_skills_for_panel", {
-          request: { ...baseRequest, scope: "global" },
-        })
-      : [];
-    set(bucketize([...projectLocal, ...global]));
+    if (projectLocalResult.status === "error") {
+      pushLog(`Failed to load skills: ${errorMessage(projectLocalResult.error)}`);
+      return;
+    }
+    const globalResult = includeGlobal
+      ? await commands.listSkillsForPanel({ ...baseRequest, scope: "global" })
+      : null;
+    if (globalResult && globalResult.status === "error") {
+      pushLog(`Failed to load global skills: ${errorMessage(globalResult.error)}`);
+      return;
+    }
+    const globalList = globalResult?.status === "ok" ? globalResult.data : [];
+    // Cast: bindings SkillSummary is structurally compatible with the local
+    // SkillSummary interface (same wire format, just stricter required fields).
+    const combined = [...projectLocalResult.data, ...globalList] as unknown as SkillSummary[];
+    set(bucketize(combined));
   },
 
-  setSelectedSkill: (id, version) => set({ selectedSkill: { id, version } }),
+  loadSelectedSkill: async ({ projectPath, projectName, projectId, storeTraces, skill_id, version }) => {
+    const { pushLog } = get();
+    const result = await commands.loadSkillFull({
+      skill_id,
+      version,
+      project_path: projectPath,
+      project_name: projectName,
+      project_id: projectId,
+      store_traces: storeTraces,
+    });
+    if (result.status === "error") {
+      pushLog(`Failed to load skill: ${errorMessage(result.error)}`);
+      return;
+    }
+    set({ selectedSkill: result.data });
+  },
+
+  setSelectedSkill: (id, version) => {
+    // Keep a lightweight stub so the sidebar can reflect selection state
+    // immediately while loadSelectedSkill races in the background. Cleared
+    // when clearSelectedSkill is called. The full Skill shape overwrites
+    // this stub once the IPC call completes.
+    const existing = get().findSkill(id, version);
+    if (existing) {
+      // Cast the SkillSummary to a partial Skill for selection display.
+      // The full shape arrives from loadSelectedSkill before SkillView renders.
+      set({ selectedSkill: existing as unknown as Skill });
+    }
+  },
 
   clearSelectedSkill: () => set({ selectedSkill: null, breadcrumb: [] }),
 
