@@ -18,13 +18,14 @@ export function useWalkthrough() {
       actions: s.walkthroughActions,
       warnings: s.walkthroughWarnings,
       annotations: s.walkthroughAnnotations,
-      actionNodeMap: s.walkthroughActionNodeMap,
+      saveSheetOpen: s.walkthroughSaveSheetOpen,
       cdpModalOpen: s.walkthroughCdpModalOpen,
       cdpProgress: s.walkthroughCdpProgress,
 
       // Core actions
       setStatus: s.setWalkthroughStatus,
       setPanelOpen: s.setWalkthroughPanelOpen,
+      setSaveSheetOpen: s.setWalkthroughSaveSheetOpen,
       setDraft: s.setWalkthroughDraft,
 
       // Recording actions

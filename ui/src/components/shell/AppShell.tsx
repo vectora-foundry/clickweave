@@ -12,6 +12,7 @@ import { OverviewView } from "./OverviewView";
 import { Sidebar } from "./Sidebar";
 import { TitleBar } from "./TitleBar";
 import { SkillView } from "../skill/SkillView";
+import { WalkthroughSaveSheet } from "../WalkthroughSaveSheet";
 import { useEscapeKey } from "../../hooks/useEscapeKey";
 import { useExecutorEvents } from "../../hooks/useExecutorEvents";
 import { useSafetyEventRouter } from "../../hooks/useSafetyEventRouter";
@@ -26,6 +27,8 @@ export function AppShell() {
     activeAmbiguityId,
     ambiguityResolutions,
     confirmClearOpen,
+    walkthroughSaveSheetOpen,
+    walkthroughSessionId,
   } = useStore(
     useShallow((s) => ({
       cdpModalOpen: s.walkthroughCdpModalOpen,
@@ -33,6 +36,8 @@ export function AppShell() {
       activeAmbiguityId: s.activeAmbiguityId,
       ambiguityResolutions: s.ambiguityResolutions,
       confirmClearOpen: s.confirmClearOpen,
+      walkthroughSaveSheetOpen: s.walkthroughSaveSheetOpen,
+      walkthroughSessionId: s.walkthroughSessionId,
     })),
   );
   const closeAmbiguityModal = useStore((s) => s.closeAmbiguityModal);
@@ -146,6 +151,19 @@ export function AppShell() {
         }}
         onCancel={() => setConfirmClearOpen(false)}
       />
+      {walkthroughSaveSheetOpen && walkthroughSessionId && (
+        <WalkthroughSaveSheet
+          sessionId={walkthroughSessionId}
+          onSaved={() => {
+            useStore.getState().setWalkthroughSaveSheetOpen(false);
+            useStore.getState().discardDraft();
+          }}
+          onDiscard={() => {
+            useStore.getState().setWalkthroughSaveSheetOpen(false);
+            useStore.getState().discardDraft();
+          }}
+        />
+      )}
     </div>
   );
 }

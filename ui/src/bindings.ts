@@ -797,7 +797,7 @@ store_traces: boolean | null }
 export type RunStatus = "Ok" | "Failed" | "Stopped" | "Cancelled"
 export type RunsQuery = { project_path: string | null; project_id: string; project_name: string; node_name: string }
 export type SaveAgentChatRequest = { project_path: string | null; project_name: string; project_id: string; chat: AgentChat; store_traces: boolean }
-export type SaveWalkthroughAsSkillRequest = { session_id: string; project_path: string | null; project_name: string; project_id: string; reviewed_draft: Workflow | null; reviewed_actions: WalkthroughAction[] | null; store_traces: boolean }
+export type SaveWalkthroughAsSkillRequest = { session_id: string; project_path: string | null; project_name: string; project_id: string; name: string; store_traces: boolean }
 /**
  * Screenshot coordinate metadata for mapping screen coordinates to image pixels.
  * 
@@ -896,7 +896,7 @@ screenshot_meta?: ScreenshotMeta | null;
 candidate?: boolean }
 export type WalkthroughActionKind = { type: "LaunchApp"; app_name: string; app_kind: AppKind } | { type: "FocusWindow"; app_name: string; window_title: string | null; app_kind: AppKind } | { type: "Click"; x: number; y: number; button: MouseButton; click_count: number } | { type: "TypeText"; text: string } | { type: "PressKey"; key: string; modifiers: string[] } | { type: "Scroll"; delta_y: number } | { type: "Hover"; x: number; y: number; dwell_ms: number }
 export type WalkthroughAnnotations = { deleted_node_ids: string[]; renamed_nodes: NodeRename[]; target_overrides: TargetOverride[]; variable_promotions: VariablePromotion[] }
-export type WalkthroughDraftResponse = { session_id: string; actions: WalkthroughAction[]; draft: Workflow | null; warnings: string[] }
+export type WalkthroughDraftResponse = { session_id: string; actions: WalkthroughAction[]; warnings: string[] }
 export type WatchSlot = { name: WatchSlotName; note: string; set_at_step: number }
 export type WatchSlotName = "pending_modal" | "pending_auth" | "pending_focus_shift"
 /**

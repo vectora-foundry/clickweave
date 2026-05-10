@@ -32,13 +32,11 @@ export function useWalkthroughEvents() {
       useStore.getState().pushWalkthroughEvent(e.payload.event);
     }));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    sub(listen<{ session_id: string; actions: any[]; draft: any; warnings: string[]; action_node_map: any[] }>("walkthrough://draft_ready", (e) => {
+    sub(listen<{ session_id: string; actions: any[]; warnings: string[] }>("walkthrough://draft_ready", (e) => {
       useStore.getState().setWalkthroughDraft({
         session_id: e.payload.session_id,
         actions: e.payload.actions,
-        draft: e.payload.draft,
         warnings: e.payload.warnings,
-        action_node_map: e.payload.action_node_map ?? [],
       });
     }));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -103,19 +103,19 @@ export interface WalkthroughSlice {
   walkthroughActions: WalkthroughAction[];
   walkthroughWarnings: string[];
   walkthroughAnnotations: WalkthroughAnnotations;
-  walkthroughActionNodeMap: ActionNodeEntry[];
+  /** Whether the WalkthroughSaveSheet overlay is visible. */
+  walkthroughSaveSheetOpen: boolean;
   walkthroughCdpModalOpen: boolean;
   walkthroughCdpProgress: CdpSetupProgress[];
 
   // ── Core actions ──
   setWalkthroughStatus: (status: WalkthroughStatus) => void;
   setWalkthroughPanelOpen: (open: boolean) => void;
+  setWalkthroughSaveSheetOpen: (open: boolean) => void;
   setWalkthroughDraft: (payload: {
     session_id: string;
     actions: WalkthroughAction[];
-    draft: unknown;
     warnings: string[];
-    action_node_map: ActionNodeEntry[];
   }) => void;
 
   // ── Recording actions ──
@@ -149,7 +149,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   walkthroughActions: [],
   walkthroughWarnings: [],
   walkthroughAnnotations: { ...emptyAnnotations },
-  walkthroughActionNodeMap: [],
+  walkthroughSaveSheetOpen: false,
   walkthroughCdpModalOpen: false,
   walkthroughCdpProgress: [],
 
@@ -161,16 +161,19 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     if (status === "Processing" || status === "Review" || status === "Idle" || status === "Cancelled" || status === "Applied") {
       closeRecordingBarWindow();
     }
+    // Open the save sheet when processing completes (entering Review)
+    if (status === "Review") {
+      set({ walkthroughSaveSheetOpen: true });
+    }
   },
   setWalkthroughPanelOpen: (open) => set({ walkthroughPanelOpen: open }),
+  setWalkthroughSaveSheetOpen: (open) => set({ walkthroughSaveSheetOpen: open }),
 
-  setWalkthroughDraft: ({ session_id, actions, warnings, action_node_map }) => set({
+  setWalkthroughDraft: ({ session_id, actions, warnings }) => set({
     walkthroughSessionId: session_id,
     walkthroughActions: actions,
     walkthroughWarnings: warnings,
-    walkthroughActionNodeMap: action_node_map,
     walkthroughStatus: "Review",
-    walkthroughPanelOpen: true,
     walkthroughAnnotations: { ...emptyAnnotations },
   }),
 
@@ -209,7 +212,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       walkthroughSessionId: null,
       walkthroughEvents: [],
       walkthroughAnnotations: { ...emptyAnnotations },
-      walkthroughActionNodeMap: [],
+      walkthroughSaveSheetOpen: false,
       walkthroughCdpProgress: [],
 
       // P2.H2 — legacy bare-boolean removed; drive the surface enum so any
@@ -283,7 +286,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       walkthroughActions: [],
       walkthroughWarnings: [],
       walkthroughAnnotations: { ...emptyAnnotations },
-      walkthroughActionNodeMap: [],
+      walkthroughSaveSheetOpen: false,
       walkthroughPanelOpen: false,
     });
     const result = await commands.cancelWalkthrough();
@@ -338,13 +341,12 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
     set({
       walkthroughStatus: "Idle",
       walkthroughPanelOpen: false,
+      walkthroughSaveSheetOpen: false,
       walkthroughSessionId: null,
       walkthroughActions: [],
       walkthroughWarnings: [],
       walkthroughAnnotations: { ...emptyAnnotations },
       walkthroughEvents: [],
-      walkthroughActionNodeMap: [],
-
       walkthroughError: null,
     });
   },
