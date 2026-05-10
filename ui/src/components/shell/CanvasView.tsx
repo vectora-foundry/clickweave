@@ -5,7 +5,6 @@ import { AssistantPanel } from "../AssistantPanel";
 import { FloatingToolbar } from "../FloatingToolbar";
 import { IntentEmptyState } from "../IntentEmptyState";
 import { SkillDetailView } from "../skills/SkillDetailView";
-import { TraceCanvas } from "../TraceCanvas";
 import { WalkthroughPanel } from "../WalkthroughPanel";
 import { isWalkthroughBusy } from "../../store/slices/walkthroughSlice";
 
@@ -94,8 +93,6 @@ export function CanvasView() {
         <div className="absolute inset-0 z-10" />
       )}
       <div className="relative flex-1 overflow-hidden bg-[var(--bg-dark)]">
-        <TraceCanvas />
-
         <FloatingToolbar
           executorState={executorState}
           executionMode={executionMode}

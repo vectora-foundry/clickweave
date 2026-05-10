@@ -12,9 +12,6 @@ vi.mock("../AssistantPanel", () => ({
 vi.mock("../FloatingToolbar", () => ({
   FloatingToolbar: () => <div data-testid="floating-toolbar" />,
 }));
-vi.mock("../TraceCanvas", () => ({
-  TraceCanvas: () => <div data-testid="trace-canvas" />,
-}));
 vi.mock("../IntentEmptyState", () => ({
   IntentEmptyState: () => <div data-testid="intent-empty-state" />,
 }));
@@ -62,10 +59,9 @@ describe("CanvasView", () => {
     });
   });
 
-  it("renders the trace canvas and floating toolbar", () => {
+  it("renders the floating toolbar", () => {
     render(<CanvasView />);
 
-    expect(screen.getByTestId("trace-canvas")).toBeInTheDocument();
     expect(screen.getByTestId("floating-toolbar")).toBeInTheDocument();
   });
 
