@@ -55,7 +55,7 @@ describe("agentSlice.startAgent", () => {
       pageTransitioned: false,
     });
     useStore.getState().setPendingApproval({
-      stepIndex: 0,
+      scope: null,
       toolName: "click",
       arguments: {},
       description: "Click the button",
@@ -374,7 +374,7 @@ describe("agentSlice approval actions", () => {
 
   it("formats structured Tauri errors from approveAction into the activity log", async () => {
     useStore.getState().setPendingApproval({
-      stepIndex: 0,
+      scope: null,
       toolName: "click",
       arguments: {},
       description: "Click the button",
@@ -393,7 +393,7 @@ describe("agentSlice approval actions", () => {
 
   it("formats structured Tauri errors from rejectAction into the activity log", async () => {
     useStore.getState().setPendingApproval({
-      stepIndex: 0,
+      scope: null,
       toolName: "click",
       arguments: {},
       description: "Click the button",
@@ -614,7 +614,7 @@ describe("stopAgent — preserves completionDisagreement for terminal event", ()
 
   it("still clears pendingApproval so the engine oneshot unblocks", async () => {
     useStore.getState().setPendingApproval({
-      stepIndex: 0,
+      scope: null,
       toolName: "click",
       arguments: {},
       description: "",

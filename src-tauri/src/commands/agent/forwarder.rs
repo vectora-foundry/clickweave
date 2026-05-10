@@ -138,11 +138,15 @@ fn install_pending_approval(app: &tauri::AppHandle, resp_tx: tokio::sync::onesho
 }
 
 fn emit_approval_required(app: &tauri::AppHandle, run_id: &str, request: ApprovalRequest) {
+    let scope = run_id
+        .parse::<uuid::Uuid>()
+        .map(|id| clickweave_core::SafetyScope::AdHoc { run_id: id })
+        .ok();
     let _ = app.emit(
         "agent://approval_required",
         serde_json::json!({
+            "scope": scope,
             "run_id": run_id,
-            "step_index": request.step_index,
             "tool_name": request.tool_name,
             "arguments": request.arguments,
             "description": request.description,

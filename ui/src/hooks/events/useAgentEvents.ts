@@ -62,7 +62,7 @@ interface StepFailedPayload extends RunScoped {
 }
 
 interface ApprovalRequiredPayload extends RunScoped {
-  step_index: number;
+  scope: import("../../store/slices/executionSlice").SafetyScope | null;
   tool_name: string;
   arguments: unknown;
   description: string;
@@ -196,7 +196,7 @@ export function useAgentEvents() {
         const current = useStore.getState().agentStatus;
         if (current !== "running") return;
         useStore.getState().setPendingApproval({
-          stepIndex: e.payload.step_index,
+          scope: e.payload.scope,
           toolName: e.payload.tool_name,
           arguments: e.payload.arguments,
           description: e.payload.description,

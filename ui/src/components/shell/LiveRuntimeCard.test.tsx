@@ -42,7 +42,7 @@ describe("LiveRuntimeCard elapsed (D24)", () => {
     useStore.setState({
       agentStatus: "running",
       pendingApproval: {
-        stepIndex: 2,
+        scope: null,
         toolName: "approve_next_tool",
         arguments: {},
         description: "Approve next tool",

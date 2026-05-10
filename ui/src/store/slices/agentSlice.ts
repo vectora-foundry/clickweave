@@ -17,7 +17,7 @@ export interface AgentStep {
 export type AgentStatus = "idle" | "running" | "complete" | "stopped" | "error";
 
 export interface PendingApproval {
-  stepIndex: number;
+  scope: import("./executionSlice").SafetyScope | null;
   toolName: string;
   arguments: unknown;
   description: string;
