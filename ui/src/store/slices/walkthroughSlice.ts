@@ -201,7 +201,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
   closeCdpModal: () => set({ walkthroughCdpModalOpen: false }),
 
   startWalkthrough: async (cdpApps: CdpAppConfig[] = []) => {
-    const { workflow, projectPath, pushLog, supervisorConfig } = get();
+    const { projectId, projectPath, pushLog, supervisorConfig } = get();
     // Flip to Recording optimistically so the pushWalkthroughEvent guard
     // accepts events from the backend — the capture processing task is
     // spawned before the backend's emit_state(Recording), so the first
@@ -223,7 +223,7 @@ export const createWalkthroughSlice: StateCreator<StoreState, [], [], Walkthroug
       ? toEndpoint(supervisorConfig)
       : null;
     const { hoverDwellThreshold } = get();
-    const result = await commands.startWalkthrough(workflow.id, projectPath ?? null, supervisor, cdpApps, hoverDwellThreshold);
+    const result = await commands.startWalkthrough(projectId, projectPath ?? null, supervisor, cdpApps, hoverDwellThreshold);
     if (result.status === "error") {
       const msg = errorMessage(result.error);
       set({ walkthroughStatus: "Idle", walkthroughError: msg, walkthroughCdpModalOpen: false });

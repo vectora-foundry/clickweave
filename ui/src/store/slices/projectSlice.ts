@@ -1,7 +1,7 @@
 import type { StateCreator } from "zustand";
-import type { ProjectManifest, Workflow } from "../../bindings";
+import type { ProjectManifest } from "../../bindings";
 import { commands } from "../../bindings";
-import { makeDefaultWorkflow, PROJECT_SCHEMA_VERSION } from "../state";
+import { PROJECT_SCHEMA_VERSION } from "../state";
 import { errorMessage } from "../../utils/commandError";
 import type { StoreState } from "./types";
 import { loadAgentChat } from "../agentChatPersistence";
@@ -9,11 +9,14 @@ import { loadLatestRunTrace } from "../runTracePersistence";
 import { isAgentActive } from "./agentSlice";
 
 export interface ProjectSlice {
-  workflow: Workflow;
+  projectId: string;
+  projectName: string;
+  projectIntent: string | null;
   projectPath: string | null;
   isNewWorkflow: boolean;
 
-  setWorkflow: (w: Workflow) => void;
+  setProjectName: (name: string) => void;
+  setProjectIntent: (intent: string | null) => void;
   openProject: () => Promise<void>;
   saveProject: () => Promise<void>;
   newProject: () => void;
@@ -21,22 +24,24 @@ export interface ProjectSlice {
 }
 
 export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> = (set, get) => ({
-  workflow: makeDefaultWorkflow(),
+  projectId: crypto.randomUUID(),
+  projectName: "New Workflow",
+  projectIntent: null,
   projectPath: null,
   isNewWorkflow: true,
 
-  setWorkflow: (w) => set({ workflow: w }),
+  setProjectName: (name) => set({ projectName: name }),
+  setProjectIntent: (intent) => set({ projectIntent: intent }),
 
   openProject: async () => {
     if (get().executorState === "running") {
       console.warn("Cannot open project during execution");
       return;
     }
-    // Cross-project corruption guard (D1.C1 review): a live agent run
-    // against workflow A would keep emitting events into workflow B's
-    // graph/messages if we swapped the project out from under it.
-    // Also block while a VLM completion-disagreement resolver is
-    // pending — the backend task still owns this workflow's cache +
+    // Cross-project corruption guard: a live agent run against project A
+    // would keep emitting events into project B if we swapped out from
+    // under it. Also block while a VLM completion-disagreement resolver is
+    // pending — the backend task still owns this project's cache +
     // variant-index writes until the operator resolves.
     if (isAgentActive(get().agentStatus, get().completionDisagreement)) {
       get().setAssistantError(
@@ -55,17 +60,9 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
     }
     set({
       projectPath: projectResult.data.path,
-      // 1.G TOMBSTONE: deleted with canvas — `workflow.nodes/edges/groups`
-      // are no longer carried by `ProjectData`. The slim `ProjectManifest`
-      // (id/name/intent) is mirrored back into the legacy `Workflow`-shaped
-      // slice field so canvas-tree consumers keep typechecking until 1.G
-      // deletes them.
-      workflow: {
-        ...makeDefaultWorkflow(),
-        id: projectResult.data.manifest.id,
-        name: projectResult.data.manifest.name,
-        intent: projectResult.data.manifest.intent ?? null,
-      },
+      projectId: projectResult.data.manifest.id,
+      projectName: projectResult.data.manifest.name,
+      projectIntent: projectResult.data.manifest.intent ?? null,
       selectedNode: null,
       isNewWorkflow: false,
       assistantError: null,
@@ -81,7 +78,7 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       // showing the previous project's run-halted message.
       consecutiveDestructiveCapHit: null,
     });
-    // Ambiguity resolutions are specific to the prior workflow's nodes.
+    // Ambiguity resolutions are specific to the prior project's nodes.
     get().clearAmbiguityResolutions();
 
     // Hydrate the per-project chat transcript from disk. Best-effort
@@ -109,7 +106,7 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
   },
 
   saveProject: async () => {
-    const { projectPath, workflow, pushLog } = get();
+    const { projectPath, projectId, projectName, projectIntent, pushLog } = get();
     let savePath = projectPath;
     if (!savePath) {
       const result = await commands.pickSaveFile();
@@ -117,13 +114,10 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       savePath = result.data;
       set({ projectPath: savePath });
     }
-    // 1.G TOMBSTONE: legacy `workflow` slice still holds id/name/intent;
-    // graph fields (nodes/edges/groups) are dropped on save now that
-    // `ProjectManifest` is the on-disk shape.
     const manifest: ProjectManifest = {
-      id: workflow.id,
-      name: workflow.name,
-      intent: workflow.intent ?? null,
+      id: projectId,
+      name: projectName,
+      intent: projectIntent ?? null,
       schema_version: PROJECT_SCHEMA_VERSION,
     };
     const saveResult = await commands.saveProject(savePath, manifest);
@@ -148,7 +142,9 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
     }
     const { pushLog } = get();
     set({
-      workflow: makeDefaultWorkflow(),
+      projectId: crypto.randomUUID(),
+      projectName: "New Workflow",
+      projectIntent: null,
       projectPath: null,
       selectedNode: null,
       isNewWorkflow: true,

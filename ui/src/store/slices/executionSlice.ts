@@ -82,13 +82,13 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
   },
 
   setIntent: (intent) => {
-    const { workflow } = get();
-    set({ workflow: { ...workflow, intent: intent || null } });
+    set({ projectIntent: intent || null });
   },
 
   runWorkflow: async () => {
     const {
-      workflow,
+      projectId,
+      projectName,
       projectPath,
       agentConfig,
       fastConfig,
@@ -106,8 +106,8 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
     // backend stub returns `Skill not found` for the placeholder id.
     const request: RunSkillRequest = {
       project_path: projectPath,
-      project_id: workflow.id,
-      project_name: workflow.name,
+      project_id: projectId,
+      project_name: projectName,
       skill_id: "<unimplemented>",
       variables: {},
       agent: toEndpoint(agentConfig),
@@ -133,7 +133,8 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
 
   runSkillFromView: async (skillId, variables = {}) => {
     const {
-      workflow,
+      projectId,
+      projectName,
       projectPath,
       agentConfig,
       fastConfig,
@@ -146,8 +147,8 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
     } = get();
     const request: RunSkillRequest = {
       project_path: projectPath,
-      project_id: workflow.id,
-      project_name: workflow.name,
+      project_id: projectId,
+      project_name: projectName,
       skill_id: skillId,
       variables,
       agent: toEndpoint(agentConfig),
@@ -165,7 +166,8 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
 
   resumeSkillFromFailure: async (skillId, fromSectionId, variables = {}) => {
     const {
-      workflow,
+      projectId,
+      projectName,
       projectPath,
       agentConfig,
       fastConfig,
@@ -178,8 +180,8 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
     } = get();
     const request: ResumeSkillFromFailureRequest = {
       project_path: projectPath,
-      project_id: workflow.id,
-      project_name: workflow.name,
+      project_id: projectId,
+      project_name: projectName,
       skill_id: skillId,
       variables,
       agent: toEndpoint(agentConfig),

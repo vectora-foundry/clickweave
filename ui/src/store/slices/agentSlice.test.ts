@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { Edge, Node, Workflow } from "../../bindings";
 
 // Tauri's `invoke` must be mocked before agentSlice is imported — the
 // slice captures the imported binding at module init time.
@@ -20,33 +19,6 @@ vi.mock("../../bindings", () => ({
 
 import { useStore } from "../useAppStore";
 
-function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
-  return {
-    id: "00000000-0000-0000-0000-000000000001",
-    name: "wf",
-    nodes: [],
-    edges: [],
-    groups: [],
-    ...overrides,
-  };
-}
-
-function makeNode(id: string, runId: string): Node {
-  return {
-    id,
-    name: id,
-    node_type: { type: "CdpWait", text: "Ready", timeout_ms: 1000 },
-    position: { x: 0, y: 0 },
-    enabled: true,
-    timeout_ms: null,
-    settle_ms: null,
-    retries: 0,
-    trace_level: "Minimal",
-    role: "Default",
-    expected_outcome: null,
-    source_run_id: runId,
-  };
-}
 
 describe("agentSlice.startAgent", () => {
   beforeEach(() => {
@@ -231,62 +203,32 @@ describe("agentSlice.startAgent", () => {
 describe("agentSlice run buffers", () => {
   beforeEach(() => {
     invokeMock.mockReset();
+    saveRunAsSkillMock.mockReset();
     useStore.getState().resetAgent();
-    useStore.setState({
-      workflow: makeWorkflow(),
-      pendingRunNodes: {},
-      pendingRunEdges: {},
-    });
   });
 
-  it("commitRunBuffer clears the pending buffer without mutating the workflow (skill-only shell)", () => {
-    // In the skill-only shell commitRunBuffer no longer appends buffered
-    // items to the workflow graph — the graph is skills-only. It simply
-    // drains the buffers so stale events don't accumulate.
-    const node = makeNode("agent-node-1", "run-1");
-    const edge: Edge = { from: "anchor", to: "agent-node-1" };
-    const workflowBefore = useStore.getState().workflow;
+  it("commitRunBuffer with skillCreationIntent triggers saveRunAsSkill", () => {
+    useStore.setState({ skillCreationIntent: true, agentGoal: "automate X" });
+    saveRunAsSkillMock.mockResolvedValue({ status: "ok", data: null });
 
-    useStore.getState().bufferAgentNode("run-1", node);
-    useStore.getState().bufferAgentEdge("run-1", edge);
+    useStore.getState().commitRunBuffer("run-1", "summary text");
 
-    useStore.getState().commitRunBuffer("run-1", "Created a node");
-
-    const state = useStore.getState();
-    // Workflow is never mutated by commitRunBuffer in the skill-only shell.
-    expect(state.workflow).toBe(workflowBefore);
-    // Buffers are drained.
-    expect(state.pendingRunNodes["run-1"]).toBeUndefined();
-    expect(state.pendingRunEdges["run-1"]).toBeUndefined();
+    expect(useStore.getState().skillCreationIntent).toBe(false);
+    expect(saveRunAsSkillMock).toHaveBeenCalled();
   });
 
-  it("dropRunBuffer removes buffered entries without mutating the workflow", () => {
-    const node = makeNode("agent-node-1", "run-1");
-    const edge: Edge = { from: "anchor", to: "agent-node-1" };
-    const workflowBefore = useStore.getState().workflow;
+  it("commitRunBuffer without skillCreationIntent is a no-op", () => {
+    useStore.setState({ skillCreationIntent: false });
 
-    useStore.getState().bufferAgentNode("run-1", node);
-    useStore.getState().bufferAgentEdge("run-1", edge);
-    useStore.getState().dropRunBuffer("run-1");
-    useStore.getState().dropRunBuffer("missing-run");
+    useStore.getState().commitRunBuffer("run-1", "summary");
 
-    const state = useStore.getState();
-    expect(state.workflow).toBe(workflowBefore);
-    expect(state.pendingRunNodes["run-1"]).toBeUndefined();
-    expect(state.pendingRunEdges["run-1"]).toBeUndefined();
+    expect(saveRunAsSkillMock).not.toHaveBeenCalled();
   });
 
-  it("commitRunBuffer with no buffered nodes only clears stale buffer entries", () => {
-    const edge: Edge = { from: "a", to: "b" };
-    useStore.getState().bufferAgentEdge("run-1", edge);
-    const workflowBefore = useStore.getState().workflow;
-
-    useStore.getState().commitRunBuffer("run-1", "No nodes");
-
-    const state = useStore.getState();
-    expect(state.workflow).toBe(workflowBefore);
-    expect(state.pendingRunNodes["run-1"]).toBeUndefined();
-    expect(state.pendingRunEdges["run-1"]).toBeUndefined();
+  it("dropRunBuffer is a no-op (buffers were removed with the canvas)", () => {
+    // dropRunBuffer is kept for call-site compatibility; it should not throw.
+    expect(() => useStore.getState().dropRunBuffer("run-1")).not.toThrow();
+    expect(() => useStore.getState().dropRunBuffer("missing-run")).not.toThrow();
   });
 });
 
@@ -474,21 +416,17 @@ describe("agentSlice.cancelDisagreement", () => {
     useStore.getState().resetAgent();
   });
 
-  it("drops the active run buffer before forwarding the cancellation", async () => {
+  it("calls dropRunBuffer then forwards the cancellation", async () => {
     useStore.getState().setAgentRunId("run-prior");
     useStore.getState().setCompletionDisagreement({
       screenshotBase64: "abc",
       vlmReasoning: "modal still visible",
       agentSummary: "clicked submit",
     });
-    useStore
-      .getState()
-      .bufferAgentNode("run-prior", makeNode("pending-node", "run-prior"));
     invokeMock.mockResolvedValueOnce(undefined);
 
     await useStore.getState().cancelDisagreement();
 
-    expect(useStore.getState().pendingRunNodes["run-prior"]).toBeUndefined();
     expect(invokeMock).toHaveBeenCalledWith("resolve_completion_disagreement", {
       action: "cancel",
     });
@@ -795,7 +733,6 @@ describe("D21 skillCreationIntent — first-skill-from-empty", () => {
     useStore.setState({
       storeTraces: true,
       skillsEnabled: true,
-      workflow: makeWorkflow(),
     });
   });
 
@@ -838,8 +775,6 @@ describe("D21 skillCreationIntent — first-skill-from-empty", () => {
     useStore.getState().commitRunBuffer("run-1", "Done");
 
     expect(saveRunAsSkillMock).not.toHaveBeenCalled();
-    // Buffers are still cleared
-    expect(useStore.getState().pendingRunNodes["run-1"]).toBeUndefined();
   });
 
   it("(D21-c) explicit saveRunAsSkill store action invokes the Tauri command", async () => {

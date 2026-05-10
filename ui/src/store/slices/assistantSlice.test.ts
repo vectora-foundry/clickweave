@@ -388,7 +388,7 @@ describe("clearConversationFlow", () => {
     expect(s.runTraces["hydrated-x"]).toBeUndefined();
   });
 
-  it("drops the active run buffer and trace when clearing conversation", async () => {
+  it("drops the active run trace when clearing conversation", async () => {
     useStore.setState({
       agentRunId: "r1",
       runTraces: {
@@ -403,25 +403,9 @@ describe("clearConversationFlow", () => {
         },
       },
     });
-    useStore.getState().bufferAgentNode("r1", {
-      id: "pending-node",
-      name: "pending-node",
-      node_type: { type: "CdpWait", text: "", timeout_ms: 1000 },
-      position: { x: 0, y: 0 },
-      enabled: true,
-      timeout_ms: null,
-      settle_ms: null,
-      retries: 0,
-      trace_level: "Minimal",
-      role: "Default",
-      expected_outcome: null,
-      auto_id: "",
-      source_run_id: "r1",
-    });
 
     await useStore.getState().clearConversationFlow();
 
-    expect(useStore.getState().pendingRunNodes.r1).toBeUndefined();
     expect(useStore.getState().runTraces.r1).toBeUndefined();
   });
 });

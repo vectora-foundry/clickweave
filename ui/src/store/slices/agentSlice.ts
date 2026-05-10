@@ -1,11 +1,9 @@
 import type { StateCreator } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import type { Node, Edge } from "../../bindings";
 import { commands } from "../../bindings";
 import { toEndpoint } from "../settings";
 import type { PermissionRule, ToolPermissions } from "../state";
 import type { StoreState } from "./types";
-import { buildPriorTurns } from "../../utils/priorTurns";
 
 export interface AgentStep {
   summary: string;
@@ -181,10 +179,6 @@ export interface AgentSlice {
   /** Active modal target for the ambiguity inspector, keyed by
    *  AmbiguityResolution.id. */
   activeAmbiguityId: string | null;
-  /** Agent-produced nodes buffered until the run reaches a clean terminal event. */
-  pendingRunNodes: Record<string, Node[]>;
-  /** Agent-produced edges buffered until the run reaches a clean terminal event. */
-  pendingRunEdges: Record<string, Edge[]>;
   /** Session-only collapse state for synthetic agent-run containers. */
   agentRunCollapsed: Record<string, boolean>;
   /**
@@ -198,13 +192,10 @@ export interface AgentSlice {
   startAgent: (goal: string) => Promise<void>;
   stopAgent: () => Promise<void>;
   addAgentStep: (step: AgentStep) => void;
-  bufferAgentNode: (runId: string, node: Node) => void;
-  bufferAgentEdge: (runId: string, edge: Edge) => void;
   /**
-   * Commit the buffered run. In the skill-only shell this is a no-op for
-   * ad-hoc runs. When `skillCreationIntent` is true, it triggers
+   * Commit the completed run. When `skillCreationIntent` is true, triggers
    * `saveRunAsSkill` to materialise the run as a skill and then clears the
-   * intent flag.
+   * intent flag. Otherwise a no-op (ad-hoc runs are not committed to a graph).
    */
   commitRunBuffer: (runId: string, summary: string) => void;
   dropRunBuffer: (runId: string) => void;
@@ -270,8 +261,6 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
   agentRunId: null,
   ambiguityResolutions: [],
   activeAmbiguityId: null,
-  pendingRunNodes: {},
-  pendingRunEdges: {},
   agentRunCollapsed: {},
   agentRunStartedAt: null,
   agentRunFinishedAt: null,
@@ -283,7 +272,8 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       pushLog,
       agentConfig,
       projectPath,
-      workflow,
+      projectName,
+      projectId,
       toolPermissions,
       storeTraces,
       episodicEnabled,
@@ -292,7 +282,6 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       skillsEnabled,
       applicableSkillsK,
       skillsGlobalParticipation,
-      messages,
       pushAssistantMessage,
     } = priorState;
     // If a run is already active, do not touch run-scoped state: the
@@ -332,29 +321,9 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       agentRunFinishedAt: priorState.agentRunFinishedAt,
     };
 
-    // Client-side run ID (D1.M1) so the user bubble can be tagged
-    // before `agent://started` arrives and the backend can echo it.
+    // Client-side run ID so the user bubble can be tagged before
+    // `agent://started` arrives and the backend can echo it.
     const runId = crypto.randomUUID();
-
-    // Anchor = most recent workflow node with a source_run_id. Used
-    // by the engine to seed `last_node_id` so the first emitted edge
-    // connects from the prior chain into the new run's first node.
-    let anchor: string | null = null;
-    for (let i = workflow.nodes.length - 1; i >= 0; i -= 1) {
-      if (workflow.nodes[i].source_run_id) {
-        anchor = workflow.nodes[i].id;
-        break;
-      }
-    }
-
-    // Build the prior-turn payload from the current chat + surviving
-    // agent nodes. `buildPriorTurns` filters to pairs whose runId
-    // still has live nodes on the canvas.
-    const priorTurns = buildPriorTurns(messages, workflow).map((t) => ({
-      goal: t.goal,
-      summary: t.summary,
-      run_id: t.run_id,
-    }));
 
     if (!wasActive) {
       set({
@@ -389,15 +358,15 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
           goal,
           agent: toEndpoint(agentConfig),
           project_path: projectPath,
-          project_name: workflow.name,
-          project_id: workflow.id,
+          project_name: projectName,
+          project_id: projectId,
           permissions: toPermissionPolicyWire(toolPermissions),
           consecutive_destructive_cap:
             toolPermissions.consecutiveDestructiveCap,
           store_traces: storeTraces,
           run_id: runId,
-          anchor_node_id: anchor,
-          prior_turns: priorTurns,
+          anchor_node_id: null,
+          prior_turns: [],
           episodic_enabled: episodicEnabled,
           retrieved_episodes_k: retrievedEpisodesK,
           episodic_global_participation: episodicGlobalParticipation,
@@ -460,38 +429,11 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
     }));
   },
 
-  bufferAgentNode: (runId, node) => {
-    set((state) => ({
-      pendingRunNodes: {
-        ...state.pendingRunNodes,
-        [runId]: [...(state.pendingRunNodes[runId] ?? []), node],
-      },
-    }));
-  },
-
-  bufferAgentEdge: (runId, edge) => {
-    set((state) => ({
-      pendingRunEdges: {
-        ...state.pendingRunEdges,
-        [runId]: [...(state.pendingRunEdges[runId] ?? []), edge],
-      },
-    }));
-  },
-
-  commitRunBuffer: (runId, summary) => {
-    // In the skill-only shell the run buffer no longer carries graph
-    // nodes — `pendingRunNodes`/`pendingRunEdges` are vestigial.
+  commitRunBuffer: (_runId, summary) => {
     // When `skillCreationIntent` is set we materialise the completed
-    // run as a skill instead of committing workflow nodes.
+    // run as a skill. Otherwise this is a no-op for ad-hoc runs.
     const state = get();
-    const { [runId]: _removedNodes, ...pendingRunNodes } =
-      state.pendingRunNodes;
-    const { [runId]: _removedEdges, ...pendingRunEdges } =
-      state.pendingRunEdges;
-    set({ pendingRunNodes, pendingRunEdges });
-
     if (state.skillCreationIntent) {
-      // Fire-and-forget: create the skill from the completed run.
       set({ skillCreationIntent: false });
       get()
         .saveRunAsSkill(summary || state.agentGoal || "")
@@ -499,14 +441,9 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
     }
   },
 
-  dropRunBuffer: (runId) => {
-    set((state) => {
-      const { [runId]: _removedNodes, ...pendingRunNodes } =
-        state.pendingRunNodes;
-      const { [runId]: _removedEdges, ...pendingRunEdges } =
-        state.pendingRunEdges;
-      return { pendingRunNodes, pendingRunEdges };
-    });
+  dropRunBuffer: (_runId) => {
+    // No-op: buffers were removed with the canvas. Kept for call-site
+    // compatibility until event subscribers are updated.
   },
 
   setSkillCreationIntent: (intent) => set({ skillCreationIntent: intent }),
@@ -521,8 +458,8 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
     }));
     const result = await commands.saveRunAsSkill({
       project_path: state.projectPath ?? null,
-      project_name: state.workflow.name,
-      project_id: state.workflow.id,
+      project_name: state.projectName,
+      project_id: state.projectId,
       name: (typeof name === "string" ? name : state.agentGoal) ?? "",
       goal: state.agentGoal,
       steps,
@@ -543,8 +480,8 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
     }));
     const result = await commands.addRunToSkill({
       project_path: state.projectPath ?? null,
-      project_name: state.workflow.name,
-      project_id: state.workflow.id,
+      project_name: state.projectName,
+      project_id: state.projectId,
       skill_id: skillId,
       version,
       goal: state.agentGoal,
@@ -681,8 +618,6 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       completionDisagreement: null,
       consecutiveDestructiveCapHit: null,
       agentRunId: null,
-      pendingRunNodes: {},
-      pendingRunEdges: {},
       agentRunCollapsed: {},
       agentRunStartedAt: null,
       agentRunFinishedAt: null,

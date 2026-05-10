@@ -29,7 +29,6 @@ vi.mock("../../bindings", () => {
   };
 });
 
-import { makeDefaultWorkflow } from "../state";
 import { useStore } from "../useAppStore";
 
 describe("projectSlice", () => {
@@ -47,12 +46,13 @@ describe("projectSlice", () => {
       lastRunStatus: "completed",
       messages: [],
       projectPath: "/tmp/old.clickweave",
-      workflow: makeDefaultWorkflow(),
+      projectId: "00000000-0000-0000-0000-000000000001",
+      projectName: "Old Project",
+      projectIntent: null,
     });
   });
 
   it("clears the previous run status when opening a project", async () => {
-    const workflow = makeDefaultWorkflow();
     commandMocks.pickWorkflowFile.mockResolvedValue({
       status: "ok",
       data: "/tmp/new.clickweave",
@@ -62,8 +62,8 @@ describe("projectSlice", () => {
       data: {
         path: "/tmp/new.clickweave",
         manifest: {
-          id: workflow.id,
-          name: workflow.name,
+          id: "00000000-0000-0000-0000-000000000002",
+          name: "New Project",
           intent: null,
           schema_version: 1,
         },
