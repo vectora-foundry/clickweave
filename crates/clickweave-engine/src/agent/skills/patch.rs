@@ -13,6 +13,8 @@
 
 #![allow(dead_code)]
 
+use serde::{Deserialize, Serialize};
+
 use super::replay::{ReplayJson, SectionHistoryEntry};
 use super::types::{ActionSketchStep, Skill, SkillError, SkillFrontmatterVariable, SkillId};
 
@@ -22,7 +24,7 @@ use super::types::{ActionSketchStep, Skill, SkillError, SkillFrontmatterVariable
 /// `old_text` and `new_text` are UTF-8 strings; the apply function
 /// replaces the first occurrence of `old_text` in the body. Overlapping
 /// replacements in a single patch are an error.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarkdownReplacement {
     /// The exact string to find in the current body prose (excluding the
     /// fenced action_sketch block).
@@ -34,7 +36,7 @@ pub struct MarkdownReplacement {
 /// A targeted replacement inside the `action_sketch` JSON. The path
 /// addresses a specific step by `step_id`; `field` names the top-level
 /// key inside the step's JSON object to update.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionSketchReplacement {
     pub step_id: String,
     /// Top-level field inside the `ActionSketchStep::ToolCall` args or
@@ -45,7 +47,7 @@ pub struct ActionSketchReplacement {
 
 /// Mutations to the `replay.json` sidecar applied in the same atomic
 /// write as the SKILL.md changes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ReplaySidecarMutation {
     /// Remove all recorded signals for a step (used when the binding
     /// target changes and old signals are no longer valid).
@@ -69,7 +71,7 @@ pub enum ReplaySidecarMutation {
 
 /// Semantic intent of a patch. Determines the diff preview label and
 /// the set of structural lint rules that apply.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SkillPatchPrimitive {
     /// `skill_patch_rebind_target` — changes a step's target kind / args and
     /// clears the old signals so the replay engine re-records from scratch.
@@ -92,7 +94,7 @@ pub enum SkillPatchPrimitive {
 /// A four-layer atomic skill patch. Created by one of the three named
 /// primitive helpers (`skill_patch_rebind_target`, etc.) or constructed
 /// directly for free-form prose edits.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillPatch {
     pub skill_id: SkillId,
     pub markdown_replacements: Vec<MarkdownReplacement>,
@@ -470,6 +472,191 @@ fn variable_references_in_body(body: &str) -> Vec<&str> {
         }
     }
     out
+}
+
+// ── Named-primitive constructors ─────────────────────────────────────────────
+
+impl SkillPatch {
+    /// Synthesize a `Rebind` patch from the args passed to the
+    /// `skill_patch_rebind_target` pseudo-tool. Returns an error string
+    /// when a required argument is missing or malformed.
+    ///
+    /// The patch carries:
+    /// - One `ActionSketchReplacement` that rewrites the step's entire `args`
+    ///   with `new_target_args`.
+    /// - One `ReplaySidecarMutation::ClearSignals` so the replay engine
+    ///   re-records from scratch with the new target.
+    pub fn from_rebind_target_args(args: &serde_json::Value) -> Result<Self, String> {
+        let skill_id = args
+            .get("skill_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "skill_patch_rebind_target: missing required field `skill_id`".to_string())?
+            .to_string();
+        let step_id = args
+            .get("step_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "skill_patch_rebind_target: missing required field `step_id`".to_string())?
+            .to_string();
+        let new_target_args = args
+            .get("new_target_args")
+            .cloned()
+            .ok_or_else(|| {
+                "skill_patch_rebind_target: missing required field `new_target_args`".to_string()
+            })?;
+
+        Ok(SkillPatch {
+            skill_id,
+            markdown_replacements: vec![],
+            action_sketch_replacements: vec![ActionSketchReplacement {
+                step_id: step_id.clone(),
+                field: "args".to_string(),
+                new_value: new_target_args,
+            }],
+            variables_additions: vec![],
+            replay_sidecar_mutations: vec![ReplaySidecarMutation::ClearSignals { step_id }],
+            primitive: SkillPatchPrimitive::Rebind,
+        })
+    }
+
+    /// Synthesize a `Reorder` patch from the args passed to the
+    /// `skill_patch_reorder_sections` pseudo-tool. Returns an error string
+    /// when a required argument is missing or malformed.
+    ///
+    /// The patch carries no layer mutations on its own — section reordering
+    /// requires the full in-memory skill body (parsed sections) which is not
+    /// available at parse time. The harness resolves the reorder by reading
+    /// the skill from disk and applying the ordering at dispatch time. The
+    /// patch records the desired `ordered_section_ids` in the
+    /// `markdown_replacements` field as a sentinel so downstream code can
+    /// identify the intent without re-parsing the LLM args.
+    ///
+    /// **Note:** the actual markdown reorder and action_sketch step
+    /// reorder are applied in a later phase when the skill is loaded.
+    /// This constructor only validates the required fields and stores
+    /// the section order.
+    pub fn from_reorder_sections_args(args: &serde_json::Value) -> Result<Self, String> {
+        let skill_id = args
+            .get("skill_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                "skill_patch_reorder_sections: missing required field `skill_id`".to_string()
+            })?
+            .to_string();
+        let ordered_section_ids = args
+            .get("ordered_section_ids")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| {
+                "skill_patch_reorder_sections: missing required field `ordered_section_ids`"
+                    .to_string()
+            })?
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        "skill_patch_reorder_sections: `ordered_section_ids` must be an array of strings"
+                            .to_string()
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if ordered_section_ids.is_empty() {
+            return Err(
+                "skill_patch_reorder_sections: `ordered_section_ids` must not be empty".to_string(),
+            );
+        }
+
+        // Encode the desired order as a sentinel `MarkdownReplacement`
+        // with `old_text = "__reorder__"` so phase-N apply code can
+        // distinguish a reorder patch from a prose edit without inspecting
+        // the `primitive` discriminant. The `new_text` carries the
+        // newline-joined section id list.
+        Ok(SkillPatch {
+            skill_id,
+            markdown_replacements: vec![MarkdownReplacement {
+                old_text: "__reorder__".to_string(),
+                new_text: ordered_section_ids.join("\n"),
+            }],
+            action_sketch_replacements: vec![],
+            variables_additions: vec![],
+            replay_sidecar_mutations: vec![],
+            primitive: SkillPatchPrimitive::Reorder,
+        })
+    }
+
+    /// Synthesize a `Promote` patch from the args passed to the
+    /// `skill_patch_promote_to_variable` pseudo-tool. Returns an error
+    /// string when a required argument is missing or malformed.
+    ///
+    /// The patch carries:
+    /// - A `SkillFrontmatterVariable` entry in `variables_additions` for the
+    ///   new variable.
+    /// - One `ActionSketchReplacement` that updates the addressed arg to the
+    ///   `{{variable_name}}` template reference.
+    ///
+    /// Prose replacement and image-crop signal clearing are deferred to the
+    /// apply phase which has the full body text; this constructor only
+    /// captures the parameter fields.
+    pub fn from_promote_to_variable_args(
+        args: &serde_json::Value,
+    ) -> Result<Self, String> {
+        let skill_id = args
+            .get("skill_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                "skill_patch_promote_to_variable: missing required field `skill_id`".to_string()
+            })?
+            .to_string();
+        let step_id = args
+            .get("step_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                "skill_patch_promote_to_variable: missing required field `step_id`".to_string()
+            })?
+            .to_string();
+        let arg_path = args
+            .get("arg_path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                "skill_patch_promote_to_variable: missing required field `arg_path`".to_string()
+            })?
+            .to_string();
+        let variable_name = args
+            .get("variable_name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                "skill_patch_promote_to_variable: missing required field `variable_name`"
+                    .to_string()
+            })?
+            .to_string();
+        let variable_type = args
+            .get("variable_type")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                "skill_patch_promote_to_variable: missing required field `variable_type`"
+                    .to_string()
+            })?
+            .to_string();
+        let default = args.get("default").cloned();
+
+        Ok(SkillPatch {
+            skill_id,
+            markdown_replacements: vec![],
+            action_sketch_replacements: vec![ActionSketchReplacement {
+                step_id,
+                field: arg_path,
+                new_value: serde_json::Value::String(format!("{{{{{variable_name}}}}}"))
+            }],
+            variables_additions: vec![SkillFrontmatterVariable {
+                name: variable_name,
+                type_: variable_type,
+                description: None,
+                default,
+            }],
+            replay_sidecar_mutations: vec![],
+            primitive: SkillPatchPrimitive::Promote,
+        })
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

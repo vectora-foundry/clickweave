@@ -1141,6 +1141,42 @@ impl StateRunner {
                     .push(Message::assistant(format!("replan: {}", reason)));
             }
             AgentAction::AgentDone { .. } | AgentAction::InvokeSkill { .. } => {}
+            AgentAction::SkillPatch {
+                patch,
+                tool_name,
+                parse_error,
+            } => {
+                // Append a synthetic tool-call + result to the transcript so
+                // the LLM sees the patch outcome on the next turn. Use a
+                // deterministic synthetic id; no MCP round-trip occurs.
+                let result_text = match patch {
+                    Some(p) => {
+                        trackers
+                            .previous_result
+                            .as_deref()
+                            .unwrap_or(&format!(r#"{{"ok":true,"skill_id":"{}"}}"#, p.skill_id))
+                            .to_string()
+                    }
+                    None => {
+                        let err = parse_error
+                            .as_deref()
+                            .unwrap_or("patch synthesis failed");
+                        format!(r#"{{"ok":false,"error":{err:?}}}"#)
+                    }
+                };
+                let skill_id = patch
+                    .as_ref()
+                    .map(|p| p.skill_id.as_str())
+                    .unwrap_or("unknown");
+                let synthetic_tc_id = format!("skill-patch-{}-{}", skill_id, tool_name);
+                append_assistant_and_tool_result(
+                    &mut loop_ctx.messages,
+                    tool_name,
+                    &serde_json::json!({"skill_id": skill_id}),
+                    &synthetic_tc_id,
+                    Some(&result_text),
+                );
+            }
         }
     }
 

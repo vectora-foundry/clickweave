@@ -154,6 +154,46 @@ impl StateRunner {
                     Err(reason) => TurnOutcome::Replan { reason },
                 }
             }
+            AgentAction::SkillPatch {
+                patch,
+                tool_name,
+                parse_error,
+            } => {
+                // Patch synthesis happened inside `parse_agent_turn`. If
+                // parsing failed the synthesizer logged a warning there;
+                // here we surface a replan with the error text so the LLM
+                // can correct its arguments on the next turn instead of
+                // spinning silently.
+                //
+                // When synthesis succeeded the patch is applied in a later
+                // phase (Phase N — full disk write + lint + sidecar). For
+                // now we return a success body that names the patch so the
+                // transcript shows the intent and the LLM can continue.
+                match patch {
+                    None => {
+                        let err = parse_error
+                            .as_deref()
+                            .unwrap_or("unknown patch synthesis error");
+                        TurnOutcome::Replan {
+                            reason: format!(
+                                "{tool_name}: patch synthesis failed — {err}"
+                            ),
+                        }
+                    }
+                    Some(p) => {
+                        let body = format!(
+                            r#"{{"ok":true,"tool":"{tool_name}","skill_id":"{skill_id}","primitive":"{primitive:?}"}}"#,
+                            tool_name = tool_name,
+                            skill_id = p.skill_id,
+                            primitive = p.primitive,
+                        );
+                        TurnOutcome::ToolSuccess {
+                            tool_name: tool_name.clone(),
+                            tool_body: body,
+                        }
+                    }
+                }
+            }
         };
 
         // `step_index` is owned by the outer-loop call sites that record

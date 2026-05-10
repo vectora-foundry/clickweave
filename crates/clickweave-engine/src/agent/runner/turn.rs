@@ -29,6 +29,22 @@ pub enum AgentAction {
         version: u32,
         parameters: serde_json::Value,
     },
+    /// Apply a structural patch to an on-disk skill. Synthesized by
+    /// `parse_agent_turn` when the LLM calls one of the three named
+    /// `skill_patch_*` pseudo-tools. The harness dispatches this as a
+    /// pure in-memory + disk write without going through MCP.
+    SkillPatch {
+        /// The synthesized patch. `None` when synthesis failed — the
+        /// run_turn arm degrades to an informational `AgentReplan` rather
+        /// than panicking so a malformed patch call cannot take the run
+        /// down.
+        patch: Option<crate::agent::skills::SkillPatch>,
+        /// The original pseudo-tool name (`skill_patch_rebind_target`, etc.)
+        /// carried so `run_turn` can name the operation in the result text.
+        tool_name: String,
+        /// Parse error when `patch` is `None`.
+        parse_error: Option<String>,
+    },
 }
 
 /// Batched single-pass agent output: task-state mutations followed by one
@@ -95,7 +111,8 @@ pub trait ToolExecutor: Send + Sync {
 /// `AgentAction::AgentReplan` with the assistant's raw text as the
 /// reason — matches the legacy "no tool call" recovery hook.
 pub fn parse_agent_turn(message: &Message) -> anyhow::Result<AgentTurn> {
-    use crate::agent::prompt::is_mutation_tool_name;
+    use crate::agent::prompt::{is_mutation_tool_name, is_skill_patch_tool_name};
+    use crate::agent::skills::SkillPatch;
 
     if let Some(tool_calls) = message.tool_calls.as_ref()
         && !tool_calls.is_empty()
@@ -177,6 +194,57 @@ pub fn parse_agent_turn(message: &Message) -> anyhow::Result<AgentTurn> {
                                 reason: "invoke_skill missing required fields".to_string(),
                             }
                         }
+                    }
+                }
+                name if is_skill_patch_tool_name(name) => {
+                    let (patch, parse_error) = match name {
+                        "skill_patch_rebind_target" => {
+                            match SkillPatch::from_rebind_target_args(args) {
+                                Ok(p) => (Some(p), None),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        tool = name,
+                                        error = %e,
+                                        "state-spine: malformed skill_patch_rebind_target call"
+                                    );
+                                    (None, Some(e))
+                                }
+                            }
+                        }
+                        "skill_patch_reorder_sections" => {
+                            match SkillPatch::from_reorder_sections_args(args) {
+                                Ok(p) => (Some(p), None),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        tool = name,
+                                        error = %e,
+                                        "state-spine: malformed skill_patch_reorder_sections call"
+                                    );
+                                    (None, Some(e))
+                                }
+                            }
+                        }
+                        "skill_patch_promote_to_variable" => {
+                            match SkillPatch::from_promote_to_variable_args(args) {
+                                Ok(p) => (Some(p), None),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        tool = name,
+                                        error = %e,
+                                        "state-spine: malformed skill_patch_promote_to_variable call"
+                                    );
+                                    (None, Some(e))
+                                }
+                            }
+                        }
+                        // Safety: `is_skill_patch_tool_name` is the gate
+                        // so this arm is unreachable in practice.
+                        _ => unreachable!("unexpected skill_patch tool name: {name}"),
+                    };
+                    AgentAction::SkillPatch {
+                        patch,
+                        tool_name: name.to_string(),
+                        parse_error,
                     }
                 }
                 _ => AgentAction::ToolCall {

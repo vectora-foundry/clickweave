@@ -248,3 +248,190 @@ fn empty_tool_calls_array_falls_back_to_text_replan() {
         _ => panic!("expected agent_replan fallback"),
     }
 }
+
+// ── skill_patch_* dispatch ────────────────────────────────────────────────────
+
+#[test]
+fn skill_patch_rebind_target_synthesizes_skill_patch_action() {
+    let msg = Message::assistant_tool_calls(vec![tc(
+        "sp1",
+        "skill_patch_rebind_target",
+        json!({
+            "skill_id": "open_settings",
+            "step_id": "s_001",
+            "new_target_kind": "ax_label",
+            "new_target_args": {"label": "Settings"}
+        }),
+    )]);
+    let turn = parse_agent_turn(&msg).unwrap();
+    assert!(turn.mutations.is_empty());
+    match turn.action {
+        AgentAction::SkillPatch {
+            patch,
+            tool_name,
+            parse_error,
+        } => {
+            assert_eq!(tool_name, "skill_patch_rebind_target");
+            assert!(parse_error.is_none(), "expected no parse error");
+            let p = patch.expect("rebind patch must be Some");
+            assert_eq!(p.skill_id, "open_settings");
+            assert_eq!(p.action_sketch_replacements.len(), 1);
+            assert_eq!(p.action_sketch_replacements[0].step_id, "s_001");
+            assert_eq!(p.action_sketch_replacements[0].field, "args");
+            assert_eq!(
+                p.replay_sidecar_mutations.len(),
+                1,
+                "rebind must ClearSignals"
+            );
+            use crate::agent::skills::ReplaySidecarMutation;
+            assert!(matches!(
+                p.replay_sidecar_mutations[0],
+                ReplaySidecarMutation::ClearSignals { ref step_id } if step_id == "s_001"
+            ));
+            use crate::agent::skills::SkillPatchPrimitive;
+            assert_eq!(p.primitive, SkillPatchPrimitive::Rebind);
+        }
+        other => panic!("expected SkillPatch action, got {:?}", other),
+    }
+}
+
+#[test]
+fn skill_patch_reorder_sections_synthesizes_skill_patch_action() {
+    let msg = Message::assistant_tool_calls(vec![tc(
+        "sp2",
+        "skill_patch_reorder_sections",
+        json!({
+            "skill_id": "open_settings",
+            "ordered_section_ids": ["sec_b", "sec_a"]
+        }),
+    )]);
+    let turn = parse_agent_turn(&msg).unwrap();
+    match turn.action {
+        AgentAction::SkillPatch {
+            patch,
+            tool_name,
+            parse_error,
+        } => {
+            assert_eq!(tool_name, "skill_patch_reorder_sections");
+            assert!(parse_error.is_none(), "expected no parse error");
+            let p = patch.expect("reorder patch must be Some");
+            assert_eq!(p.skill_id, "open_settings");
+            assert_eq!(p.markdown_replacements.len(), 1);
+            assert_eq!(p.markdown_replacements[0].old_text, "__reorder__");
+            assert!(p.markdown_replacements[0].new_text.contains("sec_b"));
+            assert!(p.markdown_replacements[0].new_text.contains("sec_a"));
+            use crate::agent::skills::SkillPatchPrimitive;
+            assert_eq!(p.primitive, SkillPatchPrimitive::Reorder);
+        }
+        other => panic!("expected SkillPatch action, got {:?}", other),
+    }
+}
+
+#[test]
+fn skill_patch_promote_to_variable_synthesizes_skill_patch_action() {
+    let msg = Message::assistant_tool_calls(vec![tc(
+        "sp3",
+        "skill_patch_promote_to_variable",
+        json!({
+            "skill_id": "open_settings",
+            "step_id": "s_002",
+            "arg_path": "text",
+            "variable_name": "search_query",
+            "variable_type": "string",
+            "default": "Notes"
+        }),
+    )]);
+    let turn = parse_agent_turn(&msg).unwrap();
+    match turn.action {
+        AgentAction::SkillPatch {
+            patch,
+            tool_name,
+            parse_error,
+        } => {
+            assert_eq!(tool_name, "skill_patch_promote_to_variable");
+            assert!(parse_error.is_none(), "expected no parse error");
+            let p = patch.expect("promote patch must be Some");
+            assert_eq!(p.skill_id, "open_settings");
+            assert_eq!(p.action_sketch_replacements.len(), 1);
+            assert_eq!(p.action_sketch_replacements[0].step_id, "s_002");
+            assert_eq!(p.action_sketch_replacements[0].field, "text");
+            assert_eq!(
+                p.action_sketch_replacements[0].new_value,
+                json!("{{search_query}}")
+            );
+            assert_eq!(p.variables_additions.len(), 1);
+            assert_eq!(p.variables_additions[0].name, "search_query");
+            assert_eq!(p.variables_additions[0].type_, "string");
+            assert_eq!(p.variables_additions[0].default, Some(json!("Notes")));
+            use crate::agent::skills::SkillPatchPrimitive;
+            assert_eq!(p.primitive, SkillPatchPrimitive::Promote);
+        }
+        other => panic!("expected SkillPatch action, got {:?}", other),
+    }
+}
+
+#[test]
+fn skill_patch_rebind_missing_required_field_yields_skill_patch_with_parse_error() {
+    // Missing `new_target_args` — synthesis must fail gracefully rather
+    // than panicking. The `SkillPatch` action still wins the action slot;
+    // `run_turn` degrades to a replan using the `parse_error` text.
+    let msg = Message::assistant_tool_calls(vec![tc(
+        "sp4",
+        "skill_patch_rebind_target",
+        json!({
+            "skill_id": "open_settings",
+            "step_id": "s_001",
+            "new_target_kind": "ax_label"
+            // new_target_args intentionally omitted
+        }),
+    )]);
+    let turn = parse_agent_turn(&msg).unwrap();
+    match turn.action {
+        AgentAction::SkillPatch {
+            patch,
+            tool_name,
+            parse_error,
+        } => {
+            assert_eq!(tool_name, "skill_patch_rebind_target");
+            assert!(patch.is_none(), "malformed args must yield None patch");
+            let err = parse_error.expect("parse_error must be Some on failure");
+            assert!(
+                err.contains("new_target_args"),
+                "error should name the missing field: {err}"
+            );
+        }
+        other => panic!("expected SkillPatch action even on failure, got {:?}", other),
+    }
+}
+
+#[test]
+fn skill_patch_does_not_reach_mcp_tool_call_arm() {
+    // Any `skill_patch_*` name must be intercepted by the synthesis
+    // arm — it must never fall through to `AgentAction::ToolCall` and
+    // attempt an MCP dispatch.
+    for name in &[
+        "skill_patch_rebind_target",
+        "skill_patch_reorder_sections",
+        "skill_patch_promote_to_variable",
+    ] {
+        let msg = Message::assistant_tool_calls(vec![tc(
+            "tc1",
+            name,
+            json!({
+                "skill_id": "any",
+                "step_id": "s_001",
+                "ordered_section_ids": ["sec_a"],
+                "new_target_kind": "ax_label",
+                "new_target_args": {},
+                "arg_path": "text",
+                "variable_name": "v",
+                "variable_type": "string"
+            }),
+        )]);
+        let turn = parse_agent_turn(&msg).unwrap();
+        assert!(
+            matches!(turn.action, AgentAction::SkillPatch { .. }),
+            "`{name}` must map to SkillPatch, not ToolCall"
+        );
+    }
+}
