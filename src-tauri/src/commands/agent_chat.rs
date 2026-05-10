@@ -8,7 +8,7 @@
 
 use super::error::CommandError;
 use super::types::resolve_storage;
-use clickweave_engine::agent::skills::{SkillState, SkillStore, slugify};
+use clickweave_engine::agent::skills::{SkillState, SkillStore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
@@ -72,16 +72,16 @@ pub struct ClearAgentConversationRequest {
     pub store_traces: bool,
 }
 
-fn proposal_filename(skill_id: &str, version: u32) -> String {
-    format!("{}-v{}.proposal.json", slugify(skill_id), version)
+fn proposal_path(dir: &std::path::Path, skill_id: &str) -> std::path::PathBuf {
+    dir.join(skill_id).join("proposal.json")
 }
 
 fn remove_proposal_if_present(
     dir: &std::path::Path,
     skill_id: &str,
-    version: u32,
+    _version: u32,
 ) -> Result<(), CommandError> {
-    let path = dir.join(proposal_filename(skill_id, version));
+    let path = proposal_path(dir, skill_id);
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -355,18 +355,15 @@ mod tests {
                 vec![deleted],
             ))
             .unwrap();
-        std::fs::write(tmp.path().join(proposal_filename("empty-draft", 1)), "{}").unwrap();
+        std::fs::create_dir_all(tmp.path().join("empty-draft")).unwrap();
+        std::fs::write(proposal_path(tmp.path(), "empty-draft"), "{}").unwrap();
 
         prune_skill_lineage_in_dir(tmp.path(), &HashSet::from([deleted])).unwrap();
 
         let partial = store.read_skill(&partial_path).unwrap();
         assert_eq!(partial.produced_node_ids, vec![kept]);
         assert!(!empty_path.exists());
-        assert!(
-            !tmp.path()
-                .join(proposal_filename("empty-draft", 1))
-                .exists()
-        );
+        assert!(!proposal_path(tmp.path(), "empty-draft").exists());
         let confirmed = store.read_skill(&confirmed_path).unwrap();
         assert_eq!(confirmed.produced_node_ids, vec![deleted]);
     }
@@ -390,15 +387,17 @@ mod tests {
                 vec![Uuid::from_u128(21)],
             ))
             .unwrap();
-        std::fs::write(tmp.path().join(proposal_filename("draft", 1)), "{}").unwrap();
-        std::fs::write(tmp.path().join(proposal_filename("confirmed", 1)), "{}").unwrap();
+        std::fs::create_dir_all(tmp.path().join("draft")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("confirmed")).unwrap();
+        std::fs::write(proposal_path(tmp.path(), "draft"), "{}").unwrap();
+        std::fs::write(proposal_path(tmp.path(), "confirmed"), "{}").unwrap();
 
         clear_draft_skills_in_dir(tmp.path()).unwrap();
 
         assert!(!draft_path.exists());
-        assert!(!tmp.path().join(proposal_filename("draft", 1)).exists());
+        assert!(!proposal_path(tmp.path(), "draft").exists());
         assert!(confirmed_path.exists());
-        assert!(tmp.path().join(proposal_filename("confirmed", 1)).exists());
+        assert!(proposal_path(tmp.path(), "confirmed").exists());
     }
 
     #[test]

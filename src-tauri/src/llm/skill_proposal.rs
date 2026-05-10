@@ -2,7 +2,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use clickweave_engine::agent::skills::{
-    ActionSketchStep, CaptureClause, ProvenanceEntry, Skill, SkillRefinementProposal, slugify,
+    ActionSketchStep, CaptureClause, ProvenanceEntry, Skill, SkillRefinementProposal,
 };
 use clickweave_llm::{ChatBackend, ChatOptions, Content, LlmClient, Message};
 use serde::Serialize;
@@ -84,11 +84,7 @@ pub async fn propose_skill_refinement_with_backend<B: ChatBackend + ?Sized>(
 }
 
 pub fn proposal_path(skills_dir: &Path, skill: &Skill) -> PathBuf {
-    skills_dir.join(format!(
-        "{}-v{}.proposal.json",
-        slugify(&skill.id),
-        skill.version
-    ))
+    skills_dir.join(&skill.id).join("proposal.json")
 }
 
 pub fn write_skill_proposal(
@@ -96,8 +92,9 @@ pub fn write_skill_proposal(
     skill: &Skill,
     proposal: &SkillRefinementProposal,
 ) -> Result<PathBuf, ProposalError> {
-    if !skills_dir.exists() {
-        std::fs::create_dir_all(skills_dir)?;
+    let skill_dir = skills_dir.join(&skill.id);
+    if !skill_dir.exists() {
+        std::fs::create_dir_all(&skill_dir)?;
     }
     let path = proposal_path(skills_dir, skill);
     let bytes = serde_json::to_vec_pretty(proposal)?;

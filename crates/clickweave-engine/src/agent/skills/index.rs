@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use tracing::warn;
 
 use super::retrieval::{ScoringWeights, is_retrieval_eligible, merge_tiers, score};
-use super::store::{SkillStore, legacy_basename};
+use super::store::{SKILL_MD, SkillStore};
 use super::types::{
     ApplicabilitySignature, RetrievedSkill, Skill, SkillContext, SkillError, SkillState,
     SubgoalSignature,
@@ -131,20 +131,27 @@ impl SkillIndex {
         }
     }
 
+    /// Drop every indexed skill whose on-disk `SKILL.md` file equals
+    /// `path`. The skill identity is derived from the parent directory
+    /// name (`<dir>/<skill_id>/SKILL.md`); when an external editor
+    /// removes the whole `<skill_id>/` directory, FSEvents reports the
+    /// missing `SKILL.md` and we drop every version of that id.
     pub fn remove_by_path(&mut self, path: &Path) -> bool {
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        if path.file_name().and_then(|n| n.to_str()) != Some(SKILL_MD) {
+            return false;
+        }
+        let Some(skill_id) = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+        else {
             return false;
         };
         let keys: Vec<_> = self
             .by_id
-            .iter()
-            .filter_map(|(key, skill)| {
-                if legacy_basename(skill.as_ref()) == file_name {
-                    Some(key.clone())
-                } else {
-                    None
-                }
-            })
+            .keys()
+            .filter(|(id, _)| id == skill_id)
+            .cloned()
             .collect();
         let removed = !keys.is_empty();
         for (id, version) in keys {
@@ -500,7 +507,8 @@ mod tests {
         let mut idx = SkillIndex::empty(Arc::new(HashedShingleEmbedder::default()));
         idx.upsert(skill_with("delete-me", 3, "sig", SkillState::Confirmed));
 
-        assert!(idx.remove_by_path(Path::new("delete-me-v3.md")));
+        let path = PathBuf::from("delete-me").join(SKILL_MD);
+        assert!(idx.remove_by_path(&path));
 
         assert!(idx.get("delete-me", 3).is_none());
         assert!(

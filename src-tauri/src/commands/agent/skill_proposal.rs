@@ -52,7 +52,7 @@ pub(super) fn spawn_skill_proposal_task(
     let skills_dir = skill_ctx.project_skills_dir.clone();
     tauri::async_runtime::spawn(async move {
         let store = SkillStore::new(skills_dir.clone());
-        let skill_path = skills_dir.join(format!("{}-v{}.md", slugify(&skill_id), version));
+        let skill_path = store.skill_md_path(&skill_id);
         let Ok(skill) = store.read_skill(&skill_path) else {
             tracing::warn!(%skill_id, version, "skills: proposal task could not read skill file");
             return;

@@ -2,7 +2,7 @@ use super::*;
 use clickweave_engine::agent::skills::{
     ActionSketchStep, ApplicabilityHints, ExpectedWorldModelDelta, OutcomePredicate,
     ProvenanceEntry, Skill, SkillError, SkillScope, SkillState, SkillStats, SkillStore,
-    emit_skill_md, parse_skill_md, prose_generator,
+    parse_skill_md, prose_generator,
 };
 use clickweave_engine::agent::skills::extractor::synthesize_skill_id_for_signature;
 use clickweave_engine::agent::skills::replay::ReplayJson;
@@ -237,9 +237,8 @@ pub async fn add_run_to_skill(
 
     let store = SkillStore::new(skills_dir.clone());
 
-    // Load the existing skill.
-    let skill_filename = format!("{}-v{}.md", request.skill_id, request.version);
-    let skill_path = skills_dir.join(&skill_filename);
+    // Load the existing skill from `<skill_id>/SKILL.md`.
+    let skill_path = store.skill_md_path(&request.skill_id);
     let current_md = std::fs::read_to_string(&skill_path)
         .map_err(|e| CommandError::io(format!("read SKILL.md: {e}")))?;
     let mut skill = parse_skill_md(&current_md)
@@ -252,13 +251,13 @@ pub async fn add_run_to_skill(
     // Regenerate prose for the full updated sketch.
     skill.body = prose_generator::generate(&skill.action_sketch, &skill.name);
 
-    // Increment version.
+    // Bump the version stamped in the frontmatter; the on-disk file
+    // path stays the same `<skill_id>/SKILL.md`.
     skill.version += 1;
 
-    // Write the new versioned SKILL.md.
-    let new_md = emit_skill_md(&skill);
-    let new_path = skills_dir.join(format!("{}-v{}.md", skill.id, skill.version));
-    std::fs::write(&new_path, new_md.as_bytes())
+    // Persist the new revision over the canonical SKILL.md.
+    store
+        .write_skill(&skill)
         .map_err(|e| CommandError::io(format!("write SKILL.md: {e}")))?;
 
     // Update replay.json skeleton.

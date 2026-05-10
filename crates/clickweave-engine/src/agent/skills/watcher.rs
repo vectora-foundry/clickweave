@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher, event::ModifyKind};
 use tokio::sync::mpsc;
 
+use super::store::SKILL_MD;
 use super::types::SkillError;
 
 const EVENT_CHANNEL_BUFFER: usize = 64;
@@ -34,11 +35,12 @@ pub struct SkillWatcher {
 }
 
 impl SkillWatcher {
-    /// Spawn a watcher over `dirs`. Each path is watched non-recursively
-    /// — skill files live directly under their tier's root, never in a
-    /// nested subdir, so a recursive watch would only add noise.
-    /// Missing directories are skipped silently; the consumer treats an
-    /// absent skills tree as an empty index.
+    /// Spawn a watcher over `dirs`. Each path is watched recursively
+    /// because skills live one level deep at `<dir>/<skill_id>/SKILL.md`,
+    /// alongside per-skill sidecars (`replay.json`) and the `.tx/`
+    /// journal directory. The non-`SKILL.md` paths are filtered out in
+    /// [`classify_event`]. Missing directories are skipped silently;
+    /// the consumer treats an absent skills tree as an empty index.
     pub fn spawn(dirs: Vec<PathBuf>) -> Result<Self, SkillError> {
         let (tx, rx) = mpsc::channel(EVENT_CHANNEL_BUFFER);
 
@@ -68,7 +70,7 @@ impl SkillWatcher {
                 continue;
             }
             watcher
-                .watch(&dir, RecursiveMode::NonRecursive)
+                .watch(&dir, RecursiveMode::Recursive)
                 .map_err(|err| {
                     SkillError::InvalidFrontmatter(format!(
                         "notify watch({}) failed: {err}",
@@ -85,7 +87,10 @@ impl SkillWatcher {
 }
 
 fn classify_event(kind: &EventKind, path: PathBuf) -> Option<SkillFileEvent> {
-    if path.extension().and_then(|e| e.to_str()) != Some("md") {
+    // Only the canonical `SKILL.md` body file participates in the
+    // index. Per-skill sidecars (`replay.json`, etc.) and `.tx/`
+    // journal entries are filtered out.
+    if path.file_name().and_then(|n| n.to_str()) != Some(SKILL_MD) {
         return None;
     }
     match kind {
@@ -146,7 +151,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn observes_create_modify_delete_for_md_file() {
+    async fn observes_create_modify_delete_for_skill_md() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_path_buf();
 
@@ -155,7 +160,9 @@ mod tests {
         // write occasionally lands before the watcher subscribes.
         tokio::time::sleep(Duration::from_millis(150)).await;
 
-        let path = dir.join("skill-v1.md");
+        let skill_dir = dir.join("skl-create-modify-delete");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let path = skill_dir.join(SKILL_MD);
         let canon_path = {
             fs::write(&path, "---\n---\nbody\n").unwrap();
             canon(&path)
@@ -189,19 +196,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ignores_non_md_files() {
+    async fn ignores_non_skill_md_files() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_path_buf();
 
         let mut watcher = SkillWatcher::spawn(vec![dir.clone()]).unwrap();
         tokio::time::sleep(Duration::from_millis(150)).await;
 
-        fs::write(dir.join("notes.txt"), "hi").unwrap();
-        // No md events should arrive within a short grace window.
+        let skill_dir = dir.join("skl-non-skill-md");
+        fs::create_dir_all(&skill_dir).unwrap();
+        // Sidecars (`replay.json`) and arbitrary `.md` files at the
+        // project root must not surface to the consumer.
+        fs::write(dir.join("notes.md"), "hi").unwrap();
+        fs::write(skill_dir.join("replay.json"), "{}").unwrap();
         let result = timeout(Duration::from_millis(400), watcher.events.recv()).await;
         assert!(
             result.is_err(),
-            "expected no events for non-md file, got {:?}",
+            "expected no events for non-SKILL.md files, got {:?}",
             result
         );
     }
@@ -215,7 +226,9 @@ mod tests {
         let mut watcher = SkillWatcher::spawn(vec![missing_dir, real_dir.clone()]).unwrap();
         tokio::time::sleep(Duration::from_millis(150)).await;
 
-        let path = real_dir.join("after.md");
+        let skill_dir = real_dir.join("skl-missing-dir");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let path = skill_dir.join(SKILL_MD);
         fs::write(&path, "---\n---\nx\n").unwrap();
         let canon_path = canon(&path);
         assert!(

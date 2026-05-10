@@ -51,7 +51,7 @@ pub use patch::{
     lint_skill_patch,
 };
 pub use replay::{ReplayJson, ReplayParseError, ReplayStepBundle, SkillFrame, parse_replay_json};
-pub use store::{MoveReport, SkillStore, legacy_basename, move_skills_to_project, slugify};
+pub use store::{MoveReport, SKILL_MD, SkillStore, move_skills_to_project, slugify};
 pub use types::{
     ActionSketchStep, ApplicabilityHints, ApplicabilitySignature, BindingCorrection, BindingRef,
     CaptureClause, CaptureSource, ExpectedWorldModelDelta, Fidelity, LoopPredicate, MaybeExtracted,

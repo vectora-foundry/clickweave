@@ -169,20 +169,21 @@ fn global_skills_dir(app: &tauri::AppHandle) -> Result<PathBuf, CommandError> {
     Ok(dir)
 }
 
-fn skill_filename(skill_id: &str, version: u32) -> String {
-    format!("{}-v{}.md", slugify(skill_id), version)
-}
-
-fn proposal_filename(skill_id: &str, version: u32) -> String {
-    format!("{}-v{}.proposal.json", slugify(skill_id), version)
+/// Path to a skill's per-skill `proposal.json` sidecar — colocated with
+/// `SKILL.md` and `replay.json` under `<dir>/<skill_id>/`. The `version`
+/// is no longer encoded in the filename: only one open proposal exists
+/// per skill at a time, and the post-confirmation `version` bump is
+/// captured in the rewritten `SKILL.md` frontmatter.
+fn proposal_path(dir: &std::path::Path, skill_id: &str) -> PathBuf {
+    dir.join(skill_id).join("proposal.json")
 }
 
 fn read_proposal(
     dir: &std::path::Path,
     skill_id: &str,
-    version: u32,
+    _version: u32,
 ) -> Option<SkillRefinementProposal> {
-    let path = dir.join(proposal_filename(skill_id, version));
+    let path = proposal_path(dir, skill_id);
     let contents = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&contents).ok()
 }
@@ -192,7 +193,7 @@ fn read_skill_at(
     skill_id: &str,
     version: u32,
 ) -> Result<(Skill, PathBuf), CommandError> {
-    let path = store.dir().join(skill_filename(skill_id, version));
+    let path = store.skill_md_path(skill_id);
     let skill = store
         .read_skill(&path)
         .map_err(|e| CommandError::io(format!("read skill {}-v{}: {}", skill_id, version, e)))?;
@@ -246,12 +247,7 @@ pub async fn confirm_skill_proposal(
         .map_err(|e| CommandError::io(format!("write confirmed skill: {e}")))?;
 
     // Best-effort cleanup of the LLM proposal sidecar file.
-    let proposal_path = dir.join(format!(
-        "{}-v{}.proposal.json",
-        slugify(&skill.id),
-        skill.version
-    ));
-    let _ = std::fs::remove_file(&proposal_path);
+    let _ = std::fs::remove_file(proposal_path(&dir, &skill.id));
 
     let run_id = request.run_id.unwrap_or_default();
     let _ = app.emit(
@@ -280,13 +276,9 @@ pub async fn reject_skill_proposal(
         &request.project_name,
         &request.project_id,
     )?;
-    let proposal_path = dir.join(format!(
-        "{}-v{}.proposal.json",
-        slugify(&request.skill_id),
-        request.version
-    ));
-    if proposal_path.exists() {
-        std::fs::remove_file(&proposal_path)
+    let path = proposal_path(&dir, &request.skill_id);
+    if path.exists() {
+        std::fs::remove_file(&path)
             .map_err(|e| CommandError::io(format!("remove proposal: {e}")))?;
     }
     Ok(())
@@ -392,7 +384,7 @@ pub async fn delete_skill(
         )?,
     };
     let store = SkillStore::new(dir.clone());
-    let path = dir.join(skill_filename(&request.skill_id, request.version));
+    let path = store.skill_md_path(&request.skill_id);
     if path.exists() {
         store
             .delete_skill(&path)
@@ -402,10 +394,9 @@ pub async fn delete_skill(
 }
 
 /// Load the full [`Skill`] value (including `sections`, `body`, and
-/// `action_sketch`) for a given `(skill_id, version)` pair. Scans the
-/// project-local skill directory for a matching file. The lightweight
-/// `list_skills_for_panel` is the preferred way to populate the sidebar
-/// index; call this only on selection.
+/// `action_sketch`) for a given `(skill_id, version)` pair from the
+/// project-local skill directory. Versions are resolved by reading
+/// `<skill_id>/SKILL.md` and matching against the requested version.
 #[tauri::command]
 #[specta::specta]
 pub async fn load_skill_full(
@@ -420,7 +411,7 @@ pub async fn load_skill_full(
         &request.project_id,
     )?;
     let store = SkillStore::new(dir.clone());
-    let path = dir.join(skill_filename(&request.skill_id, request.version));
+    let path = store.skill_md_path(&request.skill_id);
     if path.exists() {
         let skill = store.read_skill(&path).map_err(|e| {
             CommandError::io(format!(
@@ -428,10 +419,13 @@ pub async fn load_skill_full(
                 request.skill_id, request.version, e
             ))
         })?;
-        return Ok(skill);
+        if skill.version == request.version {
+            return Ok(skill);
+        }
     }
-    // Fall back to scanning all files in the directory — handles the case
-    // where the caller knows the id but not the exact slugified filename.
+    // Fall back to scanning every per-skill directory — handles the
+    // case where the caller knows the slugified skill id but the
+    // on-disk directory uses a slightly different form.
     let files = store
         .list_files()
         .map_err(|e| CommandError::io(format!("list skill files: {e}")))?;
@@ -669,7 +663,7 @@ pub async fn apply_skill_patch(
     let store = SkillStore::new(dir.clone());
 
     // -- 1. Read current SKILL.md --
-    let skill_path = dir.join(skill_filename(&request.skill_id, request.version));
+    let skill_path = store.skill_md_path(&request.skill_id);
     let current_md = std::fs::read_to_string(&skill_path)
         .map_err(|e| CommandError::io(format!("read SKILL.md: {e}")))?;
 
@@ -748,44 +742,22 @@ pub async fn apply_skill_patch(
     let replay_bytes = serde_json::to_vec_pretty(&new_replay)
         .map_err(|e| CommandError::io(format!("encode replay.json: {e}")))?;
 
-    // -- 8. Atomic journal write --
-    // The skill_id directory layout is used for the journal. The SKILL.md
-    // file lives at the legacy flat path (dir/skill_filename) in Phase 1;
-    // the journal targets relative paths under the skill_id sub-directory.
-    // For backwards compatibility we write both the legacy flat file and
-    // the replay sidecar under skill_id/.
-    //
-    // Phase 1 legacy layout: skills/SKILL.md lives at `dir/<slug>-v<N>.md`
-    // (flat) and replay.json lives at `dir/<skill_id>/replay.json`. The
-    // journal's skill_dir is keyed on skill_id, so we write the SKILL.md
-    // entry as a relative path that navigates back to the flat location.
-    // To keep the journal logic simple, we use write_atomic_multi_file
-    // with a skill_id sub-directory and record the SKILL.md write
-    // separately using the simpler write_skill helper for the legacy path,
-    // then use the journal only for the replay.json sidecar.
-    //
-    // NOTE: This is a Phase 1 trade-off — the true four-layer atomic write
-    // only becomes achievable when SKILL.md moves into the skill_id/ directory
-    // (Task 1.L.0). For Phase 1 we do a best-effort two-step: (a) journal the
-    // replay.json change atomically, then (b) rename the SKILL.md tmp file.
-    // The crash case between (a) and (b) is recoverable: next load replays
-    // the replay.json journal and the SKILL.md tmp rename is idempotent.
-    //
-    // Write SKILL.md first via temp rename.
-    let tmp_path = dir.join(format!(
-        "{}.tmp",
-        skill_filename(&request.skill_id, request.version)
-    ));
-    std::fs::write(&tmp_path, &skill_md_bytes)
-        .map_err(|e| CommandError::io(format!("write SKILL.md tmp: {e}")))?;
-    std::fs::rename(&tmp_path, &skill_path)
-        .map_err(|e| CommandError::io(format!("rename SKILL.md: {e}")))?;
-
-    // Write replay.json via journal.
+    // -- 8. Atomic four-layer journal write --
+    // `SKILL.md` and `replay.json` are siblings under `<dir>/<skill_id>/`,
+    // so a single `write_atomic_multi_file` call covers both. The
+    // commit marker is the single atomic boundary: a crash before the
+    // marker rolls back, a crash after replays both renames on the
+    // next `recover_atomic_writes` pass.
     store
         .write_atomic_multi_file(
             &request.skill_id,
-            vec![(std::path::PathBuf::from("replay.json"), replay_bytes)],
+            vec![
+                (
+                    std::path::PathBuf::from(clickweave_engine::agent::skills::SKILL_MD),
+                    skill_md_bytes,
+                ),
+                (std::path::PathBuf::from("replay.json"), replay_bytes),
+            ],
             None, // mtime guard already checked above for SKILL.md
         )
         .map_err(map_skill_error)?;
@@ -819,10 +791,11 @@ mod tests {
     }
 
     #[test]
-    fn skill_filename_combines_slug_and_version() {
+    fn proposal_path_is_colocated_with_skill_md() {
+        let dir = std::path::Path::new("/tmp/skills");
         assert_eq!(
-            skill_filename("Click Login Button", 3),
-            "click-login-button-v3.md"
+            proposal_path(dir, "click-login-button"),
+            dir.join("click-login-button").join("proposal.json"),
         );
     }
 

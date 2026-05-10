@@ -271,7 +271,9 @@ async fn third_identical_invocation_merges_from_latest_draft_version() {
         .expect("latest draft");
     assert_eq!(latest.version, 3);
     assert_eq!(latest.stats.occurrence_count, 3);
-    assert_eq!(store.list_files().unwrap().len(), 3);
+    // Per-skill directory layout: all versions of a skill share one
+    // `<skill_id>/SKILL.md` file. Three merges overwrite the same file.
+    assert_eq!(store.list_files().unwrap().len(), 1);
 }
 
 #[tokio::test]

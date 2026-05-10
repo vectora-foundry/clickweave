@@ -2,7 +2,7 @@ use super::error::CommandError;
 use super::types::*;
 use clickweave_core::variant_index::{VariantEntry, VariantIndex};
 use clickweave_engine::agent::episodic::EpisodicContext;
-use clickweave_engine::agent::skills::{SkillContext, SkillScope, SkillState, SkillStore, slugify};
+use clickweave_engine::agent::skills::{SkillContext, SkillScope, SkillState, SkillStore};
 use clickweave_engine::agent::{
     AgentChannels, AgentConfig, AgentEvent, AgentState, ApprovalRequest,
     DisagreementResolutionAction, PermissionAction, PermissionPolicy, PermissionRule, RunnerOutput,

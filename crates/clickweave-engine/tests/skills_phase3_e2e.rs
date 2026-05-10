@@ -248,8 +248,10 @@ async fn second_run_loads_skills_from_disk() {
 
     // Second run: build a fresh index from disk.
     let index_run2 = fresh_index_for(&dir);
-    // 4 entries: alpha v1 (draft), alpha v2 (confirmed), beta v1, gamma v1.
-    assert_eq!(index_run2.read().len(), 4);
+    // 3 entries: alpha v2 (confirmed), beta v1 (draft), gamma v1 (draft).
+    // Per-skill directory layout: writing alpha v2 overwrites alpha v1 on
+    // disk — a single `alpha/SKILL.md` holds the latest version only.
+    assert_eq!(index_run2.read().len(), 3);
     let app_sig = compute_applicability_signature(&wm);
     let alpha_hits = index_run2.read().lookup(&alpha_sig, &app_sig, 5);
     assert_eq!(
