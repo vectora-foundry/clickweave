@@ -1,8 +1,14 @@
 import { useMemo } from "react";
 import type { Edge, Node } from "@xyflow/react";
 import { invoke } from "@tauri-apps/api/core";
+
+/** Read-only skill canvas source passed to the sketch renderer. */
+export interface SkillCanvasSource {
+  nodes: Node[];
+  edges: Edge[];
+  readOnly: boolean;
+}
 import { useShallow } from "zustand/react/shallow";
-import { GraphCanvas, type SkillCanvasSource } from "../GraphCanvas";
 import { useStore } from "../../store/useAppStore";
 import { SkillRefinementForm } from "./SkillRefinementForm";
 import type {
@@ -158,9 +164,9 @@ export function SkillDetailView({
               <dt className="text-[var(--text-muted)]">Success rate</dt>
               <dd>{(skill.success_rate * 100).toFixed(0)}%</dd>
             </dl>
-            <div className="mt-4 h-[420px] overflow-hidden rounded border border-[var(--border)]">
+            <div className="mt-4 overflow-hidden rounded border border-[var(--border)] px-3 py-2">
               {skillSource ? (
-                <GraphCanvas skillSource={skillSource} />
+                <SkillActionSketchList source={skillSource} />
               ) : (
                 <div className="flex h-full items-center justify-center text-[10px] italic text-[var(--text-muted)]">
                   Action sketch not loaded in panel index.
@@ -184,6 +190,34 @@ export function SkillDetailView({
         )}
       </div>
     </div>
+  );
+}
+
+/** Plain-list renderer for a skill action sketch (replaces the React-Flow canvas). */
+function SkillActionSketchList({ source }: { source: SkillCanvasSource }) {
+  if (source.nodes.length === 0) {
+    return (
+      <div className="py-4 text-center text-[10px] italic text-[var(--text-muted)]">
+        No steps.
+      </div>
+    );
+  }
+  return (
+    <ol className="space-y-1 py-1 text-[11px] text-[var(--text-secondary)]">
+      {source.nodes.map((n, i) => (
+        <li key={n.id} className="flex items-start gap-2">
+          <span className="shrink-0 tabular-nums text-[var(--text-muted)]">
+            {i + 1}.
+          </span>
+          <span className="break-words">
+            {(n.data as Record<string, unknown>)?.tool as string ??
+              (n.data as Record<string, unknown>)?.label as string ??
+              n.type ??
+              n.id}
+          </span>
+        </li>
+      ))}
+    </ol>
   );
 }
 
