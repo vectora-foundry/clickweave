@@ -17,7 +17,7 @@ async fn agent_executes_single_click_and_completes() {
     };
 
     let runner = StateRunner::new("Click the submit button".to_string(), config);
-    let workflow = clickweave_core::Workflow::new("Test Workflow");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -45,7 +45,7 @@ async fn agent_executes_single_click_and_completes() {
 
     // Verify workflow was built with at least one node (from the click)
     assert!(
-        !state.workflow.nodes.is_empty(),
+        !state.trace_graph.nodes.is_empty(),
         "Workflow should have at least one node from the click action"
     );
 }
@@ -72,7 +72,7 @@ async fn agent_stops_at_max_steps() {
     };
 
     let runner = StateRunner::new("Click forever".to_string(), config);
-    let workflow = clickweave_core::Workflow::new("Test Workflow");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -116,7 +116,7 @@ async fn agent_handles_text_only_response() {
     };
 
     let runner = StateRunner::new("Do something".to_string(), config);
-    let workflow = clickweave_core::Workflow::new("Test Workflow");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -162,7 +162,7 @@ async fn agent_replan_does_not_complete() {
     };
 
     let runner = StateRunner::new("Click a missing button".to_string(), config);
-    let workflow = clickweave_core::Workflow::new("Test Workflow");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -199,7 +199,7 @@ async fn agent_state_reports_completed_reason_on_done() {
     };
 
     let runner = StateRunner::new("Do it".to_string(), config);
-    let workflow = clickweave_core::Workflow::new("Test");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -242,7 +242,7 @@ async fn agent_state_reports_max_steps_reason() {
     };
 
     let runner = StateRunner::new("Click forever".to_string(), config);
-    let workflow = clickweave_core::Workflow::new("Test");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -333,7 +333,7 @@ async fn agent_state_reports_max_errors_reason() {
     };
 
     let runner = StateRunner::new("Click it".to_string(), config);
-    let workflow = clickweave_core::Workflow::new("Test");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -421,7 +421,7 @@ async fn agent_state_reports_loop_detected_on_identical_repeat_failure() {
     };
 
     let runner = StateRunner::new("Click it".to_string(), config);
-    let workflow = clickweave_core::Workflow::new("Test");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -483,7 +483,7 @@ async fn approval_success_allows_execution() {
     let runner = StateRunner::new("Click it".to_string(), config)
         .with_events(event_tx)
         .with_approval(approval_tx);
-    let workflow = clickweave_core::Workflow::new("Test");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -535,7 +535,7 @@ async fn approval_rejection_triggers_replan() {
     let runner = StateRunner::new("Click it".to_string(), config)
         .with_events(event_tx)
         .with_approval(approval_tx);
-    let workflow = clickweave_core::Workflow::new("Test");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -583,7 +583,7 @@ async fn approval_channel_failure_terminates_agent() {
     let runner = StateRunner::new("Click it".to_string(), config)
         .with_events(event_tx)
         .with_approval(approval_tx);
-    let workflow = clickweave_core::Workflow::new("Test");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner

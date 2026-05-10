@@ -76,7 +76,7 @@ async fn world_model_changed_event_fires_per_step_with_run_id() {
             &llm,
             &mcp,
             "goal".to_string(),
-            clickweave_core::Workflow::default(),
+            crate::agent::trace_graph::AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -143,7 +143,7 @@ async fn world_model_changed_reports_cdp_page_on_first_observation() {
             &llm,
             &mcp,
             "goal".to_string(),
-            clickweave_core::Workflow::default(),
+            crate::agent::trace_graph::AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -206,7 +206,7 @@ async fn boundary_record_written_fires_for_terminal_with_run_id() {
             &llm,
             &mcp,
             "goal".to_string(),
-            clickweave_core::Workflow::default(),
+            crate::agent::trace_graph::AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -301,7 +301,7 @@ async fn boundary_record_written_carries_milestone_text_for_completed_subgoals()
             &llm,
             &mcp,
             "goal".to_string(),
-            clickweave_core::Workflow::default(),
+            crate::agent::trace_graph::AgentTraceGraph::new(),
             tools,
             None,
         )

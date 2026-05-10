@@ -44,7 +44,7 @@ async fn run_scenario(
             &llm,
             &mcp,
             "goal".to_string(),
-            clickweave_core::Workflow::default(),
+            crate::agent::trace_graph::AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -200,7 +200,7 @@ async fn live_repeated_dispatch_emits_no_progress_warning() {
             &llm,
             &mcp,
             "goal".to_string(),
-            clickweave_core::Workflow::default(),
+            crate::agent::trace_graph::AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -265,7 +265,7 @@ async fn denied_intervening_action_resets_repeat_counter() {
             &llm,
             &mcp,
             "goal".to_string(),
-            clickweave_core::Workflow::default(),
+            crate::agent::trace_graph::AgentTraceGraph::new(),
             tools,
             None,
         )

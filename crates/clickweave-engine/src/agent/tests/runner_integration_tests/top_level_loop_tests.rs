@@ -27,7 +27,7 @@ async fn run_completes_on_agent_done_after_two_tool_calls() {
             &llm,
             &mcp,
             "goal".to_string(),
-            clickweave_core::Workflow::default(),
+            crate::agent::trace_graph::AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -74,7 +74,7 @@ async fn run_terminates_at_max_steps_without_completion() {
             &llm,
             &mcp,
             "goal".to_string(),
-            clickweave_core::Workflow::default(),
+            crate::agent::trace_graph::AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -113,7 +113,7 @@ async fn run_records_tool_error_as_step_error() {
             &llm,
             &mcp,
             "goal".to_string(),
-            clickweave_core::Workflow::default(),
+            crate::agent::trace_graph::AgentTraceGraph::new(),
             Vec::new(),
             None,
         )

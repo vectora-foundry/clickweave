@@ -2,7 +2,7 @@ use super::super::super::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
 use crate::agent::runner::StateRunner;
 use crate::agent::types::{AgentConfig, AgentEvent, RunnerOutput, TerminalReason};
 use crate::executor::Mcp;
-use clickweave_core::Workflow;
+use crate::agent::trace_graph::AgentTraceGraph;
 use tokio::sync::mpsc;
 
 fn cfg_with_steps(steps: usize) -> AgentConfig {
@@ -66,7 +66,7 @@ async fn two_identical_tool_errors_in_a_row_halt_with_loop_detected() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -109,7 +109,7 @@ async fn different_args_do_not_trigger_loop_detection() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -151,7 +151,7 @@ async fn consecutive_destructive_cap_halts_run() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -246,7 +246,7 @@ async fn non_destructive_success_resets_destructive_streak() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             advertised,
             None,
         )
@@ -286,7 +286,7 @@ async fn cap_zero_disables_destructive_feature() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -319,7 +319,7 @@ async fn max_errors_reached_sets_correct_terminal_reason() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )

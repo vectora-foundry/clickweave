@@ -71,7 +71,7 @@ async fn terminal_boundary_record_written_once_on_agent_done() {
             &llm,
             &mcp,
             "goal".to_string(),
-            clickweave_core::Workflow::default(),
+            crate::agent::trace_graph::AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -113,7 +113,7 @@ async fn terminal_boundary_record_written_once_on_max_steps() {
             &llm,
             &mcp,
             "goal".to_string(),
-            clickweave_core::Workflow::default(),
+            crate::agent::trace_graph::AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -250,7 +250,7 @@ async fn recovery_succeeded_writes_one_record_on_error_to_success_transition() {
             &llm,
             &mcp,
             "goal".to_string(),
-            clickweave_core::Workflow::default(),
+            crate::agent::trace_graph::AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -284,7 +284,7 @@ async fn no_boundary_records_written_when_no_storage_attached() {
             &llm,
             &mcp,
             "goal".to_string(),
-            clickweave_core::Workflow::default(),
+            crate::agent::trace_graph::AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -307,7 +307,7 @@ async fn terminal_boundary_record_carries_world_model_and_task_state_snapshots()
             &llm,
             &mcp,
             "literal-goal".to_string(),
-            clickweave_core::Workflow::default(),
+            crate::agent::trace_graph::AgentTraceGraph::new(),
             tools,
             None,
         )

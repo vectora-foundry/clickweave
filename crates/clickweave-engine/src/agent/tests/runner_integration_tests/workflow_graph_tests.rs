@@ -1,8 +1,8 @@
 use super::super::super::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
 use crate::agent::runner::StateRunner;
+use crate::agent::trace_graph::AgentTraceGraph;
 use crate::agent::types::{AgentConfig, AgentEvent, RunnerOutput, TerminalReason};
 use crate::executor::Mcp;
-use clickweave_core::Workflow;
 use tokio::sync::mpsc;
 
 fn cfg_with_steps(steps: usize) -> AgentConfig {
@@ -56,7 +56,7 @@ async fn successful_tool_call_emits_node_added_event_with_source_run_id() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -84,8 +84,8 @@ async fn successful_tool_call_emits_node_added_event_with_source_run_id() {
             .any(|ev| matches!(ev, AgentEvent::EdgeAdded { .. })),
         "first node without an anchor must not emit an EdgeAdded"
     );
-    assert_eq!(state.workflow.nodes.len(), 1);
-    assert!(state.workflow.edges.is_empty());
+    assert_eq!(state.trace_graph.nodes.len(), 1);
+    assert!(state.trace_graph.edges.is_empty());
 }
 
 /// Two successful tool calls emit an `EdgeAdded` that connects the first
@@ -108,7 +108,7 @@ async fn second_tool_call_emits_edge_added_connecting_to_first_node() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -135,8 +135,8 @@ async fn second_tool_call_emits_edge_added_connecting_to_first_node() {
     assert_eq!(edges.len(), 1, "two nodes, no anchor → one EdgeAdded");
     assert_eq!(edges[0].from, nodes[0].id);
     assert_eq!(edges[0].to, nodes[1].id);
-    assert_eq!(state.workflow.nodes.len(), 2);
-    assert_eq!(state.workflow.edges.len(), 1);
+    assert_eq!(state.trace_graph.nodes.len(), 2);
+    assert_eq!(state.trace_graph.edges.len(), 1);
 }
 
 /// Observation-only tools (here `cdp_find_elements`) execute but must not
@@ -161,7 +161,7 @@ async fn observation_tool_does_not_emit_node() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -177,8 +177,8 @@ async fn observation_tool_does_not_emit_node() {
         node_count, 0,
         "observation tools must not produce workflow nodes"
     );
-    assert!(state.workflow.nodes.is_empty());
-    assert!(state.workflow.edges.is_empty());
+    assert!(state.trace_graph.nodes.is_empty());
+    assert!(state.trace_graph.edges.is_empty());
 }
 
 /// A caller-provided `anchor_node_id` seeds `state.last_node_id`, so the
@@ -201,7 +201,7 @@ async fn anchor_node_id_chains_first_new_node() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             Some(anchor),
         )
@@ -221,7 +221,7 @@ async fn anchor_node_id_chains_first_new_node() {
     let edge = first_edge.expect("anchor must produce a first edge");
     assert_eq!(edge.from, anchor, "first edge must chain from the anchor");
     assert_eq!(edge.to, node.id);
-    assert_eq!(state.workflow.edges.len(), 1);
+    assert_eq!(state.trace_graph.edges.len(), 1);
 }
 
 /// `build_workflow = false` opts out of workflow-graph emission even on a
@@ -245,7 +245,7 @@ async fn build_workflow_false_suppresses_node_emission() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -259,7 +259,7 @@ async fn build_workflow_false_suppresses_node_emission() {
             .any(|ev| matches!(ev, AgentEvent::NodeAdded { .. })),
         "build_workflow=false must suppress NodeAdded"
     );
-    assert!(state.workflow.nodes.is_empty());
+    assert!(state.trace_graph.nodes.is_empty());
     assert!(
         matches!(
             state.terminal_reason,

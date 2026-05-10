@@ -194,7 +194,7 @@ async fn vlm_yes_verdict_completes_run_normally() {
     };
 
     let vlm: Arc<dyn DynChatBackend> = agent_backend.clone();
-    let workflow = clickweave_core::Workflow::new("VLM YES test");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<RunnerOutput>(16);
@@ -269,7 +269,7 @@ async fn vlm_no_verdict_halts_run_and_emits_disagreement() {
     let runner = StateRunner::new("Open settings".to_string(), config)
         .with_vision(vlm)
         .with_events(event_tx);
-    let workflow = clickweave_core::Workflow::new("VLM NO test");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -350,7 +350,7 @@ async fn vlm_check_falls_through_when_reply_is_empty() {
 
     let vlm: Arc<dyn DynChatBackend> = agent_backend.clone();
     let runner = StateRunner::new("Do it".to_string(), config).with_vision(vlm);
-    let workflow = clickweave_core::Workflow::new("VLM empty reply fallback");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -403,7 +403,7 @@ async fn vlm_check_falls_through_when_screenshot_fails() {
 
     let vlm: Arc<dyn DynChatBackend> = agent_backend.clone();
     let runner = StateRunner::new("Do it".to_string(), config).with_vision(vlm);
-    let workflow = clickweave_core::Workflow::new("VLM error fallback");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner

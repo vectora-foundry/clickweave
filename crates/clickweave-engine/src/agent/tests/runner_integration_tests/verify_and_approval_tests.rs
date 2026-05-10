@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use clickweave_core::Workflow;
+use crate::agent::trace_graph::AgentTraceGraph;
 use clickweave_llm::DynChatBackend;
 use tokio::sync::{mpsc, oneshot};
 
@@ -56,7 +56,7 @@ async fn vlm_yes_verdict_lets_agent_done_complete() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -97,7 +97,7 @@ async fn vlm_no_verdict_halts_with_completion_disagreement() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -147,7 +147,7 @@ async fn no_vision_backend_lets_agent_done_complete_unchecked() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -182,7 +182,7 @@ async fn verify_completion_persists_artifacts_when_dir_set() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -243,7 +243,7 @@ async fn approval_rejected_replans_without_executing_tool() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -293,7 +293,7 @@ async fn approval_unavailable_halts_run() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -331,7 +331,7 @@ async fn approved_live_approval_lets_tool_execute() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )

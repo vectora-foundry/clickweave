@@ -27,7 +27,7 @@ use crate::agent::test_stubs::{
 };
 use crate::agent::types::{AgentConfig, AgentEvent, RunnerOutput};
 use crate::executor::Mcp;
-use clickweave_core::Workflow;
+use crate::agent::trace_graph::AgentTraceGraph;
 
 /// Build an MCP that advertises one CDP element so the world-model
 /// signature is non-trivial across both runs in the test, plus the
@@ -126,7 +126,7 @@ async fn recovery_written_and_retrieved_across_runs() {
             &llm_run1,
             &mcp_run1,
             "login".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools_run1,
             None,
         )
@@ -186,7 +186,7 @@ async fn recovery_written_and_retrieved_across_runs() {
             &llm_run2,
             &mcp_run2,
             "login".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools_run2,
             None,
         )
@@ -245,7 +245,7 @@ async fn episodic_disabled_via_config_skips_store_open_and_retrieval() {
             &llm,
             &mcp,
             "login".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -305,7 +305,7 @@ async fn episodic_ctx_disabled_overrides_config_enabled() {
             &llm,
             &mcp,
             "login".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -363,7 +363,7 @@ async fn run_with_no_recovery_writes_nothing() {
             &llm,
             &mcp,
             "login".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )

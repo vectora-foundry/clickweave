@@ -307,7 +307,7 @@ async fn tool_list_is_stable_across_cdp_connect_boundary() {
     };
 
     let runner = StateRunner::new("Launch and click".to_string(), config);
-    let workflow = clickweave_core::Workflow::new("Stable tools test");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     // Seed the tools vec from the MCP client once at run start — mirrors
     // how `run_agent_workflow` wires it up.
     let mcp_tools = mcp.tools_as_openai();

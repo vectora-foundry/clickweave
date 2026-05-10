@@ -97,7 +97,7 @@ async fn append_assistant_message_strips_reasoning_content_from_transcript() {
     };
 
     let runner = StateRunner::new("Click the button".to_string(), config);
-    let workflow = clickweave_core::Workflow::new("Test");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -184,7 +184,7 @@ async fn multi_tool_response_only_executes_first() {
     };
 
     let runner = StateRunner::new("Click a button".to_string(), config);
-    let workflow = clickweave_core::Workflow::new("Multi-tool Test");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -264,7 +264,7 @@ async fn malformed_tool_call_json_returns_error() {
     };
 
     let runner = StateRunner::new("Click something".to_string(), config);
-    let workflow = clickweave_core::Workflow::new("Malformed JSON Test");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -392,7 +392,7 @@ async fn retained_history_stays_bounded_across_snapshot_heavy_steps() {
     };
 
     let runner = StateRunner::new("Wait for a bunch of events".to_string(), config);
-    let workflow = clickweave_core::Workflow::new("Snapshot-heavy Test");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner

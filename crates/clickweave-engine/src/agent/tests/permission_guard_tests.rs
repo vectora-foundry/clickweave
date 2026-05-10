@@ -129,7 +129,7 @@ async fn policy_deny_fails_step_without_prompting() {
         .with_events(event_tx)
         .with_approval(approval_tx)
         .with_permissions(policy);
-    let workflow = clickweave_core::Workflow::new("Deny test");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -188,7 +188,7 @@ async fn policy_allow_skips_approval_prompt() {
         .with_events(event_tx)
         .with_approval(approval_tx)
         .with_permissions(policy);
-    let workflow = clickweave_core::Workflow::new("Allow test");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -249,7 +249,7 @@ async fn destructive_guardrail_still_prompts_when_tool_allowed() {
         .with_events(event_tx)
         .with_approval(approval_tx)
         .with_permissions(policy);
-    let workflow = clickweave_core::Workflow::new("Guardrail test");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let _state = runner
@@ -345,7 +345,7 @@ async fn consecutive_destructive_cap_halts_after_three_calls() {
         .with_events(event_tx)
         .with_approval(approval_tx)
         .with_permissions(policy);
-    let workflow = clickweave_core::Workflow::new("Cap test");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -475,7 +475,7 @@ async fn non_destructive_tool_resets_consecutive_destructive_counter() {
         .with_events(event_tx)
         .with_approval(approval_tx)
         .with_permissions(policy);
-    let workflow = clickweave_core::Workflow::new("Cap reset test");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -536,7 +536,7 @@ async fn consecutive_destructive_cap_of_zero_disables_feature() {
         .with_events(event_tx)
         .with_approval(approval_tx)
         .with_permissions(policy);
-    let workflow = clickweave_core::Workflow::new("Cap-zero test");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner

@@ -2,7 +2,7 @@ use super::super::super::test_stubs::{ScriptedLlm, StaticMcp, llm_reply_tool};
 use crate::agent::runner::{FocusSkipReason, StateRunner};
 use crate::agent::types::{AgentConfig, AgentEvent, RunnerOutput, TerminalReason};
 use crate::executor::Mcp;
-use clickweave_core::Workflow;
+use crate::agent::trace_graph::AgentTraceGraph;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -192,7 +192,7 @@ async fn synthetic_focus_window_skip_bypasses_mcp_dispatch() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools_openai,
             None,
         )
@@ -332,7 +332,7 @@ async fn no_focus_launch_app_skip_bypasses_foregrounding_mcp_dispatch() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools_openai,
             None,
         )
@@ -365,7 +365,7 @@ async fn no_focus_launch_app_skip_bypasses_foregrounding_mcp_dispatch() {
         "synthetic body should explain the skip: {body}"
     );
     assert!(
-        state.workflow.nodes.is_empty(),
+        state.trace_graph.nodes.is_empty(),
         "synthetic skip must not materialize a workflow node"
     );
     let events = drain_events(&mut event_rx);
@@ -475,7 +475,7 @@ async fn no_focus_launch_app_dispatch_sets_background_true() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools_openai,
             None,
         )
@@ -528,7 +528,7 @@ async fn synthetic_focus_window_skip_does_not_mutate_cdp_state() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools_openai,
             None,
         )
@@ -568,7 +568,7 @@ async fn native_launch_app_records_kind_and_does_not_connect_cdp() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools_openai,
             None,
         )
@@ -615,7 +615,7 @@ async fn quit_app_clears_active_cdp_binding() {
             &llm,
             &mcp,
             "goal".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools_openai,
             None,
         )
@@ -901,7 +901,7 @@ async fn cdp_attachable_focus_skip_triggers_auto_connect_cdp() {
             &llm,
             &mcp,
             "g".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools_openai,
             None,
         )
@@ -1033,7 +1033,7 @@ async fn policy_disabled_focus_skip_still_triggers_auto_connect_cdp() {
             &llm,
             &mcp,
             "g".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools_openai,
             None,
         )
@@ -1126,7 +1126,7 @@ async fn raw_cdp_connect_tool_call_is_blocked_before_mcp_dispatch() {
             &llm,
             &mcp,
             "g".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools_openai,
             None,
         )
