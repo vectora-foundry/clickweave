@@ -12,6 +12,7 @@
 //! runner and will be wired through the
 //! [`crate::executor::ExecutorEvent`] channel in later phases.
 
+use crate::agent::permissions::ToolAnnotations;
 use crate::agent::skills::types::{ActionSketchStep, LoopPredicate};
 use crate::executor::Mcp;
 use crate::executor::error::{ExecutorError, ExecutorResult};
@@ -65,6 +66,43 @@ pub fn run_skill_steps<'a, M: Mcp + ?Sized>(
     })
 }
 
+/// Decide whether a step must be gated behind user approval before
+/// execution.
+///
+/// Priority order:
+/// 1. `explicit = Some(true/false)` — always respected as-is.
+/// 2. `annotations.destructive_hint = Some(true)` — gate (no explicit).
+/// 3. `annotations.destructive_hint = Some(false)` — bypass (no explicit).
+/// 4. No annotations: fall back to the supplemental static list in
+///    `clickweave_core::permissions::CONFIRMABLE_TOOLS` when
+///    `phase1_static_approvals` is active; otherwise default to `false`.
+pub fn should_gate_step(
+    tool_name: &str,
+    explicit: Option<bool>,
+    annotations: &ToolAnnotations,
+) -> bool {
+    #[cfg(feature = "phase1_static_approvals")]
+    {
+        if let Some(req) = explicit {
+            return req;
+        }
+        if annotations.destructive_hint == Some(true) {
+            return true;
+        }
+        if annotations.destructive_hint == Some(false) {
+            return false;
+        }
+        // No annotations: use the supplemental static list
+        clickweave_core::permissions::CONFIRMABLE_TOOLS
+            .iter()
+            .any(|(name, _)| *name == tool_name)
+    }
+    #[cfg(not(feature = "phase1_static_approvals"))]
+    {
+        explicit.unwrap_or(false)
+    }
+}
+
 async fn run_step<M: Mcp + ?Sized>(
     ctx: &mut SkillRunContext<'_, M>,
     step: &ActionSketchStep,
@@ -74,8 +112,9 @@ async fn run_step<M: Mcp + ?Sized>(
             step_id,
             tool,
             args,
+            requires_approval,
             ..
-        } => run_tool_call(ctx, step_id, tool, args).await,
+        } => run_tool_call(ctx, step_id, tool, args, *requires_approval).await,
         ActionSketchStep::Loop {
             step_id,
             until,
@@ -101,6 +140,7 @@ async fn run_tool_call<M: Mcp + ?Sized>(
     step_id: &str,
     tool: &str,
     args: &Value,
+    _requires_approval: Option<bool>,
 ) -> ExecutorResult<()> {
     let result = ctx
         .mcp
@@ -243,6 +283,7 @@ mod tests {
             captures_pre: Vec::new(),
             captures: Vec::new(),
             expected_world_model_delta: ExpectedWorldModelDelta::default(),
+            requires_approval: None,
         }
     }
 
@@ -386,5 +427,51 @@ mod tests {
         let outer_count = observed.iter().filter(|(n, _)| n == "wait").count();
         assert_eq!(outer_count, 1);
         assert_eq!(inner_count, 2);
+    }
+
+    // ── should_gate_step tests ─────────────────────────────────────────────
+
+    /// (a) explicit Some(true) always gates, regardless of annotations.
+    #[test]
+    fn should_gate_step_explicit_true_always_gates() {
+        let annotations = ToolAnnotations::default(); // destructive_hint: None
+        assert!(should_gate_step("click", Some(true), &annotations));
+    }
+
+    /// (b) explicit Some(false) always bypasses, regardless of annotations.
+    #[test]
+    fn should_gate_step_explicit_false_never_gates() {
+        let annotations = ToolAnnotations {
+            destructive_hint: Some(true),
+            ..ToolAnnotations::default()
+        };
+        assert!(!should_gate_step("quit_app", Some(false), &annotations));
+    }
+
+    /// (c) destructive_hint = Some(true) with no explicit gates.
+    #[test]
+    fn should_gate_step_destructive_hint_true_gates_without_explicit() {
+        let annotations = ToolAnnotations {
+            destructive_hint: Some(true),
+            ..ToolAnnotations::default()
+        };
+        assert!(should_gate_step("custom_tool", None, &annotations));
+    }
+
+    /// (d) No annotations and tool in CONFIRMABLE_TOOLS static list: gates.
+    #[cfg(feature = "phase1_static_approvals")]
+    #[test]
+    fn should_gate_step_static_list_tool_no_annotations_gates() {
+        // "launch_app" is in CONFIRMABLE_TOOLS
+        let annotations = ToolAnnotations::default();
+        assert!(should_gate_step("launch_app", None, &annotations));
+    }
+
+    /// (e) No annotations and tool NOT in CONFIRMABLE_TOOLS: does not gate.
+    #[cfg(feature = "phase1_static_approvals")]
+    #[test]
+    fn should_gate_step_unknown_tool_no_annotations_no_gate() {
+        let annotations = ToolAnnotations::default();
+        assert!(!should_gate_step("some_read_only_tool", None, &annotations));
     }
 }

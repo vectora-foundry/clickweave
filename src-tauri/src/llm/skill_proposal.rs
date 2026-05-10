@@ -377,6 +377,7 @@ mod tests {
                 captures_pre: vec![],
                 captures: vec![],
                 expected_world_model_delta: Default::default(),
+                requires_approval: None,
             }],
             outputs: vec![],
             outcome_predicate: OutcomePredicate::SubgoalCompleted {

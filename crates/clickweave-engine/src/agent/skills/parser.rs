@@ -463,6 +463,7 @@ mod tests {
             captures_pre: vec![],
             captures: vec![],
             expected_world_model_delta: ExpectedWorldModelDelta::default(),
+            requires_approval: None,
         }
     }
 

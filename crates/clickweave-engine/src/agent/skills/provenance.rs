@@ -90,6 +90,7 @@ pub fn build_action_sketch(action_sequence: &[RecordedStep]) -> Vec<ActionSketch
                 &step.world_model_pre,
                 &step.world_model_post,
             ),
+            requires_approval: None,
         });
     }
 

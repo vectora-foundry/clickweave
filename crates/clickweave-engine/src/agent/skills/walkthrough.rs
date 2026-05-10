@@ -61,6 +61,7 @@ pub fn walkthrough_to_skill(
                 captures_pre: vec![],
                 captures: vec![],
                 expected_world_model_delta: ExpectedWorldModelDelta::default(),
+                requires_approval: None,
             })
         })
         .collect::<Result<Vec<_>, SkillError>>()?;

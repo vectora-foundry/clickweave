@@ -46,10 +46,15 @@ tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
 
 [features]
-default = []
+default = ["phase1_static_approvals"]
 specta = ["dep:specta"]
 # Expose the agent test doubles (`ScriptedLlm`, `StaticMcp`, `NullMcp`,
 # `YesVlm`, `NoVlm`, response builders) to downstream `[dev-dependencies]`
 # via `clickweave_engine::agent::test_stubs`. Opt-in only — production
 # builds of the engine never compile this surface.
 test-stubs = []
+# Phase 1 static approval gate: gates destructive tools at skill-runner level
+# using MCP `destructiveHint` annotations plus a supplemental static list
+# (`clickweave_core::permissions::CONFIRMABLE_TOOLS`). Disabled in Phase 2
+# when the dynamic permission policy fully supersedes it.
+phase1_static_approvals = []

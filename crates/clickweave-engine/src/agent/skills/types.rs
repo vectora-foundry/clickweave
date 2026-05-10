@@ -119,6 +119,11 @@ pub enum ActionSketchStep {
         captures_pre: Vec<CaptureClause>,
         captures: Vec<CaptureClause>,
         expected_world_model_delta: ExpectedWorldModelDelta,
+        /// Explicit approval override for this step. `Some(true)` always
+        /// gates; `Some(false)` always bypasses; `None` defers to the
+        /// `should_gate_step` heuristic (destructive-hint + static list).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        requires_approval: Option<bool>,
     },
     Loop {
         step_id: String,

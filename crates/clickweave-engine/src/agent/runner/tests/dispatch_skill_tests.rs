@@ -38,6 +38,7 @@ fn make_skill(id: &str, version: u32, state: SkillState, schema: Vec<ParameterSl
             captures_pre: vec![],
             captures: vec![],
             expected_world_model_delta: ExpectedWorldModelDelta::default(),
+            requires_approval: None,
         }],
         outputs: vec![],
         outcome_predicate: OutcomePredicate::SubgoalCompleted {
@@ -75,6 +76,7 @@ fn tool_step(tool: &str) -> ActionSketchStep {
         captures_pre: vec![],
         captures: vec![],
         expected_world_model_delta: ExpectedWorldModelDelta::default(),
+        requires_approval: None,
     }
 }
 
