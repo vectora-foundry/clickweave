@@ -342,28 +342,18 @@ fn emit_executor_event(emit_handle: &tauri::AppHandle, event: ExecutorEvent) -> 
             emit_handle.emit("executor://checks_completed", verdicts)
         }
         ExecutorEvent::RunCreated(_, _) => Ok(()),
-        ExecutorEvent::SupervisionPassed {
-            node_id,
-            node_name,
-            summary,
-        } => emit_handle.emit(
+        ExecutorEvent::SupervisionPassed { scope, summary } => emit_handle.emit(
             "executor://supervision_passed",
-            SupervisionPassedPayload {
-                node_id: node_id.to_string(),
-                node_name,
-                summary,
-            },
+            SupervisionPassedPayload { scope, summary },
         ),
         ExecutorEvent::SupervisionPaused {
-            node_id,
-            node_name,
+            scope,
             finding,
             screenshot,
         } => emit_handle.emit(
             "executor://supervision_paused",
             SupervisionPausedPayload {
-                node_id: node_id.to_string(),
-                node_name,
+                scope,
                 finding,
                 screenshot,
             },

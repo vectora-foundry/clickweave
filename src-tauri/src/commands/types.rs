@@ -175,15 +175,13 @@ pub struct AmbiguityResolvedPayload {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SupervisionPassedPayload {
-    pub node_id: String,
-    pub node_name: String,
+    pub scope: clickweave_core::SafetyScope,
     pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SupervisionPausedPayload {
-    pub node_id: String,
-    pub node_name: String,
+    pub scope: clickweave_core::SafetyScope,
     pub finding: String,
     /// Base64-encoded screenshot captured during verification, if available.
     pub screenshot: Option<String>,

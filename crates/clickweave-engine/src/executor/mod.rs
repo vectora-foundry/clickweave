@@ -115,13 +115,11 @@ pub enum ExecutorEvent {
     ChecksCompleted(Vec<()>),
     Error(String),
     SupervisionPassed {
-        node_id: Uuid,
-        node_name: String,
+        scope: clickweave_core::SafetyScope,
         summary: String,
     },
     SupervisionPaused {
-        node_id: Uuid,
-        node_name: String,
+        scope: clickweave_core::SafetyScope,
         finding: String,
         /// Base64-encoded screenshot captured during verification, if
         /// available.

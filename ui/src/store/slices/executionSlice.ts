@@ -6,9 +6,26 @@ import { errorMessage } from "../../utils/commandError";
 import { toEndpoint } from "../settings";
 import type { StoreState } from "./types";
 
+export type SafetyScope =
+  | { kind: "skill"; skill_id: string; section_id: string; step_id: string }
+  | { kind: "ad_hoc"; run_id: string };
+
 export interface SupervisionPause {
-  nodeId: string;
-  nodeName: string;
+  scope: SafetyScope;
+  finding: string;
+  screenshot: string | null;
+}
+
+/// Skill-scoped supervision pause: overlaid inline on the SkillSectionCard.
+export interface SectionApprovalPause {
+  scope: Extract<SafetyScope, { kind: "skill" }>;
+  finding: string;
+  screenshot: string | null;
+}
+
+/// Ad-hoc supervision pause: rendered as a card anchored in AssistantThread.
+export interface ChatAnchoredApprovalPause {
+  scope: Extract<SafetyScope, { kind: "ad_hoc" }>;
   finding: string;
   screenshot: string | null;
 }
@@ -17,12 +34,16 @@ export interface ExecutionSlice {
   executorState: "idle" | "running";
   executionMode: ExecutionMode;
   supervisionPause: SupervisionPause | null;
+  sectionApproval: SectionApprovalPause | null;
+  chatAnchoredApproval: ChatAnchoredApprovalPause | null;
   lastRunStatus: "completed" | "failed" | null;
 
   setExecutorState: (state: "idle" | "running") => void;
   setExecutionMode: (mode: ExecutionMode) => void;
   setSupervisionPause: (pause: SupervisionPause | null) => void;
   clearSupervisionPause: () => void;
+  setSectionApproval: (pause: SectionApprovalPause | null) => void;
+  setChatAnchoredApproval: (pause: ChatAnchoredApprovalPause | null) => void;
   supervisionRespond: (action: "retry" | "skip" | "abort") => Promise<void>;
   runWorkflow: () => Promise<void>;
   stopWorkflow: () => Promise<void>;
@@ -35,6 +56,8 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
   executorState: "idle",
   executionMode: "Test",
   supervisionPause: null,
+  sectionApproval: null,
+  chatAnchoredApproval: null,
   lastRunStatus: null,
 
   setExecutorState: (state) => set({ executorState: state }),
@@ -43,6 +66,8 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
   setExecutionMode: (mode) => set({ executionMode: mode }),
   setSupervisionPause: (pause) => set({ supervisionPause: pause }),
   clearSupervisionPause: () => set({ supervisionPause: null }),
+  setSectionApproval: (pause) => set({ sectionApproval: pause }),
+  setChatAnchoredApproval: (pause) => set({ chatAnchoredApproval: pause }),
 
   supervisionRespond: async (action) => {
     const { pushLog } = get();

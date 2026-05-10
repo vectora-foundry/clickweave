@@ -19,7 +19,12 @@ export function SupervisionModal({ pause, onRespond }: SupervisionModalProps) {
         </div>
 
         <div className="mb-1 text-xs text-[var(--text-secondary)]">
-          Step: <span className="font-medium text-[var(--text-primary)]">{pause.nodeName}</span>
+          Step:{" "}
+          <span className="font-medium text-[var(--text-primary)]">
+            {pause.scope.kind === "skill"
+              ? pause.scope.step_id
+              : pause.scope.run_id}
+          </span>
         </div>
 
         <div className="mb-4 rounded bg-[var(--bg-dark)] px-3 py-2 text-xs leading-relaxed text-[var(--text-secondary)]">
