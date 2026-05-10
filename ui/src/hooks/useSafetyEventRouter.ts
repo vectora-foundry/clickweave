@@ -16,11 +16,7 @@
 
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
-import type {
-  SafetyScope,
-  SectionApprovalPause,
-  ChatAnchoredApprovalPause,
-} from "../store/slices/executionSlice";
+import type { SafetyScope } from "../store/slices/executionSlice";
 import { useStore } from "../store/useAppStore";
 
 interface SupervisionPausedPayload {
@@ -61,7 +57,7 @@ export function useSafetyEventRouter() {
         "executor://supervision_paused",
         (e) => {
           const { scope, finding, screenshot } = e.payload;
-          routeSupervisionPause(scope, finding, screenshot ?? null);
+          routePause(scope, finding, screenshot ?? null);
         },
       ),
     );
@@ -72,7 +68,7 @@ export function useSafetyEventRouter() {
         (e) => {
           const { scope, tool_name, description } = e.payload;
           if (!scope) return;
-          routeApprovalRequired(scope, tool_name, description);
+          routePause(scope, `Approval required: ${tool_name} — ${description}`, null);
         },
       ),
     );
@@ -84,48 +80,19 @@ export function useSafetyEventRouter() {
   }, []);
 }
 
-function routeSupervisionPause(
-  scope: SafetyScope,
-  finding: string,
-  screenshot: string | null,
-) {
+function routePause(scope: SafetyScope, finding: string, screenshot: string | null) {
   const store = useStore.getState();
   if (scope.kind === "skill") {
-    const pause: SectionApprovalPause = {
+    store.setSectionApproval({
       scope: scope as Extract<SafetyScope, { kind: "skill" }>,
       finding,
       screenshot,
-    };
-    store.setSectionApproval(pause);
+    });
   } else {
-    const pause: ChatAnchoredApprovalPause = {
+    store.setChatAnchoredApproval({
       scope: scope as Extract<SafetyScope, { kind: "ad_hoc" }>,
       finding,
       screenshot,
-    };
-    store.setChatAnchoredApproval(pause);
-  }
-}
-
-function routeApprovalRequired(
-  scope: SafetyScope,
-  toolName: string,
-  description: string,
-) {
-  const store = useStore.getState();
-  if (scope.kind === "skill") {
-    const pause: SectionApprovalPause = {
-      scope: scope as Extract<SafetyScope, { kind: "skill" }>,
-      finding: `Approval required: ${toolName} — ${description}`,
-      screenshot: null,
-    };
-    store.setSectionApproval(pause);
-  } else {
-    const pause: ChatAnchoredApprovalPause = {
-      scope: scope as Extract<SafetyScope, { kind: "ad_hoc" }>,
-      finding: `Approval required: ${toolName} — ${description}`,
-      screenshot: null,
-    };
-    store.setChatAnchoredApproval(pause);
+    });
   }
 }

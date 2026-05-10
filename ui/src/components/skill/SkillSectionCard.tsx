@@ -104,17 +104,14 @@ export function SkillSectionCard({
             )}
 
             {/* Run state badge */}
-            {runStatus && runStatus !== "pending" && (() => {
-              const badge = RUN_STATE_BADGE[runStatus];
-              return (
-                <span
-                  data-testid="run-state-badge"
-                  className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${badge.className}`}
-                >
-                  {badge.label}
-                </span>
-              );
-            })()}
+            {runStatus && runStatus !== "pending" && (
+              <span
+                data-testid="run-state-badge"
+                className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${RUN_STATE_BADGE[runStatus].className}`}
+              >
+                {RUN_STATE_BADGE[runStatus].label}
+              </span>
+            )}
           </div>
 
           {/* One-line summary */}
