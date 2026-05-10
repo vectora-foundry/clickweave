@@ -1,6 +1,5 @@
 pub mod app_detection;
 pub mod app_kind;
-pub mod auto_id;
 pub mod cdp;
 pub mod chrome_profiles;
 pub mod decision_cache;
@@ -13,10 +12,8 @@ pub mod safety;
 pub mod sanitize;
 pub mod skill_run;
 pub mod storage;
-pub mod tool_mapping;
 pub mod variant_index;
 pub mod walkthrough;
-mod workflow;
 
 pub use app_kind::AppKind;
 pub use node_params::*;
@@ -25,4 +22,3 @@ pub use project::*;
 pub use safety::*;
 pub use skill_run::*;
 pub use walkthrough::*;
-pub use workflow::*;

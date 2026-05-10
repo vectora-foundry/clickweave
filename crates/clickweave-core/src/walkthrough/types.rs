@@ -442,31 +442,3 @@ pub struct VariablePromotion {
     pub variable_name: String,
 }
 
-/// Maps a walkthrough action to its corresponding workflow node in the draft.
-/// For deterministic drafts this is 1:1. For LLM-enhanced drafts, some actions
-/// may have no node (removed as redundant) and some nodes may have no action
-/// (LLM-added verification nodes).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct ActionNodeEntry {
-    pub action_id: Uuid,
-    pub node_id: Uuid,
-}
-
-/// Build a 1:1 action->node mapping for a deterministic draft where
-/// actions and nodes are in the same order.
-pub fn build_action_node_map(
-    actions: &[WalkthroughAction],
-    workflow: &crate::Workflow,
-) -> Vec<ActionNodeEntry> {
-    // Only non-candidate actions have corresponding nodes in the draft.
-    actions
-        .iter()
-        .filter(|a| !a.candidate)
-        .zip(workflow.nodes.iter())
-        .map(|(a, n)| ActionNodeEntry {
-            action_id: a.id,
-            node_id: n.id,
-        })
-        .collect()
-}
