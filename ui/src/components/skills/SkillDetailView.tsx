@@ -1,11 +1,29 @@
 import { useMemo } from "react";
-import type { Edge, Node } from "@xyflow/react";
 import { invoke } from "@tauri-apps/api/core";
+
+/** Minimal node descriptor used in action-sketch canvas data. */
+export interface SketchNode {
+  id: string;
+  type?: string;
+  parentId?: string;
+  extent?: "parent";
+  position: { x: number; y: number };
+  style?: Record<string, unknown>;
+  data: Record<string, unknown>;
+}
+
+/** Minimal edge descriptor used in action-sketch canvas data. */
+export interface SketchEdge {
+  id: string;
+  source: string;
+  target: string;
+  type?: string;
+}
 
 /** Read-only skill canvas source passed to the sketch renderer. */
 export interface SkillCanvasSource {
-  nodes: Node[];
-  edges: Edge[];
+  nodes: SketchNode[];
+  edges: SketchEdge[];
   readOnly: boolean;
 }
 import { useShallow } from "zustand/react/shallow";
@@ -210,8 +228,8 @@ function SkillActionSketchList({ source }: { source: SkillCanvasSource }) {
             {i + 1}.
           </span>
           <span className="break-words">
-            {(n.data as Record<string, unknown>)?.tool as string ??
-              (n.data as Record<string, unknown>)?.label as string ??
+            {n.data?.tool as string ??
+              n.data?.label as string ??
               n.type ??
               n.id}
           </span>
@@ -226,8 +244,8 @@ export function projectSketchToCanvas(
   skills: SkillSummary[],
   openSubSkill: (skill: { id: string; version: number }) => void,
 ): SkillCanvasSource {
-  const nodes: Node[] = [];
-  const edges: Edge[] = [];
+  const nodes: SketchNode[] = [];
+  const edges: SketchEdge[] = [];
   const childWidth = 280;
   const rowHeight = 210;
 
