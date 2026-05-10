@@ -101,6 +101,7 @@ fn main() {
             open_project,
             save_project,
             run_skill,
+            resume_skill_from_failure,
             stop_workflow,
             supervision_respond,
             list_runs,

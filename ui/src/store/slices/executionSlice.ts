@@ -1,5 +1,5 @@
 import type { StateCreator } from "zustand";
-import type { ExecutionMode, RunSkillRequest } from "../../bindings";
+import type { ExecutionMode, JsonValue, ResumeSkillFromFailureRequest, RunSkillRequest } from "../../bindings";
 import { commands } from "../../bindings";
 import { errorMessage } from "../../utils/commandError";
 import { toEndpoint } from "../settings";
@@ -49,6 +49,10 @@ export interface ExecutionSlice {
   setLastRunStatus: (status: "completed" | "failed" | null) => void;
   isExecutionLocked: () => boolean;
   setIntent: (intent: string | null) => void;
+  /** Run a specific skill by ID from the skill view shell. */
+  runSkillFromView: (skillId: string, variables?: Record<string, JsonValue>) => Promise<void>;
+  /** Resume a skill from a specific section after a failure. */
+  resumeSkillFromFailure: (skillId: string, fromSectionId: string, variables?: Record<string, JsonValue>) => Promise<void>;
 }
 
 export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSlice> = (set, get) => ({
@@ -124,6 +128,71 @@ export const createExecutionSlice: StateCreator<StoreState, [], [], ExecutionSli
     const result = await commands.stopWorkflow();
     if (result.status === "error") {
       pushLog(`Stop failed: ${errorMessage(result.error)}`);
+    }
+  },
+
+  runSkillFromView: async (skillId, variables = {}) => {
+    const {
+      workflow,
+      projectPath,
+      agentConfig,
+      fastConfig,
+      fastEnabled,
+      supervisorConfig,
+      executionMode,
+      supervisionDelayMs,
+      storeTraces,
+      pushLog,
+    } = get();
+    const request: RunSkillRequest = {
+      project_path: projectPath,
+      project_id: workflow.id,
+      project_name: workflow.name,
+      skill_id: skillId,
+      variables,
+      agent: toEndpoint(agentConfig),
+      fast: fastEnabled ? toEndpoint(fastConfig) : null,
+      supervisor: toEndpoint(supervisorConfig),
+      execution_mode: executionMode,
+      supervision_delay_ms: supervisionDelayMs,
+      store_traces: storeTraces,
+    };
+    const result = await commands.runSkill(request);
+    if (result.status === "error") {
+      pushLog(`Run failed: ${errorMessage(result.error)}`);
+    }
+  },
+
+  resumeSkillFromFailure: async (skillId, fromSectionId, variables = {}) => {
+    const {
+      workflow,
+      projectPath,
+      agentConfig,
+      fastConfig,
+      fastEnabled,
+      supervisorConfig,
+      executionMode,
+      supervisionDelayMs,
+      storeTraces,
+      pushLog,
+    } = get();
+    const request: ResumeSkillFromFailureRequest = {
+      project_path: projectPath,
+      project_id: workflow.id,
+      project_name: workflow.name,
+      skill_id: skillId,
+      variables,
+      agent: toEndpoint(agentConfig),
+      fast: fastEnabled ? toEndpoint(fastConfig) : null,
+      supervisor: toEndpoint(supervisorConfig),
+      execution_mode: executionMode,
+      supervision_delay_ms: supervisionDelayMs,
+      store_traces: storeTraces,
+      from_section_id: fromSectionId,
+    };
+    const result = await commands.resumeSkillFromFailure(request);
+    if (result.status === "error") {
+      pushLog(`Resume failed: ${errorMessage(result.error)}`);
     }
   },
 });

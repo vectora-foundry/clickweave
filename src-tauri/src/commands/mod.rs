@@ -20,7 +20,7 @@ pub use chrome_profiles::{
     create_chrome_profile, get_chrome_profile_path, is_chrome_profile_configured,
     launch_chrome_for_setup, list_chrome_profiles,
 };
-pub use executor::{ExecutorHandle, run_skill, stop_workflow, supervision_respond};
+pub use executor::{ExecutorHandle, resume_skill_from_failure, run_skill, stop_workflow, supervision_respond};
 pub use project::{
     confirmable_tools, get_mcp_status, import_asset, open_project, pick_save_file,
     pick_workflow_file, ping, save_project,

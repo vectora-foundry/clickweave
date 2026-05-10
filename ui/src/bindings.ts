@@ -74,6 +74,14 @@ async runSkill(request: RunSkillRequest) : Promise<Result<null, CommandError>> {
     else return { status: "error", error: e  as any };
 }
 },
+async resumeSkillFromFailure(request: ResumeSkillFromFailureRequest) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resume_skill_from_failure", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async stopWorkflow() : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("stop_workflow") };
@@ -810,6 +818,7 @@ supervisor: EndpointConfig | null; execution_mode: ExecutionMode; supervision_de
  * persistence (D31). `None` falls back to settings.
  */
 store_traces: boolean | null }
+export type ResumeSkillFromFailureRequest = { project_path: string | null; project_id: string; project_name: string; skill_id: string; variables?: Partial<{ [key in string]: JsonValue }>; agent: EndpointConfig; fast: EndpointConfig | null; supervisor: EndpointConfig | null; execution_mode: ExecutionMode; supervision_delay_ms?: number; store_traces: boolean | null; from_section_id: string }
 export type RunStatus = "Ok" | "Failed" | "Stopped" | "Cancelled"
 export type RunsQuery = { project_path: string | null; project_id: string; project_name: string; node_name: string }
 export type SaveAgentChatRequest = { project_path: string | null; project_name: string; project_id: string; chat: AgentChat; store_traces: boolean }

@@ -1,12 +1,12 @@
 use super::error::CommandError;
 use super::types::*;
-use clickweave_engine::agent::skills::{Skill, SkillStore};
+use clickweave_engine::agent::skills::{ActionSketchStep, Skill, SkillStore};
 use clickweave_engine::executor::skill_runner::{SkillRunContext, run_skill_steps};
 use clickweave_engine::{ExecutorCommand, ExecutorEvent, ExecutorState};
 use clickweave_mcp::McpClient;
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 use tokio_util::sync::CancellationToken;
@@ -416,6 +416,218 @@ impl From<clickweave_engine::CandidateView> for CandidateViewPayload {
                 width: r.width,
                 height: r.height,
             }),
+        }
+    }
+}
+
+/// Request body for `resume_skill_from_failure`.
+/// Inherits all fields from `RunSkillRequest` and adds the section to resume from.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ResumeSkillFromFailureRequest {
+    pub project_path: Option<String>,
+    pub project_id: Uuid,
+    pub project_name: String,
+    pub skill_id: String,
+    #[serde(default)]
+    pub variables: HashMap<String, serde_json::Value>,
+    pub agent: EndpointConfig,
+    pub fast: Option<EndpointConfig>,
+    pub supervisor: Option<EndpointConfig>,
+    pub execution_mode: clickweave_core::ExecutionMode,
+    #[serde(default = "default_supervision_delay_ms")]
+    pub supervision_delay_ms: u64,
+    pub store_traces: Option<bool>,
+    /// The section ID to resume from. All sections before this section are skipped.
+    pub from_section_id: String,
+}
+
+/// Resume a skill run from a specific section after a failure.
+///
+/// Loads the skill's section list, collects the step IDs for every section
+/// at or after `from_section_id`, and then runs only those steps. Sections
+/// before `from_section_id` are skipped entirely.
+#[tauri::command]
+#[specta::specta]
+pub async fn resume_skill_from_failure(
+    app: tauri::AppHandle,
+    request: ResumeSkillFromFailureRequest,
+) -> Result<(), CommandError> {
+    {
+        let handle = app.state::<Mutex<ExecutorHandle>>();
+        if handle.lock().unwrap().cmd_tx.is_some() {
+            return Err(CommandError::already_running());
+        }
+    }
+
+    let mut storage = resolve_storage(
+        &app,
+        &request.project_path,
+        &request.project_name,
+        request.project_id,
+    );
+    let persist_traces = request.store_traces.unwrap_or(true);
+    storage.set_persistent(persist_traces);
+
+    let skills_dir = storage
+        .project_skills_dir()
+        .map_err(|e| CommandError::io(format!("resolve project_skills_dir: {e}")))?;
+    let store = SkillStore::new(skills_dir);
+    let skill = load_skill_by_id(&store, &request.skill_id)?;
+
+    // Collect step IDs for sections at-or-after from_section_id.
+    let resume_step_ids: HashSet<String> = {
+        let sections = skill.sections.as_slice();
+        let start_idx = sections
+            .iter()
+            .position(|s| s.id == request.from_section_id)
+            .ok_or_else(|| {
+                CommandError::validation(format!(
+                    "section not found in skill: {}",
+                    request.from_section_id
+                ))
+            })?;
+        sections[start_idx..]
+            .iter()
+            .flat_map(|s| s.step_ids.iter().cloned())
+            .collect()
+    };
+
+    // Filter the action_sketch to only include steps in resume_step_ids.
+    let filtered_sketch: Vec<ActionSketchStep> = skill
+        .action_sketch
+        .iter()
+        .filter(|step| {
+            let step_id = match step {
+                ActionSketchStep::ToolCall { step_id, .. } => step_id,
+                ActionSketchStep::Loop { step_id, .. } => step_id,
+            };
+            resume_step_ids.contains(step_id)
+        })
+        .cloned()
+        .collect();
+
+    let mcp_binary_path = {
+        let status = app.state::<McpStatus>();
+        match &status.0 {
+            Ok(p) => p.clone(),
+            Err(reason) => {
+                return Err(CommandError::internal(format!(
+                    "MCP sidecar unavailable: {reason}"
+                )));
+            }
+        }
+    };
+
+    let cancel_token = CancellationToken::new();
+    let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::channel::<ExecutorCommand>(8);
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel::<ExecutorEvent>(64);
+
+    let run_record = storage
+        .create_skill_run(&skill.id)
+        .map_err(|e| CommandError::io(format!("create skill run: {e}")))?;
+
+    let run_generation = {
+        let handle = app.state::<Mutex<ExecutorHandle>>();
+        let mut guard = handle.lock().unwrap();
+        guard.run_generation = guard.run_generation.wrapping_add(1);
+        guard.cancel_token = Some(cancel_token.clone());
+        guard.cmd_tx = Some(cmd_tx);
+        guard.run_generation
+    };
+
+    spawn_executor_event_forwarder(app.clone(), event_rx, run_generation);
+
+    let variables = request.variables.clone();
+    let skill_name = skill.name.clone();
+    let task_handle = tauri::async_runtime::spawn(async move {
+        let _ = event_tx
+            .send(ExecutorEvent::StateChanged(ExecutorState::Running))
+            .await;
+
+        let outcome = run_skill_steps_from_filtered(
+            &filtered_sketch,
+            &variables,
+            &mcp_binary_path,
+            &cancel_token,
+            &event_tx,
+            &skill_name,
+        )
+        .await;
+
+        let mut updated = run_record.clone();
+        updated.finished_at = Some(chrono::Utc::now());
+        updated.duration_ms = Some(
+            (updated.finished_at.unwrap() - updated.started_at)
+                .num_milliseconds()
+                .max(0) as u64,
+        );
+        updated.status = match &outcome {
+            Ok(()) => clickweave_core::RunStatus::Ok,
+            Err(_) if cancel_token.is_cancelled() => clickweave_core::RunStatus::Cancelled,
+            Err(_) => clickweave_core::RunStatus::Failed,
+        };
+        if let Err(e) = storage.save_skill_run(&updated) {
+            warn!(error = %e, "Failed to persist resume-run terminal record");
+        }
+        if let Err(e) = &outcome {
+            let _ = event_tx
+                .send(ExecutorEvent::Error(format!("Skill resume failed: {e}")))
+                .await;
+        }
+        let _ = event_tx.send(ExecutorEvent::WorkflowCompleted).await;
+        let _ = event_tx
+            .send(ExecutorEvent::StateChanged(ExecutorState::Idle))
+            .await;
+    });
+
+    {
+        let handle = app.state::<Mutex<ExecutorHandle>>();
+        let mut guard = handle.lock().unwrap();
+        if guard.run_generation == run_generation {
+            guard.task_handle = Some(task_handle);
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_skill_steps_from_filtered(
+    filtered_sketch: &[ActionSketchStep],
+    variables: &HashMap<String, serde_json::Value>,
+    mcp_binary_path: &str,
+    cancel_token: &CancellationToken,
+    event_tx: &tokio::sync::mpsc::Sender<ExecutorEvent>,
+    skill_name: &str,
+) -> anyhow::Result<()> {
+    let mcp = tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => {
+            anyhow::bail!("Cancelled before MCP spawn");
+        }
+        res = McpClient::spawn(mcp_binary_path, &[]) => res?,
+    };
+
+    let mut ctx = SkillRunContext::new(&mcp, variables.clone());
+
+    tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => {
+            anyhow::bail!("Cancelled");
+        }
+        res = run_skill_steps(&mut ctx, filtered_sketch) => {
+            match res {
+                Ok(()) => {
+                    let _ = event_tx
+                        .send(ExecutorEvent::Log(format!(
+                            "Skill '{}' resume completed ({} steps)",
+                            skill_name,
+                            ctx.completed_steps.len()
+                        )))
+                        .await;
+                    Ok(())
+                }
+                Err(e) => Err(anyhow::anyhow!(format!("{e}"))),
+            }
         }
     }
 }

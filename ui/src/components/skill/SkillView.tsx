@@ -12,13 +12,14 @@
 
 import { useRef, useState, useEffect } from "react";
 import { FixedSizeList, type ListChildComponentProps } from "react-window";
-import type { Skill, SkillSection } from "../../bindings";
+import type { JsonValue, Skill, SkillSection } from "../../bindings";
 import { useStore } from "../../store/useAppStore";
 import { SkillSectionCard } from "./SkillSectionCard";
 import {
   SkillSelectionProvider,
   useSkillSelection,
 } from "./SkillSelectionContext";
+import { RunWithValuesForm } from "./RunWithValuesForm";
 
 const ITEM_HEIGHT = 80; // px, fixed-height card row
 
@@ -27,6 +28,7 @@ interface SectionRowData {
   body: string;
   selectedIds: string[];
   onSectionClick: (section: SkillSection, e: React.MouseEvent) => void;
+  onResume: (sectionId: string) => void;
 }
 
 function SectionRow({
@@ -34,7 +36,7 @@ function SectionRow({
   style,
   data,
 }: ListChildComponentProps<SectionRowData>) {
-  const { sections, body, selectedIds, onSectionClick } = data;
+  const { sections, body, selectedIds, onSectionClick, onResume } = data;
   const section = sections[index];
   if (!section) return null;
 
@@ -49,6 +51,7 @@ function SectionRow({
         sectionBody={sectionBody}
         selected={isSelected}
         onClick={(e) => onSectionClick(section, e)}
+        onResume={onResume}
       />
     </div>
   );
@@ -56,9 +59,10 @@ function SectionRow({
 
 interface SkillViewInnerProps {
   skill: Skill;
+  onResume: (sectionId: string) => void;
 }
 
-function SkillViewInner({ skill }: SkillViewInnerProps) {
+function SkillViewInner({ skill, onResume }: SkillViewInnerProps) {
   const { selectedSectionIds, selectSingle, extendRange, toggleMulti } =
     useSkillSelection();
 
@@ -109,6 +113,7 @@ function SkillViewInner({ skill }: SkillViewInnerProps) {
     body,
     selectedIds: selectedSectionIds,
     onSectionClick: handleSectionClick,
+    onResume,
   };
 
   return (
@@ -129,6 +134,12 @@ function SkillViewInner({ skill }: SkillViewInnerProps) {
 
 export function SkillView() {
   const selectedSkill = useStore((s) => s.selectedSkill);
+  const skillFrozen = useStore((s) => s.skillFrozen);
+  const executorState = useStore((s) => s.executorState);
+  const runSkillFromView = useStore((s) => s.runSkillFromView);
+  const resumeSkillFromFailure = useStore((s) => s.resumeSkillFromFailure);
+  const stopWorkflow = useStore((s) => s.stopWorkflow);
+  const [showRunForm, setShowRunForm] = useState(false);
 
   if (!selectedSkill) {
     return (
@@ -138,26 +149,81 @@ export function SkillView() {
     );
   }
 
+  const isRunning = executorState === "running";
+
+  const handleRunClick = () => {
+    const variables = selectedSkill.variables ?? [];
+    const hasRequiredVars = variables.some((v) => v.default === null || v.default === undefined);
+    if (hasRequiredVars) {
+      setShowRunForm(true);
+    } else {
+      runSkillFromView(selectedSkill.id);
+    }
+  };
+
+  const handleResume = (sectionId: string) => {
+    resumeSkillFromFailure(selectedSkill.id, sectionId);
+  };
+
   return (
     <SkillSelectionProvider skillId={selectedSkill.id}>
       <div className="flex h-full flex-col bg-[var(--bg-dark)]">
         {/* Skill header */}
         <div className="shrink-0 border-b border-[var(--border)] px-4 py-3">
-          <h2 className="text-sm font-semibold text-[var(--text-primary)]">
-            {selectedSkill.name}
-          </h2>
-          {selectedSkill.description && (
-            <p className="mt-0.5 text-xs text-[var(--text-secondary)]">
-              {selectedSkill.description}
-            </p>
-          )}
+          <div className="flex items-center justify-between">
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm font-semibold text-[var(--text-primary)]">
+                {selectedSkill.name}
+              </h2>
+              {selectedSkill.description && (
+                <p className="mt-0.5 text-xs text-[var(--text-secondary)] truncate">
+                  {selectedSkill.description}
+                </p>
+              )}
+            </div>
+            {/* Run / Stop button */}
+            <div className="shrink-0 ml-3">
+              {isRunning ? (
+                <button
+                  type="button"
+                  data-testid="stop-skill-run"
+                  onClick={() => stopWorkflow()}
+                  className="rounded px-2.5 py-1 text-xs font-medium border border-red-500/50 text-red-400 hover:bg-red-500/10"
+                >
+                  Stop
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  data-testid="run-skill"
+                  onClick={handleRunClick}
+                  disabled={skillFrozen}
+                  className="rounded px-2.5 py-1 text-xs font-medium bg-[var(--accent-coral)] text-white hover:opacity-90 disabled:opacity-40"
+                >
+                  Run
+                </button>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Section list */}
         <div className="min-h-0 flex-1">
-          <SkillViewInner skill={selectedSkill} />
+          <SkillViewInner skill={selectedSkill} onResume={handleResume} />
         </div>
       </div>
+
+      {/* RunWithValuesForm modal */}
+      {showRunForm && (
+        <RunWithValuesForm
+          skill={selectedSkill}
+          onSubmit={(variables: Record<string, JsonValue>) => {
+            setShowRunForm(false);
+            runSkillFromView(selectedSkill.id, variables);
+          }}
+          onCancel={() => setShowRunForm(false)}
+        />
+      )}
     </SkillSelectionProvider>
   );
 }
