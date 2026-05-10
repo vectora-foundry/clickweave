@@ -25,8 +25,6 @@ pub(crate) fn forward_agent_event<R: tauri::Runtime>(
 ) {
     let handled = match event {
         AgentEvent::StepCompleted { .. }
-        | AgentEvent::NodeAdded { .. }
-        | AgentEvent::EdgeAdded { .. }
         | AgentEvent::GoalComplete { .. }
         | AgentEvent::Error { .. }
         | AgentEvent::Warning { .. }
@@ -79,22 +77,6 @@ fn forward_lifecycle_agent_event<R: tauri::Runtime>(
                     tool_name: tool_name.clone(),
                     step_number: *step_index,
                 },
-            );
-            true
-        }
-        AgentEvent::NodeAdded { node } => {
-            emit_agent_event(
-                app,
-                "agent://node_added",
-                serde_json::json!({ "run_id": run_id, "node": node }),
-            );
-            true
-        }
-        AgentEvent::EdgeAdded { edge } => {
-            emit_agent_event(
-                app,
-                "agent://edge_added",
-                serde_json::json!({ "run_id": run_id, "edge": edge }),
             );
             true
         }

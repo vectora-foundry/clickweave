@@ -380,11 +380,11 @@ mod verify_and_approval_tests;
 mod loop_and_cap_tests;
 
 // ---------------------------------------------------------------------------
-// Task 3a.5: workflow-graph emission
+// trace-graph accumulation
 // ---------------------------------------------------------------------------
 //
 // Exercise `StateRunner::add_workflow_node` through the public `run()` entry
-// point. These tests pin the ported `NodeAdded` / `EdgeAdded` behaviour,
+// point. These tests verify `state.trace_graph` accumulation directly,
 // including `source_run_id` stamping, anchor chaining, observation-tool
 // filtering, and AX descriptor enrichment.
 

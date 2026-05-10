@@ -264,10 +264,10 @@ pub struct StateRunner {
     /// `task_state.milestones`.
     pub(crate) completed_subgoal_extraction_queue:
         Vec<(usize, Milestone, SubgoalSignature, Vec<uuid::Uuid>)>,
-    /// Workflow node ids emitted via `AgentEvent::NodeAdded`, tracked
-    /// per active subgoal frame. A produced node belongs to every open
-    /// frame so nested subgoals keep their local lineage while parent
-    /// subgoals still include all nodes produced during their lifetime.
+    /// Workflow node ids added to `state.trace_graph`, tracked per active
+    /// subgoal frame. A produced node belongs to every open frame so nested
+    /// subgoals keep their local lineage while parent subgoals still include
+    /// all nodes produced during their lifetime.
     pub(crate) produced_node_ids_stack: Vec<Vec<uuid::Uuid>>,
     /// Top-k applicable skills surfaced for the next user turn.
     /// Populated by the retrieval hook on `push_subgoal`, consumed +

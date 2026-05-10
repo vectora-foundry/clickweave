@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::agent::skills::{SkillScope, SkillState};
 use crate::agent::step_record::BoundaryKind;
 use crate::agent::task_state::TaskState;
-use crate::agent::trace_graph::{AgentTraceGraph, TraceEdge, TraceNode};
+use crate::agent::trace_graph::AgentTraceGraph;
 
 /// Wrapper carried on the engine-to-Tauri mpsc channel. Splits durable,
 /// serializable events from one-shot channel control messages.
@@ -66,12 +66,6 @@ pub enum AgentEvent {
         step_index: usize,
         tool_name: String,
         summary: String,
-    },
-    NodeAdded {
-        node: Box<TraceNode>,
-    },
-    EdgeAdded {
-        edge: TraceEdge,
     },
     GoalComplete {
         summary: String,

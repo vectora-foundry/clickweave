@@ -243,11 +243,10 @@ async fn terminal_emit_waits_for_prior_runner_output_drain() {
 /// `agent://<topic>` via `forward_agent_event`. The scripted
 /// scenario runs two tool calls and terminates on `agent_done`,
 /// which produces a known-non-zero event stream (at minimum
-/// `StepCompleted`; typically also `NodeAdded` / `EdgeAdded` /
-/// `GoalComplete`). The test does not pin an exact event count —
-/// it asserts emit and persistence counts are equal and both
-/// non-empty, which catches any future missing-match-arm
-/// regression.
+/// `StepCompleted` / `GoalComplete`). The test does not pin an
+/// exact event count — it asserts emit and persistence counts are
+/// equal and both non-empty, which catches any future
+/// missing-match-arm regression.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn run_agent_emits_full_event_stream_and_persists_records() {
     // Guardrail: any future deadlock (runner hang, forwarder pump

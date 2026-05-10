@@ -368,14 +368,7 @@ async fn no_focus_launch_app_skip_bypasses_foregrounding_mcp_dispatch() {
         state.trace_graph.nodes.is_empty(),
         "synthetic skip must not materialize a workflow node"
     );
-    let events = drain_events(&mut event_rx);
-    assert!(
-        !events
-            .iter()
-            .any(|ev| matches!(ev, AgentEvent::NodeAdded { .. })),
-        "synthetic skip must not emit NodeAdded; got {:?}",
-        events
-    );
+    let _ = drain_events(&mut event_rx);
     assert!(matches!(
         state.terminal_reason,
         Some(TerminalReason::Completed { .. })

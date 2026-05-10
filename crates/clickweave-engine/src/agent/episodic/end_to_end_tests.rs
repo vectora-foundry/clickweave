@@ -395,8 +395,6 @@ async fn run_with_no_recovery_writes_nothing() {
 fn event_kind(e: &AgentEvent) -> &'static str {
     match e {
         AgentEvent::StepCompleted { .. } => "step_completed",
-        AgentEvent::NodeAdded { .. } => "node_added",
-        AgentEvent::EdgeAdded { .. } => "edge_added",
         AgentEvent::GoalComplete { .. } => "goal_complete",
         AgentEvent::Error { .. } => "error",
         AgentEvent::Warning { .. } => "warning",

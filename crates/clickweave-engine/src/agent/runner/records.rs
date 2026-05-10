@@ -272,14 +272,13 @@ impl StateRunner {
     /// trace-graph building is disabled via `config.build_workflow`, or
     /// when the tool-to-[`crate::agent::trace_graph::TraceNodeKind`] mapping fails.
     ///
-    /// On success the node is pushed onto `state.trace_graph.nodes`, an
-    /// `AgentEvent::NodeAdded` fires, and — when a prior node exists —
-    /// an edge from the previous node to this one is pushed onto
-    /// `state.trace_graph.edges` with a matching `AgentEvent::EdgeAdded`. The
-    /// first node in a run is chained from `state.last_node_id`, which the
-    /// top-level loop seeds from the caller-provided `anchor_node_id` so the
-    /// first tool call is linked to the prior trace graph when one is
-    /// supplied. Every node is stamped with `source_run_id: self.run_id`.
+    /// On success the node is pushed onto `state.trace_graph.nodes`, and —
+    /// when a prior node exists — an edge from the previous node to this one
+    /// is pushed onto `state.trace_graph.edges`. The first node in a run is
+    /// chained from `state.last_node_id`, which the top-level loop seeds from
+    /// the caller-provided `anchor_node_id` so the first tool call is linked
+    /// to the prior trace graph when one is supplied. Every node is stamped
+    /// with `source_run_id: self.run_id`.
     ///
     /// Port of the legacy `AgentRunner::add_workflow_node`.
     pub async fn add_workflow_node(
@@ -324,12 +323,6 @@ impl StateRunner {
         let node = TraceNode::new(node_kind, tool_name, "").with_run_id(self.run_id);
         let node_id = node.id;
 
-        // Emit the live NodeAdded event before mutating the trace graph so
-        // subscribers observe creation order that matches the event stream.
-        self.emit_event(AgentEvent::NodeAdded {
-            node: Box::new(node.clone()),
-        })
-        .await;
         self.state.trace_graph.nodes.push(node);
 
         // Chain from the previous node (or the caller-supplied anchor on the
@@ -340,8 +333,6 @@ impl StateRunner {
                 from: prev_id,
                 to: node_id,
             };
-            self.emit_event(AgentEvent::EdgeAdded { edge: edge.clone() })
-                .await;
             self.state.trace_graph.edges.push(edge);
         }
 
