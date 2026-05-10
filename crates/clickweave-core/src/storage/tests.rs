@@ -13,140 +13,6 @@ fn cleanup(dir: &Path) {
 }
 
 #[test]
-fn test_create_and_load_run() {
-    let (mut storage, dir) = temp_storage();
-    storage.begin_execution().expect("begin execution");
-
-    let node_id = Uuid::new_v4();
-    let run = storage
-        .create_run(node_id, "Launch Calculator", crate::TraceLevel::Minimal)
-        .expect("create run");
-    assert_eq!(run.node_id, node_id);
-    assert_eq!(run.node_name, "Launch Calculator");
-    assert_eq!(run.status, crate::RunStatus::Ok);
-
-    let loaded = storage
-        .load_run("Launch Calculator", run.run_id, None)
-        .expect("load run");
-    assert_eq!(loaded.run_id, run.run_id);
-    assert_eq!(loaded.node_id, node_id);
-    assert_eq!(loaded.node_name, "Launch Calculator");
-
-    cleanup(&dir);
-}
-
-#[test]
-fn test_save_and_load_run() {
-    let (mut storage, dir) = temp_storage();
-    storage.begin_execution().expect("begin execution");
-
-    let node_id = Uuid::new_v4();
-    let mut run = storage
-        .create_run(node_id, "Click Button", crate::TraceLevel::Full)
-        .expect("create run");
-    run.status = crate::RunStatus::Failed;
-    run.ended_at = Some(RunStorage::now_millis());
-    storage.save_run(&run).expect("save run");
-
-    let loaded = storage
-        .load_run("Click Button", run.run_id, None)
-        .expect("load run");
-    assert_eq!(loaded.status, crate::RunStatus::Failed);
-    assert!(loaded.ended_at.is_some());
-
-    cleanup(&dir);
-}
-
-#[test]
-fn test_append_event() {
-    let (mut storage, dir) = temp_storage();
-    storage.begin_execution().expect("begin execution");
-
-    let node_id = Uuid::new_v4();
-    let run = storage
-        .create_run(node_id, "Test Node", crate::TraceLevel::Minimal)
-        .expect("create run");
-
-    let event = TraceEvent {
-        timestamp: RunStorage::now_millis(),
-        event_type: TraceEventKind::Unknown,
-        payload: serde_json::json!({"key": "value"}),
-    };
-    storage.append_event(&run, &event).expect("append event");
-
-    let events_path = storage.run_dir(&run).join("events.jsonl");
-    let content = std::fs::read_to_string(&events_path).expect("read events");
-    // `Unknown` serializes as "unknown" because of rename_all = "snake_case".
-    assert!(content.contains("unknown"));
-
-    cleanup(&dir);
-}
-
-#[test]
-fn test_save_artifact() {
-    let (mut storage, dir) = temp_storage();
-    storage.begin_execution().expect("begin execution");
-
-    let node_id = Uuid::new_v4();
-    let run = storage
-        .create_run(node_id, "Screenshot Node", crate::TraceLevel::Full)
-        .expect("create run");
-
-    let data = b"fake image data";
-    let artifact = storage
-        .save_artifact(
-            &run,
-            ArtifactKind::Screenshot,
-            "test.png",
-            data,
-            Value::Null,
-        )
-        .expect("save artifact");
-
-    assert_eq!(artifact.kind, ArtifactKind::Screenshot);
-    assert!(artifact.path.contains("test.png"));
-    assert!(std::path::Path::new(&artifact.path).exists());
-
-    cleanup(&dir);
-}
-
-#[test]
-fn test_load_runs_for_node() {
-    let (mut storage, dir) = temp_storage();
-
-    // Create runs across two separate executions
-    let node_id = Uuid::new_v4();
-
-    storage.begin_execution().expect("begin execution 1");
-    storage
-        .create_run(node_id, "My Node", crate::TraceLevel::Minimal)
-        .expect("create run 1");
-
-    storage.begin_execution().expect("begin execution 2");
-    storage
-        .create_run(node_id, "My Node", crate::TraceLevel::Minimal)
-        .expect("create run 2");
-
-    let runs = storage.load_runs_for_node("My Node").expect("load runs");
-    assert_eq!(runs.len(), 2);
-    assert!(runs[0].started_at <= runs[1].started_at);
-
-    cleanup(&dir);
-}
-
-#[test]
-fn test_load_runs_for_nonexistent_node() {
-    let (storage, dir) = temp_storage();
-
-    let runs = storage
-        .load_runs_for_node("Nonexistent")
-        .expect("load runs");
-    assert!(runs.is_empty());
-
-    cleanup(&dir);
-}
-
-#[test]
 fn test_format_execution_dirname_produces_expected_format() {
     // 2026-02-13 16:30:00 UTC in milliseconds
     let ts_ms = 1_771_000_200_000u64;
@@ -186,31 +52,6 @@ fn test_new_saved_project_path_structure() {
 }
 
 #[test]
-fn test_find_run_dir_locates_created_run() {
-    let (mut storage, dir) = temp_storage();
-    storage.begin_execution().expect("begin execution");
-
-    let node_id = Uuid::new_v4();
-    let run = storage
-        .create_run(node_id, "Find Me", crate::TraceLevel::Minimal)
-        .expect("create run");
-
-    // Fast path: with execution_dir hint
-    let found_fast = storage
-        .find_run_dir("Find Me", run.run_id, Some(&run.execution_dir))
-        .expect("find run dir (fast)");
-    assert_eq!(found_fast, storage.run_dir(&run));
-
-    // Slow path: without hint
-    let found_slow = storage
-        .find_run_dir("Find Me", run.run_id, None)
-        .expect("find run dir (slow)");
-    assert_eq!(found_slow, storage.run_dir(&run));
-
-    cleanup(&dir);
-}
-
-#[test]
 fn test_append_execution_event() {
     let (mut storage, dir) = temp_storage();
     let exec_dir = storage.begin_execution().expect("begin execution");
@@ -228,34 +69,6 @@ fn test_append_execution_event() {
     let content = std::fs::read_to_string(&events_path).expect("read events");
     assert!(content.contains("branch_evaluated"));
     assert!(content.contains("Check Result"));
-
-    cleanup(&dir);
-}
-
-#[test]
-fn test_begin_execution_required_before_create_run() {
-    let (storage, dir) = temp_storage();
-    let node_id = Uuid::new_v4();
-    let result = storage.create_run(node_id, "Node", crate::TraceLevel::Minimal);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("begin_execution"));
-    cleanup(&dir);
-}
-
-#[test]
-fn test_directory_layout() {
-    let (mut storage, dir) = temp_storage();
-    let exec_dir = storage.begin_execution().expect("begin execution");
-
-    let node_id = Uuid::new_v4();
-    let run = storage
-        .create_run(node_id, "Launch Calculator", crate::TraceLevel::Full)
-        .expect("create run");
-
-    let expected_path = storage.base_path.join(&exec_dir).join("launch-calculator");
-    assert_eq!(storage.run_dir(&run), expected_path);
-    assert!(expected_path.join("run.json").exists());
-    assert!(expected_path.join("artifacts").exists());
 
     cleanup(&dir);
 }
@@ -397,21 +210,10 @@ fn non_persistent_storage_writes_nothing_to_disk() {
     let mut storage = RunStorage::new(&base, "Test Workflow");
     storage.set_persistent(false);
 
-    let exec_dir = storage.begin_execution().expect("begin execution");
+    storage.begin_execution().expect("begin execution");
     assert!(
         !storage.base_path.exists(),
         "base_path must not be created when persistence is disabled"
-    );
-
-    let node_id = Uuid::new_v4();
-    let run = storage
-        .create_run(node_id, "Launch Calculator", crate::TraceLevel::Minimal)
-        .expect("create run");
-    assert_eq!(run.node_id, node_id);
-    assert_eq!(run.execution_dir, exec_dir);
-    assert!(
-        !storage.run_dir(&run).exists(),
-        "create_run must not create on-disk directories when disabled"
     );
 
     let event = TraceEvent {
@@ -419,23 +221,12 @@ fn non_persistent_storage_writes_nothing_to_disk() {
         event_type: TraceEventKind::Unknown,
         payload: serde_json::json!({"key": "value"}),
     };
-    storage.append_event(&run, &event).expect("append event");
     storage
         .append_execution_event(&event)
         .expect("append exec event");
     storage
         .append_agent_event(&serde_json::json!({"k": "v"}))
         .expect("append agent event");
-
-    storage
-        .save_artifact(
-            &run,
-            ArtifactKind::Screenshot,
-            "shot.png",
-            b"bytes",
-            Value::Null,
-        )
-        .expect("save artifact");
 
     assert!(
         !base.exists(),

@@ -71,15 +71,6 @@ pub struct CheckResult {
     pub reasoning: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct NodeVerdict {
-    pub node_id: Uuid,
-    pub node_name: String,
-    pub check_results: Vec<CheckResult>,
-    pub expected_outcome_verdict: Option<CheckResult>,
-}
-
 // --- Run types ---
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,24 +81,6 @@ pub enum RunStatus {
     Failed,
     Stopped,
     Cancelled,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct NodeRun {
-    pub run_id: Uuid,
-    pub node_id: Uuid,
-    #[serde(default)]
-    pub node_name: String,
-    #[serde(default)]
-    pub execution_dir: String,
-    pub started_at: u64,
-    pub ended_at: Option<u64>,
-    pub status: RunStatus,
-    pub trace_level: TraceLevel,
-    pub events: Vec<TraceEvent>,
-    pub artifacts: Vec<Artifact>,
-    pub observed_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

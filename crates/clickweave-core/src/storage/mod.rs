@@ -8,9 +8,9 @@ use serde_json::Value;
 use tracing::warn;
 use uuid::Uuid;
 
+use crate::TraceEvent;
 #[cfg(test)]
 use crate::TraceEventKind;
-use crate::{Artifact, ArtifactKind, NodeRun, NodeVerdict, RunStatus, TraceEvent, TraceLevel};
 
 mod fs;
 mod retention;
