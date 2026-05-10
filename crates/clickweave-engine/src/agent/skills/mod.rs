@@ -22,6 +22,7 @@ pub mod loop_folding;
 pub mod outcome;
 pub mod parser;
 pub mod patch;
+pub mod prose_generator;
 pub mod provenance;
 pub mod render;
 pub mod replay;
