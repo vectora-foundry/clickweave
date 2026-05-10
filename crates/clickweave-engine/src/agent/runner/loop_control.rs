@@ -59,15 +59,15 @@ impl StateRunner {
     fn initialize_run_loop(
         &mut self,
         goal: &str,
-        workflow: clickweave_core::Workflow,
+        trace_graph: crate::agent::trace_graph::AgentTraceGraph,
         mcp_tools: &[Value],
         anchor_node_id: Option<uuid::Uuid>,
     ) -> RunLoopContext {
         // Reset the visible state tuple to match the freshly-provided
-        // workflow. `AgentState::new(workflow)` wipes steps/terminal_reason
+        // trace graph. `AgentState::new(trace_graph)` wipes steps/terminal_reason
         // so the same `StateRunner` could in theory be reused across runs,
         // though `self` is consumed by the public run wrapper.
-        self.state = AgentState::new(workflow);
+        self.state = AgentState::new(trace_graph);
         self.state.last_node_id = anchor_node_id;
 
         // Build the system prompt from the raw openai-shaped tool list.
@@ -1196,7 +1196,7 @@ impl StateRunner {
         llm: &B,
         mcp: &M,
         goal: String,
-        workflow: clickweave_core::Workflow,
+        trace_graph: crate::agent::trace_graph::AgentTraceGraph,
         mcp_tools: Vec<Value>,
         anchor_node_id: Option<uuid::Uuid>,
     ) -> anyhow::Result<AgentState>
@@ -1216,7 +1216,7 @@ impl StateRunner {
             llm,
             mcp,
             goal,
-            workflow,
+            trace_graph,
             mcp_tools,
             anchor_node_id,
         );
@@ -1249,7 +1249,7 @@ impl StateRunner {
         llm: &B,
         mcp: &M,
         goal: String,
-        workflow: clickweave_core::Workflow,
+        trace_graph: crate::agent::trace_graph::AgentTraceGraph,
         mcp_tools: Vec<Value>,
         anchor_node_id: Option<uuid::Uuid>,
     ) -> anyhow::Result<()>
@@ -1257,7 +1257,7 @@ impl StateRunner {
         B: ChatBackend + ?Sized,
         M: Mcp + ?Sized,
     {
-        let mut loop_ctx = self.initialize_run_loop(&goal, workflow, &mcp_tools, anchor_node_id);
+        let mut loop_ctx = self.initialize_run_loop(&goal, trace_graph, &mcp_tools, anchor_node_id);
         let mut trackers = RunLoopTrackers::default();
 
         for _step_index in 0..self.config.max_steps {

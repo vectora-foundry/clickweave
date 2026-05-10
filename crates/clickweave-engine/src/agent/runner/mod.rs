@@ -142,7 +142,7 @@ pub struct StateRunner {
     // what callers rely on today.
     pub config: AgentConfig,
     pub state: AgentState,
-    pub workflow: clickweave_core::Workflow,
+    pub trace_graph: crate::agent::trace_graph::AgentTraceGraph,
     pub last_node_id: Option<uuid::Uuid>,
     pub recent_destructive_tools: Vec<String>,
 
@@ -338,8 +338,8 @@ impl StateRunner {
         episodic_ctx: crate::agent::episodic::EpisodicContext,
         skill_ctx: SkillContext,
     ) -> Self {
-        let workflow = clickweave_core::Workflow::default();
-        let state = AgentState::new(workflow.clone());
+        let trace_graph = crate::agent::trace_graph::AgentTraceGraph::new();
+        let state = AgentState::new(trace_graph.clone());
 
         let (episodic_store, episodic_global) = if episodic_ctx.enabled && config.episodic_enabled {
             use crate::agent::episodic::SqliteEpisodicStore;
@@ -406,7 +406,7 @@ impl StateRunner {
             pending_events: Vec::new(),
             config,
             state,
-            workflow,
+            trace_graph,
             last_node_id: None,
             recent_destructive_tools: Vec::new(),
             storage: None,

@@ -224,26 +224,30 @@ impl StateRunner {
         }
     }
 
-    /// Rewrite raw AX uid references in a workflow node into replay-stable
+    /// Rewrite raw AX uid references in a trace node into replay-stable
     /// `AxTarget::Descriptor` payloads using the current
     /// `last_native_ax_snapshot` body. Port of the legacy
     /// `enrich_ax_descriptor` helper — D15 moves the source of truth off
     /// the transcript onto `WorldModel`.
     ///
     /// No-op when no native AX snapshot has been captured yet, when the
-    /// node type is not an AX dispatch variant, when the target is already
+    /// node kind is not an AX dispatch variant, when the target is already
     /// a `Descriptor`, or when the uid is not present in the snapshot.
-    pub fn enrich_ax_descriptor(&self, node_type: &mut clickweave_core::NodeType) {
-        use clickweave_core::{AxTarget, NodeType};
+    pub fn enrich_ax_descriptor(
+        &self,
+        node_kind: &mut crate::agent::trace_graph::TraceNodeKind,
+    ) {
+        use clickweave_core::AxTarget;
+        use crate::agent::trace_graph::TraceNodeKind;
 
         let Some(ax) = &self.world_model.last_native_ax_snapshot else {
             return;
         };
 
-        let target: &mut AxTarget = match node_type {
-            NodeType::AxClick(p) => &mut p.target,
-            NodeType::AxSetValue(p) => &mut p.target,
-            NodeType::AxSelect(p) => &mut p.target,
+        let target: &mut AxTarget = match node_kind {
+            TraceNodeKind::AxClick(p) => &mut p.target,
+            TraceNodeKind::AxSetValue(p) => &mut p.target,
+            TraceNodeKind::AxSelect(p) => &mut p.target,
             _ => return,
         };
 
@@ -263,18 +267,18 @@ impl StateRunner {
         };
     }
 
-    /// Build a workflow node for the executed tool call. Returns the UUID of
+    /// Build a trace node for the executed tool call. Returns the UUID of
     /// the new node, or `None` when the tool is observation-only, when
-    /// workflow-graph building is disabled via `config.build_workflow`, or
-    /// when the tool-to-[`clickweave_core::NodeType`] mapping fails.
+    /// trace-graph building is disabled via `config.build_workflow`, or
+    /// when the tool-to-[`crate::agent::trace_graph::TraceNodeKind`] mapping fails.
     ///
-    /// On success the node is pushed onto `state.workflow.nodes`, an
+    /// On success the node is pushed onto `state.trace_graph.nodes`, an
     /// `AgentEvent::NodeAdded` fires, and — when a prior node exists —
     /// an edge from the previous node to this one is pushed onto
-    /// `state.workflow.edges` with a matching `AgentEvent::EdgeAdded`. The
+    /// `state.trace_graph.edges` with a matching `AgentEvent::EdgeAdded`. The
     /// first node in a run is chained from `state.last_node_id`, which the
     /// top-level loop seeds from the caller-provided `anchor_node_id` so the
-    /// first tool call is linked to the prior workflow graph when one is
+    /// first tool call is linked to the prior trace graph when one is
     /// supplied. Every node is stamped with `source_run_id: self.run_id`.
     ///
     /// Port of the legacy `AgentRunner::add_workflow_node`.
@@ -285,7 +289,8 @@ impl StateRunner {
         known_tools: &[Value],
         annotations_by_tool: &HashMap<String, ToolAnnotations>,
     ) -> Option<uuid::Uuid> {
-        use clickweave_core::{Node, Position, tool_mapping::tool_invocation_to_node_type};
+        use crate::agent::tool_mapping::tool_invocation_to_node_type;
+        use crate::agent::trace_graph::TraceNode;
 
         if !self.config.build_workflow {
             return None;
@@ -294,16 +299,16 @@ impl StateRunner {
             return None;
         }
 
-        let mut node_type = match tool_invocation_to_node_type(tool_name, arguments, known_tools) {
-            Ok(nt) => nt,
+        let mut node_kind = match tool_invocation_to_node_type(tool_name, arguments, known_tools) {
+            Ok(nk) => nk,
             Err(e) => {
                 warn!(
                     error = %e,
                     tool = tool_name,
-                    "state-spine: could not map tool to workflow node type — workflow graph will be incomplete"
+                    "state-spine: could not map tool to trace node kind — trace graph will be incomplete"
                 );
                 self.emit_event(AgentEvent::Warning {
-                    message: format!("Failed to map tool '{}' to workflow node: {}", tool_name, e),
+                    message: format!("Failed to map tool '{}' to trace node: {}", tool_name, e),
                 })
                 .await;
                 return None;
@@ -314,33 +319,30 @@ impl StateRunner {
         // writes `AxTarget::ResolvedUid(uid)`; upgrade to `Descriptor`
         // against the most recent native AX snapshot so the node replays
         // correctly after a fresh snapshot (different generation id).
-        self.enrich_ax_descriptor(&mut node_type);
+        self.enrich_ax_descriptor(&mut node_kind);
 
-        let position = Position {
-            x: 0.0,
-            y: (self.state.workflow.nodes.len() as f32) * 120.0,
-        };
-        let node = Node::new(node_type, position, tool_name, "").with_run_id(self.run_id);
+        let node = TraceNode::new(node_kind, tool_name, "").with_run_id(self.run_id);
         let node_id = node.id;
 
-        // Emit the live NodeAdded event before mutating the workflow so
+        // Emit the live NodeAdded event before mutating the trace graph so
         // subscribers observe creation order that matches the event stream.
         self.emit_event(AgentEvent::NodeAdded {
             node: Box::new(node.clone()),
         })
         .await;
-        self.state.workflow.nodes.push(node);
+        self.state.trace_graph.nodes.push(node);
 
         // Chain from the previous node (or the caller-supplied anchor on the
         // first iteration).
         if let Some(prev_id) = self.state.last_node_id {
-            let edge = clickweave_core::Edge {
+            use crate::agent::trace_graph::TraceEdge;
+            let edge = TraceEdge {
                 from: prev_id,
                 to: node_id,
             };
             self.emit_event(AgentEvent::EdgeAdded { edge: edge.clone() })
                 .await;
-            self.state.workflow.edges.push(edge);
+            self.state.trace_graph.edges.push(edge);
         }
 
         self.state.last_node_id = Some(node_id);

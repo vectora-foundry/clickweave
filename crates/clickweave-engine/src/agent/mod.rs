@@ -218,7 +218,7 @@ where
     // destined for `messages[1]`. The system prompt (`messages[0]`)
     // stays stable across runs for prefix-cache hits.
     let tools = mcp.tools_as_openai();
-    let workflow = clickweave_core::Workflow::default();
+    let trace_graph = crate::agent::trace_graph::AgentTraceGraph::new();
     // P4: thread the per-run `EpisodicContext` through `new_with_episodic`
     // so the runner can open the workflow-local + global SQLite stores
     // before the loop starts. Callers that pass `None` get the disabled
@@ -265,7 +265,7 @@ where
     let writer_tx = runner.writer_sender();
 
     let state = runner
-        .run(llm, mcp, goal, workflow, tools, anchor_node_id)
+        .run(llm, mcp, goal, trace_graph, tools, anchor_node_id)
         .await?;
     Ok((state, writer_tx))
 }
