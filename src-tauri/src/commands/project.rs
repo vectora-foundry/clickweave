@@ -200,9 +200,10 @@ mod tests {
         };
 
         let unsaved_dir = app_data.join("skills").join(manifest.id.to_string());
-        std::fs::create_dir_all(&unsaved_dir).unwrap();
-        std::fs::write(unsaved_dir.join("alpha-v1.md"), b"alpha").unwrap();
-        std::fs::write(unsaved_dir.join("alpha-v1.proposal.json"), b"{}").unwrap();
+        let alpha_dir = unsaved_dir.join("alpha");
+        std::fs::create_dir_all(&alpha_dir).unwrap();
+        std::fs::write(alpha_dir.join("SKILL.md"), b"alpha").unwrap();
+        std::fs::write(alpha_dir.join("proposal.json"), b"{}").unwrap();
 
         let project_path = tmp.path().join("saved").join("workflow.json");
         save_project_with_app_data(
@@ -215,13 +216,13 @@ mod tests {
         assert!(project_path.exists());
         assert!(!unsaved_dir.exists());
         assert_eq!(
-            std::fs::read(tmp.path().join("saved/.clickweave/skills/alpha-v1.md")).unwrap(),
+            std::fs::read(tmp.path().join("saved/.clickweave/skills/alpha/SKILL.md")).unwrap(),
             b"alpha"
         );
         assert_eq!(
             std::fs::read(
                 tmp.path()
-                    .join("saved/.clickweave/skills/alpha-v1.proposal.json")
+                    .join("saved/.clickweave/skills/alpha/proposal.json")
             )
             .unwrap(),
             b"{}"
