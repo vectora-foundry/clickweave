@@ -141,6 +141,7 @@ fn main() {
             commands::skills::delete_skill,
             commands::skills::list_skills_for_panel,
             commands::skills::load_skill_full,
+            commands::skills::apply_skill_patch,
             commands::run_trace::load_latest_run_trace,
         ])
         .typ::<TaskState>()

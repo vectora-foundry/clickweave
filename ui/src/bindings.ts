@@ -415,6 +415,14 @@ async loadLatestRunTrace(request: LoadLatestRunTraceRequest) : Promise<Result<Hy
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async applySkillPatch(request: ApplySkillPatchRequest) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("apply_skill_patch", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -625,6 +633,16 @@ export type CommandError = { kind: ErrorKind; message: string }
  * TypeScript binding picks it up.
  */
 export type CompletionDisagreementActionWire = "confirm" | "cancel"
+export type MarkdownReplacementDto = { old_text: string; new_text: string }
+export type ActionSketchReplacementDto = { step_id: string; field: string; new_value: JsonValue }
+export type SkillFrontmatterVariableDto = { name: string; type: string; description: string | null; default: JsonValue | null }
+export type ReplaySidecarMutationDto =
+  | { type: "clear_signals"; step_id: string }
+  | { type: "append_section_history"; retired: string; split_into: string[]; at_version: number }
+  | { type: "delete_step_bundle"; step_id: string }
+  | { type: "update_requires_approval"; step_id: string; value: boolean | null }
+export type SkillPatchPrimitiveDto = "rebind" | "reorder" | "promote" | "free_form_prose"
+export type ApplySkillPatchRequest = { skill_id: string; version: number; expected_mtime_ms: number | null; markdown_replacements: MarkdownReplacementDto[]; action_sketch_replacements: ActionSketchReplacementDto[]; variables_additions: SkillFrontmatterVariableDto[]; replay_sidecar_mutations: ReplaySidecarMutationDto[]; primitive: SkillPatchPrimitiveDto; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
 export type ConfirmSkillProposalRequest = { skill_id: string; version: number; accepted_proposal: SkillRefinementProposal; project_path: string | null; project_name: string; project_id: string; run_id: string | null; store_traces: boolean }
 export type ConfirmableTool = { name: string; description: string }
 export type DeleteSkillRequest = { skill_id: string; version: number; scope: SkillScope; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
