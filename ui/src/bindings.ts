@@ -767,7 +767,7 @@ export type PruneSkillLineageRequest = { project_path: string | null; project_na
 export type QuitAppParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { app_name: string }
 export type ReadArtifactQuery = { project_path: string | null; project_id: string; project_name: string; skill_id: string; run_id: string; artifact_path: string }
 export type RejectSkillProposalRequest = { skill_id: string; version: number; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
-export type RunEventsQuery = { project_path: string | null; project_id: string; project_name: string; node_name: string; execution_dir: string | null; run_id: string }
+export type RunEventsQuery = { project_path: string | null; project_id: string; project_name: string; skill_id: string; run_id: string }
 /**
  * IPC payload for `run_skill` (D33). Replaces the legacy `RunRequest`
  * which carried a full `Workflow` graph. Every field on the legacy
@@ -798,7 +798,7 @@ supervisor: EndpointConfig | null; execution_mode: ExecutionMode; supervision_de
 store_traces: boolean | null }
 export type ResumeSkillFromFailureRequest = { project_path: string | null; project_id: string; project_name: string; skill_id: string; variables?: Partial<{ [key in string]: JsonValue }>; agent: EndpointConfig; fast: EndpointConfig | null; supervisor: EndpointConfig | null; execution_mode: ExecutionMode; supervision_delay_ms?: number; store_traces: boolean | null; from_section_id: string }
 export type RunStatus = "Ok" | "Failed" | "Stopped" | "Cancelled"
-export type RunsQuery = { project_path: string | null; project_id: string; project_name: string; node_name: string }
+export type RunsQuery = { project_path: string | null; project_id: string; project_name: string; skill_id: string; run_id?: string | null; section_id?: string | null }
 export type SaveAgentChatRequest = { project_path: string | null; project_name: string; project_id: string; chat: AgentChat; store_traces: boolean }
 export type SaveWalkthroughAsSkillRequest = { session_id: string; project_path: string | null; project_name: string; project_id: string; name: string; store_traces: boolean }
 export type AgentStepWire = { summary: string; tool_name: string; args_json: string }

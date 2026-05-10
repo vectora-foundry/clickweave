@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use super::SKILL_SCHEMA_VERSION;
-use super::types::{ClickweaveSkillMeta, Skill, SkillFrontmatter};
+use super::types::{ClickweaveSkillMeta, Skill, SkillFrontmatter, SkillSection};
 
 const FRONTMATTER_DELIMITER: &str = "---";
 
@@ -64,7 +64,7 @@ pub fn emit_skill_md(skill: &Skill) -> String {
         // Build a section-id → prose-lines map by scanning the raw body.
         // This avoids relying on `body_range` byte offsets (which are now
         // UTF-16 positions for frontend use) for Rust-side string slicing.
-        let section_prose = collect_section_prose(&skill.body);
+        let section_prose = collect_section_prose(&skill.body, &skill.sections);
 
         for section in &skill.sections {
             let prefix = "#".repeat(section.level as usize);
@@ -106,54 +106,100 @@ pub fn emit_skill_md(skill: &Skill) -> String {
 
 /// Scan the raw body text and collect prose lines for each section,
 /// keyed by section ID. Lines that are heading markers (`##`/`###`),
-/// HTML comment markers (`<!-- ... -->`), or the fenced action-sketch
-/// block are excluded. Trailing blank lines are stripped from each
+/// HTML comment markers (`<!-- ... -->`), or the fenced `action_sketch`
+/// block are excluded; ordinary Markdown code blocks inside section
+/// prose are preserved. Trailing blank lines are stripped from each
 /// section's prose so the emitter can append a single blank separator
 /// line itself.
 ///
-/// Returns a map from section ID → non-empty prose lines.
-fn collect_section_prose(body: &str) -> HashMap<&str, Vec<&str>> {
-    let mut result: HashMap<&str, Vec<&str>> = HashMap::new();
+/// `sections` is used to resolve section IDs for headings that carry no
+/// explicit `<!-- section: id -->` marker (markerless sections). The
+/// match is by heading text order so document order is preserved.
+///
+/// Returns a map from section ID → prose lines (may be empty).
+fn collect_section_prose<'b>(
+    body: &'b str,
+    sections: &'b [SkillSection],
+) -> HashMap<&'b str, Vec<&'b str>> {
+    let mut result: HashMap<&'b str, Vec<&'b str>> = HashMap::new();
+
+    // Index sections by heading text for fast markerless lookup.
+    // Multiple sections can share a heading (the parser deduplicates IDs),
+    // so we keep them as a queue and pop the first one on each heading match.
+    let mut heading_queue: Vec<(&str, &str)> = sections
+        .iter()
+        .map(|s| (s.heading.as_str(), s.id.as_str()))
+        .collect();
+
     let mut current_id: Option<&str> = None;
-    let mut in_fence = false;
+    // Track fenced blocks so we only drop the `action_sketch` fence.
+    let mut in_action_sketch_fence = false;
+    let mut in_other_fence = false;
 
     for line in body.lines() {
         let trimmed = line.trim();
 
-        // Skip the action_sketch fenced block.
+        // Detect the action_sketch fence open/close.
+        if trimmed == "```json action_sketch" {
+            in_action_sketch_fence = true;
+            continue;
+        }
+        if in_action_sketch_fence {
+            if trimmed == "```" {
+                in_action_sketch_fence = false;
+            }
+            continue;
+        }
+
+        // Track non-action_sketch fences (ordinary code blocks) — preserve
+        // their content as prose but use the fence flag to avoid
+        // misidentifying ``` inside a code block as a section boundary.
         if trimmed.starts_with("```") {
-            in_fence = !in_fence;
+            in_other_fence = !in_other_fence;
+            if let Some(id) = current_id {
+                result.entry(id).or_default().push(line);
+            }
             continue;
         }
-        if in_fence {
+        if in_other_fence {
+            if let Some(id) = current_id {
+                result.entry(id).or_default().push(line);
+            }
             continue;
         }
 
-        // Section heading — look for the following `<!-- section: id -->`
-        // marker to set `current_id`. Reset on each heading.
-        if trimmed.starts_with("##") {
-            current_id = None;
+        // Section heading — find the matching section in document order.
+        if trimmed.starts_with("##") && !trimmed.starts_with("###") {
+            let heading_text = trimmed.trim_start_matches('#').trim();
+            current_id = pop_section_for_heading(&mut heading_queue, heading_text, 2);
+            continue;
+        }
+        if trimmed.starts_with("###") {
+            let heading_text = trimmed.trim_start_matches('#').trim();
+            current_id = pop_section_for_heading(&mut heading_queue, heading_text, 3);
             continue;
         }
 
-        // Section-ID marker: `<!-- section: <id> -->`
+        // Section-ID marker: `<!-- section: <id> -->` — also updates
+        // current_id in case a previous heading matched a different ID.
         if let Some(rest) = trimmed.strip_prefix("<!-- section:") {
             if let Some(id_part) = rest.strip_suffix("-->") {
                 let id = id_part.trim();
                 if !id.is_empty() {
-                    current_id = Some(id);
-                    result.entry(id).or_default();
+                    current_id = Some(
+                        sections
+                            .iter()
+                            .find(|s| s.id == id)
+                            .map(|s| s.id.as_str())
+                            .unwrap_or(id),
+                    );
+                    result.entry(current_id.unwrap()).or_default();
                 }
             }
             continue;
         }
 
-        // Step marker — skip.
-        if trimmed.starts_with("<!-- step:") {
-            continue;
-        }
-
-        // All other HTML comments — skip.
+        // Step and other HTML comment markers — skip.
         if trimmed.starts_with("<!--") {
             continue;
         }
@@ -176,4 +222,21 @@ fn collect_section_prose(body: &str) -> HashMap<&str, Vec<&str>> {
     }
 
     result
+}
+
+/// Walk the `heading_queue` (which is in document order, same as the
+/// `sections` slice) and find the next section whose heading matches
+/// `heading_text` and whose `level` matches. Removes consumed entries
+/// from the front of the queue.
+fn pop_section_for_heading<'s>(
+    queue: &mut Vec<(&'s str, &'s str)>,
+    heading_text: &str,
+    _level: u8,
+) -> Option<&'s str> {
+    // Find the first match in document order and remove it.
+    if let Some(pos) = queue.iter().position(|(h, _)| *h == heading_text) {
+        let (_, id) = queue.remove(pos);
+        return Some(id);
+    }
+    None
 }
