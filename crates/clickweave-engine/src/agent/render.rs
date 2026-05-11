@@ -382,9 +382,9 @@ mod tests {
             value: vec![ObservedElement::Cdp(CdpFindElementMatch {
                 uid: "d7".to_string(),
                 role: "button".to_string(),
-                label: "Chat with Ljuba Isakovic".to_string(),
+                label: "Chat with Foo Bar Baz".to_string(),
                 tag: "button".to_string(),
-                visible_text: "Note to Self Tue Photo".to_string(),
+                visible_text: "Foo Bar Baz preview one".to_string(),
                 matched_on: vec!["visible_text".to_string()],
                 warnings: vec!["accessible_name_visible_text_mismatch".to_string()],
                 viewport_rect: Some(CdpViewportRect {
@@ -403,8 +403,8 @@ mod tests {
 
         let out = render_step_input(&wm, &TaskState::new("g".to_string()), 1);
 
-        assert!(out.contains("label=\"Chat with Ljuba Isakovic\""));
-        assert!(out.contains("visible_text=\"Note to Self Tue Photo\""));
+        assert!(out.contains("label=\"Chat with Foo Bar Baz\""));
+        assert!(out.contains("visible_text=\"Foo Bar Baz preview one\""));
         assert!(out.contains("matched_on=visible_text"));
         assert!(out.contains("warnings=accessible_name_visible_text_mismatch"));
         assert!(out.contains("rect=(91,157 357x72)"));

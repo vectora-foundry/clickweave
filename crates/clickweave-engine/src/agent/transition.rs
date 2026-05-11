@@ -179,9 +179,9 @@ mod tests {
     #[test]
     fn element_fingerprint_includes_visible_text() {
         let mut before = make_element("d1", "button", "Chat with Alice", "button");
-        before.visible_text = "Note to Self Tue Photo".to_string();
+        before.visible_text = "Foo Bar Baz preview one".to_string();
         let mut after = before.clone();
-        after.visible_text = "Note to Self Wed New message".to_string();
+        after.visible_text = "Foo Bar Baz preview two".to_string();
 
         assert_ne!(
             element_fingerprint(&before),

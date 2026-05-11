@@ -208,7 +208,7 @@ pub fn build_vlm_click_prompt(
 
     prompt.push_str(
         "\nReturn ONLY the text label or name of the element \
-         (e.g., \"Send\", \"Note to Self\", \"Search\"). If there's no text \
+         (e.g., \"Send\", \"Inbox\", \"Search\"). If there's no text \
          label, describe the element briefly (e.g., \"message input field\"). \
          Return just the label, nothing else.",
     );

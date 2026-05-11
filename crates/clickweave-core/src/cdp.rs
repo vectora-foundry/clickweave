@@ -265,7 +265,7 @@ mod page_selection_tests {
             "label": "Chat with Alice",
             "tag": "button",
             "disabled": false,
-            "visible_text": "Note to Self Tue Photo",
+            "visible_text": "Foo Bar Baz preview one",
             "matched_on": ["visible_text"],
             "warnings": ["accessible_name_visible_text_mismatch"],
             "viewport_rect": {"x": 91, "y": 157, "width": 357, "height": 72},
@@ -276,7 +276,7 @@ mod page_selection_tests {
 
         let parsed: CdpFindElementsResponse = serde_json::from_str(body).unwrap();
 
-        assert_eq!(parsed.matches[0].visible_text, "Note to Self Tue Photo");
+        assert_eq!(parsed.matches[0].visible_text, "Foo Bar Baz preview one");
         assert_eq!(parsed.matches[0].matched_on, vec!["visible_text"]);
         assert_eq!(
             parsed.matches[0].warnings,
@@ -297,7 +297,7 @@ mod page_selection_tests {
           "title": "Signal",
           "source": "dom_summary",
           "snapshot_generation": 7,
-          "inventory": [{"role": "button", "count": 2, "sample_labels": ["Note to Self"]}]
+          "inventory": [{"role": "button", "count": 2, "sample_labels": ["Inbox"]}]
         }"#;
 
         let parsed: CdpPageSummaryResponse = serde_json::from_str(body).unwrap();
@@ -306,7 +306,7 @@ mod page_selection_tests {
         assert_eq!(parsed.title, "Signal");
         assert_eq!(parsed.snapshot_generation, 7);
         assert_eq!(parsed.inventory[0].role, "button");
-        assert_eq!(parsed.inventory[0].sample_labels, vec!["Note to Self"]);
+        assert_eq!(parsed.inventory[0].sample_labels, vec!["Inbox"]);
     }
 
     #[test]

@@ -185,13 +185,13 @@ fn stable_context_changes_when_semantic_element_surface_changes() {
 
 #[test]
 fn stable_context_changes_when_cdp_visible_text_changes() {
-    let mut before_el = cdp("d1", "button", "Chat with Ljuba Isakovic", "button");
+    let mut before_el = cdp("d1", "button", "Chat with Foo Bar Baz", "button");
     if let ObservedElement::Cdp(el) = &mut before_el {
-        el.visible_text = "Note to Self Tue Photo".to_string();
+        el.visible_text = "Foo Bar Baz preview one".to_string();
     }
     let mut after_el = before_el.clone();
     if let ObservedElement::Cdp(el) = &mut after_el {
-        el.visible_text = "Note to Self Wed New message".to_string();
+        el.visible_text = "Foo Bar Baz preview two".to_string();
     }
 
     let before = wm_with_cdp_elements("count=1;hash=a", vec![before_el]);
