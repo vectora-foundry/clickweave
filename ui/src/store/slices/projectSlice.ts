@@ -77,6 +77,14 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       // in AssistantThread reads this directly and would otherwise keep
       // showing the previous project's run-halted message.
       consecutiveDestructiveCapHit: null,
+      // Drop any staged first-run save sheet and its underlying step
+      // buffer: a pendingRunSave belongs to the previous project's runId,
+      // and saving it after the switch would materialise the old steps as
+      // a skill in the *new* project.
+      pendingRunSave: null,
+      agentSteps: [],
+      agentGoal: "",
+      skillCreationIntent: false,
     });
     // Ambiguity resolutions are specific to the prior project's nodes.
     get().clearAmbiguityResolutions();
@@ -160,6 +168,14 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       // in AssistantThread reads this directly and would otherwise keep
       // showing the previous project's run-halted message.
       consecutiveDestructiveCapHit: null,
+      // Drop any staged first-run save sheet and its underlying step
+      // buffer: a pendingRunSave belongs to the previous project's runId,
+      // and saving it after the switch would materialise the old steps as
+      // a skill in the *new* project.
+      pendingRunSave: null,
+      agentSteps: [],
+      agentGoal: "",
+      skillCreationIntent: false,
     });
     get().clearAmbiguityResolutions();
     pushLog("New project created");

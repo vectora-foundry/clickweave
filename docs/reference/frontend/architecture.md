@@ -134,11 +134,12 @@ The agent slice owns the live state of the state-spine agent loop. The backend `
 
 - `agentStatus: "idle" | "running" | "complete" | "stopped" | "error"`
 - `agentGoal: string`, `agentSteps: AgentStep[]`, `agentError: string | null`, `currentAgentStep: number`
-- `skillCreationIntent: boolean` — when true, a completed agent run is materialized as a skill draft rather than a standalone run record
+- `skillCreationIntent: boolean` — when true, a completed agent run stages a `pendingRunSave` payload at commit time so the post-run `AgentRunSaveSheet` review modal opens; the skill is materialized only when the user confirms in the sheet
+- `pendingRunSave: { runId, summary } | null` — staged after a completed run while `skillCreationIntent` was true; drives the `AgentRunSaveSheet` mounted in `AppShell`. Cleared on Save (after a confirmed `saveRunAsSkill` success) or Discard
 - `pendingApproval: PendingApproval | null` — populated when the agent asks the user to approve the next tool invocation
 - `completionDisagreement: CompletionDisagreement | null` — populated when the backend emits `agent://completion_disagreement`
 - `agentRunId: string | null` — per-run generation ID used to drop stale events
-- actions: `startAgent(goal)`, `stopAgent`, `addAgentStep`, `setPendingApproval`, `approveAction`, `rejectAction`, `setCompletionDisagreement`, `confirmDisagreementAsComplete`, `cancelDisagreement`, `setSkillCreationIntent`, `setAgentStatus`, `setAgentError`, `setAgentRunId`, `resetAgent`
+- actions: `startAgent(goal)`, `stopAgent`, `addAgentStep`, `setPendingApproval`, `approveAction`, `rejectAction`, `setCompletionDisagreement`, `confirmDisagreementAsComplete`, `cancelDisagreement`, `setSkillCreationIntent`, `setPendingRunSave`, `setAgentStatus`, `setAgentError`, `setAgentRunId`, `resetAgent`
 
 State-spine events (`agent://task_state_changed`, `agent://world_model_changed`, `agent://boundary_record_written`) are carried through to `AssistantSlice.runTraces` for the live trace surface.
 

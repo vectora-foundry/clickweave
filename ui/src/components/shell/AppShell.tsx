@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../../store/useAppStore";
+import { AgentRunSaveSheet } from "../AgentRunSaveSheet";
 import { AmbiguityResolutionModal } from "../AmbiguityResolutionModal";
 import { CdpAppSelectModal } from "../CdpAppSelectModal";
 import { ConfirmClearConversationModal } from "../ConfirmClearConversationModal";
@@ -44,6 +45,9 @@ export function AppShell() {
   const setConfirmClearOpen = useStore((s) => s.setConfirmClearOpen);
   const clearConversationFlow = useStore((s) => s.clearConversationFlow);
   const onIntentEmptyState = useStore((s) => s.isNewWorkflow);
+  const selectedSkill = useStore((s) => s.selectedSkill);
+  const pendingRunSave = useStore((s) => s.pendingRunSave);
+  const setPendingRunSave = useStore((s) => s.setPendingRunSave);
 
   const activeAmbiguity =
     ambiguityResolutions.find((r) => r.id === activeAmbiguityId) ?? null;
@@ -110,7 +114,7 @@ export function AppShell() {
       <div className="flex flex-1 overflow-hidden">
         {!onIntentEmptyState && <Sidebar />}
         <main className="flex flex-1 flex-col overflow-hidden">
-          {currentSurface === "skill" ? (
+          {currentSurface === "skill" && selectedSkill && !onIntentEmptyState ? (
             <SkillView />
           ) : (
             <OverviewView />
@@ -151,6 +155,13 @@ export function AppShell() {
         }}
         onCancel={() => setConfirmClearOpen(false)}
       />
+      {pendingRunSave && (
+        <AgentRunSaveSheet
+          defaultName={pendingRunSave.summary}
+          onSaved={() => setPendingRunSave(null)}
+          onDiscard={() => setPendingRunSave(null)}
+        />
+      )}
       {walkthroughSaveSheetOpen && walkthroughSessionId && (
         <WalkthroughSaveSheet
           sessionId={walkthroughSessionId}

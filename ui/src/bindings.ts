@@ -61,10 +61,14 @@ async saveProject(path: string, manifest: ProjectManifest) : Promise<Result<null
 }
 },
 /**
- * Phase 1.C stub: resolves the requested skill from the project's
- * skill store and returns Ok without dispatching the executor. Full
- * executor wiring lands in Phase 1.D, when the native `Skill`-driven
- * runner replaces the deleted `WorkflowExecutor`.
+ * Dispatch a skill run via the native `skill_runner` (D28).
+ * 
+ * Resolves the requested skill from the project's `SkillStore`,
+ * creates a per-run record under `<skills>/<skill_id>/runs/`, spawns
+ * the MCP sidecar, and runs `run_skill_steps` against the skill's
+ * `action_sketch`. Per-step events flow through the `ExecutorEvent`
+ * channel and out to the UI via `executor://*` topics, mirroring the
+ * shape used by the deleted `WorkflowExecutor`.
  */
 async runSkill(request: RunSkillRequest) : Promise<Result<null, CommandError>> {
     try {
@@ -74,6 +78,13 @@ async runSkill(request: RunSkillRequest) : Promise<Result<null, CommandError>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Resume a skill run from a specific section after a failure.
+ * 
+ * Loads the skill's section list, collects the step IDs for every section
+ * at or after `from_section_id`, and then runs only those steps. Sections
+ * before `from_section_id` are skipped entirely.
+ */
 async resumeSkillFromFailure(request: ResumeSkillFromFailureRequest) : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("resume_skill_from_failure", { request }) };
@@ -98,7 +109,16 @@ async supervisionRespond(action: string) : Promise<Result<null, CommandError>> {
     else return { status: "error", error: e  as any };
 }
 },
-async listRuns(query: RunsQuery) : Promise<Result<unknown[], CommandError>> {
+/**
+ * List historical runs for a skill (D27).
+ * 
+ * When `query.run_id` is `Some`, the result contains at most a single
+ * matching record (or empty when the run cannot be found). When
+ * `None`, every persisted run for the skill is returned, sorted
+ * oldest-first by `started_at`. The legacy node-keyed result shape
+ * no longer exists — every run is keyed on `skill_id` per D28.
+ */
+async listRuns(query: RunsQuery) : Promise<Result<SkillRun[], CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("list_runs", { query }) };
 } catch (e) {
@@ -106,6 +126,9 @@ async listRuns(query: RunsQuery) : Promise<Result<unknown[], CommandError>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Load the trace event log for a single skill run (D28).
+ */
 async loadRunEvents(query: RunEventsQuery) : Promise<Result<TraceEvent[], CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("load_run_events", { query }) };
@@ -114,6 +137,16 @@ async loadRunEvents(query: RunEventsQuery) : Promise<Result<TraceEvent[], Comman
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Read a base64-encoded artifact file from a skill run's per-run
+ * directory.
+ * 
+ * The artifact path is sandboxed under `<run_id>/artifacts/` so a
+ * caller cannot escape outside the directory tree even with absolute
+ * or `..`-prefixed inputs. The shape of this command is unchanged
+ * from the legacy node-keyed surface — only the run-locator fields
+ * (`skill_id` + `run_id`) are skill-keyed.
+ */
 async readArtifactBase64(query: ReadArtifactQuery) : Promise<Result<string, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("read_artifact_base64", { query }) };
@@ -328,6 +361,11 @@ async resolveCompletionDisagreement(action: CompletionDisagreementActionWire) : 
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Save the current agent run as a new skill. The run's tool calls are
+ * converted to `ActionSketchStep[]`, prose is generated, and the skill
+ * is written to the project's skill store.
+ */
 async saveRunAsSkill(request: SaveRunAsSkillRequest) : Promise<Result<Skill, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("save_run_as_skill", { request }) };
@@ -336,6 +374,11 @@ async saveRunAsSkill(request: SaveRunAsSkillRequest) : Promise<Result<Skill, Com
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Append the current agent run's steps to an existing skill as a new
+ * section. Reads the existing SKILL.md, appends the new steps, and
+ * writes the updated file at an incremented version.
+ */
 async addRunToSkill(request: AddRunToSkillRequest) : Promise<Result<Skill, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("add_run_to_skill", { request }) };
@@ -400,14 +443,6 @@ async promoteSkillToGlobal(request: PromoteSkillToGlobalRequest) : Promise<Resul
     else return { status: "error", error: e  as any };
 }
 },
-async loadSkillFull(request: LoadSkillFullRequest) : Promise<Result<Skill, CommandError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("load_skill_full", { request }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async forkSkill(request: ForkSkillRequest) : Promise<Result<Skill, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("fork_skill", { request }) };
@@ -432,17 +467,43 @@ async listSkillsForPanel(request: ListSkillsRequest) : Promise<Result<SkillSumma
     else return { status: "error", error: e  as any };
 }
 },
-async loadLatestRunTrace(request: LoadLatestRunTraceRequest) : Promise<Result<HydratedRunTrace | null, CommandError>> {
+/**
+ * Load the full [`Skill`] value (including `sections`, `body`, and
+ * `action_sketch`) for a given `(skill_id, version)` pair from the
+ * project-local skill directory. Versions are resolved by reading
+ * `<skill_id>/SKILL.md` and matching against the requested version.
+ */
+async loadSkillFull(request: LoadSkillFullRequest) : Promise<Result<Skill, CommandError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("load_latest_run_trace", { request }) };
+    return { status: "ok", data: await TAURI_INVOKE("load_skill_full", { request }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Apply a four-layer `SkillPatch` atomically to a skill's on-disk files.
+ * 
+ * Steps:
+ * 1. Resolve the project skills directory.
+ * 2. Read the current `SKILL.md` (and optional `replay.json` sidecar).
+ * 3. Validate the `expected_mtime_ms` guard against the current file mtime.
+ * 4. Apply the patch in-memory (pure).
+ * 5. Run structural lint; reject with lint errors before opening the journal.
+ * 6. Emit post-patch byte buffers.
+ * 7. Write via `SkillStore::write_atomic_multi_file` (journal protocol).
+ */
 async applySkillPatch(request: ApplySkillPatchRequest) : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("apply_skill_patch", { request }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async loadLatestRunTrace(request: LoadLatestRunTraceRequest) : Promise<Result<HydratedRunTrace | null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_latest_run_trace", { request }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -461,7 +522,12 @@ async applySkillPatch(request: ApplySkillPatchRequest) : Promise<Result<null, Co
 /** user-defined types **/
 
 export type ActionConfidence = "High" | "Medium" | "Low"
-export type ActionSketchStep = { type: "tool_call"; step_id: string; tool: string; args: JsonValue; captures_pre: CaptureClause[]; captures: CaptureClause[]; expected_world_model_delta: ExpectedWorldModelDelta } | { type: "loop"; step_id: string; until: LoopPredicate; body: ActionSketchStep[]; max_iterations: number; iteration_delay_ms: number }
+/**
+ * Wire-format `ActionSketchReplacement` for Tauri IPC.
+ */
+export type ActionSketchReplacementDto = { step_id: string; field: string; new_value: JsonValue }
+export type ActionSketchStep = { type: "tool_call"; step_id: string; tool: string; args: JsonValue; captures_pre: CaptureClause[]; captures: CaptureClause[]; expected_world_model_delta: ExpectedWorldModelDelta; requires_approval?: boolean | null } | { type: "loop"; step_id: string; until: LoopPredicate; body: ActionSketchStep[]; max_iterations: number; iteration_delay_ms: number }
+export type AddRunToSkillRequest = { project_path: string | null; project_name: string; project_id: string; skill_id: string; version: number; goal: string; steps: AgentStepWire[]; store_traces: boolean }
 /**
  * Persisted transcript — a sibling file to the workflow run metadata.
  * Kept deliberately minimal (no schema version) until the format
@@ -549,8 +615,12 @@ applicable_skills_k?: number | null;
  * participate in retrieval for this run.
  */
 skills_global_participation?: boolean | null }
-export type AiStepParams = { prompt: string; button_text: string | null; template_image: string | null; max_tool_calls: number | null; allowed_tools: string[] | null; timeout_ms?: number | null }
-export type AppDebugKitParams = { operation_name: string; parameters: JsonValue }
+/**
+ * One agent step sent from the frontend for skill materialisation.
+ * `args_json` is the JSON-serialised tool arguments; empty string is
+ * treated the same as `{}`.
+ */
+export type AgentStepWire = { summary: string; tool_name: string; args_json: string }
 /**
  * Classification of an app's UI framework, used to decide whether
  * Chrome DevTools Protocol (CDP) tools can provide better automation.
@@ -563,44 +633,16 @@ export type AppKind = "Native" | "ChromeBrowser" | "ElectronApp"
 export type AppResolutionSeedEntry = { node_id: string; app_name: string }
 export type ApplicabilityHints = { apps: string[]; hosts: string[]; signature: ApplicabilitySignature }
 export type ApplicabilitySignature = string
-export type Artifact = { artifact_id: string; kind: ArtifactKind; path: string; metadata: JsonValue; overlays: JsonValue[] }
-export type ArtifactKind = "Screenshot" | 
 /**
- * Catch-all for any artifact that doesn't fit a more specific category.
- * Legacy kinds (`Ocr`, `TemplateMatch`, `Log`) were never produced —
- * `#[serde(other)]` lets pre-removal artifact records still deserialize.
+ * Request body for [`apply_skill_patch`].
  */
-"Other"
-export type AxClickParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target: AxTarget }
+export type ApplySkillPatchRequest = { skill_id: string; version: number; 
+/**
+ * If `Some`, the current SKILL.md's mtime (millis since Unix epoch) must
+ * match this value or the command returns `ExternalConflict`.
+ */
+expected_mtime_ms: number | null; markdown_replacements: MarkdownReplacementDto[]; action_sketch_replacements: ActionSketchReplacementDto[]; variables_additions: SkillFrontmatterVariableDto[]; replay_sidecar_mutations: ReplaySidecarMutationDto[]; primitive: SkillPatchPrimitiveDto; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
 export type AxDescriptorMatch = { role: string; name: string; parent_name: string | null }
-export type AxSelectParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target: AxTarget }
-export type AxSetValueParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target: AxTarget; value: string }
-/**
- * Distinguishes how a macOS accessibility-tree element target was produced,
- * so the executor can choose the right resolution strategy at dispatch time.
- * 
- * AX snapshots are session-stateful: every call to `take_ax_snapshot` bumps a
- * generation and emits uids like `a42g3`. Uids from prior snapshots are
- * rejected by `ax_click` / `ax_set_value` / `ax_select` with
- * `snapshot_expired`. To replay safely, the executor re-snapshots immediately
- * before each dispatch and resolves the node's descriptor (role + name) to a
- * fresh uid — see [`clickweave_engine::executor::deterministic::ax`].
- */
-export type AxTarget = 
-/**
- * Replay-stable descriptor. Executor re-resolves via `take_ax_snapshot`
- * and matches the first entry with this `role` whose `name` matches —
- * optional `parent_name` breaks ties for sidebars/outlines where many
- * rows share a role.
- */
-{ kind: "Descriptor"; value: { role: string; name: string; parent_name?: string | null } } | 
-/**
- * Raw uid captured at agent run time. Valid only for the current AX
- * snapshot generation — will fail with `snapshot_expired` on replay.
- * Agent-loop post-hooks upgrade `ResolvedUid` to `Descriptor` when the
- * original snapshot is still on hand.
- */
-{ kind: "ResolvedUid"; value: string }
 export type BindingCorrection = { step_index: number; capture_name: string; keep: boolean; correction: CaptureClause | null }
 export type BindingRef = { type: "captured"; name: string } | { type: "params"; name: string }
 export type BoundaryKind = "terminal" | "subgoal_completed" | "recovery_succeeded"
@@ -614,39 +656,8 @@ export type CdpAppConfig = { name: string;
  * Path to the app binary (from file picker). None for already-running apps.
  */
 binary_path: string | null; app_kind: AppKind }
-export type CdpClickParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target: CdpTarget }
-export type CdpClosePageParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { page_index?: number | null }
-export type CdpFillParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target: CdpTarget; value: string }
-export type CdpHandleDialogParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { accept: boolean; prompt_text?: string | null }
-export type CdpHoverParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target: CdpTarget }
-export type CdpNavigateParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { url: string }
-export type CdpNewPageParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { url?: string }
-export type CdpPressKeyParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { key: string; modifiers?: string[] }
-export type CdpSelectPageParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { page_index: number }
-/**
- * Distinguishes how a CDP element target was produced, so the executor can
- * choose the right resolution strategy.
- */
-export type CdpTarget = 
-/**
- * Precise element name from `cdp_find_elements` or walkthrough recording.
- */
-{ kind: "ExactLabel"; value: string } | 
-/**
- * Semantic description (e.g. "the message input field") — always resolved
- * via snapshot + LLM at execution time.
- */
-{ kind: "Intent"; value: string } | 
-/**
- * Concrete DOM UID resolved at execution time (for Run mode / decision cache).
- */
-{ kind: "ResolvedUid"; value: string }
-export type CdpTypeParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { text: string }
-export type CdpWaitParams = { text: string; timeout_ms?: number }
 export type ChromeProfile = { id: string; name: string; google_email: string | null }
 export type ClearAgentConversationRequest = { project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
-export type ClickParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target?: ClickTarget | null; button: MouseButton; click_count: number }
-export type ClickTarget = { type: "Text"; text: string } | { type: "Coordinates"; x: number; y: number } | { type: "WindowControl"; action: WindowControlAction }
 /**
  * Structured error type for Tauri IPC commands.
  */
@@ -657,16 +668,6 @@ export type CommandError = { kind: ErrorKind; message: string }
  * TypeScript binding picks it up.
  */
 export type CompletionDisagreementActionWire = "confirm" | "cancel"
-export type MarkdownReplacementDto = { old_text: string; new_text: string }
-export type ActionSketchReplacementDto = { step_id: string; field: string; new_value: JsonValue }
-export type SkillFrontmatterVariableDto = { name: string; type: string; description: string | null; default: JsonValue | null }
-export type ReplaySidecarMutationDto =
-  | { type: "clear_signals"; step_id: string }
-  | { type: "append_section_history"; retired: string; split_into: string[]; at_version: number }
-  | { type: "delete_step_bundle"; step_id: string }
-  | { type: "update_requires_approval"; step_id: string; value: boolean | null }
-export type SkillPatchPrimitiveDto = "rebind" | "reorder" | "promote" | "free_form_prose"
-export type ApplySkillPatchRequest = { skill_id: string; version: number; expected_mtime_ms: number | null; markdown_replacements: MarkdownReplacementDto[]; action_sketch_replacements: ActionSketchReplacementDto[]; variables_additions: SkillFrontmatterVariableDto[]; replay_sidecar_mutations: ReplaySidecarMutationDto[]; primitive: SkillPatchPrimitiveDto; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
 export type ConfirmSkillProposalRequest = { skill_id: string; version: number; accepted_proposal: SkillRefinementProposal; project_path: string | null; project_name: string; project_id: string; run_id: string | null; store_traces: boolean }
 export type ConfirmableTool = { name: string; description: string }
 export type DeleteSkillRequest = { skill_id: string; version: number; scope: SkillScope; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
@@ -674,7 +675,6 @@ export type DeleteSkillRequest = { skill_id: string; version: number; scope: Ski
  * A running app detected as Electron or Chrome, returned to the frontend for CDP selection.
  */
 export type DetectedCdpApp = { name: string; pid: number; app_kind: AppKind }
-export type DragParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { from_x?: number | null; from_y?: number | null; to_x?: number | null; to_y?: number | null }
 export type EndpointConfig = { base_url: string; model: string; api_key: string | null }
 export type ErrorKind = "Validation" | "Io" | "Mcp" | "AlreadyRunning" | "Internal"
 export type ExecutionMode = "Test" | "Run"
@@ -686,12 +686,7 @@ export type ExecutionMode = "Test" | "Run"
  * converts from `WorldModelDiff` at the boundary.
  */
 export type ExpectedWorldModelDelta = { changed_fields: string[] }
-export type FindAppParams = { search: string }
-export type FindImageParams = { template_image: string | null; threshold: number; max_results: number }
-export type FindTextParams = { search_text?: string; scope?: string | null }
-export type FocusWindowParams = ({ method: "AppName"; value: string } | { method: "WindowId"; value: number } | { method: "Pid"; value: number }) & ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { bring_to_front: boolean; app_kind?: AppKind; chrome_profile_id?: string | null }
 export type ForkSkillRequest = { skill_id: string; version: number; new_name: string; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
-export type HoverParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { target?: ClickTarget | null; dwell_ms: number }
 export type HydratedMilestoneKind = "subgoal_completed" | "recovery_succeeded"
 export type HydratedPhase = "exploring" | "executing" | "recovering"
 export type HydratedRunTrace = { run_id: string; phase: HydratedPhase; active_subgoal: string; steps: HydratedTraceStep[]; world_model_deltas: HydratedWorldModelDelta[]; milestones: HydratedTraceMilestone[]; terminal_frame: HydratedTerminalFrame | null }
@@ -703,15 +698,25 @@ export type HydratedWorldModelDelta = { step_index: number; changed_fields: stri
 export type Hypothesis = { text: string; recorded_at_step: number; refuted: boolean }
 export type ImportedAsset = { relative_path: string; absolute_path: string }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
-export type LaunchAppParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { app_name: string }
 export type ListSkillsRequest = { scope: SkillScope; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
 export type LoadAgentChatRequest = { project_path: string | null; project_name: string; project_id: string }
-export type LoadSkillFullRequest = { skill_id: string; version: number; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
 export type LoadLatestRunTraceRequest = { project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
+/**
+ * Request for [`load_skill_full`] — resolves the full [`Skill`] value
+ * (including `sections` and `body`) for a given skill id. The panel
+ * sidebar already holds `SkillSummary`; this is called once, on
+ * selection, to hydrate the detail view.
+ */
+export type LoadSkillFullRequest = { skill_id: string; version: number; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
 export type LoopPredicate = { type: "world_model_delta"; expr: string } | { type: "step_count_reached"; count: number }
-export type McpToolCallParams = { tool_name: string; arguments: JsonValue }
+/**
+ * Wire-format `MarkdownReplacement` for Tauri IPC (mirrors the engine type
+ * with serde/specta derives).
+ */
+export type MarkdownReplacementDto = { old_text: string; new_text: string }
 export type Milestone = { subgoal_id: SubgoalId; text: string; summary: string; pushed_at_step: number; completed_at_step: number }
 export type MouseButton = "Left" | "Right" | "Center"
+export type NodeRename = { node_id: string; new_name: string }
 export type OutcomePredicate = { type: "subgoal_completed"; post_state_world_model_signature: string | null }
 export type OutputDeclaration = { name: string; type_tag: string; from: BindingRef }
 export type ParameterSlot = { name: string; type_tag: string; description: string | null; default: JsonValue | null; enum_values: string[] | null }
@@ -750,7 +755,6 @@ export type Phase =
  * Consecutive errors or an `agent_replan` this step.
  */
 "recovering"
-export type PressKeyParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { key: string; modifiers?: string[] }
 /**
  * Wire form of a prior-turn entry (matches
  * `clickweave_engine::agent::PriorTurn` with string UUIDs for JSON).
@@ -764,9 +768,21 @@ export type ProjectManifest = { id: string; name: string; intent?: string | null
 export type PromoteSkillToGlobalRequest = { skill_id: string; version: number; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
 export type ProvenanceEntry = { run_id: string; step_index: number; completed_at: string; workflow_hash: string }
 export type PruneSkillLineageRequest = { project_path: string | null; project_name: string; project_id: string; node_ids: string[]; store_traces: boolean }
-export type QuitAppParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { app_name: string }
 export type ReadArtifactQuery = { project_path: string | null; project_id: string; project_name: string; skill_id: string; run_id: string; artifact_path: string }
 export type RejectSkillProposalRequest = { skill_id: string; version: number; project_path: string | null; project_name: string; project_id: string; store_traces: boolean }
+/**
+ * Wire-format `ReplaySidecarMutation` for Tauri IPC.
+ */
+export type ReplaySidecarMutationDto = { type: "clear_signals"; step_id: string } | { type: "append_section_history"; retired: string; split_into: string[]; at_version: number } | { type: "delete_step_bundle"; step_id: string } | { type: "update_requires_approval"; step_id: string; value: boolean | null }
+/**
+ * Request body for `resume_skill_from_failure`.
+ * Inherits all fields from `RunSkillRequest` and adds the section to resume from.
+ */
+export type ResumeSkillFromFailureRequest = { project_path: string | null; project_id: string; project_name: string; skill_id: string; variables?: Partial<{ [key in string]: JsonValue }>; agent: EndpointConfig; fast: EndpointConfig | null; supervisor: EndpointConfig | null; execution_mode: ExecutionMode; supervision_delay_ms?: number; store_traces: boolean | null; 
+/**
+ * The section ID to resume from. All sections before this section are skipped.
+ */
+from_section_id: string }
 export type RunEventsQuery = { project_path: string | null; project_id: string; project_name: string; skill_id: string; run_id: string }
 /**
  * IPC payload for `run_skill` (D33). Replaces the legacy `RunRequest`
@@ -796,14 +812,28 @@ supervisor: EndpointConfig | null; execution_mode: ExecutionMode; supervision_de
  * persistence (D31). `None` falls back to settings.
  */
 store_traces: boolean | null }
-export type ResumeSkillFromFailureRequest = { project_path: string | null; project_id: string; project_name: string; skill_id: string; variables?: Partial<{ [key in string]: JsonValue }>; agent: EndpointConfig; fast: EndpointConfig | null; supervisor: EndpointConfig | null; execution_mode: ExecutionMode; supervision_delay_ms?: number; store_traces: boolean | null; from_section_id: string }
 export type RunStatus = "Ok" | "Failed" | "Stopped" | "Cancelled"
-export type RunsQuery = { project_path: string | null; project_id: string; project_name: string; skill_id: string; run_id?: string | null; section_id?: string | null }
+export type RunsQuery = { project_path: string | null; project_id: string; project_name: string; 
+/**
+ * Skill identifier (D27/D28). Run records live under
+ * `<skills>/<skill_id>/runs/`.
+ */
+skill_id: string; 
+/**
+ * When `Some`, narrow the result to a single run record. When
+ * `None`, the command returns every run for the skill (sorted
+ * oldest-first).
+ */
+run_id?: string | null; 
+/**
+ * Optional section filter retained on the wire so the UI can
+ * request a section-scoped slice once the per-section run timeline
+ * lands. Ignored by the Phase 1.D loader.
+ */
+section_id?: string | null }
 export type SaveAgentChatRequest = { project_path: string | null; project_name: string; project_id: string; chat: AgentChat; store_traces: boolean }
-export type SaveWalkthroughAsSkillRequest = { session_id: string; project_path: string | null; project_name: string; project_id: string; name: string; store_traces: boolean }
-export type AgentStepWire = { summary: string; tool_name: string; args_json: string }
 export type SaveRunAsSkillRequest = { project_path: string | null; project_name: string; project_id: string; name: string; goal: string; steps: AgentStepWire[]; store_traces: boolean }
-export type AddRunToSkillRequest = { project_path: string | null; project_name: string; project_id: string; skill_id: string; version: number; goal: string; steps: AgentStepWire[]; store_traces: boolean }
+export type SaveWalkthroughAsSkillRequest = { session_id: string; project_path: string | null; project_name: string; project_id: string; name: string; store_traces: boolean }
 /**
  * Screenshot coordinate metadata for mapping screen coordinates to image pixels.
  * 
@@ -811,8 +841,40 @@ export type AddRunToSkillRequest = { project_path: string | null; project_name: 
  * `px = (sx - origin_x) * scale`, `py = (sy - origin_y) * scale`
  */
 export type ScreenshotMeta = { origin_x: number; origin_y: number; scale: number }
-export type ScreenshotMode = "Screen" | "Window" | "Region"
-export type ScrollParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { delta_y: number; x?: number | null; y?: number | null }
+/**
+ * Per-section run outcome carried inside a [`SkillRun`].
+ * 
+ * Sections are addressed by their `<!-- section: <id> -->` markers in
+ * `SKILL.md`. Outcomes drive the per-section state pill on the run
+ * timeline and the fidelity dot aggregation in Phase 2.
+ */
+export type SectionOutcome = 
+/**
+ * Section has not started yet.
+ */
+"pending" | 
+/**
+ * Section is currently executing.
+ */
+"running" | 
+/**
+ * Section completed without intervention.
+ */
+"succeeded" | 
+/**
+ * Section completed but at least one repair iteration was needed.
+ */
+"repaired" | 
+/**
+ * Section failed and the run halted (or moved on after the user
+ * chose to skip — the per-section status is still `Failed`).
+ */
+"failed" | 
+/**
+ * Section was deliberately skipped (e.g. operator chose Skip on a
+ * supervision pause).
+ */
+"skipped"
 export type Skill = { id: string; version: number; state: SkillState; scope: SkillScope; name: string; description: string; tags: string[]; subgoal_text: string; subgoal_signature: SubgoalSignature; applicability: ApplicabilityHints; parameter_schema: ParameterSlot[]; action_sketch: ActionSketchStep[]; outputs: OutputDeclaration[]; outcome_predicate: OutcomePredicate; provenance: ProvenanceEntry[]; stats: SkillStats; edited_by_user: boolean; created_at: string; updated_at: string; produced_node_ids: string[]; body: string; 
 /**
  * Parsed marker grammar — populated by the new parser. Empty for
@@ -820,13 +882,40 @@ export type Skill = { id: string; version: number; state: SkillState; scope: Ski
  */
 schema_version?: number; variables?: SkillFrontmatterVariable[]; sections?: SkillSection[] }
 export type SkillFrontmatterVariable = { name: string; type: string; description: string | null; default: JsonValue | null }
+/**
+ * Wire-format `SkillFrontmatterVariable` addition for Tauri IPC.
+ */
+export type SkillFrontmatterVariableDto = { name: string; type: string; description: string | null; default: JsonValue | null }
+/**
+ * Primitive discriminant for the diff preview label.
+ */
+export type SkillPatchPrimitiveDto = "rebind" | "reorder" | "promote" | "free_form_prose"
 export type SkillRefinementProposal = { parameter_schema: ParameterSlot[]; binding_corrections: BindingCorrection[]; description: string; name_suggestion: string | null }
+/**
+ * Persisted record of a single skill execution.
+ * 
+ * One JSON document per run is written at
+ * `<skills>/<skill_id>/runs/<run_id>.json`; trace events stream to
+ * `<skills>/<skill_id>/runs/<run_id>/events.jsonl` under the same
+ * directory.
+ */
+export type SkillRun = { run_id: string; 
+/**
+ * Skill identifier (matches the directory name on disk).
+ */
+skill_id: string; started_at: string; finished_at: string | null; status: RunStatus; duration_ms: number | null; 
+/**
+ * Per-section outcomes keyed by section ID
+ * (`<!-- section: <id> -->` marker).
+ */
+per_section_outcome?: Partial<{ [key in string]: SectionOutcome }>; repair_count?: number }
 export type SkillScope = "project_local" | "global"
 /**
  * Per-section view of a parsed skill body. Populated by
- * `parser::parse_skill_md`; `body_range` is a UTF-8 byte range into
- * the raw markdown body (start..end of the section's prose, including
- * step markers but excluding the `##`/`###` heading line itself).
+ * `parser::parse_skill_md`; `body_range` is a UTF-16 code-unit range
+ * into the raw markdown body string (start..end of the section's
+ * prose after the heading, measured in JS-compatible UTF-16 units so
+ * the frontend can use `body.slice(start, end)` directly).
  */
 export type SkillSection = { id: string; heading: string; level: number; step_ids: string[]; body_range: [number, number] }
 export type SkillState = "draft" | "confirmed" | "promoted"
@@ -840,7 +929,6 @@ export type SkillSummary = { id: string; version: number; name: string; descript
 export type Subgoal = { id: SubgoalId; text: string; pushed_at_step: number; parent: SubgoalId | null }
 export type SubgoalId = string
 export type SubgoalSignature = string
-export type TakeScreenshotParams = { mode: ScreenshotMode; target: string | null; include_ocr: boolean }
 export type TargetCandidate = { type: "AccessibilityLabel"; label: string; role: string | null } | 
 /**
  * Label identified by a vision language model from a screenshot crop.
@@ -883,13 +971,7 @@ export type TraceEventKind = "node_started" | "tool_call" | "tool_result" | "ste
  * enum yet. `#[serde(other)]` parses any unknown string into `Unknown`.
  */
 "unknown"
-export type TraceLevel = "Off" | "Minimal" | "Full"
-export type TypeTextParams = ({ verification_method?: VerificationMethod | null; verification_assertion?: string | null }) & { text: string }
 export type VariablePromotion = { node_id: string; variable_name: string }
-/**
- * Method used to verify an action node's effect.
- */
-export type VerificationMethod = "Vlm" | "Dom" | "AccessibilityTree"
 export type WalkthroughAction = { id: string; kind: WalkthroughActionKind; app_name: string | null; window_title: string | null; target_candidates: TargetCandidate[]; artifact_paths: string[]; source_event_ids: string[]; confidence: ActionConfidence; warnings: string[]; 
 /**
  * Screenshot coordinate metadata for VLM click target resolution.
@@ -901,7 +983,7 @@ screenshot_meta?: ScreenshotMeta | null;
  */
 candidate?: boolean }
 export type WalkthroughActionKind = { type: "LaunchApp"; app_name: string; app_kind: AppKind } | { type: "FocusWindow"; app_name: string; window_title: string | null; app_kind: AppKind } | { type: "Click"; x: number; y: number; button: MouseButton; click_count: number } | { type: "TypeText"; text: string } | { type: "PressKey"; key: string; modifiers: string[] } | { type: "Scroll"; delta_y: number } | { type: "Hover"; x: number; y: number; dwell_ms: number }
-export type WalkthroughAnnotations = { deleted_node_ids: string[]; renamed_nodes: { node_id: string; new_name: string }[]; target_overrides: TargetOverride[]; variable_promotions: VariablePromotion[] }
+export type WalkthroughAnnotations = { deleted_node_ids: string[]; renamed_nodes: NodeRename[]; target_overrides: TargetOverride[]; variable_promotions: VariablePromotion[] }
 export type WalkthroughDraftResponse = { session_id: string; actions: WalkthroughAction[]; warnings: string[] }
 export type WatchSlot = { name: WatchSlotName; note: string; set_at_step: number }
 export type WatchSlotName = "pending_modal" | "pending_auth" | "pending_focus_shift"

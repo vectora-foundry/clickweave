@@ -10,10 +10,15 @@ vi.mock("@tauri-apps/api/core", () => ({
 // Mock bindings so saveRunAsSkill / addRunToSkill don't hit real Tauri IPC.
 const saveRunAsSkillMock = vi.fn();
 const addRunToSkillMock = vi.fn();
+// `saveRunAsSkill` triggers a panel refresh via `listSkillsForPanel` on
+// success; mock it as a no-op so tests don't hit real IPC.
+const listSkillsForPanelMock = vi.fn();
+listSkillsForPanelMock.mockResolvedValue({ status: "ok", data: [] });
 vi.mock("../../bindings", () => ({
   commands: {
     saveRunAsSkill: (...args: unknown[]) => saveRunAsSkillMock(...args),
     addRunToSkill: (...args: unknown[]) => addRunToSkillMock(...args),
+    listSkillsForPanel: (...args: unknown[]) => listSkillsForPanelMock(...args),
   },
 }));
 
@@ -207,14 +212,19 @@ describe("agentSlice run buffers", () => {
     useStore.getState().resetAgent();
   });
 
-  it("commitRunBuffer with skillCreationIntent triggers saveRunAsSkill", () => {
+  it("commitRunBuffer with skillCreationIntent stages a pending run save", () => {
     useStore.setState({ skillCreationIntent: true, agentGoal: "automate X" });
-    saveRunAsSkillMock.mockResolvedValue({ status: "ok", data: null });
 
     useStore.getState().commitRunBuffer("run-1", "summary text");
 
     expect(useStore.getState().skillCreationIntent).toBe(false);
-    expect(saveRunAsSkillMock).toHaveBeenCalled();
+    expect(useStore.getState().pendingRunSave).toEqual({
+      runId: "run-1",
+      summary: "summary text",
+    });
+    // Materialisation is deferred to AgentRunSaveSheet — the IPC must NOT
+    // fire from commitRunBuffer itself.
+    expect(saveRunAsSkillMock).not.toHaveBeenCalled();
   });
 
   it("commitRunBuffer without skillCreationIntent is a no-op", () => {
@@ -223,12 +233,38 @@ describe("agentSlice run buffers", () => {
     useStore.getState().commitRunBuffer("run-1", "summary");
 
     expect(saveRunAsSkillMock).not.toHaveBeenCalled();
+    expect(useStore.getState().pendingRunSave).toBeNull();
   });
 
   it("dropRunBuffer is a no-op (buffers were removed with the canvas)", () => {
     // dropRunBuffer is kept for call-site compatibility; it should not throw.
     expect(() => useStore.getState().dropRunBuffer("run-1")).not.toThrow();
     expect(() => useStore.getState().dropRunBuffer("missing-run")).not.toThrow();
+  });
+
+  it("newProject clears pendingRunSave and the run buffer so a staged save can't leak across projects", () => {
+    useStore.setState({
+      executorState: "idle",
+      agentStatus: "complete",
+      completionDisagreement: null,
+      pendingRunSave: { runId: "run-old", summary: "automate old project" },
+      agentGoal: "automate old project",
+      skillCreationIntent: false,
+    });
+    useStore.getState().addAgentStep({
+      summary: "old step",
+      toolName: "click",
+      toolArgs: null,
+      toolResult: "ok",
+      pageTransitioned: false,
+    });
+
+    useStore.getState().newProject();
+
+    expect(useStore.getState().pendingRunSave).toBeNull();
+    expect(useStore.getState().agentSteps).toEqual([]);
+    expect(useStore.getState().agentGoal).toBe("");
+    expect(useStore.getState().skillCreationIntent).toBe(false);
   });
 });
 
@@ -736,8 +772,7 @@ describe("D21 skillCreationIntent — first-skill-from-empty", () => {
     });
   });
 
-  it("(D21-a) commitRunBuffer with skillCreationIntent=true calls saveRunAsSkill", async () => {
-    saveRunAsSkillMock.mockResolvedValueOnce({ status: "ok", data: {} });
+  it("(D21-a) commitRunBuffer with skillCreationIntent=true stages pendingRunSave for the review sheet", async () => {
     useStore.getState().setSkillCreationIntent(true);
     useStore.getState().addAgentStep({
       summary: "Clicked the button",
@@ -751,15 +786,14 @@ describe("D21 skillCreationIntent — first-skill-from-empty", () => {
 
     // skillCreationIntent is cleared immediately on commit
     expect(useStore.getState().skillCreationIntent).toBe(false);
-
-    // Give the async saveRunAsSkill call a tick to fire
+    // The post-run AgentRunSaveSheet is keyed off pendingRunSave; the IPC
+    // is invoked by the sheet's Save action, not by commitRunBuffer.
+    expect(useStore.getState().pendingRunSave).toEqual({
+      runId: "run-1",
+      summary: "Goal complete",
+    });
     await new Promise((r) => setTimeout(r, 0));
-
-    expect(saveRunAsSkillMock).toHaveBeenCalledTimes(1);
-    const arg = saveRunAsSkillMock.mock.calls[0][0];
-    expect(arg.store_traces).toBe(true);
-    expect(arg.steps).toHaveLength(1);
-    expect(arg.steps[0].tool_name).toBe("click");
+    expect(saveRunAsSkillMock).not.toHaveBeenCalled();
   });
 
   it("(D21-b) commitRunBuffer with skillCreationIntent=false does not call saveRunAsSkill (ad-hoc run)", () => {
@@ -794,6 +828,106 @@ describe("D21 skillCreationIntent — first-skill-from-empty", () => {
     expect(arg.name).toBe("My new skill");
     expect(arg.store_traces).toBe(true);
     expect(arg.steps[0].tool_name).toBe("type_text");
+  });
+
+  it("saveRunAsSkill with stepIndices materialises only the selected subset", async () => {
+    saveRunAsSkillMock.mockResolvedValueOnce({ status: "ok", data: {} });
+    const baseStep = {
+      summary: "",
+      toolArgs: {},
+      toolResult: "ok",
+      pageTransitioned: false,
+    };
+    useStore.getState().addAgentStep({ ...baseStep, toolName: "launch_app" });
+    useStore.getState().addAgentStep({ ...baseStep, toolName: "click_wrong" });
+    useStore.getState().addAgentStep({ ...baseStep, toolName: "type_text" });
+
+    await useStore.getState().saveRunAsSkill("Filtered skill", [0, 2]);
+
+    expect(saveRunAsSkillMock).toHaveBeenCalledTimes(1);
+    const arg = saveRunAsSkillMock.mock.calls[0][0];
+    expect(arg.steps).toHaveLength(2);
+    expect(arg.steps[0].tool_name).toBe("launch_app");
+    expect(arg.steps[1].tool_name).toBe("type_text");
+  });
+
+  it("saveRunAsSkill returns ok=true and refreshes the skills panel on success", async () => {
+    saveRunAsSkillMock.mockResolvedValueOnce({
+      status: "ok",
+      data: { id: "skill-1", name: "My new skill" },
+    });
+    listSkillsForPanelMock.mockClear();
+    useStore.getState().addAgentStep({
+      summary: "Typed text",
+      toolName: "type_text",
+      toolArgs: { text: "hello" },
+      toolResult: "ok",
+      pageTransitioned: false,
+    });
+
+    const result = await useStore.getState().saveRunAsSkill("My new skill");
+
+    expect(result).toEqual({
+      ok: true,
+      skill: { id: "skill-1", name: "My new skill" },
+    });
+    // Sheet must trigger a panel refresh so the freshly saved skill is
+    // surfaced without a project reload.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(listSkillsForPanelMock).toHaveBeenCalled();
+  });
+
+  it("saveRunAsSkill skips the panel refresh when the project changes during the in-flight IPC", async () => {
+    // Capture the IPC promise so we can flip projectId before it resolves,
+    // emulating the user opening/creating another project mid-save.
+    let resolveSave: (v: unknown) => void = () => {};
+    saveRunAsSkillMock.mockImplementationOnce(
+      () =>
+        new Promise((res) => {
+          resolveSave = res;
+        }),
+    );
+    listSkillsForPanelMock.mockClear();
+    useStore.setState({ projectId: "project-A" });
+    useStore.getState().addAgentStep({
+      summary: "Step",
+      toolName: "click",
+      toolArgs: null,
+      toolResult: "ok",
+      pageTransitioned: false,
+    });
+
+    const savePromise = useStore.getState().saveRunAsSkill("Skill in A");
+    // Switch projects before the IPC resolves.
+    useStore.setState({ projectId: "project-B" });
+    resolveSave({ status: "ok", data: { id: "skill-A", name: "Skill in A" } });
+    const result = await savePromise;
+
+    expect(result.ok).toBe(true);
+    // Refresh must not fire — it would clobber project B's panel with
+    // project A's skill list.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(listSkillsForPanelMock).not.toHaveBeenCalled();
+  });
+
+  it("saveRunAsSkill returns ok=false with the backend error and does NOT refresh the panel on failure", async () => {
+    saveRunAsSkillMock.mockResolvedValueOnce({
+      status: "error",
+      error: "disk full",
+    });
+    listSkillsForPanelMock.mockClear();
+    useStore.getState().addAgentStep({
+      summary: "Step",
+      toolName: "click",
+      toolArgs: null,
+      toolResult: "ok",
+      pageTransitioned: false,
+    });
+
+    const result = await useStore.getState().saveRunAsSkill("My skill");
+
+    expect(result).toEqual({ ok: false, error: "disk full" });
+    expect(listSkillsForPanelMock).not.toHaveBeenCalled();
   });
 
   it("(D21-d) explicit addRunToSkill store action invokes the Tauri command with skill_id and version", async () => {

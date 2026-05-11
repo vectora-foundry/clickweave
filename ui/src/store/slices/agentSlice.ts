@@ -1,6 +1,6 @@
 import type { StateCreator } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import { commands } from "../../bindings";
+import { commands, type Skill } from "../../bindings";
 import { toEndpoint } from "../settings";
 import type { PermissionRule, ToolPermissions } from "../state";
 import type { StoreState } from "./types";
@@ -183,28 +183,48 @@ export interface AgentSlice {
   agentRunCollapsed: Record<string, boolean>;
   /**
    * True when the user typed their first goal from `IntentEmptyState` on a
-   * project with zero skills. When set, `commitRunBuffer` materialises a skill
-   * from the completed run instead of committing graph nodes (which no longer
-   * exist in the skill-only shell). Cleared after the skill is created or the
-   * run is discarded.
+   * project with zero skills. When set, `commitRunBuffer` stages a
+   * `pendingRunSave` payload that opens the post-run `AgentRunSaveSheet`
+   * review modal; the actual skill IPC fires only when the user confirms in
+   * the sheet. Cleared as soon as `commitRunBuffer` stages the payload (the
+   * sheet itself owns the `pendingRunSave` lifecycle from that point on).
    */
   skillCreationIntent: boolean;
+  /**
+   * Set by `commitRunBuffer` when a run terminates while `skillCreationIntent`
+   * is true. Drives the post-run `AgentRunSaveSheet` modal: user picks the
+   * skill name and which steps to include before the skill is materialised.
+   * Cleared on Save or Discard.
+   */
+  pendingRunSave: { runId: string; summary: string } | null;
+  setPendingRunSave: (v: { runId: string; summary: string } | null) => void;
   startAgent: (goal: string) => Promise<void>;
   stopAgent: () => Promise<void>;
   addAgentStep: (step: AgentStep) => void;
   /**
-   * Commit the completed run. When `skillCreationIntent` is true, triggers
-   * `saveRunAsSkill` to materialise the run as a skill and then clears the
-   * intent flag. Otherwise a no-op (ad-hoc runs are not committed to a graph).
+   * Commit the completed run. When `skillCreationIntent` is true, stages a
+   * `pendingRunSave` payload (clears the intent flag at the same time) so the
+   * post-run `AgentRunSaveSheet` opens and the user can review the steps
+   * before the skill is materialised. Otherwise a no-op — ad-hoc runs are
+   * not committed to a graph (no graph exists in the skill-only shell).
    */
   commitRunBuffer: (runId: string, summary: string) => void;
   dropRunBuffer: (runId: string) => void;
   setSkillCreationIntent: (intent: boolean) => void;
   /**
    * Explicitly save the most recently completed agent run as a new skill.
-   * Privacy-gated: returns early when `storeTraces` or `skillsEnabled` is off.
+   * Privacy-gated: returns `{ ok: false, error }` when `storeTraces` or
+   * `skillsEnabled` is off, or when the backend IPC returns an error.
+   * Returns `{ ok: true, skill }` carrying the materialised `Skill` on a
+   * confirmed write. Pass `stepIndices` to materialise only a subset of
+   * `agentSteps` (used by `AgentRunSaveSheet` to skip wrong-path/correction
+   * steps). On success, refreshes the skills panel so the new skill is
+   * surfaced in the UI without a project reload.
    */
-  saveRunAsSkill: (name?: string) => Promise<void>;
+  saveRunAsSkill: (
+    name?: string,
+    stepIndices?: number[],
+  ) => Promise<{ ok: true; skill: Skill } | { ok: false; error: string }>;
   /**
    * Explicitly append the most recently completed agent run to an existing
    * skill identified by `skillId`. Privacy-gated like `saveRunAsSkill`.
@@ -265,6 +285,8 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
   agentRunStartedAt: null,
   agentRunFinishedAt: null,
   skillCreationIntent: false,
+  pendingRunSave: null,
+  setPendingRunSave: (v) => set({ pendingRunSave: v }),
 
   startAgent: async (goal) => {
     const priorState = get();
@@ -429,15 +451,17 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
     }));
   },
 
-  commitRunBuffer: (_runId, summary) => {
-    // When `skillCreationIntent` is set we materialise the completed
-    // run as a skill. Otherwise this is a no-op for ad-hoc runs.
+  commitRunBuffer: (runId, summary) => {
+    // When `skillCreationIntent` is set we defer materialising the skill
+    // to `AgentRunSaveSheet` so the user can review the name + steps
+    // (including filtering out wrong-path / correction tool calls) before
+    // commit. Otherwise this is a no-op for ad-hoc runs.
     const state = get();
     if (state.skillCreationIntent) {
-      set({ skillCreationIntent: false });
-      get()
-        .saveRunAsSkill(summary || state.agentGoal || "")
-        .catch((e) => console.error("commitRunBuffer: saveRunAsSkill failed", e));
+      set({
+        skillCreationIntent: false,
+        pendingRunSave: { runId, summary: summary || state.agentGoal || "" },
+      });
     }
   },
 
@@ -448,10 +472,22 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
 
   setSkillCreationIntent: (intent) => set({ skillCreationIntent: intent }),
 
-  saveRunAsSkill: async (name) => {
+  saveRunAsSkill: async (name, stepIndices) => {
     const state = get();
-    if (!state.storeTraces || !state.skillsEnabled) return;
-    const steps = state.agentSteps.map((s) => ({
+    if (!state.storeTraces || !state.skillsEnabled) {
+      return {
+        ok: false,
+        error: !state.storeTraces
+          ? "Trace persistence is off"
+          : "Skill saving is disabled",
+      };
+    }
+    const sourceSteps = stepIndices
+      ? stepIndices
+          .map((i) => state.agentSteps[i])
+          .filter((s): s is AgentStep => s !== undefined)
+      : state.agentSteps;
+    const steps = sourceSteps.map((s) => ({
       summary: s.summary,
       tool_name: s.toolName,
       args_json: s.toolArgs ? JSON.stringify(s.toolArgs) : "",
@@ -466,8 +502,40 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       store_traces: state.storeTraces,
     });
     if (result.status === "error") {
-      console.error("saveRunAsSkill failed:", result.error);
+      const message =
+        typeof result.error === "string"
+          ? result.error
+          : JSON.stringify(result.error);
+      console.error("saveRunAsSkill failed:", message);
+      return { ok: false, error: message };
     }
+    // Refresh the skills panel so the freshly written skill is surfaced
+    // without requiring a project reload. `save_run_as_skill` emits
+    // `agent://skill_extracted` without a `run_id`, which the staleness
+    // filter on the event listener rejects, so we cannot rely on that
+    // path to update the UI for this command.
+    //
+    // Re-check the current project before refreshing: if the user opened
+    // or created a different project while the IPC was in flight, the
+    // captured project fields are stale. Refreshing with them would clobber
+    // the new project's panel with the old project's skill list. The new
+    // project's own panel load is handled by `AppShell`'s skills-load
+    // effect, so we can safely skip the refresh here.
+    const currentProjectId = get().projectId;
+    if (currentProjectId === state.projectId) {
+      get()
+        .loadSkillsForPanel({
+          projectPath: state.projectPath,
+          projectName: state.projectName,
+          projectId: state.projectId,
+          includeGlobal: state.skillsGlobalParticipation,
+          storeTraces: state.storeTraces,
+        })
+        .catch((e) =>
+          console.error("loadSkillsForPanel after saveRunAsSkill failed", e),
+        );
+    }
+    return { ok: true, skill: result.data };
   },
 
   addRunToSkill: async (skillId, version) => {
@@ -622,6 +690,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       agentRunStartedAt: null,
       agentRunFinishedAt: null,
       skillCreationIntent: false,
+      pendingRunSave: null,
       // Ambiguity records are intentionally NOT cleared — they persist across
       // runs so the user can still inspect past resolutions until they
       // explicitly clear them or start a new project.
