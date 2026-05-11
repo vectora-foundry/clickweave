@@ -1,7 +1,6 @@
 import { createElement } from "react";
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Node } from "../../bindings";
 
 const eventMock = vi.hoisted(() => ({
   listeners: new Map<string, Set<(event: { payload: unknown }) => void>>(),
@@ -29,22 +28,6 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { useStore } from "../../store/useAppStore";
 import { isStaleRunId, useAgentEvents } from "./useAgentEvents";
 
-function makeAgentNode(id: string, runId: string): Node {
-  return {
-    id,
-    name: id,
-    node_type: { type: "CdpWait", text: "Ready", timeout_ms: 1000 },
-    position: { x: 0, y: 0 },
-    enabled: true,
-    timeout_ms: null,
-    settle_ms: null,
-    retries: 0,
-    trace_level: "Minimal",
-    role: "Default",
-    expected_outcome: null,
-    source_run_id: runId,
-  };
-}
 
 function AgentEventsHarness() {
   useAgentEvents();
@@ -78,15 +61,6 @@ describe("useAgentEvents trace subscriptions", () => {
       messages: [],
       completionDisagreement: null,
       agentError: null,
-      pendingRunNodes: {},
-      pendingRunEdges: {},
-      workflow: {
-        id: "00000000-0000-0000-0000-000000000001",
-        name: "wf",
-        nodes: [],
-        edges: [],
-        groups: [],
-      },
     });
   });
 
@@ -183,84 +157,62 @@ describe("useAgentEvents trace subscriptions", () => {
     });
   });
 
-  it("buffers node and edge events, then commits them on complete", async () => {
+  it("agent://complete terminal event stamps a terminal frame on the run trace", async () => {
     await mountSubscriptions();
-
-    const node = makeAgentNode("agent-node-1", "run-1");
-    const edge = { from: "anchor", to: "agent-node-1" };
-
-    emit("agent://node_added", {
-      run_id: "run-1",
-      node,
-    });
-    emit("agent://edge_added", {
-      run_id: "run-1",
-      edge,
-    });
-
-    expect(useStore.getState().workflow.nodes).toEqual([]);
-    expect(useStore.getState().workflow.edges).toEqual([]);
-    expect(useStore.getState().pendingRunNodes["run-1"]).toEqual([node]);
-    expect(useStore.getState().pendingRunEdges["run-1"]).toEqual([edge]);
 
     emit("agent://complete", {
       run_id: "run-1",
       summary: "Done",
     });
 
-    const state = useStore.getState();
-    expect(state.workflow.nodes).toEqual([node]);
-    expect(state.workflow.edges).toEqual([edge]);
-    expect(state.pendingRunNodes["run-1"]).toBeUndefined();
-    expect(state.pendingRunEdges["run-1"]).toBeUndefined();
-    expect(state.runTraces["run-1"].terminalFrame).toEqual({
+    expect(useStore.getState().runTraces["run-1"].terminalFrame).toEqual({
       kind: "complete",
       detail: "Done",
     });
   });
+});
 
-  it("drops buffered canvas changes on stopped, error, and destructive-cap terminal paths", async () => {
+describe("terminal events stamp agentRunFinishedAt (D24)", () => {
+  beforeEach(() => {
+    eventMock.listeners.clear();
+    eventMock.listen.mockClear();
+    useStore.setState({
+      agentRunId: "run-1",
+      agentStatus: "running",
+      agentSteps: [],
+      runTraces: {},
+      messages: [],
+      completionDisagreement: null,
+      agentError: null,
+      agentRunStartedAt: 1_000,
+      agentRunFinishedAt: null,
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    eventMock.listeners.clear();
+  });
+
+  it("agent://complete stamps agentRunFinishedAt", async () => {
     await mountSubscriptions();
+    emit("agent://complete", { run_id: "run-1", summary: "Done" });
+    expect(useStore.getState().agentRunFinishedAt).not.toBeNull();
+  });
 
-    const stoppedNode = makeAgentNode("stopped-node", "run-1");
-    useStore.getState().bufferAgentNode("run-1", stoppedNode);
-    emit("agent://stopped", {
-      run_id: "run-1",
-      reason: "user_stopped",
-    });
-    expect(useStore.getState().workflow.nodes).toEqual([]);
-    expect(useStore.getState().pendingRunNodes["run-1"]).toBeUndefined();
+  it("agent://stopped stamps agentRunFinishedAt", async () => {
+    await mountSubscriptions();
+    emit("agent://stopped", { run_id: "run-1", reason: "user_stopped" });
+    expect(useStore.getState().agentRunFinishedAt).not.toBeNull();
+  });
 
-    useStore.setState({
-      agentRunId: "run-2",
-      agentStatus: "running",
-      pendingRunNodes: {},
-      pendingRunEdges: {},
-    });
-    const errorNode = makeAgentNode("error-node", "run-2");
-    useStore.getState().bufferAgentNode("run-2", errorNode);
-    emit("agent://error", {
-      run_id: "run-2",
-      message: "boom",
-    });
-    expect(useStore.getState().workflow.nodes).toEqual([]);
-    expect(useStore.getState().pendingRunNodes["run-2"]).toBeUndefined();
-
-    useStore.setState({
-      agentRunId: "run-3",
-      agentStatus: "running",
-      pendingRunNodes: {},
-      pendingRunEdges: {},
-    });
-    const capNode = makeAgentNode("cap-node", "run-3");
-    useStore.getState().bufferAgentNode("run-3", capNode);
-    emit("agent://consecutive_destructive_cap_hit", {
-      run_id: "run-3",
-      recent_tool_names: ["delete_file"],
-      cap: 1,
-    });
-    expect(useStore.getState().workflow.nodes).toEqual([]);
-    expect(useStore.getState().pendingRunNodes["run-3"]).toBeUndefined();
+  it("agent://error stamps agentRunFinishedAt even when status is not running", async () => {
+    // Racing-error-after-stop: status was already flipped, but the
+    // freeze should still reflect the last terminal moment.
+    useStore.setState({ agentStatus: "stopped" });
+    await mountSubscriptions();
+    emit("agent://error", { run_id: "run-1", message: "boom" });
+    expect(useStore.getState().agentRunFinishedAt).not.toBeNull();
   });
 });
 

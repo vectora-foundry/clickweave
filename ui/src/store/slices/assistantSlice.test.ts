@@ -34,6 +34,77 @@ vi.mock("../../bindings", async () => {
 import { useStore } from "../useAppStore";
 import { commands } from "../../bindings";
 
+describe("assistantSlice.setAssistantOpen / toggleAssistant (D21)", () => {
+  beforeEach(() => {
+    useStore.setState({
+      assistantSurface: null,
+      currentView: "canvas",
+      walkthroughStatus: "Idle",
+    });
+  });
+
+  it("setAssistantOpen(true) opens the drawer surface on Canvas", () => {
+    useStore.getState().setAssistantOpen(true);
+    expect(useStore.getState().assistantSurface).toBe("drawer");
+  });
+
+  it("setAssistantOpen(false) closes the drawer surface on Canvas", () => {
+    useStore.setState({ assistantSurface: "drawer" });
+    useStore.getState().setAssistantOpen(false);
+    expect(useStore.getState().assistantSurface).toBeNull();
+  });
+
+  it("setAssistantOpen(true) is a no-op on Overview", () => {
+    useStore.setState({ currentView: "overview", assistantSurface: null });
+    useStore.getState().setAssistantOpen(true);
+    expect(useStore.getState().assistantSurface).toBeNull();
+  });
+
+  it("toggleAssistant flips between drawer and null on Canvas", () => {
+    useStore.getState().toggleAssistant();
+    expect(useStore.getState().assistantSurface).toBe("drawer");
+    useStore.getState().toggleAssistant();
+    expect(useStore.getState().assistantSurface).toBeNull();
+  });
+
+  it("toggleAssistant is a no-op on Overview", () => {
+    useStore.setState({ currentView: "overview", assistantSurface: null });
+    useStore.getState().toggleAssistant();
+    expect(useStore.getState().assistantSurface).toBeNull();
+  });
+
+  it("setAssistantOpen(true) on Canvas does NOT cancel a Review walkthrough", () => {
+    useStore.setState({ currentView: "canvas", walkthroughStatus: "Review" });
+    useStore.getState().setAssistantOpen(true);
+    expect(useStore.getState().walkthroughStatus).toBe("Review");
+    expect(useStore.getState().assistantSurface).toBe("drawer");
+  });
+
+  it("setAssistantOpen(true) on Canvas cancels a Recording walkthrough", () => {
+    const cancelSpy = vi.fn();
+    useStore.setState({
+      currentView: "canvas",
+      walkthroughStatus: "Recording",
+      cancelWalkthrough: cancelSpy as unknown as () => Promise<void>,
+    });
+    useStore.getState().setAssistantOpen(true);
+    expect(cancelSpy).toHaveBeenCalled();
+  });
+
+  it("setCurrentView('overview') from a Recording walkthrough does NOT cancel it", () => {
+    const cancelSpy = vi.fn();
+    useStore.setState({
+      currentView: "canvas",
+      walkthroughStatus: "Recording",
+      assistantSurface: null,
+      cancelWalkthrough: cancelSpy as unknown as () => Promise<void>,
+    });
+    useStore.getState().setCurrentView("overview");
+    expect(useStore.getState().walkthroughStatus).toBe("Recording");
+    expect(cancelSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe("assistantSlice.pushAssistantMessage", () => {
   beforeEach(() => {
     useStore.setState({ messages: [] });
@@ -248,134 +319,76 @@ describe("agent chat persistence", () => {
 describe("clearConversationFlow", () => {
   beforeEach(() => {
     (commands.clearAgentConversation as ReturnType<typeof vi.fn>).mockClear();
+    useStore.setState({ messages: [], projectPath: null, storeTraces: true });
+  });
+
+  it("zeroes agentRunStartedAt and agentRunFinishedAt (D24)", async () => {
     useStore.setState({
-      messages: [],
-      workflow: {
-        id: "00000000-0000-0000-0000-000000000001",
-        name: "wf",
-        nodes: [
-          {
-            id: "n1",
-            name: "cdp_click",
-            node_type: { type: "CdpWait", text: "", timeout_ms: 1000 },
-            position: { x: 0, y: 0 },
-            enabled: true,
-            timeout_ms: null,
-            settle_ms: null,
-            retries: 0,
-            trace_level: "Minimal",
-            role: "Default",
-            expected_outcome: null,
-            auto_id: "",
-            source_run_id: "r1",
-          },
-          {
-            id: "n2",
-            name: "user_added",
-            node_type: { type: "CdpWait", text: "", timeout_ms: 1000 },
-            position: { x: 0, y: 0 },
-            enabled: true,
-            timeout_ms: null,
-            settle_ms: null,
-            retries: 0,
-            trace_level: "Minimal",
-            role: "Default",
-            expected_outcome: null,
-            auto_id: "",
-          },
-        ],
-        edges: [],
-        groups: [],
-        next_id_counters: {},
-        intent: null,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } as any,
-      projectPath: null,
-      storeTraces: true,
+      agentRunStartedAt: 100,
+      agentRunFinishedAt: 200,
     });
-  });
-
-  it("wipes messages, removes agent-built nodes, and calls clearAgentConversation", async () => {
-    useStore.getState().pushAssistantMessage("user", "goal", "r1");
-    useStore.getState().pushAssistantMessage("assistant", "summary", "r1");
 
     await useStore.getState().clearConversationFlow();
 
-    expect(useStore.getState().messages).toEqual([]);
-    const remainingNodes = useStore.getState().workflow.nodes;
-    expect(remainingNodes).toHaveLength(1);
-    expect(remainingNodes[0].id).toBe("n2");
-    expect(commands.clearAgentConversation).toHaveBeenCalled();
+    const s = useStore.getState();
+    expect(s.agentRunStartedAt).toBeNull();
+    expect(s.agentRunFinishedAt).toBeNull();
   });
 
-  it("strips deleted agent nodes from user groups and auto-dissolves underfilled groups", async () => {
-    // Seed a user group that contains the agent-built node (n1) plus
-    // the user-owned node (n2). After Clear, n1 is gone, n2 survives,
-    // and the group's effective membership drops to 1 → auto-dissolve.
-    useStore.setState((s) => ({
-      workflow: {
-        ...s.workflow,
-        groups: [
-          {
-            id: "g1",
-            name: "Mixed group",
-            color: "#aaa",
-            node_ids: ["n1", "n2"],
-            parent_group_id: null,
-          },
-        ],
+  it("hydrateRunTrace drops the trace and sets agentRunId when no run is active", () => {
+    useStore.setState({ agentRunId: null, runTraces: {} });
+    useStore.getState().hydrateRunTrace({
+      runId: "hydrated-2026-04-01",
+      phase: "executing",
+      activeSubgoal: "Click button",
+      steps: [
+        {
+          stepIndex: 0,
+          toolName: "click",
+          phase: "executing",
+          body: "ok",
+          failed: false,
+        },
+      ],
+      worldModelDeltas: [],
+      milestones: [],
+      terminalFrame: null,
+    });
+    const s = useStore.getState();
+    expect(s.agentRunId).toBe("hydrated-2026-04-01");
+    expect(s.runTraces["hydrated-2026-04-01"].steps).toHaveLength(1);
+  });
+
+  it("hydrateRunTrace is a no-op while a live run is active", () => {
+    useStore.setState({
+      agentRunId: "live-run",
+      runTraces: {
+        "live-run": {
+          runId: "live-run",
+          phase: "exploring",
+          activeSubgoal: "",
+          steps: [],
+          worldModelDeltas: [],
+          milestones: [],
+          terminalFrame: null,
+        },
       },
-    }));
-
-    await useStore.getState().clearConversationFlow();
-
-    const groups = useStore.getState().workflow.groups ?? [];
-    // Group auto-dissolved because it fell below 2 members.
-    expect(groups).toHaveLength(0);
+    });
+    useStore.getState().hydrateRunTrace({
+      runId: "hydrated-x",
+      phase: "executing",
+      activeSubgoal: "",
+      steps: [],
+      worldModelDeltas: [],
+      milestones: [],
+      terminalFrame: null,
+    });
+    const s = useStore.getState();
+    expect(s.agentRunId).toBe("live-run");
+    expect(s.runTraces["hydrated-x"]).toBeUndefined();
   });
 
-  it("keeps a group with >=2 surviving members but strips the deleted agent node from it", async () => {
-    useStore.setState((s) => ({
-      workflow: {
-        ...s.workflow,
-        nodes: [
-          ...s.workflow.nodes,
-          {
-            id: "n3",
-            name: "another_user_node",
-            node_type: { type: "CdpWait", text: "", timeout_ms: 1000 },
-            position: { x: 0, y: 0 },
-            enabled: true,
-            timeout_ms: null,
-            settle_ms: null,
-            retries: 0,
-            trace_level: "Minimal",
-            role: "Default",
-            expected_outcome: null,
-            auto_id: "",
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          } as any,
-        ],
-        groups: [
-          {
-            id: "g1",
-            name: "Mixed group",
-            color: "#aaa",
-            node_ids: ["n1", "n2", "n3"],
-            parent_group_id: null,
-          },
-        ],
-      },
-    }));
-
-    await useStore.getState().clearConversationFlow();
-
-    const groups = useStore.getState().workflow.groups ?? [];
-    expect(groups).toHaveLength(1);
-    expect(groups[0].node_ids).toEqual(["n2", "n3"]);
-  });
-
-  it("drops the active run buffer and trace when clearing conversation", async () => {
+  it("drops the active run trace when clearing conversation", async () => {
     useStore.setState({
       agentRunId: "r1",
       runTraces: {
@@ -390,25 +403,9 @@ describe("clearConversationFlow", () => {
         },
       },
     });
-    useStore.getState().bufferAgentNode("r1", {
-      id: "pending-node",
-      name: "pending-node",
-      node_type: { type: "CdpWait", text: "", timeout_ms: 1000 },
-      position: { x: 0, y: 0 },
-      enabled: true,
-      timeout_ms: null,
-      settle_ms: null,
-      retries: 0,
-      trace_level: "Minimal",
-      role: "Default",
-      expected_outcome: null,
-      auto_id: "",
-      source_run_id: "r1",
-    });
 
     await useStore.getState().clearConversationFlow();
 
-    expect(useStore.getState().pendingRunNodes.r1).toBeUndefined();
     expect(useStore.getState().runTraces.r1).toBeUndefined();
   });
 });

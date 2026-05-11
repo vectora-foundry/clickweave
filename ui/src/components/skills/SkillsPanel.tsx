@@ -9,7 +9,7 @@ interface SkillsPanelProps {
 /// Skills panel left rail. Three collapsible sections (Drafts /
 /// Confirmed / Promoted) with `name + version` listing; a footer
 /// button kicks off "Save as Skill" flow (wired in Phase 7). Click
-/// selects a skill via the slice's `setSelectedSkill`.
+/// selects a skill and loads its full shape via `loadSelectedSkill`.
 export function SkillsPanel({ onNewFromWalkthrough }: SkillsPanelProps) {
   const { drafts, confirmed, promoted, selectedSkill } = useStore(
     useShallow((s) => ({
@@ -20,6 +20,31 @@ export function SkillsPanel({ onNewFromWalkthrough }: SkillsPanelProps) {
     })),
   );
   const setSelectedSkill = useStore((s) => s.setSelectedSkill);
+  const loadSelectedSkill = useStore((s) => s.loadSelectedSkill);
+  const { projectPath, projectId, projectName, storeTraces } = useStore(
+    useShallow((s) => ({
+      projectPath: s.projectPath,
+      projectId: s.projectId,
+      projectName: s.projectName,
+      storeTraces: s.storeTraces,
+    })),
+  );
+
+  const handleSelect = (id: string, version: number) => {
+    // Set a lightweight stub immediately so SkillDetailView renders without
+    // waiting for the IPC round-trip. The full Skill shape is fetched in the
+    // background via loadSelectedSkill for SkillView.
+    setSelectedSkill(id, version);
+    loadSelectedSkill({
+      projectPath,
+      projectId,
+      projectName,
+      storeTraces,
+      includeGlobal: false,
+      skill_id: id,
+      version,
+    }).catch((e) => console.error("Failed to load skill", e));
+  };
 
   return (
     <div className="flex h-full w-56 shrink-0 flex-col border-r border-[var(--border)] bg-[var(--bg-panel)] text-xs">
@@ -28,19 +53,19 @@ export function SkillsPanel({ onNewFromWalkthrough }: SkillsPanelProps) {
           title="Drafts"
           skills={drafts}
           selected={selectedSkill}
-          onSelect={setSelectedSkill}
+          onSelect={handleSelect}
         />
         <SkillsBucket
           title="Confirmed"
           skills={confirmed}
           selected={selectedSkill}
-          onSelect={setSelectedSkill}
+          onSelect={handleSelect}
         />
         <SkillsBucket
           title="Promoted"
           skills={promoted}
           selected={selectedSkill}
-          onSelect={setSelectedSkill}
+          onSelect={handleSelect}
         />
       </div>
       {onNewFromWalkthrough && (

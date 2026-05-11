@@ -1,7 +1,9 @@
 //! Integration tests for `SkillStore`. Exercise the public surface the
-//! runner (Phase 3) and the file watcher (Task 2.3.5) depend on:
-//! atomic-rename writes, lossless round-trips through the markdown
-//! frontmatter, and recently-written self-write tracking.
+//! runner and the file watcher depend on: atomic-rename writes, lossless
+//! round-trips through the markdown frontmatter, and recently-written
+//! self-write tracking.
+//!
+//! Skills live at `<dir>/<skill_id>/SKILL.md` (per-skill directory layout).
 
 use std::fs;
 use std::path::PathBuf;
@@ -43,6 +45,10 @@ fn sample_skill(id: &str, version: u32) -> Skill {
         updated_at: Utc::now(),
         produced_node_ids: vec![],
         body: format!("# {id}\n\nbody for {id}\n"),
+        schema_version: clickweave_engine::agent::skills::SKILL_SCHEMA_VERSION,
+        variables: vec![],
+        sections: vec![],
+        replay: None,
     }
 }
 
@@ -54,6 +60,8 @@ fn write_then_list_then_read_round_trips() {
     let original = sample_skill("alpha", 1);
     let written = store.write_skill(&original).unwrap();
     assert!(written.exists());
+    // New layout: <dir>/<skill_id>/SKILL.md
+    assert_eq!(written, tmp.path().join("alpha").join("SKILL.md"));
 
     let files = store.list_files().unwrap();
     assert_eq!(files.len(), 1);
@@ -66,25 +74,35 @@ fn write_then_list_then_read_round_trips() {
 }
 
 #[test]
-fn writing_two_versions_produces_two_files() {
+fn writing_two_skills_produces_two_directories() {
     let tmp = tempfile::tempdir().unwrap();
     let store = SkillStore::new(tmp.path().to_path_buf());
 
-    let v1 = sample_skill("beta", 1);
-    let v2 = sample_skill("beta", 2);
+    let skill_a = sample_skill("beta-v1", 1);
+    let skill_b = sample_skill("beta-v2", 2);
 
-    store.write_skill(&v1).unwrap();
-    store.write_skill(&v2).unwrap();
+    store.write_skill(&skill_a).unwrap();
+    store.write_skill(&skill_b).unwrap();
 
     let mut files = store.list_files().unwrap();
     files.sort();
     assert_eq!(files.len(), 2);
-    let names: Vec<String> = files
+    // Each file is a SKILL.md inside the per-skill directory.
+    assert!(files.iter().all(|p| p.file_name().unwrap() == "SKILL.md"));
+    // The parent directories are named after the skill IDs.
+    let dirs: Vec<String> = files
         .iter()
-        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .map(|p| {
+            p.parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
-    assert!(names.contains(&"beta-v1.md".into()));
-    assert!(names.contains(&"beta-v2.md".into()));
+    assert!(dirs.contains(&"beta-v1".to_string()));
+    assert!(dirs.contains(&"beta-v2".to_string()));
 }
 
 #[test]
@@ -95,54 +113,41 @@ fn write_uses_tmp_file_then_atomic_rename() {
     let skill = sample_skill("gamma", 1);
     let final_path = store.write_skill(&skill).unwrap();
 
-    // Post-condition: only the final file exists; no `.tmp` straggler.
-    let entries: Vec<PathBuf> = fs::read_dir(tmp.path())
+    // Post-condition: the final SKILL.md exists and no `.tmp` straggler.
+    assert!(final_path.exists());
+    assert!(!final_path.to_string_lossy().ends_with(".tmp"));
+    // The per-skill directory contains only the SKILL.md.
+    let skill_dir = final_path.parent().unwrap();
+    let entries: Vec<PathBuf> = fs::read_dir(skill_dir)
         .unwrap()
         .map(|e| e.unwrap().path())
         .collect();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0], final_path);
-    assert!(!final_path.to_string_lossy().ends_with(".tmp"));
 }
 
 #[test]
-fn rename_in_place_replaces_old_file_with_new_name() {
-    let tmp = tempfile::tempdir().unwrap();
-    let store = SkillStore::new(tmp.path().to_path_buf());
-
-    let original = sample_skill("delta-old", 1);
-    let original_path = store.write_skill(&original).unwrap();
-
-    let mut renamed = original.clone();
-    renamed.id = "delta-new".into();
-    let new_path = store
-        .rename_skill_in_place(&original_path, &renamed)
-        .unwrap();
-
-    assert!(new_path.exists());
-    assert!(!original_path.exists());
-
-    let files = store.list_files().unwrap();
-    assert_eq!(files.len(), 1);
-    assert_eq!(files[0], new_path);
-}
-
-#[test]
-fn malformed_file_errors_but_other_files_still_load() {
+fn malformed_file_in_per_skill_dir_errors_gracefully() {
     let tmp = tempfile::tempdir().unwrap();
     let store = SkillStore::new(tmp.path().to_path_buf());
 
     let good = sample_skill("eps", 1);
     let good_path = store.write_skill(&good).unwrap();
 
-    let bad_path = tmp.path().join("malformed-v1.md");
+    // Place a malformed SKILL.md in a second skill directory.
+    let bad_dir = tmp.path().join("malformed");
+    fs::create_dir_all(&bad_dir).unwrap();
+    let bad_path = bad_dir.join("SKILL.md");
     fs::write(&bad_path, "no frontmatter here\n").unwrap();
 
     let files = store.list_files().unwrap();
     assert_eq!(files.len(), 2);
 
     let bad_err = store.read_skill(&bad_path).unwrap_err();
-    assert!(matches!(bad_err, SkillError::InvalidFrontmatter(_)));
+    assert!(matches!(
+        bad_err,
+        SkillError::MissingFrontmatterDelimiter(_)
+    ));
 
     let good_again = store.read_skill(&good_path).unwrap();
     assert_eq!(good_again.id, "eps");

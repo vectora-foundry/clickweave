@@ -4,9 +4,15 @@
 
 use std::path::PathBuf;
 
+use clickweave_engine::agent::skills::patch::{
+    ActionSketchReplacement, MarkdownReplacement, ReplaySidecarMutation,
+};
+use clickweave_engine::agent::skills::replay::ReplayJson;
 use clickweave_engine::agent::skills::{
-    ActionSketchStep, ApplicabilityHints, ParameterSlot, Skill, SkillRefinementProposal,
-    SkillScope, SkillState, SkillStore, slugify,
+    ActionSketchStep, ApplicabilityHints, ParameterSlot, Skill, SkillError,
+    SkillFrontmatterVariable, SkillLintError, SkillPatch, SkillPatchPrimitive,
+    SkillRefinementProposal, SkillScope, SkillState, SkillStore, apply_patch_to_skill,
+    emit_skill_md, lint_skill_patch, parse_replay_json, parse_skill_md, slugify,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -21,8 +27,8 @@ pub struct ConfirmSkillProposalRequest {
     pub version: u32,
     pub accepted_proposal: SkillRefinementProposal,
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
     pub run_id: Option<String>,
     pub store_traces: bool,
 }
@@ -32,8 +38,8 @@ pub struct RejectSkillProposalRequest {
     pub skill_id: String,
     pub version: u32,
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
     pub store_traces: bool,
 }
 
@@ -42,8 +48,8 @@ pub struct PromoteSkillToGlobalRequest {
     pub skill_id: String,
     pub version: u32,
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
     pub store_traces: bool,
 }
 
@@ -53,8 +59,8 @@ pub struct ForkSkillRequest {
     pub version: u32,
     pub new_name: String,
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
     pub store_traces: bool,
 }
 
@@ -64,8 +70,8 @@ pub struct DeleteSkillRequest {
     pub version: u32,
     pub scope: SkillScope,
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
     pub store_traces: bool,
 }
 
@@ -73,8 +79,22 @@ pub struct DeleteSkillRequest {
 pub struct ListSkillsRequest {
     pub scope: SkillScope,
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
+    pub store_traces: bool,
+}
+
+/// Request for [`load_skill_full`] — resolves the full [`Skill`] value
+/// (including `sections` and `body`) for a given skill id. The panel
+/// sidebar already holds `SkillSummary`; this is called once, on
+/// selection, to hydrate the detail view.
+#[derive(Debug, Deserialize, Type)]
+pub struct LoadSkillFullRequest {
+    pub skill_id: String,
+    pub version: u32,
+    pub project_path: Option<String>,
+    pub project_name: String,
+    pub project_id: String,
     pub store_traces: bool,
 }
 
@@ -123,13 +143,13 @@ impl SkillSummary {
 fn project_skills_dir_for(
     app: &tauri::AppHandle,
     project_path: &Option<String>,
-    workflow_name: &str,
-    workflow_id_str: &str,
+    project_name: &str,
+    project_id_str: &str,
 ) -> Result<PathBuf, CommandError> {
-    let workflow_uuid: uuid::Uuid = workflow_id_str
+    let project_uuid: uuid::Uuid = project_id_str
         .parse()
-        .map_err(|_| CommandError::validation("Invalid workflow ID"))?;
-    let storage = resolve_storage(app, project_path, workflow_name, workflow_uuid);
+        .map_err(|_| CommandError::validation("Invalid project ID"))?;
+    let storage = resolve_storage(app, project_path, project_name, project_uuid);
     storage
         .project_skills_dir()
         .map_err(|e| CommandError::io(format!("resolve project_skills_dir: {e}")))
@@ -149,20 +169,21 @@ fn global_skills_dir(app: &tauri::AppHandle) -> Result<PathBuf, CommandError> {
     Ok(dir)
 }
 
-fn skill_filename(skill_id: &str, version: u32) -> String {
-    format!("{}-v{}.md", slugify(skill_id), version)
-}
-
-fn proposal_filename(skill_id: &str, version: u32) -> String {
-    format!("{}-v{}.proposal.json", slugify(skill_id), version)
+/// Path to a skill's per-skill `proposal.json` sidecar — colocated with
+/// `SKILL.md` and `replay.json` under `<dir>/<skill_id>/`. The `version`
+/// is no longer encoded in the filename: only one open proposal exists
+/// per skill at a time, and the post-confirmation `version` bump is
+/// captured in the rewritten `SKILL.md` frontmatter.
+fn proposal_path(dir: &std::path::Path, skill_id: &str) -> PathBuf {
+    dir.join(skill_id).join("proposal.json")
 }
 
 fn read_proposal(
     dir: &std::path::Path,
     skill_id: &str,
-    version: u32,
+    _version: u32,
 ) -> Option<SkillRefinementProposal> {
-    let path = dir.join(proposal_filename(skill_id, version));
+    let path = proposal_path(dir, skill_id);
     let contents = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&contents).ok()
 }
@@ -172,7 +193,7 @@ fn read_skill_at(
     skill_id: &str,
     version: u32,
 ) -> Result<(Skill, PathBuf), CommandError> {
-    let path = store.dir().join(skill_filename(skill_id, version));
+    let path = store.skill_md_path(skill_id);
     let skill = store
         .read_skill(&path)
         .map_err(|e| CommandError::io(format!("read skill {}-v{}: {}", skill_id, version, e)))?;
@@ -199,8 +220,8 @@ pub async fn confirm_skill_proposal(
     let dir = project_skills_dir_for(
         &app,
         &request.project_path,
-        &request.workflow_name,
-        &request.workflow_id,
+        &request.project_name,
+        &request.project_id,
     )?;
     let store = SkillStore::new(dir.clone());
     let (mut skill, old_path) = read_skill_at(&store, &request.skill_id, request.version)?;
@@ -226,12 +247,7 @@ pub async fn confirm_skill_proposal(
         .map_err(|e| CommandError::io(format!("write confirmed skill: {e}")))?;
 
     // Best-effort cleanup of the LLM proposal sidecar file.
-    let proposal_path = dir.join(format!(
-        "{}-v{}.proposal.json",
-        slugify(&skill.id),
-        skill.version
-    ));
-    let _ = std::fs::remove_file(&proposal_path);
+    let _ = std::fs::remove_file(proposal_path(&dir, &skill.id));
 
     let run_id = request.run_id.unwrap_or_default();
     let _ = app.emit(
@@ -257,16 +273,12 @@ pub async fn reject_skill_proposal(
     let dir = project_skills_dir_for(
         &app,
         &request.project_path,
-        &request.workflow_name,
-        &request.workflow_id,
+        &request.project_name,
+        &request.project_id,
     )?;
-    let proposal_path = dir.join(format!(
-        "{}-v{}.proposal.json",
-        slugify(&request.skill_id),
-        request.version
-    ));
-    if proposal_path.exists() {
-        std::fs::remove_file(&proposal_path)
+    let path = proposal_path(&dir, &request.skill_id);
+    if path.exists() {
+        std::fs::remove_file(&path)
             .map_err(|e| CommandError::io(format!("remove proposal: {e}")))?;
     }
     Ok(())
@@ -282,8 +294,8 @@ pub async fn promote_skill_to_global(
     let project_dir = project_skills_dir_for(
         &app,
         &request.project_path,
-        &request.workflow_name,
-        &request.workflow_id,
+        &request.project_name,
+        &request.project_id,
     )?;
     let project_store = SkillStore::new(project_dir);
     let (mut skill, _) = read_skill_at(&project_store, &request.skill_id, request.version)?;
@@ -315,8 +327,8 @@ pub async fn fork_skill(
     let dir = project_skills_dir_for(
         &app,
         &request.project_path,
-        &request.workflow_name,
-        &request.workflow_id,
+        &request.project_name,
+        &request.project_id,
     )?;
     let store = SkillStore::new(dir.clone());
     let (source, _) = read_skill_at(&store, &request.skill_id, request.version)?;
@@ -367,18 +379,68 @@ pub async fn delete_skill(
         SkillScope::ProjectLocal => project_skills_dir_for(
             &app,
             &request.project_path,
-            &request.workflow_name,
-            &request.workflow_id,
+            &request.project_name,
+            &request.project_id,
         )?,
     };
     let store = SkillStore::new(dir.clone());
-    let path = dir.join(skill_filename(&request.skill_id, request.version));
+    let path = store.skill_md_path(&request.skill_id);
     if path.exists() {
         store
             .delete_skill(&path)
             .map_err(|e| CommandError::io(format!("delete skill: {e}")))?;
     }
     Ok(())
+}
+
+/// Load the full [`Skill`] value (including `sections`, `body`, and
+/// `action_sketch`) for a given `(skill_id, version)` pair from the
+/// project-local skill directory. Versions are resolved by reading
+/// `<skill_id>/SKILL.md` and matching against the requested version.
+#[tauri::command]
+#[specta::specta]
+pub async fn load_skill_full(
+    app: tauri::AppHandle,
+    request: LoadSkillFullRequest,
+) -> Result<Skill, CommandError> {
+    ensure_skill_file_io_enabled(request.store_traces)?;
+    let dir = project_skills_dir_for(
+        &app,
+        &request.project_path,
+        &request.project_name,
+        &request.project_id,
+    )?;
+    let store = SkillStore::new(dir.clone());
+    let path = store.skill_md_path(&request.skill_id);
+    if path.exists() {
+        let skill = store.read_skill(&path).map_err(|e| {
+            CommandError::io(format!(
+                "read skill {}-v{}: {}",
+                request.skill_id, request.version, e
+            ))
+        })?;
+        if skill.version == request.version {
+            return Ok(skill);
+        }
+    }
+    // Fall back to scanning every per-skill directory — handles the
+    // case where the caller knows the slugified skill id but the
+    // on-disk directory uses a slightly different form.
+    let files = store
+        .list_files()
+        .map_err(|e| CommandError::io(format!("list skill files: {e}")))?;
+    for file_path in files {
+        match store.read_skill(&file_path) {
+            Ok(s) if s.id == request.skill_id && s.version == request.version => {
+                return Ok(s);
+            }
+            _ => {}
+        }
+    }
+    Err(CommandError::validation(format!(
+        "skill not found: {}-v{}",
+        request.skill_id, request.version
+    )))
 }
 
 #[tauri::command]
@@ -395,8 +457,8 @@ pub async fn list_skills_for_panel(
         SkillScope::ProjectLocal => project_skills_dir_for(
             &app,
             &request.project_path,
-            &request.workflow_name,
-            &request.workflow_id,
+            &request.project_name,
+            &request.project_id,
         )?,
     };
     let store = SkillStore::new(dir.clone());
@@ -420,6 +482,287 @@ pub async fn list_skills_for_panel(
         }
     }
     Ok(out)
+}
+
+// ── apply_skill_patch ────────────────────────────────────────────────────────
+
+/// Wire-format `MarkdownReplacement` for Tauri IPC (mirrors the engine type
+/// with serde/specta derives).
+#[derive(Debug, Deserialize, Type)]
+pub struct MarkdownReplacementDto {
+    pub old_text: String,
+    pub new_text: String,
+}
+
+/// Wire-format `ActionSketchReplacement` for Tauri IPC.
+#[derive(Debug, Deserialize, Type)]
+pub struct ActionSketchReplacementDto {
+    pub step_id: String,
+    pub field: String,
+    pub new_value: serde_json::Value,
+}
+
+/// Wire-format `SkillFrontmatterVariable` addition for Tauri IPC.
+#[derive(Debug, Deserialize, Type)]
+pub struct SkillFrontmatterVariableDto {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub description: Option<String>,
+    pub default: Option<serde_json::Value>,
+}
+
+/// Wire-format `ReplaySidecarMutation` for Tauri IPC.
+#[derive(Debug, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReplaySidecarMutationDto {
+    ClearSignals {
+        step_id: String,
+    },
+    AppendSectionHistory {
+        retired: String,
+        split_into: Vec<String>,
+        at_version: u32,
+    },
+    DeleteStepBundle {
+        step_id: String,
+    },
+    UpdateRequiresApproval {
+        step_id: String,
+        value: Option<bool>,
+    },
+}
+
+/// Primitive discriminant for the diff preview label.
+#[derive(Debug, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillPatchPrimitiveDto {
+    Rebind,
+    Reorder,
+    Promote,
+    FreeFormProse,
+}
+
+/// Request body for [`apply_skill_patch`].
+#[derive(Debug, Deserialize, Type)]
+pub struct ApplySkillPatchRequest {
+    pub skill_id: String,
+    pub version: u32,
+    /// If `Some`, the current SKILL.md's mtime (millis since Unix epoch) must
+    /// match this value or the command returns `ExternalConflict`.
+    pub expected_mtime_ms: Option<u64>,
+    pub markdown_replacements: Vec<MarkdownReplacementDto>,
+    pub action_sketch_replacements: Vec<ActionSketchReplacementDto>,
+    pub variables_additions: Vec<SkillFrontmatterVariableDto>,
+    pub replay_sidecar_mutations: Vec<ReplaySidecarMutationDto>,
+    pub primitive: SkillPatchPrimitiveDto,
+    pub project_path: Option<String>,
+    pub project_name: String,
+    pub project_id: String,
+    pub store_traces: bool,
+}
+
+fn map_skill_error(e: SkillError) -> CommandError {
+    match e {
+        SkillError::ExternalConflict => {
+            CommandError::validation("Skill file was modified externally; reload and retry")
+        }
+        other => CommandError::io(other.to_string()),
+    }
+}
+
+fn map_lint_errors(errs: Vec<SkillLintError>) -> CommandError {
+    let msg = errs
+        .iter()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join("; ");
+    CommandError::validation(format!("SkillPatch lint failures: {msg}"))
+}
+
+fn dto_to_markdown_replacement(dto: MarkdownReplacementDto) -> MarkdownReplacement {
+    MarkdownReplacement {
+        old_text: dto.old_text,
+        new_text: dto.new_text,
+    }
+}
+
+fn dto_to_action_sketch_replacement(dto: ActionSketchReplacementDto) -> ActionSketchReplacement {
+    ActionSketchReplacement {
+        step_id: dto.step_id,
+        field: dto.field,
+        new_value: dto.new_value,
+    }
+}
+
+fn dto_to_variable(dto: SkillFrontmatterVariableDto) -> SkillFrontmatterVariable {
+    SkillFrontmatterVariable {
+        name: dto.name,
+        type_: dto.type_,
+        description: dto.description,
+        default: dto.default,
+    }
+}
+
+fn dto_to_sidecar_mutation(dto: ReplaySidecarMutationDto) -> ReplaySidecarMutation {
+    match dto {
+        ReplaySidecarMutationDto::ClearSignals { step_id } => {
+            ReplaySidecarMutation::ClearSignals { step_id }
+        }
+        ReplaySidecarMutationDto::AppendSectionHistory {
+            retired,
+            split_into,
+            at_version,
+        } => ReplaySidecarMutation::AppendSectionHistory {
+            retired,
+            split_into,
+            at_version,
+        },
+        ReplaySidecarMutationDto::DeleteStepBundle { step_id } => {
+            ReplaySidecarMutation::DeleteStepBundle { step_id }
+        }
+        ReplaySidecarMutationDto::UpdateRequiresApproval { step_id, value } => {
+            ReplaySidecarMutation::UpdateRequiresApproval { step_id, value }
+        }
+    }
+}
+
+fn dto_to_primitive(dto: SkillPatchPrimitiveDto) -> SkillPatchPrimitive {
+    match dto {
+        SkillPatchPrimitiveDto::Rebind => SkillPatchPrimitive::Rebind,
+        SkillPatchPrimitiveDto::Reorder => SkillPatchPrimitive::Reorder,
+        SkillPatchPrimitiveDto::Promote => SkillPatchPrimitive::Promote,
+        SkillPatchPrimitiveDto::FreeFormProse => SkillPatchPrimitive::FreeFormProse,
+    }
+}
+
+/// Apply a four-layer `SkillPatch` atomically to a skill's on-disk files.
+///
+/// Steps:
+/// 1. Resolve the project skills directory.
+/// 2. Read the current `SKILL.md` (and optional `replay.json` sidecar).
+/// 3. Validate the `expected_mtime_ms` guard against the current file mtime.
+/// 4. Apply the patch in-memory (pure).
+/// 5. Run structural lint; reject with lint errors before opening the journal.
+/// 6. Emit post-patch byte buffers.
+/// 7. Write via `SkillStore::write_atomic_multi_file` (journal protocol).
+#[tauri::command]
+#[specta::specta]
+pub async fn apply_skill_patch(
+    app: tauri::AppHandle,
+    request: ApplySkillPatchRequest,
+) -> Result<(), CommandError> {
+    ensure_skill_file_io_enabled(request.store_traces)?;
+
+    let dir = project_skills_dir_for(
+        &app,
+        &request.project_path,
+        &request.project_name,
+        &request.project_id,
+    )?;
+    let store = SkillStore::new(dir.clone());
+
+    // -- 1. Read current SKILL.md --
+    let skill_path = store.skill_md_path(&request.skill_id);
+    let current_md = std::fs::read_to_string(&skill_path)
+        .map_err(|e| CommandError::io(format!("read SKILL.md: {e}")))?;
+
+    // -- 2. mtime guard (D31) --
+    if let Some(expected_ms) = request.expected_mtime_ms {
+        use std::time::{Duration, UNIX_EPOCH};
+        let meta = std::fs::metadata(&skill_path)
+            .map_err(|e| CommandError::io(format!("stat SKILL.md: {e}")))?;
+        let actual_mtime = meta
+            .modified()
+            .map_err(|e| CommandError::io(format!("read mtime: {e}")))?;
+        let actual_ms = actual_mtime
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_millis() as u64;
+        // Tolerate ≤1 ms rounding drift (filesystem precision).
+        if actual_ms.abs_diff(expected_ms) > 1 {
+            return Err(CommandError::validation(
+                "Skill file was modified externally; reload and retry",
+            ));
+        }
+    }
+
+    // -- 3. Parse current files --
+    let skill = parse_skill_md(&current_md).map_err(|e| CommandError::io(e.to_string()))?;
+
+    // Read replay.json if present; skeleton-empty if absent.
+    let replay_path = dir.join(&request.skill_id).join("replay.json");
+    let replay: ReplayJson = if replay_path.exists() {
+        let contents = std::fs::read_to_string(&replay_path)
+            .map_err(|e| CommandError::io(format!("read replay.json: {e}")))?;
+        parse_replay_json(&contents).map_err(|e| CommandError::io(e.to_string()))?
+    } else {
+        ReplayJson {
+            skill_id: request.skill_id.clone(),
+            schema_version: clickweave_engine::agent::skills::replay::REPLAY_SCHEMA_VERSION,
+            ..Default::default()
+        }
+    };
+
+    // -- 4. Build the patch --
+    let patch = SkillPatch {
+        skill_id: request.skill_id.clone(),
+        markdown_replacements: request
+            .markdown_replacements
+            .into_iter()
+            .map(dto_to_markdown_replacement)
+            .collect(),
+        action_sketch_replacements: request
+            .action_sketch_replacements
+            .into_iter()
+            .map(dto_to_action_sketch_replacement)
+            .collect(),
+        variables_additions: request
+            .variables_additions
+            .into_iter()
+            .map(dto_to_variable)
+            .collect(),
+        replay_sidecar_mutations: request
+            .replay_sidecar_mutations
+            .into_iter()
+            .map(dto_to_sidecar_mutation)
+            .collect(),
+        primitive: dto_to_primitive(request.primitive),
+    };
+
+    // -- 5. Apply in-memory (pure) --
+    let (new_skill, new_replay) =
+        apply_patch_to_skill(&skill, replay, &patch).map_err(map_skill_error)?;
+
+    // -- 6. Structural lint (before the journal opens) --
+    lint_skill_patch(&new_skill, &new_replay, &patch).map_err(map_lint_errors)?;
+
+    // -- 7. Emit byte buffers --
+    let skill_md_bytes = emit_skill_md(&new_skill).into_bytes();
+    let replay_bytes = serde_json::to_vec_pretty(&new_replay)
+        .map_err(|e| CommandError::io(format!("encode replay.json: {e}")))?;
+
+    // -- 8. Atomic four-layer journal write --
+    // `SKILL.md` and `replay.json` are siblings under `<dir>/<skill_id>/`,
+    // so a single `write_atomic_multi_file` call covers both. The
+    // commit marker is the single atomic boundary: a crash before the
+    // marker rolls back, a crash after replays both renames on the
+    // next `recover_atomic_writes` pass.
+    store
+        .write_atomic_multi_file(
+            &request.skill_id,
+            vec![
+                (
+                    std::path::PathBuf::from(clickweave_engine::agent::skills::SKILL_MD),
+                    skill_md_bytes,
+                ),
+                (std::path::PathBuf::from("replay.json"), replay_bytes),
+            ],
+            None, // mtime guard already checked above for SKILL.md
+        )
+        .map_err(map_skill_error)?;
+
+    Ok(())
 }
 
 fn generate_id_suffix() -> String {
@@ -448,10 +791,11 @@ mod tests {
     }
 
     #[test]
-    fn skill_filename_combines_slug_and_version() {
+    fn proposal_path_is_colocated_with_skill_md() {
+        let dir = std::path::Path::new("/tmp/skills");
         assert_eq!(
-            skill_filename("Click Login Button", 3),
-            "click-login-button-v3.md"
+            proposal_path(dir, "click-login-button"),
+            dir.join("click-login-button").join("proposal.json"),
         );
     }
 

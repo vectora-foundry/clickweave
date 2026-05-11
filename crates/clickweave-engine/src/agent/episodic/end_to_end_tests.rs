@@ -25,9 +25,9 @@ use crate::agent::runner::StateRunner;
 use crate::agent::test_stubs::{
     CapturingLlm, ScriptedLlm, StaticMcp, llm_reply_tool, llm_reply_tool_with_id,
 };
+use crate::agent::trace_graph::AgentTraceGraph;
 use crate::agent::types::{AgentConfig, AgentEvent, RunnerOutput};
 use crate::executor::Mcp;
-use clickweave_core::Workflow;
 
 /// Build an MCP that advertises one CDP element so the world-model
 /// signature is non-trivial across both runs in the test, plus the
@@ -46,7 +46,7 @@ fn enabled_ctx(workflow_local: PathBuf) -> EpisodicContext {
         enabled: true,
         workflow_local_path: workflow_local,
         global_path: None,
-        workflow_hash: "test-workflow-uuid".into(),
+        project_id: "test-workflow-uuid".into(),
     }
 }
 
@@ -126,7 +126,7 @@ async fn recovery_written_and_retrieved_across_runs() {
             &llm_run1,
             &mcp_run1,
             "login".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools_run1,
             None,
         )
@@ -186,7 +186,7 @@ async fn recovery_written_and_retrieved_across_runs() {
             &llm_run2,
             &mcp_run2,
             "login".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools_run2,
             None,
         )
@@ -245,7 +245,7 @@ async fn episodic_disabled_via_config_skips_store_open_and_retrieval() {
             &llm,
             &mcp,
             "login".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -305,7 +305,7 @@ async fn episodic_ctx_disabled_overrides_config_enabled() {
             &llm,
             &mcp,
             "login".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -363,7 +363,7 @@ async fn run_with_no_recovery_writes_nothing() {
             &llm,
             &mcp,
             "login".to_string(),
-            Workflow::default(),
+            AgentTraceGraph::new(),
             tools,
             None,
         )
@@ -395,8 +395,6 @@ async fn run_with_no_recovery_writes_nothing() {
 fn event_kind(e: &AgentEvent) -> &'static str {
     match e {
         AgentEvent::StepCompleted { .. } => "step_completed",
-        AgentEvent::NodeAdded { .. } => "node_added",
-        AgentEvent::EdgeAdded { .. } => "edge_added",
         AgentEvent::GoalComplete { .. } => "goal_complete",
         AgentEvent::Error { .. } => "error",
         AgentEvent::Warning { .. } => "warning",

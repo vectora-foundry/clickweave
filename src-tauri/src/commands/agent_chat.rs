@@ -8,7 +8,7 @@
 
 use super::error::CommandError;
 use super::types::resolve_storage;
-use clickweave_engine::agent::skills::{SkillState, SkillStore, slugify};
+use clickweave_engine::agent::skills::{SkillState, SkillStore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
@@ -42,15 +42,15 @@ pub enum AgentChatRole {
 #[derive(Debug, Clone, Deserialize, specta::Type)]
 pub struct LoadAgentChatRequest {
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, specta::Type)]
 pub struct SaveAgentChatRequest {
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
     pub chat: AgentChat,
     pub store_traces: bool,
 }
@@ -58,8 +58,8 @@ pub struct SaveAgentChatRequest {
 #[derive(Debug, Clone, Deserialize, specta::Type)]
 pub struct PruneSkillLineageRequest {
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
     pub node_ids: Vec<Uuid>,
     pub store_traces: bool,
 }
@@ -67,21 +67,21 @@ pub struct PruneSkillLineageRequest {
 #[derive(Debug, Clone, Deserialize, specta::Type)]
 pub struct ClearAgentConversationRequest {
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
+    pub project_name: String,
+    pub project_id: String,
     pub store_traces: bool,
 }
 
-fn proposal_filename(skill_id: &str, version: u32) -> String {
-    format!("{}-v{}.proposal.json", slugify(skill_id), version)
+fn proposal_path(dir: &std::path::Path, skill_id: &str) -> std::path::PathBuf {
+    dir.join(skill_id).join("proposal.json")
 }
 
 fn remove_proposal_if_present(
     dir: &std::path::Path,
     skill_id: &str,
-    version: u32,
+    _version: u32,
 ) -> Result<(), CommandError> {
-    let path = dir.join(proposal_filename(skill_id, version));
+    let path = proposal_path(dir, skill_id);
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -144,17 +144,17 @@ fn clear_draft_skills_in_dir(skills_dir: &Path) -> Result<(), CommandError> {
     Ok(())
 }
 
-/// Resolve the `agent_chat.json` path for the current project + workflow.
+/// Resolve the `agent_chat.json` path for the current project.
 fn resolve_chat_path(
     app: &tauri::AppHandle,
     project_path: Option<&str>,
-    workflow_name: &str,
-    workflow_id: &str,
+    project_name: &str,
+    project_id: &str,
 ) -> Result<std::path::PathBuf, CommandError> {
-    let uuid: Uuid = workflow_id
+    let uuid: Uuid = project_id
         .parse()
-        .map_err(|_| CommandError::validation("Invalid workflow ID"))?;
-    let storage = resolve_storage(app, &project_path.map(String::from), workflow_name, uuid);
+        .map_err(|_| CommandError::validation("Invalid project ID"))?;
+    let storage = resolve_storage(app, &project_path.map(String::from), project_name, uuid);
     Ok(storage.agent_chat_path())
 }
 
@@ -167,8 +167,8 @@ pub async fn load_agent_chat(
     let path = resolve_chat_path(
         &app,
         request.project_path.as_deref(),
-        &request.workflow_name,
-        &request.workflow_id,
+        &request.project_name,
+        &request.project_id,
     )?;
     match std::fs::read_to_string(&path) {
         Ok(json) => serde_json::from_str::<AgentChat>(&json)
@@ -192,8 +192,8 @@ pub async fn save_agent_chat(
     let path = resolve_chat_path(
         &app,
         request.project_path.as_deref(),
-        &request.workflow_name,
-        &request.workflow_id,
+        &request.project_name,
+        &request.project_id,
     )?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -217,15 +217,15 @@ pub async fn prune_skill_lineage_for_nodes(
     if !request.store_traces {
         return Ok(());
     }
-    let workflow_uuid: Uuid = request
-        .workflow_id
+    let project_uuid: Uuid = request
+        .project_id
         .parse()
-        .map_err(|_| CommandError::validation("Invalid workflow ID"))?;
+        .map_err(|_| CommandError::validation("Invalid project ID"))?;
     let storage = resolve_storage(
         &app,
         &request.project_path,
-        &request.workflow_name,
-        workflow_uuid,
+        &request.project_name,
+        project_uuid,
     );
     let skills_dir = storage
         .project_skills_dir()
@@ -244,15 +244,15 @@ pub async fn clear_agent_conversation(
     if !request.store_traces {
         return Ok(());
     }
-    let workflow_uuid: Uuid = request
-        .workflow_id
+    let project_uuid: Uuid = request
+        .project_id
         .parse()
-        .map_err(|_| CommandError::validation("Invalid workflow ID"))?;
+        .map_err(|_| CommandError::validation("Invalid project ID"))?;
     let storage = resolve_storage(
         &app,
         &request.project_path,
-        &request.workflow_name,
-        workflow_uuid,
+        &request.project_name,
+        project_uuid,
     );
     // Remove draft skills derived from the current agent conversation.
     let skills_dir = storage
@@ -355,18 +355,15 @@ mod tests {
                 vec![deleted],
             ))
             .unwrap();
-        std::fs::write(tmp.path().join(proposal_filename("empty-draft", 1)), "{}").unwrap();
+        std::fs::create_dir_all(tmp.path().join("empty-draft")).unwrap();
+        std::fs::write(proposal_path(tmp.path(), "empty-draft"), "{}").unwrap();
 
         prune_skill_lineage_in_dir(tmp.path(), &HashSet::from([deleted])).unwrap();
 
         let partial = store.read_skill(&partial_path).unwrap();
         assert_eq!(partial.produced_node_ids, vec![kept]);
         assert!(!empty_path.exists());
-        assert!(
-            !tmp.path()
-                .join(proposal_filename("empty-draft", 1))
-                .exists()
-        );
+        assert!(!proposal_path(tmp.path(), "empty-draft").exists());
         let confirmed = store.read_skill(&confirmed_path).unwrap();
         assert_eq!(confirmed.produced_node_ids, vec![deleted]);
     }
@@ -390,15 +387,17 @@ mod tests {
                 vec![Uuid::from_u128(21)],
             ))
             .unwrap();
-        std::fs::write(tmp.path().join(proposal_filename("draft", 1)), "{}").unwrap();
-        std::fs::write(tmp.path().join(proposal_filename("confirmed", 1)), "{}").unwrap();
+        std::fs::create_dir_all(tmp.path().join("draft")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("confirmed")).unwrap();
+        std::fs::write(proposal_path(tmp.path(), "draft"), "{}").unwrap();
+        std::fs::write(proposal_path(tmp.path(), "confirmed"), "{}").unwrap();
 
         clear_draft_skills_in_dir(tmp.path()).unwrap();
 
         assert!(!draft_path.exists());
-        assert!(!tmp.path().join(proposal_filename("draft", 1)).exists());
+        assert!(!proposal_path(tmp.path(), "draft").exists());
         assert!(confirmed_path.exists());
-        assert!(tmp.path().join(proposal_filename("confirmed", 1)).exists());
+        assert!(proposal_path(tmp.path(), "confirmed").exists());
     }
 
     #[test]
@@ -470,6 +469,10 @@ mod tests {
             updated_at: chrono::Utc::now(),
             produced_node_ids,
             body: String::new(),
+            schema_version: clickweave_engine::agent::skills::SKILL_SCHEMA_VERSION,
+            variables: vec![],
+            sections: vec![],
+            replay: None,
         }
     }
 }

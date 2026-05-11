@@ -104,7 +104,7 @@ pub struct EpisodicContext {
     pub enabled: bool,
     pub workflow_local_path: PathBuf,
     pub global_path: Option<PathBuf>, // Some iff global participation is on (D35)
-    pub workflow_hash: String,        // workflow.id UUID
+    pub project_id: String,           // project UUID
 }
 
 impl EpisodicContext {
@@ -115,7 +115,7 @@ impl EpisodicContext {
             enabled: false,
             workflow_local_path: PathBuf::new(),
             global_path: None,
-            workflow_hash: String::new(),
+            project_id: String::new(),
         }
     }
 }

@@ -108,7 +108,7 @@ The state-spine agent then appends harness-local pseudo-tools to that OpenAI-sha
 Files:
 
 - `crates/clickweave-engine/src/agent/mod.rs` — seeds `mcp.tools_as_openai()` once per run
-- `crates/clickweave-engine/src/agent/runner.rs` — state-spine control loop and MCP dispatch
+- `crates/clickweave-engine/src/agent/runner/mod.rs` — state-spine control loop and MCP dispatch
 - `crates/clickweave-engine/src/agent/prompt.rs` — stable system prompt and per-turn state block
 - `crates/clickweave-engine/src/agent/context.rs` — transcript compaction
 
@@ -118,7 +118,7 @@ Snapshot bodies are budget-managed by `context::compact`. It preserves `messages
 
 ## NodeType <-> Tool Mapping
 
-File: `crates/clickweave-core/src/tool_mapping.rs`
+File: `crates/clickweave-core/src/tool_mapping/mod.rs`
 
 ### NodeType -> Tool invocation
 
@@ -149,9 +149,9 @@ The MCP binary path is resolved automatically by `mcp_resolve::resolve_mcp_binar
 Relevant files:
 
 - `src-tauri/src/mcp_resolve.rs`
-- `src-tauri/src/commands/agent.rs` — spawns the MCP client for the agent loop
+- `src-tauri/src/commands/agent/commands.rs` — spawns the MCP client for the agent loop
 - `src-tauri/src/commands/executor.rs` — spawns the MCP client for deterministic workflow execution
-- `crates/clickweave-engine/src/agent/runner.rs` — state-spine runner that dispatches MCP tools step by step from agent decisions
+- `crates/clickweave-engine/src/agent/runner/mod.rs` — state-spine runner that dispatches MCP tools step by step from agent decisions
 - `crates/clickweave-engine/src/executor/run_loop.rs` — dispatches MCP tools node by node for saved workflows
 
 ## App Detection
@@ -182,7 +182,7 @@ If proactive detection classifies an app as `Native` but accessibility enrichmen
 |------|------|
 | `crates/clickweave-core/src/app_detection.rs` | `classify_app`, `bundle_path_from_pid`, Chrome/Electron checks |
 | `crates/clickweave-core/src/walkthrough/types.rs` | `AppKind` enum, `AppFocused` event |
-| `src-tauri/src/commands/walkthrough_session.rs` | Event loop integration, reactive fallback, CDP setup |
+| `src-tauri/src/commands/walkthrough_session/` | Event loop integration, reactive fallback, CDP setup |
 
 ## Key Files
 
@@ -191,5 +191,5 @@ If proactive detection classifies an app as `Native` but accessibility enrichmen
 | `crates/clickweave-mcp/src/client.rs` | McpClient: spawn, init, tools/list, tools/call |
 | `crates/clickweave-mcp/src/protocol.rs` | protocol data types |
 | `crates/clickweave-mcp/src/lib.rs` | re-exports |
-| `crates/clickweave-core/src/tool_mapping.rs` | shared node/tool mapping |
+| `crates/clickweave-core/src/tool_mapping/mod.rs` | shared node/tool mapping |
 | `crates/clickweave-core/src/app_detection.rs` | Electron/Chrome app classification |

@@ -1,11 +1,14 @@
 import type { StateCreator } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
+import { commands } from "../../bindings";
+import type { Skill } from "../../bindings";
+import { errorMessage } from "../../utils/commandError";
 import type { StoreState } from "./types";
 
 /// Lightweight projection of the engine's `Skill` type for the panel.
 /// Mirrors `SkillSummary` produced by the `list_skills_for_panel` Tauri
-/// command. Auto-generated bindings will replace this once `cargo run`
-/// regenerates `bindings.ts` in dev mode.
+/// command. Kept as a local interface so existing consumers (SkillsPanel,
+/// StatsStrip, SkillDetailView) that use the old optional-field shape
+/// stay compatible until 1.G cleans them up.
 export interface SkillSummary {
   id: string;
   version: number;
@@ -95,15 +98,30 @@ export interface SkillBreadcrumbEntry {
   name: string;
 }
 
+export type SectionRunStatus = "pending" | "running" | "succeeded" | "repaired" | "failed" | "skipped";
+
 export interface SkillsSlice {
   drafts: SkillSummary[];
   confirmed: SkillSummary[];
   promoted: SkillSummary[];
-  selectedSkill: { id: string; version: number } | null;
+  /** Full `Skill` shape loaded on selection; `null` when nothing is selected. */
+  selectedSkill: Skill | null;
   breadcrumb: SkillBreadcrumbEntry[];
+  /**
+   * Per-section run state painted by the skill runner. Keys are section IDs;
+   * values are one of the SectionRunStatus literals. Cleared when a new run
+   * starts or the selected skill changes.
+   */
+  sectionRunState: Record<string, SectionRunStatus>;
+  /** The section ID that failed during the last run, for failure handoff. */
+  failedSectionId: string | null;
+  /** Error message from the last section failure, for chat pre-fill. */
+  failedSectionError: string | null;
 
   setSkillsList: (list: SkillSummary[]) => void;
   loadSkillsForPanel: (request: LoadSkillsForPanelRequest) => Promise<void>;
+  /** Select a skill by id+version and load its full shape via IPC. */
+  loadSelectedSkill: (request: LoadSkillsForPanelRequest & { skill_id: string; version: number }) => Promise<void>;
   setSelectedSkill: (id: string, version: number) => void;
   clearSelectedSkill: () => void;
   findSkill: (id: string, version: number) => SkillSummary | null;
@@ -113,12 +131,22 @@ export interface SkillsSlice {
   popSkillBreadcrumbTo: (idx: number) => void;
   popSkillBreadcrumb: () => void;
   clearSkillBreadcrumb: () => void;
+  /** Seed all sections of the selected skill as "pending" when a run starts. */
+  initSectionRunState: () => void;
+  /** Mark a specific section by ID with the given status. */
+  setSectionRunStatus: (sectionId: string, status: SectionRunStatus) => void;
+  /** Flip all sections to the given terminal status (succeeded or failed). */
+  finalizeSectionRunState: (status: "succeeded" | "failed") => void;
+  /** Record a section failure for failure handoff. */
+  recordSectionFailure: (sectionId: string, error: string) => void;
+  /** Clear all run state (used between runs). */
+  clearSectionRunState: () => void;
 }
 
 export interface LoadSkillsForPanelRequest {
   projectPath: string | null;
-  workflowName: string;
-  workflowId: string;
+  projectName: string;
+  projectId: string;
   includeGlobal: boolean;
   storeTraces: boolean;
 }
@@ -150,13 +178,16 @@ export const createSkillsSlice: StateCreator<
   promoted: [],
   selectedSkill: null,
   breadcrumb: [],
+  sectionRunState: {},
+  failedSectionId: null,
+  failedSectionError: null,
 
   setSkillsList: (list) => set(bucketize(list)),
 
   loadSkillsForPanel: async ({
     projectPath,
-    workflowName,
-    workflowId,
+    projectName,
+    projectId,
     includeGlobal,
     storeTraces,
   }) => {
@@ -164,24 +195,64 @@ export const createSkillsSlice: StateCreator<
       set(bucketize([]));
       return;
     }
+    const { pushLog } = get();
     const baseRequest = {
       project_path: projectPath,
-      workflow_name: workflowName,
-      workflow_id: workflowId,
+      project_name: projectName,
+      project_id: projectId,
       store_traces: storeTraces,
     };
-    const projectLocal = await invoke<SkillSummary[]>("list_skills_for_panel", {
-      request: { ...baseRequest, scope: "project_local" },
+    const projectLocalResult = await commands.listSkillsForPanel({
+      ...baseRequest,
+      scope: "project_local",
     });
-    const global = includeGlobal
-      ? await invoke<SkillSummary[]>("list_skills_for_panel", {
-          request: { ...baseRequest, scope: "global" },
-        })
-      : [];
-    set(bucketize([...projectLocal, ...global]));
+    if (projectLocalResult.status === "error") {
+      pushLog(`Failed to load skills: ${errorMessage(projectLocalResult.error)}`);
+      return;
+    }
+    const globalResult = includeGlobal
+      ? await commands.listSkillsForPanel({ ...baseRequest, scope: "global" })
+      : null;
+    if (globalResult && globalResult.status === "error") {
+      pushLog(`Failed to load global skills: ${errorMessage(globalResult.error)}`);
+      return;
+    }
+    const globalList = globalResult?.status === "ok" ? globalResult.data : [];
+    // Cast: bindings SkillSummary is structurally compatible with the local
+    // SkillSummary interface (same wire format, just stricter required fields).
+    const combined = [...projectLocalResult.data, ...globalList] as unknown as SkillSummary[];
+    set(bucketize(combined));
   },
 
-  setSelectedSkill: (id, version) => set({ selectedSkill: { id, version } }),
+  loadSelectedSkill: async ({ projectPath, projectName, projectId, storeTraces, skill_id, version }) => {
+    const { pushLog } = get();
+    const result = await commands.loadSkillFull({
+      skill_id,
+      version,
+      project_path: projectPath,
+      project_name: projectName,
+      project_id: projectId,
+      store_traces: storeTraces,
+    });
+    if (result.status === "error") {
+      pushLog(`Failed to load skill: ${errorMessage(result.error)}`);
+      return;
+    }
+    set({ selectedSkill: result.data });
+  },
+
+  setSelectedSkill: (id, version) => {
+    // Keep a lightweight stub so the sidebar can reflect selection state
+    // immediately while loadSelectedSkill races in the background. Cleared
+    // when clearSelectedSkill is called. The full Skill shape overwrites
+    // this stub once the IPC call completes.
+    const existing = get().findSkill(id, version);
+    if (existing) {
+      // Cast the SkillSummary to a partial Skill for selection display.
+      // The full shape arrives from loadSelectedSkill before SkillView renders.
+      set({ selectedSkill: existing as unknown as Skill });
+    }
+  },
 
   clearSelectedSkill: () => set({ selectedSkill: null, breadcrumb: [] }),
 
@@ -257,4 +328,50 @@ export const createSkillsSlice: StateCreator<
   },
 
   clearSkillBreadcrumb: () => set({ breadcrumb: [] }),
+
+  initSectionRunState: () => {
+    const { selectedSkill } = get();
+    if (!selectedSkill?.sections) {
+      set({ sectionRunState: {}, failedSectionId: null, failedSectionError: null });
+      return;
+    }
+    const initial: Record<string, SectionRunStatus> = {};
+    for (const section of selectedSkill.sections) {
+      initial[section.id] = "pending";
+    }
+    set({ sectionRunState: initial, failedSectionId: null, failedSectionError: null });
+  },
+
+  setSectionRunStatus: (sectionId, status) => {
+    set((s) => ({
+      sectionRunState: { ...s.sectionRunState, [sectionId]: status },
+    }));
+  },
+
+  finalizeSectionRunState: (status) => {
+    const { sectionRunState } = get();
+    const next: Record<string, SectionRunStatus> = {};
+    for (const id of Object.keys(sectionRunState)) {
+      const current = sectionRunState[id];
+      // Leave already-terminal states alone (failed sections stay failed).
+      if (current === "failed" || current === "succeeded" || current === "repaired" || current === "skipped") {
+        next[id] = current;
+      } else {
+        next[id] = status;
+      }
+    }
+    set({ sectionRunState: next });
+  },
+
+  recordSectionFailure: (sectionId, error) => {
+    set((s) => ({
+      sectionRunState: { ...s.sectionRunState, [sectionId]: "failed" },
+      failedSectionId: sectionId,
+      failedSectionError: error,
+    }));
+  },
+
+  clearSectionRunState: () => {
+    set({ sectionRunState: {}, failedSectionId: null, failedSectionError: null });
+  },
 });

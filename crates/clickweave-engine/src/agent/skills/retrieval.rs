@@ -12,9 +12,7 @@
 
 use chrono::{DateTime, Utc};
 
-use super::types::{
-    ActionSketchStep, RetrievedSkill, Skill, SkillScope, SkillState, SubgoalSignature,
-};
+use super::types::{RetrievedSkill, Skill, SkillScope, SkillState, SubgoalSignature};
 use crate::agent::episodic::embedder::cosine;
 
 /// Weights for the four additive score terms before the time-decay
@@ -136,10 +134,12 @@ pub fn merge_tiers(
 }
 
 fn is_leaf_skill(skill: &Skill) -> bool {
-    skill
-        .action_sketch
-        .iter()
-        .all(|step| !matches!(step, ActionSketchStep::SubSkill { .. }))
+    // The compound-skill variant was removed as part of the
+    // skill-only-shell rewrite. Every remaining `ActionSketchStep`
+    // variant (`ToolCall`, `Loop`) is a leaf operation, so any skill
+    // with an action_sketch counts as a leaf skill here.
+    let _ = skill;
+    true
 }
 
 /// Drafts are intentionally excluded from retrieval — only `Confirmed`
@@ -151,8 +151,8 @@ pub fn is_retrieval_eligible(skill: &Skill) -> bool {
 #[cfg(test)]
 mod tests {
     use super::super::types::{
-        ApplicabilityHints, ApplicabilitySignature, ExpectedWorldModelDelta, OutcomePredicate,
-        SkillScope, SkillState, SkillStats, SubgoalSignature,
+        ApplicabilityHints, ApplicabilitySignature, OutcomePredicate, SkillScope, SkillState,
+        SkillStats, SubgoalSignature,
     };
     use super::*;
     use chrono::{Duration, TimeZone, Utc};
@@ -199,6 +199,10 @@ mod tests {
             updated_at: Utc.timestamp_opt(0, 0).unwrap(),
             produced_node_ids: vec![],
             body: String::new(),
+            schema_version: super::super::SKILL_SCHEMA_VERSION,
+            variables: vec![],
+            sections: vec![],
+            replay: None,
         }
     }
 
@@ -344,41 +348,9 @@ mod tests {
         assert_eq!(out.len(), GLOBAL_CAP_PER_RETRIEVAL);
     }
 
-    #[test]
-    fn leaf_bonus_outranks_compound_with_same_signature() {
-        let weights = ScoringWeights::default();
-        let now = Utc::now();
-        let mut leaf = skill_at("leaf", "sig", SkillScope::ProjectLocal, 1, 1.0, Some(now));
-        leaf.action_sketch = vec![ActionSketchStep::ToolCall {
-            tool: "click".into(),
-            args: serde_json::json!({}),
-            captures_pre: vec![],
-            captures: vec![],
-            expected_world_model_delta: ExpectedWorldModelDelta::default(),
-        }];
-        let mut compound = skill_at("comp", "sig", SkillScope::ProjectLocal, 1, 1.0, Some(now));
-        compound.action_sketch = vec![ActionSketchStep::SubSkill {
-            skill_id: "inner".into(),
-            version: 1,
-            parameters: serde_json::json!({}),
-            bind_outputs_as: Default::default(),
-        }];
-        let s_leaf = score(
-            &leaf,
-            &SubgoalSignature("sig".into()),
-            &[],
-            &[],
-            &weights,
-            now,
-        );
-        let s_comp = score(
-            &compound,
-            &SubgoalSignature("sig".into()),
-            &[],
-            &[],
-            &weights,
-            now,
-        );
-        assert!(s_leaf > s_comp);
-    }
+    // The legacy "leaf vs compound" test relied on the compound-skill
+    // variant that was removed as part of the skill-only-shell rewrite.
+    // Every remaining variant is a leaf operation, so the leaf-bonus
+    // signal collapses to a no-op and there is no meaningful pairing
+    // left to assert here.
 }

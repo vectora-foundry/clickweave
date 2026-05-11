@@ -134,7 +134,7 @@ async fn stop_during_approval_wait_sends_rejection_not_channel_drop() {
     let runner = StateRunner::new("Click it".to_string(), config)
         .with_events(event_tx)
         .with_approval(approval_tx);
-    let workflow = clickweave_core::Workflow::new("Stop-during-approval");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -188,7 +188,7 @@ async fn buffered_events_do_not_leak_between_runs() {
             &llm_a,
             &mcp_a,
             "goal A".to_string(),
-            clickweave_core::Workflow::new("A"),
+            crate::agent::trace_graph::AgentTraceGraph::new(),
             mcp_a.tools_as_openai(),
             None,
         )
@@ -214,7 +214,7 @@ async fn buffered_events_do_not_leak_between_runs() {
             &llm_b,
             &mcp_b,
             "goal B".to_string(),
-            clickweave_core::Workflow::new("B"),
+            crate::agent::trace_graph::AgentTraceGraph::new(),
             mcp_b.tools_as_openai(),
             None,
         )
@@ -271,7 +271,7 @@ async fn workflow_mapping_miss_emits_warning_and_run_continues() {
     let runner = StateRunner::new("trigger mapping miss".to_string(), config)
         .with_events(event_tx)
         .with_approval(approval_tx);
-    let workflow = clickweave_core::Workflow::new("Mapping-miss");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
     let state = runner
         .run(
@@ -424,7 +424,7 @@ async fn focus_window_after_native_launch_is_suppressed_with_ax_toolset() {
     let runner = StateRunner::new("reach Calculator via AX".to_string(), config)
         .with_events(event_tx)
         .with_approval(approval_tx);
-    let workflow = clickweave_core::Workflow::new("focus-window-skip");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -462,25 +462,25 @@ async fn focus_window_after_native_launch_is_suppressed_with_ax_toolset() {
 
     // Workflow-node assertion: the graph must NOT contain a FocusWindow
     // node for the skipped call — that node never actually ran.
-    use clickweave_core::NodeType;
+    use crate::agent::trace_graph::TraceNodeKind;
     let focus_node_count = state
-        .workflow
+        .trace_graph
         .nodes
         .iter()
-        .filter(|n| matches!(n.node_type, NodeType::FocusWindow(_)))
+        .filter(|n| matches!(n.node_kind, TraceNodeKind::FocusWindow(_)))
         .count();
     assert_eq!(
         focus_node_count, 0,
         "Skipped focus_window must not produce a FocusWindow workflow node, graph = {:?}",
-        state.workflow.nodes,
+        state.trace_graph.nodes,
     );
     // Sanity: launch_app's LaunchApp node SHOULD be recorded — the guard
     // is scoped to focus_window only.
     let launch_node_count = state
-        .workflow
+        .trace_graph
         .nodes
         .iter()
-        .filter(|n| matches!(n.node_type, NodeType::LaunchApp(_)))
+        .filter(|n| matches!(n.node_kind, TraceNodeKind::LaunchApp(_)))
         .count();
     assert_eq!(
         launch_node_count, 1,
@@ -587,7 +587,7 @@ async fn focus_window_still_runs_when_app_kind_is_unknown() {
     let runner = StateRunner::new("focus UnseenApp".to_string(), config)
         .with_events(event_tx)
         .with_approval(approval_tx);
-    let workflow = clickweave_core::Workflow::new("focus-unknown-kind");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -627,12 +627,12 @@ async fn focus_window_still_runs_when_app_kind_is_unknown() {
         other => panic!("Expected Success from real focus_window, got {:?}", other),
     }
 
-    use clickweave_core::NodeType;
+    use crate::agent::trace_graph::TraceNodeKind;
     let focus_node_count = state
-        .workflow
+        .trace_graph
         .nodes
         .iter()
-        .filter(|n| matches!(n.node_type, NodeType::FocusWindow(_)))
+        .filter(|n| matches!(n.node_kind, TraceNodeKind::FocusWindow(_)))
         .count();
     assert_eq!(
         focus_node_count, 1,
@@ -721,7 +721,7 @@ async fn focus_window_after_cdp_connected_is_suppressed_for_electron_target() {
     // a live CDP session bound to "Signal".
     runner.seed_cdp_live_for_test("Signal", "ElectronApp");
 
-    let workflow = clickweave_core::Workflow::new("focus-window-cdp-skip");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -766,17 +766,17 @@ async fn focus_window_after_cdp_connected_is_suppressed_for_electron_target() {
 
     // Workflow-node assertion: the graph must NOT contain a FocusWindow
     // node — a suppressed call never actually ran.
-    use clickweave_core::NodeType;
+    use crate::agent::trace_graph::TraceNodeKind;
     let focus_node_count = state
-        .workflow
+        .trace_graph
         .nodes
         .iter()
-        .filter(|n| matches!(n.node_type, NodeType::FocusWindow(_)))
+        .filter(|n| matches!(n.node_kind, TraceNodeKind::FocusWindow(_)))
         .count();
     assert_eq!(
         focus_node_count, 0,
         "Skipped focus_window must not produce a FocusWindow workflow node, graph = {:?}",
-        state.workflow.nodes,
+        state.trace_graph.nodes,
     );
 
     // Event assertion: SubAction must describe the CDP-live reason so
@@ -869,7 +869,7 @@ async fn focus_window_suppressed_when_allow_focus_window_policy_is_false() {
     let runner = StateRunner::new("complete task in background".to_string(), config)
         .with_events(event_tx)
         .with_approval(approval_tx);
-    let workflow = clickweave_core::Workflow::new("focus-window-policy-off");
+    let workflow = crate::agent::trace_graph::AgentTraceGraph::new();
     let mcp_tools = mcp.tools_as_openai();
 
     let state = runner
@@ -917,17 +917,17 @@ async fn focus_window_suppressed_when_allow_focus_window_policy_is_false() {
 
     // Workflow-node assertion: no FocusWindow node — the suppressed
     // call never actually ran, so it must stay invisible to the graph.
-    use clickweave_core::NodeType;
+    use crate::agent::trace_graph::TraceNodeKind;
     let focus_node_count = state
-        .workflow
+        .trace_graph
         .nodes
         .iter()
-        .filter(|n| matches!(n.node_type, NodeType::FocusWindow(_)))
+        .filter(|n| matches!(n.node_kind, TraceNodeKind::FocusWindow(_)))
         .count();
     assert_eq!(
         focus_node_count, 0,
         "Policy-suppressed focus_window must not produce a FocusWindow workflow node, graph = {:?}",
-        state.workflow.nodes,
+        state.trace_graph.nodes,
     );
 
     // Event assertion: SubAction must announce the policy reason so

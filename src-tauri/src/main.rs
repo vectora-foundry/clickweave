@@ -100,10 +100,8 @@ fn main() {
             pick_save_file,
             open_project,
             save_project,
-            validate,
-            node_type_defaults,
-            generate_auto_id,
-            run_workflow,
+            run_skill,
+            resume_skill_from_failure,
             stop_workflow,
             supervision_respond,
             list_runs,
@@ -133,6 +131,8 @@ fn main() {
             stop_agent,
             approve_agent_action,
             resolve_completion_disagreement,
+            save_run_as_skill,
+            add_run_to_skill,
             commands::agent_chat::load_agent_chat,
             commands::agent_chat::save_agent_chat,
             commands::agent_chat::prune_skill_lineage_for_nodes,
@@ -143,6 +143,9 @@ fn main() {
             commands::skills::fork_skill,
             commands::skills::delete_skill,
             commands::skills::list_skills_for_panel,
+            commands::skills::load_skill_full,
+            commands::skills::apply_skill_patch,
+            commands::run_trace::load_latest_run_trace,
         ])
         .typ::<TaskState>()
         .typ::<Subgoal>()

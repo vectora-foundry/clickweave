@@ -69,19 +69,26 @@ export function RunTraceView({ runId }: { runId: string }) {
   }
 
   return (
-    <div className="run-trace-view mx-3 mb-2 rounded border border-[var(--border)] bg-[var(--bg-dark)]">
-      <div className="flex items-center gap-2 border-b border-[var(--border)] px-3 py-2">
+    <div className="run-trace-view mx-3 mb-2 min-w-0 rounded border border-[var(--border)] bg-[var(--bg-dark)]">
+      <div className="flex min-w-0 items-center gap-2 border-b border-[var(--border)] px-3 py-2">
         <PhaseChip phase={trace.phase} />
         <span className="min-w-0 flex-1 truncate text-xs text-[var(--text-secondary)]">
           {trace.activeSubgoal || "No active subgoal"}
         </span>
       </div>
 
-      <ol className="trace-steps max-h-72 space-y-2 overflow-y-auto px-3 py-2">
+      <ol className="trace-steps max-h-72 min-w-0 space-y-2 overflow-y-auto px-3 py-2">
         {entries.length === 0 ? (
           <li className="text-xs text-[var(--text-muted)]">Waiting for first step</li>
         ) : (
-          entries.map((entry, index) => renderEntry(entry, index))
+          entries.map((entry, index) => {
+            const inProgress =
+              !trace.terminalFrame &&
+              entry.type === "step" &&
+              !entry.value.failed &&
+              index === entries.length - 1;
+            return renderEntry(entry, index, inProgress);
+          })
         )}
       </ol>
 
@@ -129,12 +136,14 @@ function TerminalFrameBlock({ frame }: { frame: TerminalFrame }) {
   return (
     <div className={`border-t px-3 py-2 text-xs ${terminalTone[frame.kind]}`}>
       <span className="font-medium">{terminalLabel[frame.kind]}</span>
-      <span className="ml-2 text-[var(--text-secondary)]">{frame.detail}</span>
+      <span className="ml-2 break-words text-[var(--text-secondary)]">
+        {frame.detail}
+      </span>
     </div>
   );
 }
 
-function renderEntry(entry: TraceEntry, index: number) {
+function renderEntry(entry: TraceEntry, index: number, inProgress = false) {
   if (entry.type === "milestone") {
     return (
       <li
@@ -182,7 +191,7 @@ function renderEntry(entry: TraceEntry, index: number) {
         entry.value.failed
           ? "border-red-500/40 bg-red-500/10"
           : "border-[var(--border)] bg-[var(--bg-panel)]"
-      }`}
+      } ${inProgress ? "cw-bloom-pulse" : ""}`}
     >
       <div className="flex items-center gap-2">
         <span className="font-mono text-[10px] text-[var(--text-muted)]">

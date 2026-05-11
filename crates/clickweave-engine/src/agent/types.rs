@@ -1,4 +1,3 @@
-use clickweave_core::Workflow;
 use clickweave_core::cdp::CdpFindElementMatch;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -6,6 +5,7 @@ use uuid::Uuid;
 use crate::agent::skills::{SkillScope, SkillState};
 use crate::agent::step_record::BoundaryKind;
 use crate::agent::task_state::TaskState;
+use crate::agent::trace_graph::AgentTraceGraph;
 
 /// Wrapper carried on the engine-to-Tauri mpsc channel. Splits durable,
 /// serializable events from one-shot channel control messages.
@@ -66,12 +66,6 @@ pub enum AgentEvent {
         step_index: usize,
         tool_name: String,
         summary: String,
-    },
-    NodeAdded {
-        node: Box<clickweave_core::Node>,
-    },
-    EdgeAdded {
-        edge: clickweave_core::Edge,
     },
     GoalComplete {
         summary: String,
@@ -470,9 +464,9 @@ impl AgentCommand {
 pub struct AgentState {
     /// Steps executed so far.
     pub steps: Vec<AgentStep>,
-    /// Workflow being built (when `build_workflow` is true).
-    pub workflow: Workflow,
-    /// ID of the last node added to the workflow graph.
+    /// Trace graph being built (when `build_workflow` is true).
+    pub trace_graph: AgentTraceGraph,
+    /// ID of the last node added to the trace graph.
     pub last_node_id: Option<Uuid>,
     /// Consecutive error count (resets on success).
     pub consecutive_errors: usize,
@@ -491,10 +485,10 @@ pub struct AgentState {
 }
 
 impl AgentState {
-    pub fn new(workflow: Workflow) -> Self {
+    pub fn new(trace_graph: AgentTraceGraph) -> Self {
         Self {
             steps: Vec::new(),
-            workflow,
+            trace_graph,
             last_node_id: None,
             consecutive_errors: 0,
             completed: false,

@@ -1,14 +1,13 @@
 use std::sync::Mutex;
 
 use clickweave_core::AppKind;
-use clickweave_core::Workflow;
 use clickweave_core::app_detection::{bundle_path_from_pid, classify_app};
 use clickweave_core::storage::now_millis;
 use clickweave_core::walkthrough::{
     WalkthroughAction, WalkthroughAnnotations, WalkthroughEvent, WalkthroughEventKind,
     WalkthroughSessionRuntime, WalkthroughStatus, WalkthroughStorage,
 };
-use clickweave_engine::agent::skills::walkthrough::walkthrough_to_skill;
+use clickweave_engine::agent::skills::walkthrough::{actions_to_sketch, build_skill_from_sketch};
 use clickweave_engine::agent::skills::{Skill, SkillError, SkillStore};
 use tauri::{Emitter, Manager};
 use uuid::Uuid;
@@ -145,13 +144,13 @@ fn emit_state(app: &tauri::AppHandle, status: WalkthroughStatus) {
 #[specta::specta]
 pub async fn start_walkthrough(
     app: tauri::AppHandle,
-    workflow_id: String,
+    project_id: String,
     project_path: Option<String>,
     supervisor: Option<super::types::EndpointConfig>,
     cdp_apps: Vec<CdpAppConfig>,
     hover_dwell_threshold: Option<u64>,
 ) -> Result<(), CommandError> {
-    let wf_id = parse_uuid(&workflow_id, "workflow")?;
+    let proj_id = parse_uuid(&project_id, "project")?;
 
     // Resolve MCP binary before acquiring the session lock so a failure
     // doesn't leave walkthrough state wedged as "already running".
@@ -168,7 +167,7 @@ pub async fn start_walkthrough(
             return Err(CommandError::already_running());
         }
 
-        let session = WalkthroughSessionRuntime::new(wf_id);
+        let session = WalkthroughSessionRuntime::new(proj_id);
 
         let storage = match &project_path {
             Some(p) => {
@@ -297,7 +296,7 @@ pub async fn start_walkthrough(
     }
 
     emit_state(&app, WalkthroughStatus::Recording);
-    tracing::info!("Walkthrough session started for workflow {workflow_id}");
+    tracing::info!("Walkthrough session started for project {project_id}");
     Ok(())
 }
 
@@ -378,7 +377,7 @@ pub async fn stop_walkthrough(
     supervisor: Option<super::types::EndpointConfig>,
     hover_dwell_threshold: Option<u64>,
 ) -> Result<(), CommandError> {
-    let (task, storage, session_dir, workflow_id, session_id) = {
+    let (task, storage, session_dir, _project_id, session_id) = {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
         let mut guard = handle.lock().unwrap();
 
@@ -404,7 +403,7 @@ pub async fn stop_walkthrough(
             task,
             guard.storage.clone(),
             guard.session_dir.clone(),
-            sess.meta.workflow_id,
+            sess.meta.project_id,
             sess.meta.id,
         )
     };
@@ -419,7 +418,7 @@ pub async fn stop_walkthrough(
 
     // --- Processing phase (outside the lock) ---
 
-    let (actions, draft, warnings) = match (&storage, &session_dir) {
+    let (actions, warnings) = match (&storage, &session_dir) {
         (Some(storage), Some(dir)) => {
             // Read events from disk.
             let mut events = storage
@@ -432,7 +431,7 @@ pub async fn stop_walkthrough(
             }
 
             // Normalize.
-            let (mut actions, mut norm_warnings) =
+            let (mut actions, norm_warnings) =
                 clickweave_core::walkthrough::normalize_events(&events);
 
             // Hover: retrieve hover events and convert to candidate actions.
@@ -488,35 +487,10 @@ pub async fn stop_walkthrough(
                 tracing::warn!("Failed to save actions: {e}");
             }
 
-            // Synthesize draft.
-            let draft = clickweave_core::walkthrough::synthesize_draft(
-                &actions,
-                workflow_id,
-                "Walkthrough Draft",
-            );
-
-            // Validate (non-fatal — warnings only).
-            if !draft.nodes.is_empty()
-                && let Err(e) = clickweave_core::validate_workflow(&draft)
-            {
-                norm_warnings.push(format!("Draft validation warning: {e}"));
-            }
-
-            // Save draft.
-            if let Err(e) = storage.save_draft(dir, &draft) {
-                tracing::warn!("Failed to save draft: {e}");
-            }
-
-            (actions, draft, norm_warnings)
+            (actions, norm_warnings)
         }
-        _ => (
-            vec![],
-            clickweave_core::Workflow::default(),
-            vec!["No storage available".to_string()],
-        ),
+        _ => (vec![], vec!["No storage available".to_string()]),
     };
-
-    let action_node_map = clickweave_core::walkthrough::build_action_node_map(&actions, &draft);
 
     // Store results, persist, and emit — all under the same lock acquisition
     // to prevent cancel_walkthrough() from racing between the session update
@@ -552,9 +526,7 @@ pub async fn stop_walkthrough(
             WalkthroughDraftPayload {
                 session_id: session_id.to_string(),
                 actions,
-                draft,
                 warnings,
-                action_node_map,
             },
         );
         emit_state(&app, WalkthroughStatus::Review);
@@ -568,7 +540,6 @@ pub async fn stop_walkthrough(
 pub struct WalkthroughDraftResponse {
     pub session_id: String,
     pub actions: Vec<WalkthroughAction>,
-    pub draft: Option<clickweave_core::Workflow>,
     pub warnings: Vec<String>,
 }
 
@@ -576,10 +547,9 @@ pub struct WalkthroughDraftResponse {
 pub struct SaveWalkthroughAsSkillRequest {
     pub session_id: String,
     pub project_path: Option<String>,
-    pub workflow_name: String,
-    pub workflow_id: String,
-    pub reviewed_draft: Option<clickweave_core::Workflow>,
-    pub reviewed_actions: Option<Vec<WalkthroughAction>>,
+    pub project_name: String,
+    pub project_id: String,
+    pub name: String,
     pub store_traces: bool,
 }
 
@@ -590,37 +560,20 @@ pub async fn get_walkthrough_draft(
 ) -> Result<WalkthroughDraftResponse, CommandError> {
     let handle = app.state::<Mutex<WalkthroughHandle>>();
 
-    // Extract needed data under lock, then drop it before doing file I/O.
-    let (session_id, actions, warnings, draft_path) = {
+    let (session_id, actions, warnings) = {
         let guard = handle.lock().unwrap();
         guard.ensure_status(&[WalkthroughStatus::Review])?;
         let session = guard.session.as_ref().unwrap();
-        let path = guard.session_dir.as_ref().map(|dir| dir.join("draft.json"));
         (
             session.meta.id.to_string(),
             session.actions.clone(),
             session.meta.warnings.clone(),
-            path,
         )
-    };
-
-    // Read draft from disk if available (no lock held).
-    let draft = match draft_path {
-        Some(path) => match std::fs::read_to_string(&path) {
-            Ok(data) => Some(
-                serde_json::from_str(&data)
-                    .map_err(|e| CommandError::validation(format!("Failed to parse draft: {e}")))?,
-            ),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(CommandError::io(format!("Failed to read draft: {e}"))),
-        },
-        None => None,
     };
 
     Ok(WalkthroughDraftResponse {
         session_id,
         actions,
-        draft,
         warnings,
     })
 }
@@ -638,9 +591,9 @@ pub async fn save_walkthrough_as_skill(
     }
 
     let session_id = parse_uuid(&request.session_id, "walkthrough session")?;
-    let workflow_id = parse_uuid(&request.workflow_id, "workflow")?;
+    let project_id = parse_uuid(&request.project_id, "project")?;
 
-    let (session_actions, draft_path) = {
+    let session_actions = {
         let handle = app.state::<Mutex<WalkthroughHandle>>();
         let guard = handle.lock().unwrap();
         guard.ensure_status(&[WalkthroughStatus::Review])?;
@@ -648,47 +601,70 @@ pub async fn save_walkthrough_as_skill(
         if session.meta.id != session_id {
             return Err(CommandError::validation("Walkthrough session ID mismatch"));
         }
-        if session.meta.workflow_id != workflow_id {
-            return Err(CommandError::validation("Workflow ID mismatch"));
+        if session.meta.project_id != project_id {
+            return Err(CommandError::validation("Project ID mismatch"));
         }
-        let draft_path = guard.session_dir.as_ref().map(|dir| dir.join("draft.json"));
-        (session.actions.clone(), draft_path)
+        session.actions.clone()
     };
 
-    let actions = request.reviewed_actions.clone().unwrap_or(session_actions);
-    let draft = match request.reviewed_draft.clone() {
-        Some(reviewed) => Some(reviewed),
-        None => match draft_path {
-            Some(path) => match std::fs::read_to_string(&path) {
-                Ok(data) => Some(serde_json::from_str::<Workflow>(&data).map_err(|e| {
-                    CommandError::validation(format!("Failed to parse draft: {e}"))
-                })?),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-                Err(e) => return Err(CommandError::io(format!("Failed to read draft: {e}"))),
-            },
-            None => None,
-        },
-    };
+    // Build ActionSketchStep[] directly from actions (no Workflow intermediary).
+    let mut action_sketch = actions_to_sketch(&session_actions).map_err(skill_error_to_command)?;
 
-    let skill = walkthrough_to_skill(
-        &actions,
-        draft.as_ref(),
+    // Fold any repeating polling sub-sequences into Loop steps.
+    clickweave_engine::agent::skills::loop_folding::fold_polling_loops(&mut action_sketch);
+
+    // Generate mechanical prose body.
+    let name = request.name.trim();
+    let name = if name.is_empty() {
+        "Recorded Walkthrough"
+    } else {
+        name
+    };
+    let body = clickweave_engine::agent::skills::prose_generator::generate(&action_sketch, name);
+
+    // Default description keeps generic to avoid private-string leakage.
+    let today = chrono::Utc::now().format("%Y-%m-%d");
+    let app_name = session_actions
+        .iter()
+        .filter(|a| !a.candidate)
+        .find_map(|a| a.app_name.as_deref())
+        .unwrap_or("unknown app");
+    let description = format!("Recorded {today} in {app_name}");
+
+    let skill = build_skill_from_sketch(
+        &session_actions,
+        action_sketch,
+        body,
+        name,
+        &description,
         &request.session_id,
-        &request.workflow_id,
-    )
-    .map_err(skill_error_to_command)?;
+        &request.project_id,
+    );
+
     let storage = resolve_storage(
         &app,
         &request.project_path,
-        &request.workflow_name,
-        workflow_id,
+        &request.project_name,
+        project_id,
     );
     let skills_dir = storage
         .project_skills_dir()
         .map_err(|e| CommandError::io(format!("resolve project skills dir: {e}")))?;
-    SkillStore::new(skills_dir)
-        .write_skill(&skill)
-        .map_err(skill_error_to_command)?;
+
+    let store = SkillStore::new(skills_dir);
+    store.write_skill(&skill).map_err(skill_error_to_command)?;
+
+    // Write skeleton replay.json sidecar (empty step bundles; intent
+    // extraction is Phase 2).
+    let _ = store.write_replay(
+        &skill.id,
+        &clickweave_engine::agent::skills::ReplayJson {
+            skill_id: skill.id.clone(),
+            schema_version: clickweave_engine::agent::skills::SKILL_SCHEMA_VERSION,
+            steps: std::collections::HashMap::new(),
+            section_history: vec![],
+        },
+    );
 
     let _ = app.emit(
         "agent://skill_extracted",
@@ -783,25 +759,25 @@ pub async fn apply_walkthrough_annotations(
 #[specta::specta]
 pub async fn seed_walkthrough_cache(
     app: tauri::AppHandle,
-    workflow_id: String,
-    workflow_name: String,
+    project_id: String,
+    project_name: String,
     project_path: Option<String>,
     app_entries: Vec<super::types::AppResolutionSeedEntry>,
 ) -> Result<(), CommandError> {
     use clickweave_core::decision_cache::{AppResolution, DecisionCache, cache_key};
 
-    let wf_id = parse_uuid(&workflow_id, "workflow")?;
+    let proj_id = parse_uuid(&project_id, "project")?;
 
     if app_entries.is_empty() {
         return Ok(());
     }
 
-    let storage = super::types::resolve_storage(&app, &project_path, &workflow_name, wf_id);
+    let storage = super::types::resolve_storage(&app, &project_path, &project_name, proj_id);
     let cache_path = storage.cache_path();
 
     // Load existing cache or create new one.
     let mut cache =
-        DecisionCache::load(&cache_path, wf_id).unwrap_or_else(|| DecisionCache::new(wf_id));
+        DecisionCache::load(&cache_path, proj_id).unwrap_or_else(|| DecisionCache::new(proj_id));
 
     for entry in &app_entries {
         let node_id = parse_uuid(&entry.node_id, "node")?;

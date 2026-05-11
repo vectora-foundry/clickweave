@@ -517,6 +517,99 @@ pub fn invoke_skill_tool() -> Value {
     })
 }
 
+/// Tool descriptor for `skill_patch_rebind_target`.
+///
+/// Emitted by the assistant to change the target binding of a specific step
+/// in a skill's action_sketch. The harness synthesizes a `SkillPatch` whose
+/// `action_sketch_replacements` updates the named step's `args` and whose
+/// `replay_sidecar_mutations` carries `ClearSignals { step_id }` so the
+/// replay engine re-records from scratch with the new target.
+///
+/// Whole-skill rewrites are refused at this boundary — each call must
+/// address exactly one step.
+pub fn skill_patch_rebind_target_tool() -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "skill_patch_rebind_target",
+            "description": "Change the target binding of a single action_sketch step in an active skill. Synthesizes a SkillPatch that updates the step args and clears stale signals so the replay engine re-records with the new target. Whole-skill rewrites are not accepted.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill_id":         { "type": "string", "description": "Skill to patch." },
+                    "step_id":          { "type": "string", "description": "step_id of the step whose target binding changes." },
+                    "new_target_kind":  {
+                        "type": "string",
+                        "enum": ["ax_label", "cdp_selector", "image_crop", "coords"],
+                        "description": "Target kind after the rebind."
+                    },
+                    "new_target_args":  { "type": "object", "description": "New args object for the step (must be valid for the chosen target kind)." }
+                },
+                "required": ["skill_id", "step_id", "new_target_kind", "new_target_args"]
+            }
+        }
+    })
+}
+
+/// Tool descriptor for `skill_patch_reorder_sections`.
+///
+/// Emitted by the assistant to reorder `##` sections within a skill's body.
+/// The harness synthesizes a `SkillPatch` that reorders both the section
+/// markdown blocks and the contiguous action_sketch step ranges so they stay
+/// in sync. No sidecar mutations are required.
+pub fn skill_patch_reorder_sections_tool() -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "skill_patch_reorder_sections",
+            "description": "Reorder the ##-level sections of a skill. The harness reorders both the markdown prose blocks and the corresponding contiguous action_sketch step ranges atomically. No sidecar mutations.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill_id":           { "type": "string", "description": "Skill to patch." },
+                    "ordered_section_ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Full list of ##-level section IDs in the desired order. Must be a permutation of the current section IDs."
+                    }
+                },
+                "required": ["skill_id", "ordered_section_ids"]
+            }
+        }
+    })
+}
+
+/// Tool descriptor for `skill_patch_promote_to_variable`.
+///
+/// Emitted by the assistant to lift a hard-coded literal value into a named
+/// `variables` entry in the SKILL.md frontmatter. The harness synthesizes a
+/// `SkillPatch` that:
+/// - Adds the variable to `variables_additions`.
+/// - Replaces the literal in the prose body with `{{variable_name}}`.
+/// - Rewrites the matching action_sketch arg with the template reference.
+/// - Clears image-crop signals only (AX/CDP signals remain valid, per D12).
+pub fn skill_patch_promote_to_variable_tool() -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": "skill_patch_promote_to_variable",
+            "description": "Lift a hard-coded literal in a skill step into a named frontmatter variable. Updates both the prose body ({{variable_name}} template) and the action_sketch arg. Clears image-crop signals only — AX/CDP signals remain.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill_id":       { "type": "string", "description": "Skill to patch." },
+                    "step_id":        { "type": "string", "description": "step_id of the step that contains the literal." },
+                    "arg_path":       { "type": "string", "description": "Dot-separated path inside the step args object pointing to the literal (e.g. 'text' or 'selector')." },
+                    "variable_name":  { "type": "string", "description": "Name for the new variable (must be a valid identifier)." },
+                    "variable_type":  { "type": "string", "description": "Type tag for the variable schema (e.g. 'string', 'number')." },
+                    "default":        { "description": "Optional default value for the variable." }
+                },
+                "required": ["skill_id", "step_id", "arg_path", "variable_name", "variable_type"]
+            }
+        }
+    })
+}
+
 /// All harness-local pseudo-tools that the LLM may emit in a turn.
 ///
 /// Order is intentional: the action pseudo-tools (`agent_done`,
@@ -524,7 +617,9 @@ pub fn invoke_skill_tool() -> Value {
 /// clusters the "terminate the loop" choices, while the mutations cluster
 /// together at the start of the pseudo-tool block. `invoke_skill` is appended
 /// after `agent_replan` so the tool-list prefix stays stable for prompt-cache
-/// compatibility across runs that toggle the skills layer.
+/// compatibility across runs that toggle the skills layer. The three
+/// `skill_patch_*` tools follow `invoke_skill` so the skills-layer prefix
+/// remains cache-stable between runs that don't use patch primitives.
 pub fn pseudo_tools() -> Vec<Value> {
     vec![
         push_subgoal_tool(),
@@ -537,7 +632,24 @@ pub fn pseudo_tools() -> Vec<Value> {
         agent_done_tool(),
         agent_replan_tool(),
         invoke_skill_tool(),
+        skill_patch_rebind_target_tool(),
+        skill_patch_reorder_sections_tool(),
+        skill_patch_promote_to_variable_tool(),
     ]
+}
+
+/// Names of the `skill_patch_*` pseudo-tools exposed to the assistant.
+/// Used by `parse_agent_turn` to route calls to the patch synthesizer
+/// rather than an MCP dispatch.
+pub const SKILL_PATCH_TOOL_NAMES: &[&str] = &[
+    "skill_patch_rebind_target",
+    "skill_patch_reorder_sections",
+    "skill_patch_promote_to_variable",
+];
+
+/// True when `name` is one of the three named `skill_patch_*` primitives.
+pub fn is_skill_patch_tool_name(name: &str) -> bool {
+    SKILL_PATCH_TOOL_NAMES.contains(&name)
 }
 
 /// Names of the pseudo-tools that map to `TaskStateMutation` rather than
@@ -703,6 +815,10 @@ mod state_spine_prompt_tests {
             updated_at: chrono::Utc.timestamp_opt(0, 0).unwrap(),
             produced_node_ids: vec![],
             body: String::new(),
+            schema_version: crate::agent::skills::SKILL_SCHEMA_VERSION,
+            variables: vec![],
+            sections: vec![],
+            replay: None,
         };
         let applicable = vec![RetrievedSkill {
             skill: Arc::new(skill),
@@ -933,18 +1049,34 @@ mod state_spine_prompt_tests {
     }
 
     #[test]
-    fn pseudo_tools_appends_invoke_skill_at_end() {
-        // Stable trailing position keeps the system-prompt prefix
-        // identical for runs that toggle the skills layer, so the
-        // shared LLM prompt-cache prefix is preserved.
+    fn pseudo_tools_trailing_order_is_stable() {
+        // The skills-layer tools are appended at the tail of the list so the
+        // system-prompt prefix shared by non-skill runs remains cache-stable.
+        // invoke_skill must appear before the skill_patch_* group; the last
+        // tool in the list is skill_patch_promote_to_variable.
         let tools = pseudo_tools();
-        let last = tools.last().expect("at least one pseudo-tool");
-        let name = last
-            .get("function")
-            .and_then(|f| f.get("name"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        assert_eq!(name, "invoke_skill");
+
+        let names: Vec<&str> = tools
+            .iter()
+            .filter_map(|t| t.get("function")?.get("name")?.as_str())
+            .collect();
+
+        // invoke_skill precedes the patch primitives.
+        let invoke_pos = names.iter().position(|n| *n == "invoke_skill").unwrap();
+        let rebind_pos = names
+            .iter()
+            .position(|n| *n == "skill_patch_rebind_target")
+            .unwrap();
+        assert!(
+            invoke_pos < rebind_pos,
+            "invoke_skill must precede skill_patch_rebind_target"
+        );
+
+        // The three patch tools appear at the tail.
+        let len = names.len();
+        assert_eq!(names[len - 3], "skill_patch_rebind_target");
+        assert_eq!(names[len - 2], "skill_patch_reorder_sections");
+        assert_eq!(names[len - 1], "skill_patch_promote_to_variable");
     }
 
     #[test]

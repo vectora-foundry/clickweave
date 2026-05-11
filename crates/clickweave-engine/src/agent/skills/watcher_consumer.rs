@@ -163,6 +163,10 @@ mod tests {
             updated_at: Utc::now(),
             produced_node_ids: vec![],
             body: format!("# {id}\n"),
+            schema_version: super::super::SKILL_SCHEMA_VERSION,
+            variables: vec![],
+            sections: vec![],
+            replay: None,
         }
     }
 

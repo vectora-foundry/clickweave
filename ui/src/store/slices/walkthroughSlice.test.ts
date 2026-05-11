@@ -122,7 +122,7 @@ describe("walkthroughSlice.startWalkthrough cancel-during-start race", () => {
   it("retries cancel once the session is live when Escape races start", async () => {
     useStore.setState({
       walkthroughStatus: "Idle",
-      workflow: { id: "wf1", name: "wf", nodes: [], edges: [], groups: [] } as never,
+      projectId: "wf1",
       projectPath: null,
       supervisorConfig: { baseUrl: "", apiKey: "", model: "" } as never,
       hoverDwellThreshold: 2000,

@@ -7,7 +7,6 @@
 
 #![allow(dead_code)]
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -16,6 +15,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::agent::step_record::WorldModelSnapshot;
+
+/// Stable, human-friendly skill identifier (e.g. `skl_a8c4f1`). Carried
+/// in `SKILL.md` frontmatter and in the on-disk directory name. Plain
+/// type alias for now — a newtype can be introduced later without
+/// touching the wire format.
+pub type SkillId = String;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -53,7 +58,7 @@ pub struct ParameterSlot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum BindingRef {
     Captured { name: String },
@@ -77,7 +82,7 @@ pub struct AxDescriptorMatch {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum CaptureSource {
     AxDescriptor { descriptor: AxDescriptorMatch },
@@ -104,23 +109,24 @@ pub struct ExpectedWorldModelDelta {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum ActionSketchStep {
     ToolCall {
+        step_id: String,
         tool: String,
         args: serde_json::Value,
         captures_pre: Vec<CaptureClause>,
         captures: Vec<CaptureClause>,
         expected_world_model_delta: ExpectedWorldModelDelta,
-    },
-    SubSkill {
-        skill_id: String,
-        version: u32,
-        parameters: serde_json::Value,
-        bind_outputs_as: HashMap<String, String>,
+        /// Explicit approval override for this step. `Some(true)` always
+        /// gates; `Some(false)` always bypasses; `None` defers to the
+        /// `should_gate_step` heuristic (destructive-hint + static list).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        requires_approval: Option<bool>,
     },
     Loop {
+        step_id: String,
         until: LoopPredicate,
         body: Vec<ActionSketchStep>,
         max_iterations: u32,
@@ -129,7 +135,7 @@ pub enum ActionSketchStep {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum LoopPredicate {
     WorldModelDelta { expr: String },
@@ -137,7 +143,7 @@ pub enum LoopPredicate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum OutcomePredicate {
     SubgoalCompleted {
@@ -171,6 +177,142 @@ pub struct SkillStats {
     pub last_invoked_at: Option<DateTime<Utc>>,
 }
 
+/// Clickweave-internal skill metadata serialized under the
+/// `clickweave:` nested key in the YAML frontmatter. Distinct from
+/// [`SkillFrontmatter`] (which carries the cross-tool-portable subset
+/// Claude Code / Codex CLI / Gemini Extensions consume) so external
+/// agent tools see a recognizable skill shape and ignore this block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct ClickweaveSkillMeta {
+    pub state: SkillState,
+    pub scope: SkillScope,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub subgoal_text: String,
+    #[serde(default)]
+    pub subgoal_signature: SubgoalSignature,
+    pub applicability: ApplicabilityHints,
+    #[serde(default)]
+    pub parameter_schema: Vec<ParameterSlot>,
+    #[serde(default)]
+    pub outputs: Vec<OutputDeclaration>,
+    pub outcome_predicate: OutcomePredicate,
+    #[serde(default)]
+    pub provenance: Vec<ProvenanceEntry>,
+    #[serde(default)]
+    pub stats: SkillStats,
+    #[serde(default)]
+    pub edited_by_user: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub produced_node_ids: Vec<Uuid>,
+}
+
+impl Default for ClickweaveSkillMeta {
+    fn default() -> Self {
+        let now = Utc::now();
+        Self {
+            state: SkillState::Confirmed,
+            scope: SkillScope::ProjectLocal,
+            tags: Vec::new(),
+            subgoal_text: String::new(),
+            subgoal_signature: SubgoalSignature(String::new()),
+            applicability: ApplicabilityHints {
+                apps: Vec::new(),
+                hosts: Vec::new(),
+                signature: ApplicabilitySignature(String::new()),
+            },
+            parameter_schema: Vec::new(),
+            outputs: Vec::new(),
+            outcome_predicate: OutcomePredicate::SubgoalCompleted {
+                post_state_world_model_signature: None,
+            },
+            provenance: Vec::new(),
+            stats: SkillStats::default(),
+            edited_by_user: false,
+            created_at: now,
+            updated_at: now,
+            produced_node_ids: Vec::new(),
+        }
+    }
+}
+
+impl SubgoalSignature {
+    pub fn empty() -> Self {
+        Self(String::new())
+    }
+}
+
+impl Default for SubgoalSignature {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+/// Per-section view of a parsed skill body. Populated by
+/// `parser::parse_skill_md`; `body_range` is a UTF-16 code-unit range
+/// into the raw markdown body string (start..end of the section's
+/// prose after the heading, measured in JS-compatible UTF-16 units so
+/// the frontend can use `body.slice(start, end)` directly).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct SkillSection {
+    pub id: String,
+    pub heading: String,
+    pub level: u8,
+    pub step_ids: Vec<String>,
+    pub body_range: (usize, usize),
+}
+
+/// Coarse-grained replay confidence used by per-section fidelity dots
+/// (D7). Defaults to `NoData` until the replay engine in Phase 2 starts
+/// stamping the underlying step bundles.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "snake_case")]
+pub enum Fidelity {
+    Solid,
+    Repaired,
+    Brittle,
+    #[default]
+    NoData,
+}
+
+/// Minimal `SKILL.md` YAML frontmatter, intentionally cross-tool
+/// portable. Mirrors the Claude Code / Codex / Gemini skill-format
+/// shape; everything else lives in the markdown body and the fenced
+/// `action_sketch` block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct SkillFrontmatter {
+    pub name: String,
+    pub description: String,
+    pub id: SkillId,
+    pub version: u32,
+    pub schema_version: u32,
+    #[serde(default)]
+    pub variables: Vec<SkillFrontmatterVariable>,
+    /// Clickweave-internal metadata. External LLM-agent tools (Claude
+    /// Code, Codex CLI, Gemini Extensions) ignore unknown YAML keys, so
+    /// this nested block preserves Clickweave's runtime metadata
+    /// without breaking the cross-tool portability promise from D3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clickweave: Option<ClickweaveSkillMeta>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct SkillFrontmatterVariable {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub description: Option<String>,
+    pub default: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct Skill {
@@ -195,6 +337,19 @@ pub struct Skill {
     pub updated_at: DateTime<Utc>,
     pub produced_node_ids: Vec<Uuid>,
     pub body: String,
+    /// Parsed marker grammar — populated by the new parser. Empty for
+    /// in-memory skills built directly from `action_sketch`.
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub variables: Vec<SkillFrontmatterVariable>,
+    #[serde(default)]
+    pub sections: Vec<SkillSection>,
+    /// In-memory mirror of the on-disk `replay.json` sidecar. Loaded by
+    /// `SkillStore::load_all`; persisted via the four-layer atomic
+    /// write protocol.
+    #[serde(skip)]
+    pub replay: Option<crate::agent::skills::replay::ReplayJson>,
 }
 
 #[derive(Debug, Clone)]
@@ -276,6 +431,8 @@ pub enum SkillError {
     Yaml(#[from] serde_yaml::Error),
     #[error("invalid frontmatter: {0}")]
     InvalidFrontmatter(String),
+    #[error("missing frontmatter delimiter: {0}")]
+    MissingFrontmatterDelimiter(String),
     #[error("skill not found: {0}@v{1}")]
     NotFound(String, u32),
     #[error("skill in draft state cannot be invoked: {0}@v{1}")]
@@ -286,4 +443,34 @@ pub enum SkillError {
     Substitution(String),
     #[error("outcome predicate failed: {0}")]
     OutcomeFailed(String),
+    #[error("missing fenced action_sketch block in skill body")]
+    MissingActionSketchFence,
+    #[error("multiple fenced action_sketch blocks in skill body")]
+    MultipleActionSketchFences,
+    #[error("malformed action_sketch JSON: {0}")]
+    MalformedActionSketchJson(serde_json::Error),
+    #[error(
+        "step marker / action_sketch mismatch — markers: {in_markers:?}, top-level sketch ids: {in_action_sketch_top_level:?}"
+    )]
+    StepMarkerMismatch {
+        in_markers: Vec<String>,
+        in_action_sketch_top_level: Vec<String>,
+    },
+    #[error("duplicate step_id in skill: {0}")]
+    DuplicateStepId(String),
+    #[error("duplicate section_id in skill: {0}")]
+    DuplicateSectionId(String),
+    #[error("unresolved variable reference: {{{{{0}}}}}")]
+    UnresolvedVariableRef(String),
+    #[error("unsupported skill schema_version {found}; max supported is {max_supported}")]
+    UnsupportedSchemaVersion { found: u32, max_supported: u32 },
+    #[error(
+        "replay sidecar/action_sketch step_id mismatch — sketch ids: {skill_step_ids:?}, replay ids: {replay_step_ids:?}"
+    )]
+    ReplaySidecarMismatch {
+        skill_step_ids: Vec<String>,
+        replay_step_ids: Vec<String>,
+    },
+    #[error("skill file changed externally between read and write")]
+    ExternalConflict,
 }

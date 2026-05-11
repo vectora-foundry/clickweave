@@ -1,18 +1,22 @@
 import type { StateCreator } from "zustand";
-import type { Workflow } from "../../bindings";
+import type { ProjectManifest } from "../../bindings";
 import { commands } from "../../bindings";
-import { makeDefaultWorkflow } from "../state";
+import { PROJECT_SCHEMA_VERSION } from "../state";
 import { errorMessage } from "../../utils/commandError";
 import type { StoreState } from "./types";
 import { loadAgentChat } from "../agentChatPersistence";
+import { loadLatestRunTrace } from "../runTracePersistence";
 import { isAgentActive } from "./agentSlice";
 
 export interface ProjectSlice {
-  workflow: Workflow;
+  projectId: string;
+  projectName: string;
+  projectIntent: string | null;
   projectPath: string | null;
   isNewWorkflow: boolean;
 
-  setWorkflow: (w: Workflow) => void;
+  setProjectName: (name: string) => void;
+  setProjectIntent: (intent: string | null) => void;
   openProject: () => Promise<void>;
   saveProject: () => Promise<void>;
   newProject: () => void;
@@ -20,22 +24,24 @@ export interface ProjectSlice {
 }
 
 export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> = (set, get) => ({
-  workflow: makeDefaultWorkflow(),
+  projectId: crypto.randomUUID(),
+  projectName: "New Workflow",
+  projectIntent: null,
   projectPath: null,
   isNewWorkflow: true,
 
-  setWorkflow: (w) => set({ workflow: w }),
+  setProjectName: (name) => set({ projectName: name }),
+  setProjectIntent: (intent) => set({ projectIntent: intent }),
 
   openProject: async () => {
     if (get().executorState === "running") {
       console.warn("Cannot open project during execution");
       return;
     }
-    // Cross-project corruption guard (D1.C1 review): a live agent run
-    // against workflow A would keep emitting events into workflow B's
-    // graph/messages if we swapped the project out from under it.
-    // Also block while a VLM completion-disagreement resolver is
-    // pending — the backend task still owns this workflow's cache +
+    // Cross-project corruption guard: a live agent run against project A
+    // would keep emitting events into project B if we swapped out from
+    // under it. Also block while a VLM completion-disagreement resolver is
+    // pending — the backend task still owns this project's cache +
     // variant-index writes until the operator resolves.
     if (isAgentActive(get().agentStatus, get().completionDisagreement)) {
       get().setAssistantError(
@@ -54,32 +60,61 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
     }
     set({
       projectPath: projectResult.data.path,
-      workflow: projectResult.data.workflow,
+      projectId: projectResult.data.manifest.id,
+      projectName: projectResult.data.manifest.name,
+      projectIntent: projectResult.data.manifest.intent ?? null,
       selectedNode: null,
       isNewWorkflow: false,
       assistantError: null,
       messages: [],
+      // Clear the previous project's run context so the Overview
+      // cards don't display stale trace/elapsed data for the old project.
+      agentRunId: null,
+      agentRunStartedAt: null,
+      agentRunFinishedAt: null,
+      lastRunStatus: null,
+      // Also clear the terminal run notice — the destructive-cap card
+      // in AssistantThread reads this directly and would otherwise keep
+      // showing the previous project's run-halted message.
+      consecutiveDestructiveCapHit: null,
+      // Drop any staged first-run save sheet and its underlying step
+      // buffer: a pendingRunSave belongs to the previous project's runId,
+      // and saving it after the switch would materialise the old steps as
+      // a skill in the *new* project.
+      pendingRunSave: null,
+      agentSteps: [],
+      agentGoal: "",
+      skillCreationIntent: false,
     });
-    get().clearHistory();
-    // Ambiguity resolutions are specific to the prior workflow's nodes.
+    // Ambiguity resolutions are specific to the prior project's nodes.
     get().clearAmbiguityResolutions();
 
-    // Hydrate the per-workflow chat transcript from disk. Best-effort
+    // Hydrate the per-project chat transcript from disk. Best-effort
     // — missing or malformed files return an empty array.
     const rehydrated = await loadAgentChat({
       projectPath: projectResult.data.path,
-      workflowName: projectResult.data.workflow.name,
-      workflowId: projectResult.data.workflow.id,
+      projectName: projectResult.data.manifest.name,
+      projectId: projectResult.data.manifest.id,
     });
     if (rehydrated.length > 0) {
       get().setMessages(rehydrated);
+    }
+
+    const hydratedTrace = await loadLatestRunTrace({
+      projectPath: projectResult.data.path,
+      projectName: projectResult.data.manifest.name,
+      projectId: projectResult.data.manifest.id,
+      storeTraces: get().storeTraces,
+    });
+    if (hydratedTrace) {
+      get().hydrateRunTrace(hydratedTrace);
     }
 
     pushLog(`Opened: ${filePath}`);
   },
 
   saveProject: async () => {
-    const { projectPath, workflow, pushLog } = get();
+    const { projectPath, projectId, projectName, projectIntent, pushLog } = get();
     let savePath = projectPath;
     if (!savePath) {
       const result = await commands.pickSaveFile();
@@ -87,7 +122,13 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
       savePath = result.data;
       set({ projectPath: savePath });
     }
-    const saveResult = await commands.saveProject(savePath, workflow);
+    const manifest: ProjectManifest = {
+      id: projectId,
+      name: projectName,
+      intent: projectIntent ?? null,
+      schema_version: PROJECT_SCHEMA_VERSION,
+    };
+    const saveResult = await commands.saveProject(savePath, manifest);
     if (saveResult.status !== "ok") {
       pushLog(`Failed to save: ${errorMessage(saveResult.error)}`);
       return;
@@ -109,14 +150,33 @@ export const createProjectSlice: StateCreator<StoreState, [], [], ProjectSlice> 
     }
     const { pushLog } = get();
     set({
-      workflow: makeDefaultWorkflow(),
+      projectId: crypto.randomUUID(),
+      projectName: "New Workflow",
+      projectIntent: null,
       projectPath: null,
       selectedNode: null,
       isNewWorkflow: true,
       messages: [],
       assistantError: null,
+      // Clear the previous project's run context so the Overview
+      // cards don't display stale trace/elapsed data for the old project.
+      agentRunId: null,
+      agentRunStartedAt: null,
+      agentRunFinishedAt: null,
+      lastRunStatus: null,
+      // Also clear the terminal run notice — the destructive-cap card
+      // in AssistantThread reads this directly and would otherwise keep
+      // showing the previous project's run-halted message.
+      consecutiveDestructiveCapHit: null,
+      // Drop any staged first-run save sheet and its underlying step
+      // buffer: a pendingRunSave belongs to the previous project's runId,
+      // and saving it after the switch would materialise the old steps as
+      // a skill in the *new* project.
+      pendingRunSave: null,
+      agentSteps: [],
+      agentGoal: "",
+      skillCreationIntent: false,
     });
-    get().clearHistory();
     get().clearAmbiguityResolutions();
     pushLog("New project created");
   },

@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
-import type { BoundaryKind, Edge, Node, TaskState, WorldModelDiff } from "../../bindings";
+import type { BoundaryKind, TaskState, WorldModelDiff } from "../../bindings";
 import { useStore } from "../../store/useAppStore";
 import type { AgentStatus } from "../../store/slices/agentSlice";
 import type { AgentPhase, TerminalFrame } from "../../store/slices/assistantSlice";
@@ -32,14 +32,6 @@ interface AgentStepPayload extends RunScoped {
   step_number: number;
 }
 
-interface NodeAddedPayload extends RunScoped {
-  node: Node;
-}
-
-interface EdgeAddedPayload extends RunScoped {
-  edge: Edge;
-}
-
 interface CdpConnectedPayload extends RunScoped {
   app_name: string;
   port: number;
@@ -62,7 +54,7 @@ interface StepFailedPayload extends RunScoped {
 }
 
 interface ApprovalRequiredPayload extends RunScoped {
-  step_index: number;
+  scope: import("../../store/slices/executionSlice").SafetyScope | null;
   tool_name: string;
   arguments: unknown;
   description: string;
@@ -97,9 +89,8 @@ interface BoundaryRecordWrittenPayload extends RunScoped {
  * Subscribe to agent backend events:
  * agent://started, agent://step, agent://complete,
  * agent://completion_disagreement, agent://stopped, agent://error,
- * agent://warning, agent://node_added, agent://edge_added,
- * agent://approval_required, agent://cdp_connected, agent://step_failed,
- * agent://sub_action.
+ * agent://warning, agent://approval_required, agent://cdp_connected,
+ * agent://step_failed, agent://sub_action.
  *
  * All run-scoped events carry a `run_id` generation ID. Events whose
  * run_id does not match the active run are silently dropped to prevent
@@ -172,31 +163,13 @@ export function useAgentEvents() {
     );
 
     sub(
-      listen<NodeAddedPayload>("agent://node_added", (e) => {
-        if (isStale(e.payload.run_id)) return;
-        useStore
-          .getState()
-          .bufferAgentNode(e.payload.run_id, e.payload.node);
-      }),
-    );
-
-    sub(
-      listen<EdgeAddedPayload>("agent://edge_added", (e) => {
-        if (isStale(e.payload.run_id)) return;
-        useStore
-          .getState()
-          .bufferAgentEdge(e.payload.run_id, e.payload.edge);
-      }),
-    );
-
-    sub(
       listen<ApprovalRequiredPayload>("agent://approval_required", (e) => {
         if (isStale(e.payload.run_id)) return;
         // Ignore stale approval requests that arrive after stop/cancel
         const current = useStore.getState().agentStatus;
         if (current !== "running") return;
         useStore.getState().setPendingApproval({
-          stepIndex: e.payload.step_index,
+          scope: e.payload.scope,
           toolName: e.payload.tool_name,
           arguments: e.payload.arguments,
           description: e.payload.description,
@@ -294,6 +267,8 @@ export function useAgentEvents() {
         // optimistically and reopened the guards before the backend
         // was actually done.
         useStore.getState().setCompletionDisagreement(null);
+        // D24 — freeze elapsed at the terminal moment.
+        useStore.setState({ agentRunFinishedAt: Date.now() });
         useStore.getState().pushLog("Agent completed");
         useStore.getState().setTerminalFrame(e.payload.run_id, {
           kind: "complete",
@@ -370,6 +345,8 @@ export function useAgentEvents() {
         // the `isAgentActive` gates reopen only after the backend
         // has actually completed its final cache/variant-index writes.
         useStore.getState().setCompletionDisagreement(null);
+        // D24 — freeze elapsed at the terminal moment.
+        useStore.setState({ agentRunFinishedAt: Date.now() });
         const detail =
           e.payload.reason === "max_steps_reached"
             ? `after ${e.payload.steps_executed} steps`
@@ -443,6 +420,11 @@ export function useAgentEvents() {
         // `isAgentActive` drops to false now that the backend task
         // has signalled it is done.
         useStore.getState().setCompletionDisagreement(null);
+        // D24 — freeze elapsed at the terminal moment. Stamped
+        // outside the `if (current === "running")` branch above so
+        // a racing-error-after-stop still reflects the last terminal
+        // moment in the Live Runtime card.
+        useStore.setState({ agentRunFinishedAt: Date.now() });
         useStore.getState().setTerminalFrame(e.payload.run_id, {
           kind: "error",
           detail: e.payload.message,

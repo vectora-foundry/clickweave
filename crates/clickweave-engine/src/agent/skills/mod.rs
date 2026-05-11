@@ -14,15 +14,20 @@
 
 #![allow(dead_code)]
 
+pub mod emitter;
 pub mod extractor;
 pub mod frontmatter;
 pub mod index;
 pub mod loop_folding;
 pub mod outcome;
+pub mod parser;
+pub mod patch;
+pub mod prose_generator;
 pub mod provenance;
 pub mod render;
 pub mod replay;
 pub mod retrieval;
+pub mod section_history;
 pub mod signature;
 pub mod store;
 pub mod substitution;
@@ -31,13 +36,27 @@ pub mod walkthrough;
 pub mod watcher;
 pub mod watcher_consumer;
 
+/// Wire-format version stamped into every `SKILL.md` frontmatter and
+/// every `replay.json` sidecar. Bumped on any breaking format change;
+/// loaders reject `schema_version > SKILL_SCHEMA_VERSION` with
+/// `SkillError::UnsupportedSchemaVersion`.
+pub const SKILL_SCHEMA_VERSION: u32 = 1;
+
+pub use emitter::emit_skill_md;
 pub use index::SkillIndex;
-pub use replay::SkillFrame;
-pub use store::{MoveReport, SkillStore, filename_for, move_skills_to_project, slugify};
+pub use parser::parse_skill_md;
+pub use patch::{
+    ActionSketchReplacement, MarkdownReplacement, ReplaySidecarMutation, SkillLintError,
+    SkillPatch, SkillPatchPrimitive, apply_patch_to_skill, apply_replay_mutations,
+    lint_skill_patch,
+};
+pub use replay::{ReplayJson, ReplayParseError, ReplayStepBundle, SkillFrame, parse_replay_json};
+pub use store::{MoveReport, SKILL_MD, SkillStore, move_skills_to_project, slugify};
 pub use types::{
     ActionSketchStep, ApplicabilityHints, ApplicabilitySignature, BindingCorrection, BindingRef,
-    CaptureClause, CaptureSource, ExpectedWorldModelDelta, LoopPredicate, MaybeExtracted,
+    CaptureClause, CaptureSource, ExpectedWorldModelDelta, Fidelity, LoopPredicate, MaybeExtracted,
     OutcomePredicate, OutputDeclaration, ParameterSlot, ProvenanceEntry, RecordedStep,
-    RetrievedSkill, Skill, SkillContext, SkillError, SkillRefinementProposal, SkillScope,
-    SkillState, SkillStats, SubgoalSignature,
+    RetrievedSkill, Skill, SkillContext, SkillError, SkillFrontmatter, SkillFrontmatterVariable,
+    SkillId, SkillRefinementProposal, SkillScope, SkillSection, SkillState, SkillStats,
+    SubgoalSignature,
 };

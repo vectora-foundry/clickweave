@@ -119,6 +119,16 @@ pub fn strip_recording_bar_click(
 /// Maximum time window (ms) after a hover to look for a subsuming click.
 const HOVER_CLICK_WINDOW_MS: u64 = 2000;
 
+type FocusEvent = (u64, String, Option<String>);
+type PausedInterval = (u64, u64);
+type CdpHoverTarget = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 /// Retrieve hover candidates from HoverDetected events captured during recording.
 ///
 /// Filters by dwell threshold and removes hovers immediately followed by a click
@@ -127,14 +137,27 @@ pub fn retrieve_hover_candidates(
     events: &[WalkthroughEvent],
     hover_threshold_ms: u64,
 ) -> Vec<WalkthroughAction> {
-    let mut candidates = Vec::new();
+    let focus_events = collect_focus_events(events);
+    let paused_intervals = collect_paused_intervals(events);
 
-    // Pre-collect AppFocused events sorted by timestamp so we can resolve
-    // both previous and next focus for any hover, regardless of file
-    // append order (hover events are written after recording stops, so
-    // they appear at the end of events.jsonl, not at their chronological
-    // position).
-    let mut focus_events: Vec<(u64, String, Option<String>)> = events
+    events
+        .iter()
+        .filter_map(|event| {
+            hover_candidate_from_event(
+                event,
+                events,
+                hover_threshold_ms,
+                &focus_events,
+                &paused_intervals,
+            )
+        })
+        .collect()
+}
+
+fn collect_focus_events(events: &[WalkthroughEvent]) -> Vec<FocusEvent> {
+    // Hover events are written after recording stops, not at their chronological
+    // position, so app resolution needs a timestamp-sorted focus index.
+    let mut focus_events: Vec<FocusEvent> = events
         .iter()
         .filter_map(|e| match &e.kind {
             WalkthroughEventKind::AppFocused {
@@ -146,11 +169,11 @@ pub fn retrieve_hover_candidates(
         })
         .collect();
     focus_events.sort_by_key(|(ts, _, _)| *ts);
+    focus_events
+}
 
-    // Build paused intervals so we can discard hovers that occurred while
-    // recording was paused (MCP hover tracking keeps running during pause,
-    // so dwell time during paused intervals produces false candidates).
-    let mut paused_intervals: Vec<(u64, u64)> = Vec::new();
+fn collect_paused_intervals(events: &[WalkthroughEvent]) -> Vec<PausedInterval> {
+    let mut paused_intervals = Vec::new();
     let mut pause_start: Option<u64> = None;
     for e in events {
         match &e.kind {
@@ -163,175 +186,199 @@ pub fn retrieve_hover_candidates(
             _ => {}
         }
     }
-    // If still paused at end of events (no matching Resume), extend to u64::MAX
     if let Some(start) = pause_start {
         paused_intervals.push((start, u64::MAX));
     }
+    paused_intervals
+}
 
-    for event in events {
-        let WalkthroughEventKind::HoverDetected {
-            x,
-            y,
-            element_name,
-            element_role,
-            dwell_ms,
-            app_name,
-        } = &event.kind
-        else {
-            continue;
-        };
+fn hover_candidate_from_event(
+    event: &WalkthroughEvent,
+    events: &[WalkthroughEvent],
+    hover_threshold_ms: u64,
+    focus_events: &[FocusEvent],
+    paused_intervals: &[PausedInterval],
+) -> Option<WalkthroughAction> {
+    let WalkthroughEventKind::HoverDetected {
+        x,
+        y,
+        element_name,
+        element_role,
+        dwell_ms,
+        app_name,
+    } = &event.kind
+    else {
+        return None;
+    };
 
-        // Subtract any paused time that overlaps with the hover span so that
-        // hovers spanning or occurring during a pause don't get inflated dwell.
-        let hover_end = event.timestamp + dwell_ms;
-        let paused_overlap: u64 = paused_intervals
-            .iter()
-            .map(|(ps, pe)| {
-                let os = (*ps).max(event.timestamp);
-                let oe = (*pe).min(hover_end);
-                oe.saturating_sub(os)
-            })
-            .sum();
-        let effective_dwell = dwell_ms.saturating_sub(paused_overlap);
+    let effective_dwell = pause_adjusted_dwell(event.timestamp, *dwell_ms, paused_intervals);
+    if effective_dwell < hover_threshold_ms || is_window_level_hover(element_role) {
+        return None;
+    }
+    if hover_subsumed_by_click(events, event, *x, *y) {
+        return None;
+    }
+    if hover_subsumed_by_cdp_click(events, event, element_name, element_role) {
+        return None;
+    }
 
-        // Filter by dwell threshold using pause-adjusted dwell.
-        if effective_dwell < hover_threshold_ms {
-            continue;
-        }
+    let (hover_app, hover_window) =
+        resolve_hover_event_app(event.timestamp, app_name, focus_events);
+    Some(WalkthroughAction {
+        id: Uuid::new_v4(),
+        kind: WalkthroughActionKind::Hover {
+            x: *x,
+            y: *y,
+            dwell_ms: effective_dwell,
+        },
+        app_name: hover_app,
+        window_title: hover_window,
+        target_candidates: hover_target_candidates(events, event.id, element_name, element_role),
+        artifact_paths: vec![],
+        source_event_ids: vec![event.id],
+        confidence: ActionConfidence::Medium,
+        warnings: vec![],
+        screenshot_meta: None,
+        candidate: true,
+    })
+}
 
-        // Skip window-level hovers — these capture the window title (e.g.
-        // "#general | DevCrew - Discord") rather than the specific element
-        // the user is hovering on.  Common with Electron/Chrome apps where
-        // macOS accessibility can't resolve finer-grained elements.
-        if element_role.as_deref() == Some("AXWindow") {
-            continue;
-        }
+fn pause_adjusted_dwell(
+    hover_start: u64,
+    dwell_ms: u64,
+    paused_intervals: &[PausedInterval],
+) -> u64 {
+    let hover_end = hover_start + dwell_ms;
+    let paused_overlap: u64 = paused_intervals
+        .iter()
+        .map(|(ps, pe)| {
+            let os = (*ps).max(hover_start);
+            let oe = (*pe).min(hover_end);
+            oe.saturating_sub(os)
+        })
+        .sum();
+    dwell_ms.saturating_sub(paused_overlap)
+}
 
-        // Skip if any click near the same coordinates occurred shortly after
-        // this hover (the click subsumes the hover intent).  Scans all events
-        // because hover entries may be appended after clicks in the file.
-        let click_follows = events.iter().any(|e| {
-            matches!(
-                &e.kind,
-                WalkthroughEventKind::MouseClicked { x: cx, y: cy, .. }
-                if (cx - x).abs() < 20.0 && (cy - y).abs() < 20.0
-                    && e.timestamp > event.timestamp
-                    && e.timestamp.saturating_sub(event.timestamp) < HOVER_CLICK_WINDOW_MS
-            )
-        });
-        if click_follows {
-            continue;
-        }
+fn is_window_level_hover(element_role: &Option<String>) -> bool {
+    // These capture a window title rather than the specific hovered element,
+    // which is common when AX cannot resolve finer-grained Electron/Chrome UI.
+    element_role.as_deref() == Some("AXWindow")
+}
 
-        // For CDP hovers, coordinate matching doesn't work (clientX/clientY vs
-        // screen coords).  Match on name+role against CdpClickResolved instead.
-        // Use CdpHoverResolved presence (not app_name) to detect CDP provenance,
-        // since native hovers can also carry app_name.
-        let is_cdp_hover = events.iter().any(|e| {
-            matches!(
-                &e.kind,
-                WalkthroughEventKind::CdpHoverResolved { hover_event_id, .. }
-                if *hover_event_id == event.id
-            )
-        });
-        if is_cdp_hover {
-            let matches_click = events.iter().any(|e| {
-                if let WalkthroughEventKind::CdpClickResolved {
-                    name,
-                    role: click_role,
-                    ..
-                } = &e.kind
-                {
-                    e.timestamp > event.timestamp
-                        && e.timestamp.saturating_sub(event.timestamp) < HOVER_CLICK_WINDOW_MS
-                        && name == element_name
-                        && match (element_role, click_role) {
-                            (Some(hr), Some(cr)) => hr == cr,
-                            _ => true, // if either role is missing, name match is sufficient
-                        }
-                } else {
-                    false
+fn hover_subsumed_by_click(
+    events: &[WalkthroughEvent],
+    hover_event: &WalkthroughEvent,
+    x: f64,
+    y: f64,
+) -> bool {
+    events.iter().any(|e| {
+        matches!(
+            &e.kind,
+            WalkthroughEventKind::MouseClicked { x: cx, y: cy, .. }
+            if (cx - x).abs() < 20.0 && (cy - y).abs() < 20.0
+                && e.timestamp > hover_event.timestamp
+                && e.timestamp.saturating_sub(hover_event.timestamp) < HOVER_CLICK_WINDOW_MS
+        )
+    })
+}
+
+fn hover_subsumed_by_cdp_click(
+    events: &[WalkthroughEvent],
+    hover_event: &WalkthroughEvent,
+    element_name: &str,
+    element_role: &Option<String>,
+) -> bool {
+    if cdp_hover_target(events, hover_event.id).is_none() {
+        return false;
+    }
+
+    events.iter().any(|e| {
+        if let WalkthroughEventKind::CdpClickResolved {
+            name,
+            role: click_role,
+            ..
+        } = &e.kind
+        {
+            e.timestamp > hover_event.timestamp
+                && e.timestamp.saturating_sub(hover_event.timestamp) < HOVER_CLICK_WINDOW_MS
+                && name == element_name
+                && match (element_role, click_role) {
+                    (Some(hr), Some(cr)) => hr == cr,
+                    _ => true,
                 }
-            });
-            if matches_click {
-                continue;
-            }
-        }
-
-        // Use explicit app_name from CDP if present; fall back to timestamp resolution.
-        let (hover_app, hover_window) = if let Some(explicit_app) = app_name {
-            let title = focus_events
-                .iter()
-                .rev()
-                .find(|(_, a, _)| a == explicit_app)
-                .and_then(|(_, _, t)| t.clone());
-            (Some(explicit_app.clone()), title)
         } else {
-            resolve_hover_app(event.timestamp, &focus_events)
-        };
-
-        let mut target_candidates = vec![];
-
-        // Check for CDP DOM resolution for this hover event.
-        let cdp_resolved = events.iter().find_map(|e| {
-            if let WalkthroughEventKind::CdpHoverResolved {
-                hover_event_id,
-                name,
-                role,
-                href,
-                parent_role,
-                parent_name,
-            } = &e.kind
-                && *hover_event_id == event.id
-            {
-                return Some((
-                    name.clone(),
-                    role.clone(),
-                    href.clone(),
-                    parent_role.clone(),
-                    parent_name.clone(),
-                ));
-            }
-            None
-        });
-
-        if let Some((name, role, href, parent_role, parent_name)) = cdp_resolved {
-            target_candidates.push(TargetCandidate::CdpElement {
-                name,
-                role,
-                href,
-                parent_role,
-                parent_name,
-            });
+            false
         }
+    })
+}
 
-        if !element_name.is_empty() {
-            target_candidates.push(TargetCandidate::AccessibilityLabel {
-                label: element_name.clone(),
-                role: element_role.clone(),
-            });
-        }
+fn resolve_hover_event_app(
+    hover_ts: u64,
+    explicit_app: &Option<String>,
+    focus_events: &[FocusEvent],
+) -> (Option<String>, Option<String>) {
+    if let Some(explicit_app) = explicit_app {
+        let title = focus_events
+            .iter()
+            .rev()
+            .find(|(_, app, _)| app == explicit_app)
+            .and_then(|(_, _, title)| title.clone());
+        return (Some(explicit_app.clone()), title);
+    }
+    resolve_hover_app(hover_ts, focus_events)
+}
 
-        candidates.push(WalkthroughAction {
-            id: Uuid::new_v4(),
-            kind: WalkthroughActionKind::Hover {
-                x: *x,
-                y: *y,
-                dwell_ms: effective_dwell,
-            },
-            app_name: hover_app,
-            window_title: hover_window,
-            target_candidates,
-            artifact_paths: vec![],
-            source_event_ids: vec![event.id],
-            confidence: ActionConfidence::Medium,
-            warnings: vec![],
-            screenshot_meta: None,
-            candidate: true,
+fn hover_target_candidates(
+    events: &[WalkthroughEvent],
+    hover_event_id: Uuid,
+    element_name: &str,
+    element_role: &Option<String>,
+) -> Vec<TargetCandidate> {
+    let mut target_candidates = Vec::new();
+    if let Some((name, role, href, parent_role, parent_name)) =
+        cdp_hover_target(events, hover_event_id)
+    {
+        target_candidates.push(TargetCandidate::CdpElement {
+            name,
+            role,
+            href,
+            parent_role,
+            parent_name,
         });
     }
 
-    candidates
+    if !element_name.is_empty() {
+        target_candidates.push(TargetCandidate::AccessibilityLabel {
+            label: element_name.to_string(),
+            role: element_role.clone(),
+        });
+    }
+    target_candidates
+}
+
+fn cdp_hover_target(events: &[WalkthroughEvent], hover_event_id: Uuid) -> Option<CdpHoverTarget> {
+    events.iter().find_map(|e| {
+        if let WalkthroughEventKind::CdpHoverResolved {
+            hover_event_id: resolved_hover_id,
+            name,
+            role,
+            href,
+            parent_role,
+            parent_name,
+        } = &e.kind
+            && *resolved_hover_id == hover_event_id
+        {
+            return Some((
+                name.clone(),
+                role.clone(),
+                href.clone(),
+                parent_role.clone(),
+                parent_name.clone(),
+            ));
+        }
+        None
+    })
 }
 
 /// Determine which app a hover event belongs to.

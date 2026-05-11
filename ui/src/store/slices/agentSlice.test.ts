@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { Edge, Node, Workflow } from "../../bindings";
 
 // Tauri's `invoke` must be mocked before agentSlice is imported — the
 // slice captures the imported binding at module init time.
@@ -8,35 +7,23 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 
+// Mock bindings so saveRunAsSkill / addRunToSkill don't hit real Tauri IPC.
+const saveRunAsSkillMock = vi.fn();
+const addRunToSkillMock = vi.fn();
+// `saveRunAsSkill` triggers a panel refresh via `listSkillsForPanel` on
+// success; mock it as a no-op so tests don't hit real IPC.
+const listSkillsForPanelMock = vi.fn();
+listSkillsForPanelMock.mockResolvedValue({ status: "ok", data: [] });
+vi.mock("../../bindings", () => ({
+  commands: {
+    saveRunAsSkill: (...args: unknown[]) => saveRunAsSkillMock(...args),
+    addRunToSkill: (...args: unknown[]) => addRunToSkillMock(...args),
+    listSkillsForPanel: (...args: unknown[]) => listSkillsForPanelMock(...args),
+  },
+}));
+
 import { useStore } from "../useAppStore";
 
-function makeWorkflow(overrides: Partial<Workflow> = {}): Workflow {
-  return {
-    id: "00000000-0000-0000-0000-000000000001",
-    name: "wf",
-    nodes: [],
-    edges: [],
-    groups: [],
-    ...overrides,
-  };
-}
-
-function makeNode(id: string, runId: string): Node {
-  return {
-    id,
-    name: id,
-    node_type: { type: "CdpWait", text: "Ready", timeout_ms: 1000 },
-    position: { x: 0, y: 0 },
-    enabled: true,
-    timeout_ms: null,
-    settle_ms: null,
-    retries: 0,
-    trace_level: "Minimal",
-    role: "Default",
-    expected_outcome: null,
-    source_run_id: runId,
-  };
-}
 
 describe("agentSlice.startAgent", () => {
   beforeEach(() => {
@@ -55,7 +42,7 @@ describe("agentSlice.startAgent", () => {
       pageTransitioned: false,
     });
     useStore.getState().setPendingApproval({
-      stepIndex: 0,
+      scope: null,
       toolName: "click",
       arguments: {},
       description: "Click the button",
@@ -221,74 +208,63 @@ describe("agentSlice.startAgent", () => {
 describe("agentSlice run buffers", () => {
   beforeEach(() => {
     invokeMock.mockReset();
+    saveRunAsSkillMock.mockReset();
     useStore.getState().resetAgent();
-    useStore.setState({
-      workflow: makeWorkflow(),
-      pendingRunNodes: {},
-      pendingRunEdges: {},
+  });
+
+  it("commitRunBuffer with skillCreationIntent stages a pending run save", () => {
+    useStore.setState({ skillCreationIntent: true, agentGoal: "automate X" });
+
+    useStore.getState().commitRunBuffer("run-1", "summary text");
+
+    expect(useStore.getState().skillCreationIntent).toBe(false);
+    expect(useStore.getState().pendingRunSave).toEqual({
+      runId: "run-1",
+      summary: "summary text",
     });
+    // Materialisation is deferred to AgentRunSaveSheet — the IPC must NOT
+    // fire from commitRunBuffer itself.
+    expect(saveRunAsSkillMock).not.toHaveBeenCalled();
   });
 
-  it("buffers nodes and edges until commit appends them to the workflow", () => {
-    const groups = [
-      {
-        id: "group-1",
-        name: "User group",
-        color: "#888888",
-        node_ids: ["user-node-1", "user-node-2"],
-        parent_group_id: null,
-      },
-    ];
+  it("commitRunBuffer without skillCreationIntent is a no-op", () => {
+    useStore.setState({ skillCreationIntent: false });
+
+    useStore.getState().commitRunBuffer("run-1", "summary");
+
+    expect(saveRunAsSkillMock).not.toHaveBeenCalled();
+    expect(useStore.getState().pendingRunSave).toBeNull();
+  });
+
+  it("dropRunBuffer is a no-op (buffers were removed with the canvas)", () => {
+    // dropRunBuffer is kept for call-site compatibility; it should not throw.
+    expect(() => useStore.getState().dropRunBuffer("run-1")).not.toThrow();
+    expect(() => useStore.getState().dropRunBuffer("missing-run")).not.toThrow();
+  });
+
+  it("newProject clears pendingRunSave and the run buffer so a staged save can't leak across projects", () => {
     useStore.setState({
-      workflow: makeWorkflow({ groups }),
+      executorState: "idle",
+      agentStatus: "complete",
+      completionDisagreement: null,
+      pendingRunSave: { runId: "run-old", summary: "automate old project" },
+      agentGoal: "automate old project",
+      skillCreationIntent: false,
     });
-    const groupsBefore = useStore.getState().workflow.groups;
-    const node = makeNode("agent-node-1", "run-1");
-    const edge: Edge = { from: "anchor", to: "agent-node-1" };
+    useStore.getState().addAgentStep({
+      summary: "old step",
+      toolName: "click",
+      toolArgs: null,
+      toolResult: "ok",
+      pageTransitioned: false,
+    });
 
-    useStore.getState().bufferAgentNode("run-1", node);
-    useStore.getState().bufferAgentEdge("run-1", edge);
+    useStore.getState().newProject();
 
-    expect(useStore.getState().workflow.nodes).toEqual([]);
-    expect(useStore.getState().workflow.edges).toEqual([]);
-
-    useStore.getState().commitRunBuffer("run-1", "Created a node");
-
-    const state = useStore.getState();
-    expect(state.workflow.nodes).toEqual([node]);
-    expect(state.workflow.edges).toEqual([edge]);
-    expect(state.workflow.groups).toBe(groupsBefore);
-    expect(state.pendingRunNodes["run-1"]).toBeUndefined();
-    expect(state.pendingRunEdges["run-1"]).toBeUndefined();
-  });
-
-  it("dropRunBuffer removes buffered entries without mutating the workflow", () => {
-    const node = makeNode("agent-node-1", "run-1");
-    const edge: Edge = { from: "anchor", to: "agent-node-1" };
-    const workflowBefore = useStore.getState().workflow;
-
-    useStore.getState().bufferAgentNode("run-1", node);
-    useStore.getState().bufferAgentEdge("run-1", edge);
-    useStore.getState().dropRunBuffer("run-1");
-    useStore.getState().dropRunBuffer("missing-run");
-
-    const state = useStore.getState();
-    expect(state.workflow).toBe(workflowBefore);
-    expect(state.pendingRunNodes["run-1"]).toBeUndefined();
-    expect(state.pendingRunEdges["run-1"]).toBeUndefined();
-  });
-
-  it("commitRunBuffer with no buffered nodes only clears stale buffer entries", () => {
-    const edge: Edge = { from: "a", to: "b" };
-    useStore.getState().bufferAgentEdge("run-1", edge);
-    const workflowBefore = useStore.getState().workflow;
-
-    useStore.getState().commitRunBuffer("run-1", "No nodes");
-
-    const state = useStore.getState();
-    expect(state.workflow).toBe(workflowBefore);
-    expect(state.pendingRunNodes["run-1"]).toBeUndefined();
-    expect(state.pendingRunEdges["run-1"]).toBeUndefined();
+    expect(useStore.getState().pendingRunSave).toBeNull();
+    expect(useStore.getState().agentSteps).toEqual([]);
+    expect(useStore.getState().agentGoal).toBe("");
+    expect(useStore.getState().skillCreationIntent).toBe(false);
   });
 });
 
@@ -374,7 +350,7 @@ describe("agentSlice approval actions", () => {
 
   it("formats structured Tauri errors from approveAction into the activity log", async () => {
     useStore.getState().setPendingApproval({
-      stepIndex: 0,
+      scope: null,
       toolName: "click",
       arguments: {},
       description: "Click the button",
@@ -393,7 +369,7 @@ describe("agentSlice approval actions", () => {
 
   it("formats structured Tauri errors from rejectAction into the activity log", async () => {
     useStore.getState().setPendingApproval({
-      stepIndex: 0,
+      scope: null,
       toolName: "click",
       arguments: {},
       description: "Click the button",
@@ -476,21 +452,17 @@ describe("agentSlice.cancelDisagreement", () => {
     useStore.getState().resetAgent();
   });
 
-  it("drops the active run buffer before forwarding the cancellation", async () => {
+  it("calls dropRunBuffer then forwards the cancellation", async () => {
     useStore.getState().setAgentRunId("run-prior");
     useStore.getState().setCompletionDisagreement({
       screenshotBase64: "abc",
       vlmReasoning: "modal still visible",
       agentSummary: "clicked submit",
     });
-    useStore
-      .getState()
-      .bufferAgentNode("run-prior", makeNode("pending-node", "run-prior"));
     invokeMock.mockResolvedValueOnce(undefined);
 
     await useStore.getState().cancelDisagreement();
 
-    expect(useStore.getState().pendingRunNodes["run-prior"]).toBeUndefined();
     expect(invokeMock).toHaveBeenCalledWith("resolve_completion_disagreement", {
       action: "cancel",
     });
@@ -614,7 +586,7 @@ describe("stopAgent — preserves completionDisagreement for terminal event", ()
 
   it("still clears pendingApproval so the engine oneshot unblocks", async () => {
     useStore.getState().setPendingApproval({
-      stepIndex: 0,
+      scope: null,
       toolName: "click",
       arguments: {},
       description: "",
@@ -663,6 +635,103 @@ describe("startAgent — blocked during pending completion-disagreement", () => 
   });
 });
 
+describe("elapsed timestamps (D24)", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useStore.getState().resetAgent();
+    useStore.setState({ messages: [] });
+  });
+
+  it("startAgent sets agentRunStartedAt to a recent epoch and clears agentRunFinishedAt", async () => {
+    // Pre-populate a stale finished timestamp from a prior run.
+    useStore.setState({ agentRunStartedAt: 1, agentRunFinishedAt: 999 });
+    invokeMock.mockResolvedValueOnce(undefined);
+    const before = Date.now();
+
+    await useStore.getState().startAgent("goal");
+
+    const s = useStore.getState();
+    expect(s.agentRunStartedAt).not.toBeNull();
+    expect(s.agentRunStartedAt!).toBeGreaterThanOrEqual(before);
+    expect(s.agentRunFinishedAt).toBeNull();
+  });
+
+  it("stopAgent stamps agentRunFinishedAt without clearing agentRunStartedAt", async () => {
+    useStore.setState({ agentRunStartedAt: 100, agentRunFinishedAt: null });
+    invokeMock.mockResolvedValueOnce(undefined);
+
+    await useStore.getState().stopAgent();
+
+    const s = useStore.getState();
+    expect(s.agentRunStartedAt).toBe(100);
+    expect(s.agentRunFinishedAt).not.toBeNull();
+  });
+
+  it("resetAgent clears both timestamps", () => {
+    useStore.setState({ agentRunStartedAt: 100, agentRunFinishedAt: 200 });
+    useStore.getState().resetAgent();
+    const s = useStore.getState();
+    expect(s.agentRunStartedAt).toBeNull();
+    expect(s.agentRunFinishedAt).toBeNull();
+  });
+
+  it("startAgent on a fresh run zeros both fields together (next-start contract)", async () => {
+    useStore.setState({
+      agentRunStartedAt: 100,
+      agentRunFinishedAt: 200,
+      agentStatus: "stopped",
+    });
+    invokeMock.mockResolvedValueOnce(undefined);
+
+    await useStore.getState().startAgent("goal");
+
+    const s = useStore.getState();
+    expect(s.agentRunStartedAt).not.toBe(100);
+    expect(s.agentRunFinishedAt).toBeNull();
+  });
+
+  it("confirmDisagreementAsComplete stamps agentRunFinishedAt before invoke (D24)", async () => {
+    useStore.setState({
+      agentRunStartedAt: 100,
+      agentRunFinishedAt: null,
+      completionDisagreement: {
+        screenshotBase64: "",
+        vlmReasoning: "",
+        agentSummary: "",
+      },
+    });
+    invokeMock.mockRejectedValueOnce({
+      kind: "Validation",
+      message: "no resolver",
+    });
+
+    await useStore.getState().confirmDisagreementAsComplete();
+
+    expect(useStore.getState().agentRunFinishedAt).not.toBeNull();
+  });
+
+  it("cancelDisagreement stamps agentRunFinishedAt before invoke (D24)", async () => {
+    useStore.setState({
+      agentRunStartedAt: 100,
+      agentRunFinishedAt: null,
+      completionDisagreement: {
+        screenshotBase64: "",
+        vlmReasoning: "",
+        agentSummary: "",
+      },
+      agentRunId: "run-1",
+    });
+    invokeMock.mockRejectedValueOnce({
+      kind: "Validation",
+      message: "no resolver",
+    });
+
+    await useStore.getState().cancelDisagreement();
+
+    expect(useStore.getState().agentRunFinishedAt).not.toBeNull();
+  });
+});
+
 describe("isAgentActive", () => {
   it("is true when status is running", async () => {
     const { isAgentActive } = await import("./agentSlice");
@@ -686,5 +755,207 @@ describe("isAgentActive", () => {
     expect(isAgentActive("complete", null)).toBe(false);
     expect(isAgentActive("stopped", null)).toBe(false);
     expect(isAgentActive("error", null)).toBe(false);
+  });
+});
+
+// ── D21 three-state command grammar acceptance scenarios ────────────────
+
+describe("D21 skillCreationIntent — first-skill-from-empty", () => {
+  beforeEach(() => {
+    saveRunAsSkillMock.mockReset();
+    addRunToSkillMock.mockReset();
+    invokeMock.mockReset();
+    useStore.getState().resetAgent();
+    useStore.setState({
+      storeTraces: true,
+      skillsEnabled: true,
+    });
+  });
+
+  it("(D21-a) commitRunBuffer with skillCreationIntent=true stages pendingRunSave for the review sheet", async () => {
+    useStore.getState().setSkillCreationIntent(true);
+    useStore.getState().addAgentStep({
+      summary: "Clicked the button",
+      toolName: "click",
+      toolArgs: { x: 10, y: 20 },
+      toolResult: "ok",
+      pageTransitioned: false,
+    });
+
+    useStore.getState().commitRunBuffer("run-1", "Goal complete");
+
+    // skillCreationIntent is cleared immediately on commit
+    expect(useStore.getState().skillCreationIntent).toBe(false);
+    // The post-run AgentRunSaveSheet is keyed off pendingRunSave; the IPC
+    // is invoked by the sheet's Save action, not by commitRunBuffer.
+    expect(useStore.getState().pendingRunSave).toEqual({
+      runId: "run-1",
+      summary: "Goal complete",
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(saveRunAsSkillMock).not.toHaveBeenCalled();
+  });
+
+  it("(D21-b) commitRunBuffer with skillCreationIntent=false does not call saveRunAsSkill (ad-hoc run)", () => {
+    useStore.getState().setSkillCreationIntent(false);
+    useStore.getState().addAgentStep({
+      summary: "Opened settings",
+      toolName: "launch_app",
+      toolArgs: { app_name: "System Preferences" },
+      toolResult: "ok",
+      pageTransitioned: false,
+    });
+
+    useStore.getState().commitRunBuffer("run-1", "Done");
+
+    expect(saveRunAsSkillMock).not.toHaveBeenCalled();
+  });
+
+  it("(D21-c) explicit saveRunAsSkill store action invokes the Tauri command", async () => {
+    saveRunAsSkillMock.mockResolvedValueOnce({ status: "ok", data: {} });
+    useStore.getState().addAgentStep({
+      summary: "Typed text",
+      toolName: "type_text",
+      toolArgs: { text: "hello" },
+      toolResult: "ok",
+      pageTransitioned: false,
+    });
+
+    await useStore.getState().saveRunAsSkill("My new skill");
+
+    expect(saveRunAsSkillMock).toHaveBeenCalledTimes(1);
+    const arg = saveRunAsSkillMock.mock.calls[0][0];
+    expect(arg.name).toBe("My new skill");
+    expect(arg.store_traces).toBe(true);
+    expect(arg.steps[0].tool_name).toBe("type_text");
+  });
+
+  it("saveRunAsSkill with stepIndices materialises only the selected subset", async () => {
+    saveRunAsSkillMock.mockResolvedValueOnce({ status: "ok", data: {} });
+    const baseStep = {
+      summary: "",
+      toolArgs: {},
+      toolResult: "ok",
+      pageTransitioned: false,
+    };
+    useStore.getState().addAgentStep({ ...baseStep, toolName: "launch_app" });
+    useStore.getState().addAgentStep({ ...baseStep, toolName: "click_wrong" });
+    useStore.getState().addAgentStep({ ...baseStep, toolName: "type_text" });
+
+    await useStore.getState().saveRunAsSkill("Filtered skill", [0, 2]);
+
+    expect(saveRunAsSkillMock).toHaveBeenCalledTimes(1);
+    const arg = saveRunAsSkillMock.mock.calls[0][0];
+    expect(arg.steps).toHaveLength(2);
+    expect(arg.steps[0].tool_name).toBe("launch_app");
+    expect(arg.steps[1].tool_name).toBe("type_text");
+  });
+
+  it("saveRunAsSkill returns ok=true and refreshes the skills panel on success", async () => {
+    saveRunAsSkillMock.mockResolvedValueOnce({
+      status: "ok",
+      data: { id: "skill-1", name: "My new skill" },
+    });
+    listSkillsForPanelMock.mockClear();
+    useStore.getState().addAgentStep({
+      summary: "Typed text",
+      toolName: "type_text",
+      toolArgs: { text: "hello" },
+      toolResult: "ok",
+      pageTransitioned: false,
+    });
+
+    const result = await useStore.getState().saveRunAsSkill("My new skill");
+
+    expect(result).toEqual({
+      ok: true,
+      skill: { id: "skill-1", name: "My new skill" },
+    });
+    // Sheet must trigger a panel refresh so the freshly saved skill is
+    // surfaced without a project reload.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(listSkillsForPanelMock).toHaveBeenCalled();
+  });
+
+  it("saveRunAsSkill skips the panel refresh when the project changes during the in-flight IPC", async () => {
+    // Capture the IPC promise so we can flip projectId before it resolves,
+    // emulating the user opening/creating another project mid-save.
+    let resolveSave: (v: unknown) => void = () => {};
+    saveRunAsSkillMock.mockImplementationOnce(
+      () =>
+        new Promise((res) => {
+          resolveSave = res;
+        }),
+    );
+    listSkillsForPanelMock.mockClear();
+    useStore.setState({ projectId: "project-A" });
+    useStore.getState().addAgentStep({
+      summary: "Step",
+      toolName: "click",
+      toolArgs: null,
+      toolResult: "ok",
+      pageTransitioned: false,
+    });
+
+    const savePromise = useStore.getState().saveRunAsSkill("Skill in A");
+    // Switch projects before the IPC resolves.
+    useStore.setState({ projectId: "project-B" });
+    resolveSave({ status: "ok", data: { id: "skill-A", name: "Skill in A" } });
+    const result = await savePromise;
+
+    expect(result.ok).toBe(true);
+    // Refresh must not fire — it would clobber project B's panel with
+    // project A's skill list.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(listSkillsForPanelMock).not.toHaveBeenCalled();
+  });
+
+  it("saveRunAsSkill returns ok=false with the backend error and does NOT refresh the panel on failure", async () => {
+    saveRunAsSkillMock.mockResolvedValueOnce({
+      status: "error",
+      error: "disk full",
+    });
+    listSkillsForPanelMock.mockClear();
+    useStore.getState().addAgentStep({
+      summary: "Step",
+      toolName: "click",
+      toolArgs: null,
+      toolResult: "ok",
+      pageTransitioned: false,
+    });
+
+    const result = await useStore.getState().saveRunAsSkill("My skill");
+
+    expect(result).toEqual({ ok: false, error: "disk full" });
+    expect(listSkillsForPanelMock).not.toHaveBeenCalled();
+  });
+
+  it("(D21-d) explicit addRunToSkill store action invokes the Tauri command with skill_id and version", async () => {
+    addRunToSkillMock.mockResolvedValueOnce({ status: "ok", data: {} });
+    useStore.getState().addAgentStep({
+      summary: "Scrolled down",
+      toolName: "scroll",
+      toolArgs: { delta_y: -300 },
+      toolResult: "ok",
+      pageTransitioned: false,
+    });
+
+    await useStore.getState().addRunToSkill("my-skill-id", 3);
+
+    expect(addRunToSkillMock).toHaveBeenCalledTimes(1);
+    const arg = addRunToSkillMock.mock.calls[0][0];
+    expect(arg.skill_id).toBe("my-skill-id");
+    expect(arg.version).toBe(3);
+    expect(arg.steps[0].tool_name).toBe("scroll");
+  });
+
+  it("(D21-e) saveRunAsSkill and addRunToSkill refuse when storeTraces=false", async () => {
+    useStore.setState({ storeTraces: false });
+
+    await useStore.getState().saveRunAsSkill("My skill");
+    expect(saveRunAsSkillMock).not.toHaveBeenCalled();
+
+    await useStore.getState().addRunToSkill("skill-x", 1);
+    expect(addRunToSkillMock).not.toHaveBeenCalled();
   });
 });

@@ -323,7 +323,7 @@ The [Model Context Protocol (MCP)](https://modelcontextprotocol.io/specification
 This section helps AI agents navigate and understand the codebase.
 
 **Key Entry Points:**
-- **Agent Loop:** `crates/clickweave-engine/src/agent/runner.rs` — state-spine observe-act loop that drives the agent LLM against MCP tools (built on `TaskState` + `WorldModel` spines)
+- **Agent Loop:** `crates/clickweave-engine/src/agent/runner/mod.rs` — state-spine observe-act loop that drives the agent LLM against MCP tools (built on `TaskState` + `WorldModel` spines)
 - **Context Compaction:** `crates/clickweave-engine/src/agent/context.rs` — transcript compaction and snapshot supersession
 - **Execution Loop:** `crates/clickweave-engine/src/executor/run_loop.rs` — deterministic replay of saved workflows
 - **Supervision:** `crates/clickweave-engine/src/executor/supervision.rs` — per-step fast-VLM + supervisor LLM verification pipeline

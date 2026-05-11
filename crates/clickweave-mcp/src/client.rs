@@ -117,45 +117,11 @@ impl McpClient {
         let mut skipped = 0usize;
 
         loop {
-            let mut line = String::new();
-            let bytes = stdout
-                .read_line(&mut line)
-                .await
-                .context("Failed to read MCP response line")?;
-            if bytes == 0 {
-                return Err(McpError::SubprocessClosed.into());
-            }
-
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                warn!("MCP produced blank stdout line; skipping");
+            let line = read_mcp_stdout_line(&mut stdout).await?;
+            let Some(value) = parse_mcp_stdout_line(&line)? else {
                 skipped += 1;
-                if skipped > MAX_SKIPPED_LINES {
-                    return Err(anyhow!(
-                        "Too many malformed lines on MCP stdout (>{MAX_SKIPPED_LINES})"
-                    ));
-                }
+                ensure_skipped_line_budget(skipped)?;
                 continue;
-            }
-
-            trace!("MCP response: {}", trimmed);
-
-            let value: Value = match serde_json::from_str(trimmed) {
-                Ok(v) => v,
-                Err(e) => {
-                    let preview: String = trimmed.chars().take(200).collect();
-                    warn!(
-                        "Non-JSON line on MCP stdout (skipping): {} -- {}",
-                        e, preview
-                    );
-                    skipped += 1;
-                    if skipped > MAX_SKIPPED_LINES {
-                        return Err(anyhow!(
-                            "Too many malformed lines on MCP stdout (>{MAX_SKIPPED_LINES})"
-                        ));
-                    }
-                    continue;
-                }
             };
 
             if value.get("method").is_some() && value.get("id").is_none() {
@@ -352,6 +318,49 @@ impl McpClient {
             .context("Failed to kill MCP server")?;
         Ok(())
     }
+}
+
+async fn read_mcp_stdout_line(stdout: &mut BufReader<ChildStdout>) -> Result<String> {
+    let mut line = String::new();
+    let bytes = stdout
+        .read_line(&mut line)
+        .await
+        .context("Failed to read MCP response line")?;
+    if bytes == 0 {
+        return Err(McpError::SubprocessClosed.into());
+    }
+    Ok(line)
+}
+
+fn parse_mcp_stdout_line(line: &str) -> Result<Option<Value>> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        warn!("MCP produced blank stdout line; skipping");
+        return Ok(None);
+    }
+
+    trace!("MCP response: {}", trimmed);
+
+    match serde_json::from_str(trimmed) {
+        Ok(value) => Ok(Some(value)),
+        Err(e) => {
+            let preview: String = trimmed.chars().take(200).collect();
+            warn!(
+                "Non-JSON line on MCP stdout (skipping): {} -- {}",
+                e, preview
+            );
+            Ok(None)
+        }
+    }
+}
+
+fn ensure_skipped_line_budget(skipped: usize) -> Result<()> {
+    if skipped > MAX_SKIPPED_LINES {
+        return Err(anyhow!(
+            "Too many malformed lines on MCP stdout (>{MAX_SKIPPED_LINES})"
+        ));
+    }
+    Ok(())
 }
 
 impl Drop for McpClient {

@@ -1,5 +1,3 @@
-import type { Workflow } from "../bindings";
-
 export type DetailTab = "setup" | "trace" | "runs";
 
 export interface EndpointConfig {
@@ -53,12 +51,9 @@ export const DEFAULT_TOOL_PERMISSIONS: ToolPermissions = {
   consecutiveDestructiveCap: 3,
 };
 
-export function makeDefaultWorkflow(): Workflow {
-  return {
-    id: crypto.randomUUID(),
-    name: "New Workflow",
-    nodes: [],
-    edges: [],
-    groups: [],
-  };
-}
+/**
+ * Mirrors `clickweave_core::project::PROJECT_SCHEMA_VERSION` (D33).
+ * Bump in lock-step with the Rust constant whenever the manifest
+ * shape changes.
+ */
+export const PROJECT_SCHEMA_VERSION = 1;

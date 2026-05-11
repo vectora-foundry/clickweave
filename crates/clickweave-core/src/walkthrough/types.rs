@@ -16,7 +16,7 @@ use crate::storage::now_millis;
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct WalkthroughSessionMeta {
     pub id: Uuid,
-    pub workflow_id: Uuid,
+    pub project_id: Uuid,
     pub started_at: u64,
     pub ended_at: Option<u64>,
     pub status: WalkthroughStatus,
@@ -24,10 +24,10 @@ pub struct WalkthroughSessionMeta {
 }
 
 impl WalkthroughSessionMeta {
-    pub fn new(workflow_id: Uuid) -> Self {
+    pub fn new(project_id: Uuid) -> Self {
         Self {
             id: Uuid::new_v4(),
-            workflow_id,
+            project_id,
             started_at: now_millis(),
             ended_at: None,
             status: WalkthroughStatus::Recording,
@@ -50,9 +50,9 @@ pub struct WalkthroughSessionRuntime {
 }
 
 impl WalkthroughSessionRuntime {
-    pub fn new(workflow_id: Uuid) -> Self {
+    pub fn new(project_id: Uuid) -> Self {
         Self {
-            meta: WalkthroughSessionMeta::new(workflow_id),
+            meta: WalkthroughSessionMeta::new(project_id),
             events: Vec::new(),
             actions: Vec::new(),
         }
@@ -440,33 +440,4 @@ pub struct TargetOverride {
 pub struct VariablePromotion {
     pub node_id: Uuid,
     pub variable_name: String,
-}
-
-/// Maps a walkthrough action to its corresponding workflow node in the draft.
-/// For deterministic drafts this is 1:1. For LLM-enhanced drafts, some actions
-/// may have no node (removed as redundant) and some nodes may have no action
-/// (LLM-added verification nodes).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-pub struct ActionNodeEntry {
-    pub action_id: Uuid,
-    pub node_id: Uuid,
-}
-
-/// Build a 1:1 action->node mapping for a deterministic draft where
-/// actions and nodes are in the same order.
-pub fn build_action_node_map(
-    actions: &[WalkthroughAction],
-    workflow: &crate::Workflow,
-) -> Vec<ActionNodeEntry> {
-    // Only non-candidate actions have corresponding nodes in the draft.
-    actions
-        .iter()
-        .filter(|a| !a.candidate)
-        .zip(workflow.nodes.iter())
-        .map(|(a, n)| ActionNodeEntry {
-            action_id: a.id,
-            node_id: n.id,
-        })
-        .collect()
 }

@@ -1,5 +1,5 @@
+use clickweave_core::ProjectManifest;
 use clickweave_core::storage::RunStorage;
-use clickweave_core::{ExecutionMode, NodeType, Workflow};
 use clickweave_llm::LlmConfig;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -15,14 +15,14 @@ pub struct McpStatus(pub Result<String, String>);
 pub fn resolve_storage(
     app: &tauri::AppHandle,
     project_path: &Option<String>,
-    workflow_name: &str,
-    workflow_id: uuid::Uuid,
+    project_name: &str,
+    project_id: uuid::Uuid,
 ) -> RunStorage {
     match project_path {
-        Some(p) => RunStorage::new(&project_dir(p), workflow_name),
+        Some(p) => RunStorage::new(&project_dir(p), project_name),
         None => {
             let app_data_dir = app.state::<AppDataDir>();
-            RunStorage::new_app_data(&app_data_dir.0, workflow_name, workflow_id)
+            RunStorage::new_app_data(&app_data_dir.0, project_name, project_id)
         }
     }
 }
@@ -44,22 +44,7 @@ pub fn parse_uuid(s: &str, label: &str) -> Result<uuid::Uuid, super::error::Comm
 #[derive(Debug, Serialize, Deserialize, Type)]
 pub struct ProjectData {
     pub path: String,
-    pub workflow: Workflow,
-}
-
-#[derive(Debug, Serialize, Deserialize, Type)]
-pub struct ValidationResult {
-    pub valid: bool,
-    pub errors: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Type)]
-pub struct NodeTypeInfo {
-    pub name: &'static str,
-    pub output_role: String,
-    pub node_context: String,
-    pub icon: &'static str,
-    pub node_type: NodeType,
+    pub manifest: ProjectManifest,
 }
 
 #[derive(Debug, Serialize, Type)]
@@ -92,44 +77,43 @@ impl EndpointConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct RunRequest {
-    pub workflow: Workflow,
-    pub project_path: Option<String>,
-    pub agent: EndpointConfig,
-    pub fast: Option<EndpointConfig>,
-    /// Supervisor LLM used for step verdict in Test mode.
-    pub supervisor: Option<EndpointConfig>,
-    pub execution_mode: ExecutionMode,
-    #[serde(default = "default_supervision_delay_ms")]
-    pub supervision_delay_ms: u64,
-    /// Privacy kill switch: when false, the run is entirely in-memory
-    /// and no files are written under `.clickweave/runs/`. When missing,
-    /// persistence is on — matches the UI default (`storeTraces: true`).
-    #[serde(default)]
-    pub store_traces: Option<bool>,
-}
-
-fn default_supervision_delay_ms() -> u64 {
-    500
-}
-
 #[derive(Debug, Serialize, Deserialize, Type)]
 pub struct RunsQuery {
     pub project_path: Option<String>,
-    pub workflow_id: String,
-    pub workflow_name: String,
-    pub node_name: String,
+    pub project_id: String,
+    pub project_name: String,
+    /// Skill identifier (D27/D28). Run records live under
+    /// `<skills>/<skill_id>/runs/`.
+    pub skill_id: String,
+    /// When `Some`, narrow the result to a single run record. When
+    /// `None`, the command returns every run for the skill (sorted
+    /// oldest-first).
+    #[serde(default)]
+    pub run_id: Option<String>,
+    /// Optional section filter retained on the wire so the UI can
+    /// request a section-scoped slice once the per-section run timeline
+    /// lands. Ignored by the Phase 1.D loader.
+    #[serde(default)]
+    pub section_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Type)]
 pub struct RunEventsQuery {
     pub project_path: Option<String>,
-    pub workflow_id: String,
-    pub workflow_name: String,
-    pub node_name: String,
-    pub execution_dir: Option<String>,
+    pub project_id: String,
+    pub project_name: String,
+    pub skill_id: String,
     pub run_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Type)]
+pub struct ReadArtifactQuery {
+    pub project_path: Option<String>,
+    pub project_id: String,
+    pub project_name: String,
+    pub skill_id: String,
+    pub run_id: String,
+    pub artifact_path: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Type)]
@@ -191,15 +175,13 @@ pub struct AmbiguityResolvedPayload {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SupervisionPassedPayload {
-    pub node_id: String,
-    pub node_name: String,
+    pub scope: clickweave_core::SafetyScope,
     pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SupervisionPausedPayload {
-    pub node_id: String,
-    pub node_name: String,
+    pub scope: clickweave_core::SafetyScope,
     pub finding: String,
     /// Base64-encoded screenshot captured during verification, if available.
     pub screenshot: Option<String>,
@@ -216,9 +198,7 @@ pub struct WalkthroughStatePayload {
 pub struct WalkthroughDraftPayload {
     pub session_id: String,
     pub actions: Vec<clickweave_core::WalkthroughAction>,
-    pub draft: clickweave_core::Workflow,
     pub warnings: Vec<String>,
-    pub action_node_map: Vec<clickweave_core::walkthrough::ActionNodeEntry>,
 }
 
 #[derive(Debug, Clone, Serialize)]

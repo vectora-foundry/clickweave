@@ -28,10 +28,10 @@ export function IntentEmptyState({ onGenerate, onSkip, onRecordWalkthrough, load
       <div className="flex w-[480px] flex-col items-center gap-6">
         <div className="text-center">
           <h2 className="text-lg font-medium text-[var(--text-primary)]">
-            What should this workflow do?
+            Create your first skill
           </h2>
           <p className="mt-1 text-xs text-[var(--text-muted)]">
-            Describe the steps and we'll generate a workflow for you.
+            Describe what you want to automate and the agent will run it, then save the steps as a reusable skill.
           </p>
         </div>
 
@@ -40,7 +40,7 @@ export function IntentEmptyState({ onGenerate, onSkip, onRecordWalkthrough, load
             value={intent}
             onChange={(e) => setIntent(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="e.g. Open Safari, navigate to example.com, take a screenshot, find the login button and click it"
+            placeholder="e.g. Open Safari, navigate to example.com, find the login button and click it"
             rows={4}
             autoFocus
             disabled={loading}
@@ -54,20 +54,20 @@ export function IntentEmptyState({ onGenerate, onSkip, onRecordWalkthrough, load
             disabled={loading || !intent.trim()}
             className="rounded-lg bg-[var(--accent-coral)] px-5 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
-            {loading ? "Generating..." : "Generate Workflow"}
+            {loading ? "Running..." : "Run & save as skill"}
           </button>
           <button
             onClick={onRecordWalkthrough}
             disabled={loading}
             className="rounded-lg border border-[var(--border)] px-4 py-2 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] disabled:opacity-50"
           >
-            Record Walkthrough
+            Record walkthrough
           </button>
           <button
             onClick={onSkip}
             className="rounded-lg px-4 py-2 text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
           >
-            Build manually
+            Skip
           </button>
         </div>
       </div>

@@ -1,15 +1,12 @@
-//! Walkthrough → draft skill conversion.
+//! Walkthrough → skill conversion.
 //!
-//! Walkthrough drafts already have a semantic action stream and synthesized
-//! workflow graph. The conversion keeps the skill as a leaf skill by mapping
-//! the synthesized workflow nodes back to MCP tool calls, preserving the
-//! existing target-resolution choices from walkthrough synthesis.
+//! Provides a direct path from `WalkthroughAction` →
+//! `Vec<ActionSketchStep>` without a `Workflow` intermediary.
+//! Used by the `save_walkthrough_as_skill` Tauri command.
 
 use chrono::Utc;
-use clickweave_core::tool_mapping::{ToolMappingError, node_type_to_tool_invocation};
-use clickweave_core::walkthrough::WalkthroughAction;
-use clickweave_core::{Workflow, walkthrough};
-use uuid::Uuid;
+use clickweave_core::walkthrough::{WalkthroughAction, WalkthroughActionKind};
+use serde_json::json;
 
 use super::extractor::synthesize_skill_id_for_signature;
 use super::signature::{
@@ -20,74 +17,125 @@ use super::types::{
     ProvenanceEntry, Skill, SkillError, SkillScope, SkillState, SkillStats,
 };
 
-pub fn walkthrough_to_skill(
+// ── Direct path: actions → ActionSketchStep[] ──────────────────────────
+
+/// Convert a slice of `WalkthroughAction` directly into `ActionSketchStep`s
+/// without an intermediate `Workflow`. Each confirmed (non-candidate) action
+/// becomes one `ToolCall` step. Candidate hover actions are skipped — only
+/// confirmed actions produce steps.
+///
+/// Returns an error if there are no confirmed actions to convert.
+pub fn actions_to_sketch(
     actions: &[WalkthroughAction],
-    draft: Option<&Workflow>,
-    session_id: &str,
-    project_id: &str,
-) -> Result<Skill, SkillError> {
-    if actions.iter().all(|action| action.candidate) {
+) -> Result<Vec<ActionSketchStep>, SkillError> {
+    let confirmed: Vec<_> = actions.iter().filter(|a| !a.candidate).collect();
+    if confirmed.is_empty() {
         return Err(SkillError::InvalidParameters(
             "walkthrough has no confirmed actions".to_string(),
         ));
     }
 
-    let synthesized;
-    let workflow = match draft {
-        Some(draft) => draft,
-        None => {
-            let workflow_id = Uuid::parse_str(project_id).unwrap_or_else(|_| Uuid::new_v4());
-            synthesized = walkthrough::synthesize_draft(actions, workflow_id, "Walkthrough Skill");
-            &synthesized
-        }
-    };
-    if workflow.nodes.is_empty() {
-        return Err(SkillError::InvalidParameters(
-            "walkthrough draft has no workflow nodes".to_string(),
-        ));
-    }
-
-    let action_sketch = workflow
-        .nodes
-        .iter()
-        .map(|node| {
-            let invocation =
-                node_type_to_tool_invocation(&node.node_type).map_err(map_tool_mapping_error)?;
+    confirmed
+        .into_iter()
+        .enumerate()
+        .map(|(idx, action)| {
+            let (tool, args) = action_kind_to_tool(&action.kind);
             Ok(ActionSketchStep::ToolCall {
-                tool: invocation.name,
-                args: invocation.arguments,
+                step_id: format!("s_{idx:06}"),
+                tool,
+                args,
                 captures_pre: vec![],
                 captures: vec![],
                 expected_world_model_delta: ExpectedWorldModelDelta::default(),
+                requires_approval: None,
             })
         })
-        .collect::<Result<Vec<_>, SkillError>>()?;
+        .collect()
+}
 
-    let title = if workflow.name.trim().is_empty() {
-        "Walkthrough Skill"
-    } else {
-        workflow.name.trim()
-    };
+/// Map a `WalkthroughActionKind` to its MCP tool name + arguments JSON.
+fn action_kind_to_tool(kind: &WalkthroughActionKind) -> (String, serde_json::Value) {
+    match kind {
+        WalkthroughActionKind::Click {
+            x,
+            y,
+            button,
+            click_count,
+        } => {
+            let btn = match button {
+                clickweave_core::MouseButton::Left => "left",
+                clickweave_core::MouseButton::Right => "right",
+                clickweave_core::MouseButton::Center => "middle",
+            };
+            (
+                "click".to_string(),
+                json!({ "x": x, "y": y, "button": btn, "click_count": click_count }),
+            )
+        }
+        WalkthroughActionKind::TypeText { text } => {
+            ("type_text".to_string(), json!({ "text": text }))
+        }
+        WalkthroughActionKind::PressKey { key, modifiers } => (
+            "press_key".to_string(),
+            json!({ "key": key, "modifiers": modifiers }),
+        ),
+        WalkthroughActionKind::Scroll { delta_y } => {
+            ("scroll".to_string(), json!({ "delta_y": delta_y }))
+        }
+        WalkthroughActionKind::LaunchApp { app_name, .. } => {
+            ("launch_app".to_string(), json!({ "app_name": app_name }))
+        }
+        WalkthroughActionKind::FocusWindow {
+            app_name,
+            window_title,
+            ..
+        } => {
+            let mut args = json!({ "app_name": app_name });
+            if let Some(title) = window_title {
+                args["window_title"] = json!(title);
+            }
+            ("focus_window".to_string(), args)
+        }
+        WalkthroughActionKind::Hover { x, y, dwell_ms } => (
+            "move_mouse".to_string(),
+            json!({ "x": x, "y": y, "dwell_ms": dwell_ms }),
+        ),
+    }
+}
+
+// ── Build a Skill from an action sketch ────────────────────────────────
+
+/// Assemble a [`Skill`] from a pre-built `action_sketch`, pre-generated prose
+/// `body`, and session/project metadata.
+pub fn build_skill_from_sketch(
+    actions: &[WalkthroughAction],
+    action_sketch: Vec<ActionSketchStep>,
+    body: String,
+    name: &str,
+    description: &str,
+    session_id: &str,
+    project_id: &str,
+) -> Skill {
     let now = Utc::now();
     let apps = action_apps(actions);
     let focused_app = first_action_app(actions).unwrap_or_default();
-    let subgoal_signature = compute_subgoal_signature_from_parts(title, &focused_app, "");
-    let id = synthesize_skill_id_for_signature(title, &subgoal_signature);
+    let subgoal_signature = compute_subgoal_signature_from_parts(name, &focused_app, "");
+    let id = synthesize_skill_id_for_signature(name, &subgoal_signature);
     let applicability = ApplicabilityHints {
         apps,
         hosts: vec![],
         signature: compute_applicability_signature_from_parts(&focused_app, ""),
     };
 
-    Ok(Skill {
+    Skill {
         id,
         version: 1,
         state: SkillState::Draft,
         scope: SkillScope::ProjectLocal,
-        name: title.to_string(),
-        description: format!("Imported from walkthrough session {session_id}."),
+        name: name.to_string(),
+        description: description.to_string(),
         tags: vec!["walkthrough".to_string()],
-        subgoal_text: title.to_string(),
+        subgoal_text: name.to_string(),
         subgoal_signature,
         applicability,
         parameter_schema: vec![],
@@ -111,10 +159,16 @@ pub fn walkthrough_to_skill(
         edited_by_user: false,
         created_at: now,
         updated_at: now,
-        produced_node_ids: workflow.nodes.iter().map(|node| node.id).collect(),
-        body: String::new(),
-    })
+        produced_node_ids: vec![],
+        body,
+        schema_version: super::SKILL_SCHEMA_VERSION,
+        variables: vec![],
+        sections: vec![],
+        replay: None,
+    }
 }
+
+// ── Helpers ─────────────────────────────────────────────────────────────
 
 fn action_apps(actions: &[WalkthroughAction]) -> Vec<String> {
     let mut apps = actions
@@ -139,18 +193,13 @@ fn first_action_app(actions: &[WalkthroughAction]) -> Option<String> {
         .map(str::to_string)
 }
 
-fn map_tool_mapping_error(err: ToolMappingError) -> SkillError {
-    SkillError::InvalidParameters(format!(
-        "walkthrough action cannot become skill step: {err}"
-    ))
-}
-
 #[cfg(test)]
 mod tests {
+    use clickweave_core::MouseButton;
     use clickweave_core::walkthrough::{
         ActionConfidence, WalkthroughAction, WalkthroughActionKind,
     };
-    use clickweave_core::{MouseButton, Workflow};
+    use uuid::Uuid;
 
     use super::*;
 
@@ -170,9 +219,10 @@ mod tests {
         }
     }
 
+    // ── actions_to_sketch tests ──────────────────────────────────────
+
     #[test]
-    fn walkthrough_to_skill_builds_leaf_tool_sketch_from_draft() {
-        let workflow_id = Uuid::new_v4();
+    fn actions_to_sketch_maps_click_and_type() {
         let actions = vec![
             action(
                 WalkthroughActionKind::Click {
@@ -190,133 +240,52 @@ mod tests {
                 Some("Calculator"),
             ),
         ];
-        let draft = walkthrough::synthesize_draft(&actions, workflow_id, "Enter answer");
-
-        let skill = walkthrough_to_skill(
-            &actions,
-            Some(&draft),
-            "550e8400-e29b-41d4-a716-446655440000",
-            &workflow_id.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(skill.name, "Enter answer");
-        assert_eq!(skill.state, SkillState::Draft);
-        assert_eq!(skill.scope, SkillScope::ProjectLocal);
-        assert_eq!(skill.stats.occurrence_count, 1);
-        assert_eq!(skill.produced_node_ids.len(), 2);
-        assert_eq!(skill.applicability.apps, vec!["Calculator"]);
-        assert_eq!(
-            skill.subgoal_signature,
-            compute_subgoal_signature_from_parts("Enter answer", "Calculator", "")
+        let sketch = actions_to_sketch(&actions).unwrap();
+        assert_eq!(sketch.len(), 2);
+        assert!(matches!(&sketch[0], ActionSketchStep::ToolCall { tool, .. } if tool == "click"));
+        assert!(
+            matches!(&sketch[1], ActionSketchStep::ToolCall { tool, .. } if tool == "type_text")
         );
-        assert_eq!(
-            skill.applicability.signature,
-            compute_applicability_signature_from_parts("Calculator", "")
-        );
-        assert!(matches!(
-            &skill.action_sketch[0],
-            ActionSketchStep::ToolCall { tool, .. } if tool == "click"
-        ));
-        assert!(matches!(
-            &skill.action_sketch[1],
-            ActionSketchStep::ToolCall { tool, .. } if tool == "type_text"
-        ));
     }
 
     #[test]
-    fn walkthrough_to_skill_ids_include_app_signature() {
-        let workflow_id = Uuid::new_v4();
-        let calc_actions = vec![action(
+    fn actions_to_sketch_rejects_all_candidates() {
+        let mut a = action(
             WalkthroughActionKind::Click {
-                x: 12.0,
-                y: 34.0,
+                x: 1.0,
+                y: 1.0,
                 button: MouseButton::Left,
                 click_count: 1,
             },
-            Some("Calculator"),
-        )];
-        let notes_actions = vec![action(
-            WalkthroughActionKind::Click {
-                x: 12.0,
-                y: 34.0,
-                button: MouseButton::Left,
-                click_count: 1,
-            },
-            Some("Notes"),
-        )];
-        let calc_draft = walkthrough::synthesize_draft(&calc_actions, workflow_id, "Save result");
-        let notes_draft = walkthrough::synthesize_draft(&notes_actions, workflow_id, "Save result");
-
-        let calc = walkthrough_to_skill(
-            &calc_actions,
-            Some(&calc_draft),
-            "550e8400-e29b-41d4-a716-446655440000",
-            &workflow_id.to_string(),
-        )
-        .unwrap();
-        let notes = walkthrough_to_skill(
-            &notes_actions,
-            Some(&notes_draft),
-            "550e8400-e29b-41d4-a716-446655440001",
-            &workflow_id.to_string(),
-        )
-        .unwrap();
-
-        assert_ne!(calc.subgoal_signature, notes.subgoal_signature);
-        assert_ne!(calc.id, notes.id);
-    }
-
-    #[test]
-    fn walkthrough_signature_uses_first_action_app_not_sorted_app_list() {
-        let workflow_id = Uuid::new_v4();
-        let actions = vec![
-            action(
-                WalkthroughActionKind::Click {
-                    x: 1.0,
-                    y: 1.0,
-                    button: MouseButton::Left,
-                    click_count: 1,
-                },
-                Some("Zeta"),
-            ),
-            action(
-                WalkthroughActionKind::Click {
-                    x: 2.0,
-                    y: 2.0,
-                    button: MouseButton::Left,
-                    click_count: 1,
-                },
-                Some("Alpha"),
-            ),
-        ];
-        let draft = walkthrough::synthesize_draft(&actions, workflow_id, "Cross app");
-
-        let skill = walkthrough_to_skill(
-            &actions,
-            Some(&draft),
-            "550e8400-e29b-41d4-a716-446655440002",
-            &workflow_id.to_string(),
-        )
-        .unwrap();
-
-        assert_eq!(skill.applicability.apps, vec!["Alpha", "Zeta"]);
-        assert_eq!(
-            skill.applicability.signature,
-            compute_applicability_signature_from_parts("Zeta", "")
+            None,
         );
-    }
-
-    #[test]
-    fn walkthrough_to_skill_rejects_empty_draft() {
-        let workflow = Workflow {
-            id: Uuid::new_v4(),
-            name: "Empty".to_string(),
-            ..Workflow::default()
-        };
-
-        let err = walkthrough_to_skill(&[], Some(&workflow), "session", &workflow.id.to_string())
-            .unwrap_err();
+        a.candidate = true;
+        let err = actions_to_sketch(&[a]).unwrap_err();
         assert!(matches!(err, SkillError::InvalidParameters(_)));
+    }
+
+    #[test]
+    fn actions_to_sketch_skips_candidate_actions() {
+        let mut candidate = action(
+            WalkthroughActionKind::Click {
+                x: 5.0,
+                y: 5.0,
+                button: MouseButton::Left,
+                click_count: 1,
+            },
+            None,
+        );
+        candidate.candidate = true;
+        let confirmed = action(
+            WalkthroughActionKind::TypeText {
+                text: "hi".to_string(),
+            },
+            None,
+        );
+        let sketch = actions_to_sketch(&[candidate, confirmed]).unwrap();
+        assert_eq!(sketch.len(), 1);
+        assert!(
+            matches!(&sketch[0], ActionSketchStep::ToolCall { tool, .. } if tool == "type_text")
+        );
     }
 }

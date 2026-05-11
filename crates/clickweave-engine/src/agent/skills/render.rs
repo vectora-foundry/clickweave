@@ -139,6 +139,10 @@ mod tests {
             updated_at: chrono::Utc.timestamp_opt(0, 0).unwrap(),
             produced_node_ids: vec![],
             body: String::new(),
+            schema_version: super::super::SKILL_SCHEMA_VERSION,
+            variables: vec![],
+            sections: vec![],
+            replay: None,
         }
     }
 

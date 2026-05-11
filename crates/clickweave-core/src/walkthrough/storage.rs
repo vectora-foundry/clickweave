@@ -84,15 +84,6 @@ impl WalkthroughStorage {
         write_json_pretty(&session_dir.join("actions.json"), actions)
     }
 
-    /// Save a workflow draft to `draft.json`.
-    pub fn save_draft(
-        &self,
-        session_dir: &std::path::Path,
-        draft: &crate::Workflow,
-    ) -> anyhow::Result<()> {
-        write_json_pretty(&session_dir.join("draft.json"), draft)
-    }
-
     /// Read all events from `events.jsonl` in a session directory.
     pub fn read_events(
         &self,

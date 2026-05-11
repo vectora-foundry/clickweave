@@ -2,11 +2,9 @@ import { useStore } from "../store/useAppStore";
 import { useShallow } from "zustand/react/shallow";
 
 /**
- * Selector hook that extracts all walkthrough state and actions from the store.
- * Uses `useShallow` to batch the selection and avoid unnecessary re-renders.
- *
- * Intended as the single access point for WalkthroughPanel and other
- * walkthrough-aware components.
+ * Selector hook that extracts walkthrough recording state and actions from
+ * the store. Uses `useShallow` to batch the selection and avoid unnecessary
+ * re-renders.
  */
 export function useWalkthrough() {
   return useStore(
@@ -18,18 +16,16 @@ export function useWalkthrough() {
       sessionId: s.walkthroughSessionId,
       events: s.walkthroughEvents,
       actions: s.walkthroughActions,
-      draft: s.walkthroughDraft,
       warnings: s.walkthroughWarnings,
       annotations: s.walkthroughAnnotations,
-      expandedAction: s.walkthroughExpandedAction,
-      actionNodeMap: s.walkthroughActionNodeMap,
+      saveSheetOpen: s.walkthroughSaveSheetOpen,
       cdpModalOpen: s.walkthroughCdpModalOpen,
       cdpProgress: s.walkthroughCdpProgress,
-      nodeOrder: s.walkthroughNodeOrder,
 
       // Core actions
       setStatus: s.setWalkthroughStatus,
       setPanelOpen: s.setWalkthroughPanelOpen,
+      setSaveSheetOpen: s.setWalkthroughSaveSheetOpen,
       setDraft: s.setWalkthroughDraft,
 
       // Recording actions
@@ -44,19 +40,10 @@ export function useWalkthrough() {
       cancelWalkthrough: s.cancelWalkthrough,
 
       // Review actions
-      setExpandedAction: s.setWalkthroughExpandedAction,
-      keepCandidate: s.keepCandidate,
-      dismissCandidate: s.dismissCandidate,
       deleteNode: s.deleteNode,
       restoreNode: s.restoreNode,
       renameNode: s.renameNode,
-      overrideTarget: s.overrideTarget,
-      promoteToVariable: s.promoteToVariable,
-      removeVariablePromotion: s.removeVariablePromotion,
       resetAnnotations: s.resetAnnotations,
-      reorderNode: s.reorderNode,
-      reorderGroup: s.reorderGroup,
-      applyDraftToCanvas: s.applyDraftToCanvas,
       discardDraft: s.discardDraft,
     })),
   );

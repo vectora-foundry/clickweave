@@ -17,18 +17,20 @@ export function useSupervisionEvents() {
         useStore.getState().pushLog(`Critical: supervision event listener failed: ${err}`);
       });
 
-    sub(listen<{ node_id: string; node_name: string; summary: string }>(
+    sub(listen<{ scope: import("../../store/slices/executionSlice").SafetyScope; summary: string }>(
       "executor://supervision_passed",
       (e) => {
-        useStore.getState().pushLog(`Verified: ${e.payload.node_name} — ${e.payload.summary}`);
+        const scopeLabel = e.payload.scope.kind === "skill"
+          ? e.payload.scope.step_id
+          : e.payload.scope.run_id;
+        useStore.getState().pushLog(`Verified: ${scopeLabel} — ${e.payload.summary}`);
       },
     ));
-    sub(listen<{ node_id: string; node_name: string; finding: string; screenshot: string | null }>(
+    sub(listen<{ scope: import("../../store/slices/executionSlice").SafetyScope; finding: string; screenshot: string | null }>(
       "executor://supervision_paused",
       (e) => {
         useStore.getState().setSupervisionPause({
-          nodeId: e.payload.node_id,
-          nodeName: e.payload.node_name,
+          scope: e.payload.scope,
           finding: e.payload.finding,
           screenshot: e.payload.screenshot ?? null,
         });

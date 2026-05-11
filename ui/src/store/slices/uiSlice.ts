@@ -1,14 +1,38 @@
 import type { StateCreator } from "zustand";
 import type { DetailTab } from "../state";
-import type { NodeTypeInfo } from "../../bindings";
-import { commands } from "../../bindings";
 import type { StoreState } from "./types";
+
+// 1.G TOMBSTONE: placeholder shape mirroring the deleted
+// `bindings.ts::NodeTypeInfo`. The `nodeTypeDefaults` Tauri command is
+// gone; this whole canvas-tree branch is deleted with the canvas in 1.G.
+export type NodeTypeInfo = {
+  name: string;
+  output_role: string;
+  node_context: string;
+  icon: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  node_type: any;
+};
 
 export interface UiSlice {
   selectedNode: string | null;
   activeNode: string | null;
+  currentView: "overview" | "canvas";
+  /**
+   * Which main-pane surface is active.
+   * - `"skill"`: `SkillView` (Phase 1.F+) — the new primary surface.
+   * - `"canvas"`: Legacy canvas tree retained until 1.G deletes it.
+   * Defaults to `"skill"` so the new view is the default starting from 1.F.
+   */
+  currentSurface: "skill" | "canvas";
   detailTab: DetailTab;
   sidebarCollapsed: boolean;
+  /**
+   * Collapsed state for the AppShell utility sidebar (Overview / Canvas
+   * nav). Distinct from `sidebarCollapsed`, which belongs to the
+   * Canvas-internal `NodePalette`.
+   */
+  utilitySidebarCollapsed: boolean;
   logsDrawerOpen: boolean;
   nodeSearch: string;
   showSettings: boolean;
@@ -16,6 +40,23 @@ export interface UiSlice {
   allowAgentSteps: boolean;
   nodeTypes: NodeTypeInfo[];
   _nodeTypesLoaded: boolean;
+  /** Root-hoisted `ConfirmClearConversationModal` open state per D15.
+   *  Lifted from AssistantPanel so AppShell can mount the modal at root. */
+  confirmClearOpen: boolean;
+  /**
+   * D21 — source of truth for "is the assistant thread visible right now,
+   * and on which surface".
+   * - `"overview-card"`: rendered as the embedded Overview card (always
+   *   live on Overview; setting this from elsewhere has no visual effect).
+   * - `"drawer"`: rendered as the legacy Canvas-side slide-in drawer.
+   * - `null`: no drawer surface; on Canvas no thread chrome is mounted,
+   *   on Overview the embedded card is unaffected.
+   *
+   * Replaces the legacy boolean `assistant-open` flag. Switching to
+   * Overview does NOT cancel a Recording/Paused walkthrough because
+   * `setAssistantOpen` / `toggleAssistant` are no-ops on Overview.
+   */
+  assistantSurface: "overview-card" | "drawer" | null;
   /**
    * True when the canvas has a selection (one or more nodes, including group
    * containers) that is NOT represented by `selectedNode`. `selectedNode`
@@ -29,11 +70,21 @@ export interface UiSlice {
    * without threading an imperative handle up to `useEscapeKey`.
    */
   canvasSelectionResetTick: number;
+  /**
+   * True while a skill run is in progress. Freezes the SkillView shell:
+   * disables selection mode mutations, patch application, and other
+   * surfaces that would mutate the running skill. Cleared when the run
+   * terminates (executor://state → idle).
+   */
+  skillFrozen: boolean;
 
   selectNode: (id: string | null) => void;
   setActiveNode: (id: string | null) => void;
+  setCurrentView: (view: "overview" | "canvas") => void;
+  setCurrentSurface: (surface: "skill" | "canvas") => void;
   setDetailTab: (tab: DetailTab) => void;
   toggleSidebar: () => void;
+  toggleUtilitySidebar: () => void;
   toggleLogsDrawer: () => void;
   setNodeSearch: (s: string) => void;
   setShowSettings: (show: boolean) => void;
@@ -42,13 +93,19 @@ export interface UiSlice {
   loadNodeTypes: () => void;
   setHasCanvasSelection: (has: boolean) => void;
   clearCanvasSelection: () => void;
+  setConfirmClearOpen: (open: boolean) => void;
+  setAssistantSurface: (surface: "overview-card" | "drawer" | null) => void;
+  setSkillFrozen: (frozen: boolean) => void;
 }
 
 export const createUiSlice: StateCreator<StoreState, [], [], UiSlice> = (set, get) => ({
   selectedNode: null,
   activeNode: null,
+  currentView: "overview",
+  currentSurface: "skill",
   detailTab: "setup" as DetailTab,
   sidebarCollapsed: false,
+  utilitySidebarCollapsed: false,
   logsDrawerOpen: false,
   nodeSearch: "",
   showSettings: false,
@@ -58,11 +115,18 @@ export const createUiSlice: StateCreator<StoreState, [], [], UiSlice> = (set, ge
   _nodeTypesLoaded: false,
   hasCanvasSelection: false,
   canvasSelectionResetTick: 0,
+  confirmClearOpen: false,
+  assistantSurface: null,
+  skillFrozen: false,
 
   selectNode: (id) => set({ selectedNode: id }),
   setActiveNode: (id) => set({ activeNode: id }),
+  setCurrentView: (view) => set({ currentView: view }),
+  setCurrentSurface: (surface) => set({ currentSurface: surface }),
   setDetailTab: (tab) => set({ detailTab: tab }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+  toggleUtilitySidebar: () =>
+    set((s) => ({ utilitySidebarCollapsed: !s.utilitySidebarCollapsed })),
   toggleLogsDrawer: () => set((s) => ({ logsDrawerOpen: !s.logsDrawerOpen })),
   setNodeSearch: (s) => set({ nodeSearch: s }),
   setShowSettings: (show) => set({ showSettings: show }),
@@ -70,12 +134,13 @@ export const createUiSlice: StateCreator<StoreState, [], [], UiSlice> = (set, ge
   setAllowAgentSteps: (allow) => set({ allowAgentSteps: allow }),
 
   loadNodeTypes: () => {
+    // 1.G TOMBSTONE: deleted with canvas — the `nodeTypeDefaults` IPC
+    // command was removed in 1.C alongside the legacy graph envelope.
+    // The canvas (NodePalette) is the only consumer; both are deleted
+    // in 1.G. Mark loaded so existing call sites see a stable "no node
+    // types available" rather than a perpetual pending state.
     if (get()._nodeTypesLoaded) return;
-    set({ _nodeTypesLoaded: true });
-    commands
-      .nodeTypeDefaults()
-      .then((types) => set({ nodeTypes: types }))
-      .catch((e) => console.error("Failed to load node type defaults:", e));
+    set({ _nodeTypesLoaded: true, nodeTypes: [] });
   },
 
   setHasCanvasSelection: (has) => {
@@ -88,4 +153,7 @@ export const createUiSlice: StateCreator<StoreState, [], [], UiSlice> = (set, ge
       hasCanvasSelection: false,
       canvasSelectionResetTick: s.canvasSelectionResetTick + 1,
     })),
+  setConfirmClearOpen: (open) => set({ confirmClearOpen: open }),
+  setAssistantSurface: (surface) => set({ assistantSurface: surface }),
+  setSkillFrozen: (frozen) => set({ skillFrozen: frozen }),
 });

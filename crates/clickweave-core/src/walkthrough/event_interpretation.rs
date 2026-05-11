@@ -54,21 +54,6 @@ impl WindowControl {
         }
     }
 
-    /// Reverse-detect from a PressKey's key + modifiers.
-    /// Note: Close is NOT here — Cmd+W closes a tab, not the window.
-    /// Close is only detected via accessibility (subrole/label).
-    pub(crate) fn from_shortcut(key: &str, modifiers: &[String]) -> Option<Self> {
-        // Sort modifiers so matching is order-independent — the order from
-        // flags_to_modifiers() depends on flag-check order, not user intent.
-        let mut sorted: Vec<&str> = modifiers.iter().map(|s| s.as_str()).collect();
-        sorted.sort_unstable();
-        match (key, sorted.as_slice()) {
-            ("m", ["command"]) => Some(Self::Minimize),
-            ("f", ["command", "control"]) => Some(Self::Maximize),
-            _ => None,
-        }
-    }
-
     /// Keyboard shortcut key. Returns `None` for Close (Cmd+W closes tabs, not windows).
     pub(crate) fn shortcut(self) -> Option<(&'static str, Vec<String>)> {
         match self {
@@ -76,10 +61,6 @@ impl WindowControl {
             Self::Maximize => Some(("f", vec!["command".into(), "control".into()])),
             Self::Close | Self::Zoom => None,
         }
-    }
-
-    pub(crate) fn display_name(self) -> &'static str {
-        self.to_action().display_name()
     }
 
     /// Convert to the public `WindowControlAction` for use in target candidates
@@ -91,17 +72,6 @@ impl WindowControl {
             Self::Maximize => WindowControlAction::Maximize,
             Self::Zoom => WindowControlAction::Zoom,
         }
-    }
-}
-
-/// Human-readable names for well-known keyboard shortcuts that aren't
-/// window control buttons (those are handled by `WindowControl::from_shortcut`).
-pub(crate) fn shortcut_display_name(key: &str, modifiers: &[String]) -> Option<String> {
-    let mut sorted: Vec<&str> = modifiers.iter().map(|s| s.as_str()).collect();
-    sorted.sort_unstable();
-    match (key, sorted.as_slice()) {
-        ("w", ["command"]) => Some("Close tab".to_string()),
-        _ => None,
     }
 }
 
@@ -165,27 +135,6 @@ mod tests {
     fn test_window_control_unrelated_subrole_returns_none() {
         assert!(
             WindowControl::from_accessibility("", Some("AXButton"), Some("AXSortButton")).is_none()
-        );
-    }
-
-    #[test]
-    fn test_window_control_shortcut_roundtrip() {
-        // Close has no shortcut — only Minimize and Maximize round-trip.
-        assert!(WindowControl::Close.shortcut().is_none());
-        for wc in [WindowControl::Minimize, WindowControl::Maximize] {
-            let (key, modifiers) = wc.shortcut().unwrap();
-            let recovered = WindowControl::from_shortcut(key, &modifiers);
-            assert_eq!(recovered, Some(wc), "roundtrip failed for {wc:?}");
-        }
-    }
-
-    #[test]
-    fn test_window_control_shortcut_order_independent() {
-        // control+command (reversed) should still match Maximize.
-        let modifiers = vec!["control".to_string(), "command".to_string()];
-        assert_eq!(
-            WindowControl::from_shortcut("f", &modifiers),
-            Some(WindowControl::Maximize)
         );
     }
 }

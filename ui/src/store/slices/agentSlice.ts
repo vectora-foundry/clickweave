@@ -1,10 +1,9 @@
 import type { StateCreator } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import type { Node, Edge } from "../../bindings";
+import { commands, type Skill } from "../../bindings";
 import { toEndpoint } from "../settings";
 import type { PermissionRule, ToolPermissions } from "../state";
 import type { StoreState } from "./types";
-import { buildPriorTurns } from "../../utils/priorTurns";
 
 export interface AgentStep {
   summary: string;
@@ -17,7 +16,7 @@ export interface AgentStep {
 export type AgentStatus = "idle" | "running" | "complete" | "stopped" | "error";
 
 export interface PendingApproval {
-  stepIndex: number;
+  scope: import("./executionSlice").SafetyScope | null;
   toolName: string;
   arguments: unknown;
   description: string;
@@ -164,25 +163,73 @@ export interface AgentSlice {
   consecutiveDestructiveCapHit: ConsecutiveDestructiveCapHit | null;
   /** Generation ID for the active run — used to reject stale events. */
   agentRunId: string | null;
+  /** Epoch ms when `startAgent` flipped the slice into the running state.
+   *  Used by `LiveRuntimeCard` to compute the Elapsed metric. Cleared on
+   *  the next `startAgent` (or `clearConversationFlow`) — never on terminal
+   *  events alone, so the freeze duration stays visible. */
+  agentRunStartedAt: number | null;
+  /** Epoch ms when the active run reached a terminal state (stop, complete,
+   *  error, or completion-disagreement resolution). Drives the frozen
+   *  Elapsed display in `LiveRuntimeCard` between runs. Cleared together
+   *  with `agentRunStartedAt` on the next start. */
+  agentRunFinishedAt: number | null;
   /** Ambiguity resolution records, newest first. Persists across agent
    *  completion so the user can inspect past resolutions. */
   ambiguityResolutions: AmbiguityResolution[];
   /** Active modal target for the ambiguity inspector, keyed by
    *  AmbiguityResolution.id. */
   activeAmbiguityId: string | null;
-  /** Agent-produced nodes buffered until the run reaches a clean terminal event. */
-  pendingRunNodes: Record<string, Node[]>;
-  /** Agent-produced edges buffered until the run reaches a clean terminal event. */
-  pendingRunEdges: Record<string, Edge[]>;
   /** Session-only collapse state for synthetic agent-run containers. */
   agentRunCollapsed: Record<string, boolean>;
+  /**
+   * True when the user typed their first goal from `IntentEmptyState` on a
+   * project with zero skills. When set, `commitRunBuffer` stages a
+   * `pendingRunSave` payload that opens the post-run `AgentRunSaveSheet`
+   * review modal; the actual skill IPC fires only when the user confirms in
+   * the sheet. Cleared as soon as `commitRunBuffer` stages the payload (the
+   * sheet itself owns the `pendingRunSave` lifecycle from that point on).
+   */
+  skillCreationIntent: boolean;
+  /**
+   * Set by `commitRunBuffer` when a run terminates while `skillCreationIntent`
+   * is true. Drives the post-run `AgentRunSaveSheet` modal: user picks the
+   * skill name and which steps to include before the skill is materialised.
+   * Cleared on Save or Discard.
+   */
+  pendingRunSave: { runId: string; summary: string } | null;
+  setPendingRunSave: (v: { runId: string; summary: string } | null) => void;
   startAgent: (goal: string) => Promise<void>;
   stopAgent: () => Promise<void>;
   addAgentStep: (step: AgentStep) => void;
-  bufferAgentNode: (runId: string, node: Node) => void;
-  bufferAgentEdge: (runId: string, edge: Edge) => void;
+  /**
+   * Commit the completed run. When `skillCreationIntent` is true, stages a
+   * `pendingRunSave` payload (clears the intent flag at the same time) so the
+   * post-run `AgentRunSaveSheet` opens and the user can review the steps
+   * before the skill is materialised. Otherwise a no-op — ad-hoc runs are
+   * not committed to a graph (no graph exists in the skill-only shell).
+   */
   commitRunBuffer: (runId: string, summary: string) => void;
   dropRunBuffer: (runId: string) => void;
+  setSkillCreationIntent: (intent: boolean) => void;
+  /**
+   * Explicitly save the most recently completed agent run as a new skill.
+   * Privacy-gated: returns `{ ok: false, error }` when `storeTraces` or
+   * `skillsEnabled` is off, or when the backend IPC returns an error.
+   * Returns `{ ok: true, skill }` carrying the materialised `Skill` on a
+   * confirmed write. Pass `stepIndices` to materialise only a subset of
+   * `agentSteps` (used by `AgentRunSaveSheet` to skip wrong-path/correction
+   * steps). On success, refreshes the skills panel so the new skill is
+   * surfaced in the UI without a project reload.
+   */
+  saveRunAsSkill: (
+    name?: string,
+    stepIndices?: number[],
+  ) => Promise<{ ok: true; skill: Skill } | { ok: false; error: string }>;
+  /**
+   * Explicitly append the most recently completed agent run to an existing
+   * skill identified by `skillId`. Privacy-gated like `saveRunAsSkill`.
+   */
+  addRunToSkill: (skillId: string, version: number) => Promise<void>;
   toggleAgentRunCollapsed: (runId: string) => void;
   setPendingApproval: (approval: PendingApproval | null) => void;
   approveAction: () => Promise<void>;
@@ -234,9 +281,12 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
   agentRunId: null,
   ambiguityResolutions: [],
   activeAmbiguityId: null,
-  pendingRunNodes: {},
-  pendingRunEdges: {},
   agentRunCollapsed: {},
+  agentRunStartedAt: null,
+  agentRunFinishedAt: null,
+  skillCreationIntent: false,
+  pendingRunSave: null,
+  setPendingRunSave: (v) => set({ pendingRunSave: v }),
 
   startAgent: async (goal) => {
     const priorState = get();
@@ -244,7 +294,8 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       pushLog,
       agentConfig,
       projectPath,
-      workflow,
+      projectName,
+      projectId,
       toolPermissions,
       storeTraces,
       episodicEnabled,
@@ -253,7 +304,6 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       skillsEnabled,
       applicableSkillsK,
       skillsGlobalParticipation,
-      messages,
       pushAssistantMessage,
     } = priorState;
     // If a run is already active, do not touch run-scoped state: the
@@ -286,31 +336,16 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       completionDisagreement: priorState.completionDisagreement,
       consecutiveDestructiveCapHit: priorState.consecutiveDestructiveCapHit,
       agentRunId: priorState.agentRunId,
+      // Include elapsed timestamps so AlreadyRunning rollback restores
+      // the prior terminal run's frozen duration rather than keeping
+      // the rejected attempt's start time and a null finish time.
+      agentRunStartedAt: priorState.agentRunStartedAt,
+      agentRunFinishedAt: priorState.agentRunFinishedAt,
     };
 
-    // Client-side run ID (D1.M1) so the user bubble can be tagged
-    // before `agent://started` arrives and the backend can echo it.
+    // Client-side run ID so the user bubble can be tagged before
+    // `agent://started` arrives and the backend can echo it.
     const runId = crypto.randomUUID();
-
-    // Anchor = most recent workflow node with a source_run_id. Used
-    // by the engine to seed `last_node_id` so the first emitted edge
-    // connects from the prior chain into the new run's first node.
-    let anchor: string | null = null;
-    for (let i = workflow.nodes.length - 1; i >= 0; i -= 1) {
-      if (workflow.nodes[i].source_run_id) {
-        anchor = workflow.nodes[i].id;
-        break;
-      }
-    }
-
-    // Build the prior-turn payload from the current chat + surviving
-    // agent nodes. `buildPriorTurns` filters to pairs whose runId
-    // still has live nodes on the canvas.
-    const priorTurns = buildPriorTurns(messages, workflow).map((t) => ({
-      goal: t.goal,
-      summary: t.summary,
-      run_id: t.run_id,
-    }));
 
     if (!wasActive) {
       set({
@@ -326,6 +361,12 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
         // and any late in-flight events from the prior run (which
         // carry a different run_id) get rejected by `isStaleRunId`.
         agentRunId: runId,
+        // D24 — both elapsed fields zero together on every fresh
+        // start. The "cleared together only on the next start" rule
+        // is achieved by writing both fields here; terminal events
+        // only set `agentRunFinishedAt`, never `agentRunStartedAt`.
+        agentRunStartedAt: Date.now(),
+        agentRunFinishedAt: null,
       });
       // Push the user bubble stamped with the new run ID. This is
       // the single producer for the user side of the conversation —
@@ -339,15 +380,15 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
           goal,
           agent: toEndpoint(agentConfig),
           project_path: projectPath,
-          workflow_name: workflow.name,
-          workflow_id: workflow.id,
+          project_name: projectName,
+          project_id: projectId,
           permissions: toPermissionPolicyWire(toolPermissions),
           consecutive_destructive_cap:
             toolPermissions.consecutiveDestructiveCap,
           store_traces: storeTraces,
           run_id: runId,
-          anchor_node_id: anchor,
-          prior_turns: priorTurns,
+          anchor_node_id: null,
+          prior_turns: [],
           episodic_enabled: episodicEnabled,
           retrieved_episodes_k: retrievedEpisodesK,
           episodic_global_participation: episodicGlobalParticipation,
@@ -388,6 +429,12 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       agentStatus: "stopped",
       pendingApproval: null,
       consecutiveDestructiveCapHit: null,
+      // D24 — freeze elapsed at the user-initiated stop. Terminal
+      // event handlers will overwrite with their own Date.now() if
+      // they fire (within microseconds), but stamping here keeps the
+      // Live Runtime card frozen even if the backend never emits a
+      // terminal event (e.g. force-kill path).
+      agentRunFinishedAt: Date.now(),
     });
     try {
       await invoke("stop_agent");
@@ -404,57 +451,114 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
     }));
   },
 
-  bufferAgentNode: (runId, node) => {
-    set((state) => ({
-      pendingRunNodes: {
-        ...state.pendingRunNodes,
-        [runId]: [...(state.pendingRunNodes[runId] ?? []), node],
-      },
-    }));
+  commitRunBuffer: (runId, summary) => {
+    // When `skillCreationIntent` is set we defer materialising the skill
+    // to `AgentRunSaveSheet` so the user can review the name + steps
+    // (including filtering out wrong-path / correction tool calls) before
+    // commit. Otherwise this is a no-op for ad-hoc runs.
+    const state = get();
+    if (state.skillCreationIntent) {
+      set({
+        skillCreationIntent: false,
+        pendingRunSave: { runId, summary: summary || state.agentGoal || "" },
+      });
+    }
   },
 
-  bufferAgentEdge: (runId, edge) => {
-    set((state) => ({
-      pendingRunEdges: {
-        ...state.pendingRunEdges,
-        [runId]: [...(state.pendingRunEdges[runId] ?? []), edge],
-      },
-    }));
+  dropRunBuffer: (_runId) => {
+    // No-op: buffers were removed with the canvas. Kept for call-site
+    // compatibility until event subscribers are updated.
   },
 
-  commitRunBuffer: (runId, _summary) => {
-    set((state) => {
-      const nodes = state.pendingRunNodes[runId] ?? [];
-      const edges = state.pendingRunEdges[runId] ?? [];
-      const { [runId]: _removedNodes, ...pendingRunNodes } =
-        state.pendingRunNodes;
-      const { [runId]: _removedEdges, ...pendingRunEdges } =
-        state.pendingRunEdges;
+  setSkillCreationIntent: (intent) => set({ skillCreationIntent: intent }),
 
-      if (nodes.length === 0) {
-        return { pendingRunNodes, pendingRunEdges };
-      }
-
+  saveRunAsSkill: async (name, stepIndices) => {
+    const state = get();
+    if (!state.storeTraces || !state.skillsEnabled) {
       return {
-        pendingRunNodes,
-        pendingRunEdges,
-        workflow: {
-          ...state.workflow,
-          nodes: [...state.workflow.nodes, ...nodes],
-          edges: [...state.workflow.edges, ...edges],
-        },
+        ok: false,
+        error: !state.storeTraces
+          ? "Trace persistence is off"
+          : "Skill saving is disabled",
       };
+    }
+    const sourceSteps = stepIndices
+      ? stepIndices
+          .map((i) => state.agentSteps[i])
+          .filter((s): s is AgentStep => s !== undefined)
+      : state.agentSteps;
+    const steps = sourceSteps.map((s) => ({
+      summary: s.summary,
+      tool_name: s.toolName,
+      args_json: s.toolArgs ? JSON.stringify(s.toolArgs) : "",
+    }));
+    const result = await commands.saveRunAsSkill({
+      project_path: state.projectPath ?? null,
+      project_name: state.projectName,
+      project_id: state.projectId,
+      name: (typeof name === "string" ? name : state.agentGoal) ?? "",
+      goal: state.agentGoal,
+      steps,
+      store_traces: state.storeTraces,
     });
+    if (result.status === "error") {
+      const message =
+        typeof result.error === "string"
+          ? result.error
+          : JSON.stringify(result.error);
+      console.error("saveRunAsSkill failed:", message);
+      return { ok: false, error: message };
+    }
+    // Refresh the skills panel so the freshly written skill is surfaced
+    // without requiring a project reload. `save_run_as_skill` emits
+    // `agent://skill_extracted` without a `run_id`, which the staleness
+    // filter on the event listener rejects, so we cannot rely on that
+    // path to update the UI for this command.
+    //
+    // Re-check the current project before refreshing: if the user opened
+    // or created a different project while the IPC was in flight, the
+    // captured project fields are stale. Refreshing with them would clobber
+    // the new project's panel with the old project's skill list. The new
+    // project's own panel load is handled by `AppShell`'s skills-load
+    // effect, so we can safely skip the refresh here.
+    const currentProjectId = get().projectId;
+    if (currentProjectId === state.projectId) {
+      get()
+        .loadSkillsForPanel({
+          projectPath: state.projectPath,
+          projectName: state.projectName,
+          projectId: state.projectId,
+          includeGlobal: state.skillsGlobalParticipation,
+          storeTraces: state.storeTraces,
+        })
+        .catch((e) =>
+          console.error("loadSkillsForPanel after saveRunAsSkill failed", e),
+        );
+    }
+    return { ok: true, skill: result.data };
   },
 
-  dropRunBuffer: (runId) => {
-    set((state) => {
-      const { [runId]: _removedNodes, ...pendingRunNodes } =
-        state.pendingRunNodes;
-      const { [runId]: _removedEdges, ...pendingRunEdges } =
-        state.pendingRunEdges;
-      return { pendingRunNodes, pendingRunEdges };
+  addRunToSkill: async (skillId, version) => {
+    const state = get();
+    if (!state.storeTraces || !state.skillsEnabled) return;
+    const steps = state.agentSteps.map((s) => ({
+      summary: s.summary,
+      tool_name: s.toolName,
+      args_json: s.toolArgs ? JSON.stringify(s.toolArgs) : "",
+    }));
+    const result = await commands.addRunToSkill({
+      project_path: state.projectPath ?? null,
+      project_name: state.projectName,
+      project_id: state.projectId,
+      skill_id: skillId,
+      version,
+      goal: state.agentGoal,
+      steps,
+      store_traces: state.storeTraces,
     });
+    if (result.status === "error") {
+      console.error("addRunToSkill failed:", result.error);
+    }
   },
 
   toggleAgentRunCollapsed: (runId) => {
@@ -514,6 +618,12 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
    */
   confirmDisagreementAsComplete: async () => {
     const { pushLog } = get();
+    // D24 — freeze elapsed at the moment of resolution. The terminal
+    // event will overwrite this with its own Date.now() if it fires
+    // (within microseconds), but the optimistic stamp ensures the
+    // Live Runtime card freezes immediately even if the catch path
+    // runs (resolver-rejected race) and only sets `completionDisagreement`.
+    set({ agentRunFinishedAt: Date.now() });
     try {
       await invoke("resolve_completion_disagreement", { action: "confirm" });
       pushLog(
@@ -538,6 +648,11 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
     if (agentRunId) {
       get().dropRunBuffer(agentRunId);
     }
+    // D24 — freeze elapsed at resolution (mirrors confirm path). The
+    // terminal `agent://stopped` event overwrites this if it fires;
+    // stamping here guarantees the Live Runtime card freezes even on
+    // the resolver-rejected catch path.
+    set({ agentRunFinishedAt: Date.now() });
     try {
       await invoke("resolve_completion_disagreement", { action: "cancel" });
       pushLog("Agent run cancelled by user (VLM disagreement)");
@@ -548,6 +663,7 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
         completionDisagreement: null,
         agentStatus: "stopped",
         pendingApproval: null,
+        agentRunFinishedAt: Date.now(),
       });
       pushLog(`Completion cancel invoke rejected: ${formatAgentError(err)}`);
     }
@@ -570,9 +686,11 @@ export const createAgentSlice: StateCreator<StoreState, [], [], AgentSlice> = (
       completionDisagreement: null,
       consecutiveDestructiveCapHit: null,
       agentRunId: null,
-      pendingRunNodes: {},
-      pendingRunEdges: {},
       agentRunCollapsed: {},
+      agentRunStartedAt: null,
+      agentRunFinishedAt: null,
+      skillCreationIntent: false,
+      pendingRunSave: null,
       // Ambiguity records are intentionally NOT cleared — they persist across
       // runs so the user can still inspect past resolutions until they
       // explicitly clear them or start a new project.

@@ -4,7 +4,6 @@ import type { StoreState } from "./types";
 import { commands } from "../../bindings";
 import type { BoundaryKind, Phase, TaskState, WorldModelDiff } from "../../bindings";
 import { saveAgentChat } from "../agentChatPersistence";
-import { autoDissolveGroups } from "../useWorkflowMutations";
 
 // Flag consumed by `saveAgentChat` in `agentChatPersistence.ts` to
 // short-circuit writes after Clear begins but before the file is
@@ -70,10 +69,19 @@ export interface RunTrace {
 
 export interface AssistantSlice {
   messages: AssistantMessage[];
-  assistantOpen: boolean;
   assistantError: string | null;
   runTraces: Record<string, RunTrace>;
 
+  /**
+   * D21 — `setAssistantOpen` / `toggleAssistant` no longer mutate a bare
+   * boolean. They now drive `assistantSurface` (lives on `uiSlice`):
+   *  - On Overview both actions are no-ops (the embedded card is always
+   *    live, so toggling has no surface to act on).
+   *  - On Canvas they flip `assistantSurface` between `"drawer"` and
+   *    `null`.
+   * The walkthrough cancellation side-effect (Recording / Paused) is
+   * preserved on Canvas only.
+   */
   setAssistantOpen: (open: boolean) => void;
   toggleAssistant: () => void;
   setAssistantError: (error: string | null) => void;
@@ -111,6 +119,12 @@ export interface AssistantSlice {
   pushTraceStep: (runId: string, step: TraceStep) => void;
   setTerminalFrame: (runId: string, frame: TerminalFrame) => void;
   clearTrace: (runId: string) => void;
+  /**
+   * Drop a fully-built trace (hydrated from disk) into `runTraces` and
+   * point `agentRunId` at it. Only applied when no live run is active
+   * — a hydrated trace must never override a fresh `agent://started`.
+   */
+  hydrateRunTrace: (trace: RunTrace) => void;
   /**
    * Full Clear-conversation flow (D1.C1): delete every agent-built
    * node, wipe the cache + variant-index + transcript files via the
@@ -179,8 +193,8 @@ export const createAssistantSlice: StateCreator<
     void saveAgentChat(
       {
         projectPath: s.projectPath,
-        workflowName: s.workflow.name,
-        workflowId: s.workflow.id,
+        projectName: s.projectName,
+        projectId: s.projectId,
         storeTraces: s.storeTraces,
       },
       s.messages,
@@ -189,11 +203,18 @@ export const createAssistantSlice: StateCreator<
 
   return {
   messages: [],
-  assistantOpen: false,
   assistantError: null,
   runTraces: {},
 
   setAssistantOpen: (open) => {
+    // D21 — the legacy boolean is now derived from `assistantSurface`.
+    // Setting "open" maps to opening the **drawer** surface; the
+    // Overview embedded card has its own surface and is not toggled
+    // by this action.
+    if (get().currentView === "overview") {
+      // No drawer to toggle on Overview — the embedded card is always live.
+      return;
+    }
     if (open && isWalkthroughActive(get().walkthroughStatus)) {
       const status = get().walkthroughStatus;
       if (status === "Recording" || status === "Paused") {
@@ -202,10 +223,11 @@ export const createAssistantSlice: StateCreator<
       // Review/Processing: don't discard — just hide the walkthrough panel
       // while the assistant is open. Closing the assistant restores it.
     }
-    set({ assistantOpen: open });
+    get().setAssistantSurface(open ? "drawer" : null);
   },
   toggleAssistant: () => {
-    const opening = !get().assistantOpen;
+    if (get().currentView === "overview") return;
+    const opening = get().assistantSurface !== "drawer";
     if (opening && isWalkthroughActive(get().walkthroughStatus)) {
       const status = get().walkthroughStatus;
       if (status === "Recording" || status === "Paused") {
@@ -214,7 +236,7 @@ export const createAssistantSlice: StateCreator<
       // Review/Processing: don't discard — just hide the walkthrough panel
       // while the assistant is open. Closing the assistant restores it.
     }
-    set({ assistantOpen: opening });
+    get().setAssistantSurface(opening ? "drawer" : null);
   },
 
   setAssistantError: (error) => set({ assistantError: error }),
@@ -368,53 +390,43 @@ export const createAssistantSlice: StateCreator<
     });
   },
 
+  hydrateRunTrace: (trace) => {
+    if (get().agentRunId !== null) return;
+    set((s) => ({
+      runTraces: { ...s.runTraces, [trace.runId]: trace },
+      agentRunId: trace.runId,
+    }));
+  },
+
   clearConversationFlow: async () => {
     const state = get();
     const activeRunId = state.agentRunId;
-    const agentNodeIds = state.workflow.nodes
-      .filter((n) => n.source_run_id != null)
-      .map((n) => n.id);
 
-    // (1) Remove agent nodes from the workflow WITHOUT a history push
-    //     (D1.C1 — Clear is not undoable; writing a history entry here
-    //     would resurrect deleted nodes via Cmd+Z while the cache/
-    //     variant/transcript files stay wiped). Also strip deleted
-    //     ids from any user groups and auto-dissolve groups that
-    //     drop below their minimum membership — otherwise user-group
-    //     metadata keeps referencing nodes that no longer exist and
-    //     the canvas renders ghost/empty group containers.
-    if (agentNodeIds.length > 0) {
-      const idSet = new Set(agentNodeIds);
-      const updatedGroups = (state.workflow.groups ?? []).map((g) => ({
-        ...g,
-        node_ids: g.node_ids.filter((id) => !idSet.has(id)),
-      }));
-      state.setWorkflow({
-        ...state.workflow,
-        nodes: state.workflow.nodes.filter((n) => !idSet.has(n.id)),
-        edges: state.workflow.edges.filter(
-          (e) => !idSet.has(e.from) && !idSet.has(e.to),
-        ),
-        groups: autoDissolveGroups(updatedGroups),
-      });
-      // Also clear history stacks so Cmd+Z cannot partial-undo the
-      // graph mutation we just performed.
-      state.clearHistory();
-    }
-
-    // (2) Wipe messages in memory before the file wipe so any
+    // (1) Wipe messages in memory before the file wipe so any
     //     concurrent saveAgentChat has nothing to replay. The flag
     //     short-circuits any in-flight save that races this call.
     conversationWipeInProgress = true;
     set({ messages: [] });
+    // D24 — Clear is one of the two zeroing points for the elapsed
+    // timestamps (the other is the next `startAgent`). Without this
+    // reset the Live Runtime card would keep showing the prior run's
+    // frozen Elapsed value after a Clear, which contradicts the
+    // freshly-empty conversation surface.
+    // Also clear the destructive-cap notice so the AssistantThread
+    // run-halted card does not persist after the conversation is wiped.
+    set({
+      agentRunStartedAt: null,
+      agentRunFinishedAt: null,
+      consecutiveDestructiveCapHit: null,
+    });
 
     // (3) Wipe files on disk. Respects `store_traces` privacy flag
     //     inside the command body (D1.M4).
     try {
       await commands.clearAgentConversation({
         project_path: state.projectPath,
-        workflow_name: state.workflow.name,
-        workflow_id: state.workflow.id,
+        project_name: state.projectName,
+        project_id: state.projectId,
         store_traces: state.storeTraces,
       });
     } catch (e) {
@@ -426,6 +438,11 @@ export const createAssistantSlice: StateCreator<
     if (activeRunId) {
       state.dropRunBuffer(activeRunId);
       state.clearTrace(activeRunId);
+      // Null the run ID so LiveRuntimeCard shows "No active run."
+      // rather than the "Agent running..." fallback from RunTraceView
+      // (which triggers when agentRunId is non-null but the trace was
+      // just dropped).
+      set({ agentRunId: null });
     }
   },
   };

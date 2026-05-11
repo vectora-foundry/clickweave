@@ -4,6 +4,7 @@ mod chrome_profiles;
 pub mod error;
 mod executor;
 mod project;
+pub mod run_trace;
 mod runs;
 pub mod skills;
 mod types;
@@ -12,16 +13,19 @@ mod walkthrough_enrichment;
 mod walkthrough_session;
 
 pub use agent::{
-    AgentHandle, approve_agent_action, resolve_completion_disagreement, run_agent, stop_agent,
+    AgentHandle, add_run_to_skill, approve_agent_action, resolve_completion_disagreement,
+    run_agent, save_run_as_skill, stop_agent,
 };
 pub use chrome_profiles::{
     create_chrome_profile, get_chrome_profile_path, is_chrome_profile_configured,
     launch_chrome_for_setup, list_chrome_profiles,
 };
-pub use executor::{ExecutorHandle, run_workflow, stop_workflow, supervision_respond};
+pub use executor::{
+    ExecutorHandle, resume_skill_from_failure, run_skill, stop_workflow, supervision_respond,
+};
 pub use project::{
-    confirmable_tools, generate_auto_id, get_mcp_status, import_asset, node_type_defaults,
-    open_project, pick_save_file, pick_workflow_file, ping, save_project, validate,
+    confirmable_tools, get_mcp_status, import_asset, open_project, pick_save_file,
+    pick_workflow_file, ping, save_project,
 };
 pub use runs::{list_runs, load_run_events, read_artifact_base64};
 pub use types::{AppDataDir, McpStatus};

@@ -1,8 +1,32 @@
 import { useMemo } from "react";
-import type { Edge, Node } from "@xyflow/react";
 import { invoke } from "@tauri-apps/api/core";
+
+/** Minimal node descriptor used in action-sketch canvas data. */
+export interface SketchNode {
+  id: string;
+  type?: string;
+  parentId?: string;
+  extent?: "parent";
+  position: { x: number; y: number };
+  style?: Record<string, unknown>;
+  data: Record<string, unknown>;
+}
+
+/** Minimal edge descriptor used in action-sketch canvas data. */
+export interface SketchEdge {
+  id: string;
+  source: string;
+  target: string;
+  type?: string;
+}
+
+/** Read-only skill canvas source passed to the sketch renderer. */
+export interface SkillCanvasSource {
+  nodes: SketchNode[];
+  edges: SketchEdge[];
+  readOnly: boolean;
+}
 import { useShallow } from "zustand/react/shallow";
-import { GraphCanvas, type SkillCanvasSource } from "../GraphCanvas";
 import { useStore } from "../../store/useAppStore";
 import { SkillRefinementForm } from "./SkillRefinementForm";
 import type {
@@ -16,8 +40,8 @@ interface SkillDetailViewProps {
   skillId: string;
   version: number;
   projectPath: string | null;
-  workflowName: string;
-  workflowId: string;
+  projectName: string;
+  projectId: string;
   runId?: string | null;
   storeTraces: boolean;
   onChanged?: () => void;
@@ -27,8 +51,8 @@ export function SkillDetailView({
   skillId,
   version,
   projectPath,
-  workflowName,
-  workflowId,
+  projectName,
+  projectId,
   runId,
   storeTraces,
   onChanged,
@@ -72,8 +96,8 @@ export function SkillDetailView({
         version,
         accepted_proposal: proposal,
         project_path: projectPath,
-        workflow_name: workflowName,
-        workflow_id: workflowId,
+        project_name: projectName,
+        project_id: projectId,
         run_id: runId ?? "",
         store_traces: storeTraces,
       },
@@ -93,8 +117,8 @@ export function SkillDetailView({
         skill_id: skillId,
         version,
         project_path: projectPath,
-        workflow_name: workflowName,
-        workflow_id: workflowId,
+        project_name: projectName,
+        project_id: projectId,
         store_traces: storeTraces,
       },
     });
@@ -158,9 +182,9 @@ export function SkillDetailView({
               <dt className="text-[var(--text-muted)]">Success rate</dt>
               <dd>{(skill.success_rate * 100).toFixed(0)}%</dd>
             </dl>
-            <div className="mt-4 h-[420px] overflow-hidden rounded border border-[var(--border)]">
+            <div className="mt-4 overflow-hidden rounded border border-[var(--border)] px-3 py-2">
               {skillSource ? (
-                <GraphCanvas skillSource={skillSource} />
+                <SkillActionSketchList source={skillSource} />
               ) : (
                 <div className="flex h-full items-center justify-center text-[10px] italic text-[var(--text-muted)]">
                   Action sketch not loaded in panel index.
@@ -187,13 +211,41 @@ export function SkillDetailView({
   );
 }
 
+/** Plain-list renderer for a skill action sketch (replaces the React-Flow canvas). */
+function SkillActionSketchList({ source }: { source: SkillCanvasSource }) {
+  if (source.nodes.length === 0) {
+    return (
+      <div className="py-4 text-center text-[10px] italic text-[var(--text-muted)]">
+        No steps.
+      </div>
+    );
+  }
+  return (
+    <ol className="space-y-1 py-1 text-[11px] text-[var(--text-secondary)]">
+      {source.nodes.map((n, i) => (
+        <li key={n.id} className="flex items-start gap-2">
+          <span className="shrink-0 tabular-nums text-[var(--text-muted)]">
+            {i + 1}.
+          </span>
+          <span className="break-words">
+            {n.data?.tool as string ??
+              n.data?.label as string ??
+              n.type ??
+              n.id}
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 export function projectSketchToCanvas(
   sketch: ActionSketchStep[],
   skills: SkillSummary[],
   openSubSkill: (skill: { id: string; version: number }) => void,
 ): SkillCanvasSource {
-  const nodes: Node[] = [];
-  const edges: Edge[] = [];
+  const nodes: SketchNode[] = [];
+  const edges: SketchEdge[] = [];
   const childWidth = 280;
   const rowHeight = 210;
 
